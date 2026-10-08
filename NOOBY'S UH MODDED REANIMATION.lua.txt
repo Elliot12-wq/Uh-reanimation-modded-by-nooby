@@ -32,6 +32,18 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 ARCADE: Minigames page + fullscreen launcher with 10 built-in 3D/2D games (DOOM, Minecraft, Roblox 2014,
                 Call of Duty, CS:GO, Garry's Mod, Mortal Kombat Arcade, GTA 3, Red Dead Revolver, Terraria), automatic
                 PC / mobile controls, and a plugin system that loads player-made minigames from UhhhhhhReanim/Minigames)
+       Custom mod (v28: Limb Reanimator Config > Compatibility Checker - game animations, voice chat, dynamic faces, environment, R6/R15 (v29 rewrite),
+                part geometry; Compatible / Partially Compatible / Not Compatible + itemized PASS/FAIL/REVIEW flags)
+       Custom mod (v30: MOTION REMASTER - buttery tween feel throughout, 5 NEW page transitions
+                (ORBIT / DOORS / BUBBLE POP / CARD FLIP / WAVE, 15 total), bubbly buttons (overshoot hover,
+                squish press, elastic spring release, staggered pop-in cascade); intro remastered with dust
+                motes, film grain, cinematic vignette, beat edge-flash, card pips, READY stamp, tick sounds,
+                bubbly skip button and a glowing progress head)
+       Custom mod (v32: new respawntp option "Under ReanimCharacter (Keep Streamed)" - the character
+                resets right below the reanim character using the keep-rootpart-streamed trick so the area
+                stays streamed in during the hat reanimation reset; new hat reanimation Torso Offset method
+                "10 - NOOBY'S METHOD *EXPERIMENTAL!!!*" - accoutrement state lock + 60-stud far-from-void
+                offset + instant re-equip to make hat drop as unlikely as possible)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -56,7 +68,7 @@ IY (old ;iy command) and every mobile-fly implementation are removed.
 ]]
 
 local UhhhhhhVersion = "V10"
-local UHMergeBuild = "a_very_cool_script_v24"
+local UHMergeBuild = "a_very_cool_script_v32"
 if _G.UhhhhhhLoaded == UhhhhhhVersion then return end
 
 -- External-admin bootstrap compatibility. Optional executor helpers must be
@@ -207,7 +219,7 @@ end
       drag            : rotate with inertia
       hold 5 seconds  : charges up, EXPLODES, then REFORMS
   • Remastered intro (warp field, scanline, 3D triangle, glitch title)
-  • Unique page transition per page (6 styles) + small screen blur
+  • Unique page transition per page (15 styles) + small screen blur
   • Contextual click / hover / release sounds (pitch-shifted from the
     script's own click sound, so it follows your UI theme + mute option)
   • Button hover / press animation with ripples
@@ -959,6 +971,7 @@ Util.FX = (function()
 
 	-- ═════════════════════════ BUTTON FX ═════════════════════════
 	local rippleHosts = setmetatable({}, {__mode = "k"})
+	local btnScale = setmetatable({}, {__mode = "k"})
 	local function ripple(b, input)
 		local host = rippleHosts[b]
 		if not host or not host.Parent then
@@ -997,7 +1010,7 @@ Util.FX = (function()
 		local f = sheenFns[b]
 		if f then f() end
 	end
-	-- staggered light-sweep across the first buttons of a page as it enters (NEW)
+	-- staggered pop-in + light-sweep across the first buttons of a page as it enters (v30: bubbly pop)
 	function FX.Cascade(page)
 		if not FX.Settings.Transitions then return end
 		local n = 0
@@ -1005,7 +1018,14 @@ Util.FX = (function()
 			if d:IsA("TextButton") and d:GetAttribute("FXB") then
 				n = n + 1
 				if n > 14 then break end
+				local sc = btnScale[d]
+				if sc and sc.Parent then
+					sc.Scale = 0.001
+				end
 				task.delay(0.1 + n * 0.05, function()
+					if sc and sc.Parent then
+						tween(sc, 0.55, Enum.EasingStyle.Elastic, EOut, {Scale = 1})
+					end
 					FX.Sheen(d)
 				end)
 			end
@@ -1071,29 +1091,33 @@ Util.FX = (function()
 			pcall(sheen)
 		end
 
+		btnScale[b] = sc
+		-- [v30] BUBBLY MOTION: hover overshoots with a slight tilt, press squishes flat,
+		-- release springs back elastic. Every button feels like a toy, not a rectangle.
 		local function refresh(style, time)
-			local s = 1
+			local s, rot = 1, 0
 			if down then
-				s = 0.955
+				s, rot = 0.925, 1.2
 			elseif hover then
-				s = 1.03
+				s, rot = 1.055, -1.8
 			end
 			tween(sc, time, style, EOut, {Scale = s})
+			tween(b, time, style, EOut, {Rotation = rot})
 		end
 		b.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
 			hover = true
-			refresh(Quad, 0.15)
+			refresh(Back, 0.24)
 			if stroke then tween(stroke, 0.15, Quad, EOut, {Thickness = 2}) end
 			local r = getRec()
 			r.bar.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
-			tween(r.bar, 0.22, Quint, EOut, {Size = UDim2.new(0, 3, 1, -8)})
+			tween(r.bar, 0.28, Back, EOut, {Size = UDim2.new(0, 3, 1, -8)})
 			sheen()
 			FX.Play("tick")
 		end)
 		b.MouseLeave:Connect(function()
 			hover, down = false, false
-			refresh(Quad, 0.2)
+			refresh(Back, 0.32)
 			if stroke then tween(stroke, 0.2, Quad, EOut, {Thickness = 1}) end
 			if rec then tween(rec.bar, 0.18, Quad, EOut, {Size = UDim2.new(0, 3, 0, 0)}) end
 		end)
@@ -1102,12 +1126,13 @@ Util.FX = (function()
 			down = true
 			refresh(Quad, 0.07)
 			ripple(b, input)
+			FX.Ring(b, FX.GetColor and FX.GetColor() or WHITE, 52, 0.35, 2)
 			if input.UserInputType == Enum.UserInputType.Touch then sheen() end
 		end)
 		b.InputEnded:Connect(function(input)
 			if not isPress(input) or not down then return end
 			down = false
-			refresh(Back, 0.3)
+			refresh(Enum.EasingStyle.Elastic, 0.55)
 			FX.Play("release")
 		end)
 	end
@@ -1117,7 +1142,7 @@ Util.FX = (function()
 	local PageStyle = setmetatable({}, {__mode = "k"})
 	local Rigs = setmetatable({}, {__mode = "k"})
 	local Active = setmetatable({}, {__mode = "k"})
-	local styleOrder = {1, 7, 3, 9, 4, 8, 5, 10, 6, 2}
+	local styleOrder = {1, 7, 3, 9, 4, 8, 5, 10, 6, 2, 11, 13, 12, 15, 14}
 	local styleCount = 0
 	local veil, veilToken = nil, 0
 
@@ -1453,6 +1478,181 @@ Util.FX = (function()
 		end
 	end
 
+	-- 11 · ORBIT : the page swings in on a wide arc, swings out the other way (NEW v30)
+	Styles[11] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal + UDim2.fromOffset(420, 130)
+			page.Rotation = 22
+			R.scale.Scale = 0.85
+			R.veil.BackgroundTransparency = 0.35
+			tween(R.veil, 0.5, Quad, EOut, {BackgroundTransparency = 1})
+			tween(page, 0.65, Back, EOut, {Position = goal, Rotation = 0})
+			tween(R.scale, 0.6, Quint, EOut, {Scale = 1})
+			task.wait(0.65)
+		else
+			tween(R.veil, 0.38, Quad, EIn, {BackgroundTransparency = 0.55})
+			tween(page, 0.42, Quint, EIn, {Position = UDim2.new(0.5, -420, 0.5, -130), Rotation = -18})
+			tween(R.scale, 0.4, Quad, EIn, {Scale = 0.88})
+			task.wait(0.42)
+			if not R.alive() then return end
+			page.Position = goal
+			page.Rotation = 0
+			R.scale.Scale = 1
+			tween(R.veil, 0.18, Quad, EOut, {BackgroundTransparency = 1})
+		end
+	end
+
+	-- 12 · DOORS : twin panels part like sliding doors, with an accent seam flash (NEW v30)
+	Styles[12] = function(page, entering, goal, R)
+		local bg = bgColor()
+		local ac = accentColor()
+		local function door(x)
+			local d = Util.Instance("Frame", FX.Content)
+			d.Position = UDim2.fromScale(x, 0)
+			d.Size = UDim2.fromScale(0.5 + 0.004, 1)
+			d.BackgroundColor3 = bg
+			d.BackgroundTransparency = 0
+			d.BorderSizePixel = 0
+			d.ZIndex = 100
+			d.Interactable = false
+			Debris:AddItem(d, 2)
+			return d
+		end
+		local seam = Util.Instance("Frame", FX.Content)
+		seam.AnchorPoint = Vector2.new(0.5, 0)
+		seam.Position = UDim2.fromScale(0.5, 0)
+		seam.Size = UDim2.new(0, 2, 1, 0)
+		seam.BackgroundColor3 = ac
+		seam.BackgroundTransparency = 0.15
+		seam.BorderSizePixel = 0
+		seam.ZIndex = 101
+		seam.Interactable = false
+		Debris:AddItem(seam, 2)
+		if entering then
+			page.Position = goal
+			-- the closed pair starts covering the window, then parts from the middle
+			local L, Rt = door(-0.002), door(0.5)
+			tween(L, 0.55, Quint, EInOut, {Position = UDim2.fromScale(-0.51, 0)})
+			tween(Rt, 0.55, Quint, EInOut, {Position = UDim2.fromScale(1.01, 0)})
+			tween(seam, 0.3, Quad, EOut, {BackgroundTransparency = 1})
+			task.wait(0.6)
+			L.BackgroundTransparency = 1
+			Rt.BackgroundTransparency = 1
+		else
+			local L, Rt = door(-0.51), door(1.01)
+			seam.BackgroundTransparency = 1
+			tween(L, 0.45, Quint, EInOut, {Position = UDim2.fromScale(-0.002, 0)})
+			tween(Rt, 0.45, Quint, EInOut, {Position = UDim2.fromScale(0.5, 0)})
+			task.wait(0.45)
+			tween(seam, 0.14, Quad, EOut, {BackgroundTransparency = 0.15})
+			if not R.alive() then
+				L.BackgroundTransparency, Rt.BackgroundTransparency = 1, 1
+				return
+			end
+			page.Position = goal
+			task.wait(0.12)
+			tween(seam, 0.16, Quad, EOut, {BackgroundTransparency = 1})
+			tween(L, 0.16, Quad, EOut, {BackgroundTransparency = 1})
+			tween(Rt, 0.16, Quad, EOut, {BackgroundTransparency = 1})
+			task.wait(0.16)
+		end
+	end
+
+	-- 13 · BUBBLE POP : elastic pop in from a dot with a ring, squish-shrink out (NEW v30)
+	Styles[13] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal
+			R.scale.Scale = 0.05
+			R.veil.BackgroundTransparency = 0.2
+			tween(R.scale, 0.8, Enum.EasingStyle.Elastic, EOut, {Scale = 1})
+			tween(R.veil, 0.55, Quad, EOut, {BackgroundTransparency = 1})
+			pcall(FX.Ring, FX.Content, accentColor(), 260, 0.6, 3)
+			task.wait(0.8)
+		else
+			tween(R.veil, 0.35, Quad, EIn, {BackgroundTransparency = 0.5})
+			tween(R.scale, 0.4, Back, EIn, {Scale = 0.05})
+			task.wait(0.4)
+			if not R.alive() then return end
+			page.Position = goal
+			R.scale.Scale = 1
+			tween(R.veil, 0.18, Quad, EOut, {BackgroundTransparency = 1})
+		end
+	end
+
+	-- 14 · CARD FLIP : the page flips over like a trading card (NEW v30)
+	Styles[14] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal
+			page.Rotation = 65
+			R.scale.Scale = 0.6
+			R.veil.BackgroundTransparency = 0.3
+			tween(page, 0.7, Back, EOut, {Rotation = 0})
+			tween(R.scale, 0.65, Quint, EOut, {Scale = 1})
+			tween(R.veil, 0.5, Quad, EOut, {BackgroundTransparency = 1})
+			task.wait(0.7)
+		else
+			tween(page, 0.45, Back, EIn, {Rotation = -70})
+			tween(R.scale, 0.42, Quad, EIn, {Scale = 0.55})
+			tween(R.veil, 0.4, Quad, EIn, {BackgroundTransparency = 0})
+			task.wait(0.45)
+			if not R.alive() then return end
+			page.Position = goal
+			page.Rotation = 0
+			R.scale.Scale = 1
+			tween(R.veil, 0.2, Quad, EOut, {BackgroundTransparency = 1})
+		end
+	end
+
+	-- 15 · WAVE : strips ripple away top-to-bottom, then ripple back (NEW v30)
+	Styles[15] = function(page, entering, goal, R)
+		local N = 7
+		local bg = bgColor()
+		local strips = {}
+		for i = 1, N do
+			local s = Util.Instance("Frame", FX.Content)
+			s.AnchorPoint = Vector2.new(0.5, 0)
+			s.Position = UDim2.new(0.5, 0, (i - 1) / N, 0)
+			s.Size = UDim2.new(1, 0, 1 / N + 0.004, 0)
+			s.BackgroundColor3 = bg
+			s.BackgroundTransparency = entering and 0 or 1
+			s.BorderSizePixel = 0
+			s.ZIndex = 100
+			s.Interactable = false
+			strips[i] = s
+			Debris:AddItem(s, 2)
+		end
+		if entering then
+			page.Position = goal
+			for i, s in ipairs(strips) do
+				task.delay((i - 1) * 0.05, function()
+					tween(s, 0.34, Quint, EInOut, {
+						BackgroundTransparency = 1,
+						Size = UDim2.new(0.001, 0, 1 / N + 0.004, 0),
+					})
+				end)
+			end
+			task.wait(0.34 + N * 0.05)
+		else
+			for i, s in ipairs(strips) do
+				s.Size = UDim2.new(0.001, 0, 1 / N + 0.004, 0)
+				task.delay((i - 1) * 0.04, function()
+					tween(s, 0.26, Quint, EInOut, {
+						BackgroundTransparency = 0,
+						Size = UDim2.new(1, 0, 1 / N + 0.004, 0),
+					})
+				end)
+			end
+			task.wait(0.26 + N * 0.04)
+			if not R.alive() then
+				dropCells(strips)
+				return
+			end
+			page.Position = goal
+			dropCells(strips)
+			task.wait(0.15)
+		end
+	end
+
 	-- Tween-like handle so the script's  tween:Play() / tween.Completed:Connect()  keep working
 	local function pageTween(page, props)
 		local goal = props.Position
@@ -1675,6 +1875,20 @@ Util.FX = (function()
 			if ok and type(s) == "string" then return s end
 			return ""
 		end
+		-- [v30] tiny UI ticks during the intro, pitched off the script's own click sound
+		local function itick(pitch, vol)
+			if not FX.Settings.ExtraSounds then return end
+			local base = opts.ClickSnd
+			if not base or base.Volume <= 0 then return end
+			pcall(function()
+				local s = base:Clone()
+				s.PlaybackSpeed = pitch * (0.96 + math.random() * 0.08)
+				s.Volume = base.Volume * vol
+				s.Parent = base.Parent
+				s:Play()
+				Debris:AddItem(s, 2.5)
+			end)
+		end
 
 		-- ── stage ──
 		local stage = mk("Frame", MainFrame, {
@@ -1708,6 +1922,30 @@ Util.FX = (function()
 				BackgroundTransparency = 1, Interactable = false,
 			})
 			E.stars[i] = {f = f, i = i, a = math.random() * math.pi * 2, r = math.random(), v = 0.15 + math.random() * 0.35}
+		end
+
+		-- [v30] dust motes: slow parallax specks drifting through every scene
+		E.motes = {}
+		for i = 1, 16 do
+			local f = mk("Frame", world, {
+				AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, ZIndex = 2, Size = UDim2.fromOffset(2, 2),
+				BackgroundColor3 = WHITE, BackgroundTransparency = 0.5, Interactable = false,
+			})
+			Util.Instance("UICorner", f).CornerRadius = UDim.new(1, 0)
+			E.motes[i] = {
+				f = f, x = math.random(), y = math.random(),
+				vx = (math.random() - 0.5) * 0.02, vy = -0.008 - math.random() * 0.02,
+				ph = math.random() * math.pi * 2, s = math.random(1, 3),
+			}
+		end
+
+		-- [v30] film grain: 1px specks re-scattered every frame
+		E.grain = {}
+		for i = 1, 9 do
+			E.grain[i] = mk("Frame", world, {
+				AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, ZIndex = 3, Size = UDim2.fromOffset(1, 1),
+				BackgroundColor3 = WHITE, BackgroundTransparency = 0.88, Visible = false, Interactable = false,
+			})
 		end
 		for i = 1, 12 do
 			local f = mk("Frame", world, {
@@ -1814,6 +2052,35 @@ Util.FX = (function()
 			})
 		end
 		local barTop, barBot = bar(0), bar(1)
+
+		-- [v30] cinematic vignette: the frame edges fall off into darkness
+		local function softEdge(ax, ay, pos, size, rot)
+			local f = mk("Frame", stage, {
+				AnchorPoint = Vector2.new(ax, ay), Position = pos, Size = size, BackgroundColor3 = Color3.new(0, 0, 0),
+				BorderSizePixel = 0, ZIndex = 10, Interactable = false,
+			})
+			local g = Util.Instance("UIGradient", f)
+			g.Rotation = rot
+			g.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.55), NumberSequenceKeypoint.new(1, 1)})
+		end
+		softEdge(0, 0, UDim2.fromScale(0, 0), UDim2.new(1, 0, 0, 110), 90)
+		softEdge(0, 1, UDim2.fromScale(0, 1), UDim2.new(1, 0, 0, 110), -90)
+		softEdge(0, 0, UDim2.fromScale(0, 0), UDim2.new(0, 140, 1, 0), 0)
+		softEdge(1, 0, UDim2.fromScale(1, 0), UDim2.new(0, 140, 1, 0), 180)
+
+		-- [v30] edge flash: the frame edges flare with every beat
+		E.edge = {}
+		for _, c in ipairs({
+			{Vector2.new(0, 0), UDim2.fromScale(0, 0), UDim2.new(1, 0, 0, 3)},
+			{Vector2.new(0, 1), UDim2.fromScale(0, 1), UDim2.new(1, 0, 0, 3)},
+			{Vector2.new(0, 0), UDim2.fromScale(0, 0), UDim2.new(0, 3, 1, 0)},
+			{Vector2.new(1, 0), UDim2.fromScale(1, 0), UDim2.new(0, 3, 1, 0)},
+		}) do
+			E.edge[#E.edge + 1] = mk("Frame", stage, {
+				AnchorPoint = c[1], Position = c[2], Size = c[3], BackgroundColor3 = WHITE,
+				BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 11, Visible = false, Interactable = false,
+			})
+		end
 		E.hud = {}
 		for _, c in ipairs({{0, 0}, {1, 0}, {0, 1}, {1, 1}}) do
 			local ax, ay = c[1], c[2]
@@ -1849,6 +2116,12 @@ Util.FX = (function()
 			BackgroundColor3 = WHITE, BackgroundTransparency = 0.9, BorderSizePixel = 0, ZIndex = 15, Interactable = false,
 		})
 		local progFill = mk("Frame", progBg, {Size = UDim2.new(0, 0, 1, 0), BorderSizePixel = 0, BackgroundColor3 = WHITE, ZIndex = 16, Interactable = false})
+		-- [v30] glowing head riding the tip of the progress bar
+		local progDot = mk("Frame", progFill, {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(7, 7),
+			BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 17, Interactable = false,
+		})
+		Util.Instance("UICorner", progDot).CornerRadius = UDim.new(1, 0)
 		local skipBtn = mk("TextButton", stage, {
 			AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -16, 0, 14), Size = UDim2.fromOffset(168, 30),
 			BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.3, BorderSizePixel = 0, Font = Enum.Font.Code,
@@ -1856,6 +2129,26 @@ Util.FX = (function()
 		})
 		local skipStroke = mk("UIStroke", skipBtn, {Thickness = 1, Color = WHITE, Transparency = 0.2})
 		conns[#conns + 1] = skipBtn.Activated:Connect(doSkip)
+		-- [v30] bubbly skip button: overshoot hover, squish press, elastic release
+		local skipScale = Util.Instance("UIScale", skipBtn)
+		skipBtn.MouseEnter:Connect(function()
+			tween(skipScale, 0.2, Back, EOut, {Scale = 1.12})
+			tween(skipStroke, 0.2, Quad, EOut, {Thickness = 2})
+		end)
+		skipBtn.MouseLeave:Connect(function()
+			tween(skipScale, 0.3, Back, EOut, {Scale = 1})
+			tween(skipStroke, 0.25, Quad, EOut, {Thickness = 1})
+		end)
+		skipBtn.InputBegan:Connect(function(input)
+			if isPress(input) then
+				tween(skipScale, 0.07, Quad, EOut, {Scale = 0.88})
+			end
+		end)
+		skipBtn.InputEnded:Connect(function(input)
+			if isPress(input) then
+				tween(skipScale, 0.45, Enum.EasingStyle.Elastic, EOut, {Scale = 1})
+			end
+		end)
 		local flash = mk("Frame", stage, {
 			Size = UDim2.fromScale(1, 1), BackgroundColor3 = WHITE, BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 40, Interactable = false,
 		})
@@ -1863,13 +2156,14 @@ Util.FX = (function()
 		-- ── beat engine ──
 		local pulse, beatN, lastBeat, avgL, lastLoudAt = 0, 0, -1, 40, 0
 		local shake, glitch, lastRing = 0, 0, -1
-		local invert = 0
+		local invert, edgeFlash = 0, 0
 		local function beatNow(t, strength)
 			beatN = beatN + 1
 			lastBeat = t
 			pulse = 1
 			shake = math.max(shake, 4 + 6 * (strength or 1))
 			glitch = math.max(glitch, 0.5)
+			edgeFlash = math.max(edgeFlash, 0.4 + 0.45 * (strength or 1))
 			if beatN % 4 == 0 then invert = 1 end
 			tri.pulse = math.max(tri.pulse or 0, 0.55)
 			if t - lastRing > 0.34 and t > 3 then
@@ -2010,7 +2304,8 @@ Util.FX = (function()
 			"> INITIATING CINEMATIC",
 		}
 		local lastWord, wordT, chaosWord = 0, 0, DATA.chaos[1]
-		local bloomed, slammed = false, false
+		local bloomed, slammed, readyFired = false, false, false
+		local bootLines, lastCard = 0, 0
 		local lastScene = 0
 
 		local function run()
@@ -2037,6 +2332,7 @@ Util.FX = (function()
 				pulse = math.max(0, pulse - dt * 7)
 				invert = math.max(0, invert - dt * 9)
 				glitch = math.max(0, glitch - dt * 3)
+				edgeFlash = math.max(0, edgeFlash - dt * 3.2)
 
 				local scene = (t < T1 and 1) or (t < T2 and 2) or (t < T3 and 3) or (t < T4 and 4) or (t < T5 and 5) or 6
 				if scene ~= lastScene then
@@ -2073,6 +2369,28 @@ Util.FX = (function()
 					s.f.Size = UDim2.fromOffset(2 + s.r * warp * 14, 2)
 					s.f.BackgroundTransparency = 1 - math.min(1, s.r * 3) * (scene == 1 and 0.3 or 0.75)
 					s.f.BackgroundColor3 = (s.i % 5 == 0) and col or WHITE
+				end
+
+				-- [v30] dust motes drift
+				for _, m in ipairs(E.motes) do
+					m.x = (m.x + m.vx * dt) % 1
+					m.y = (m.y + m.vy * dt) % 1
+					m.f.Position = UDim2.new(m.x, math.sin(t * 1.6 + m.ph) * 7, m.y, 0)
+					m.f.Size = UDim2.fromOffset(m.s, m.s)
+					m.f.BackgroundColor3 = (m.s == 2) and col or WHITE
+					m.f.BackgroundTransparency = math.clamp(0.62 + 0.28 * math.sin(t * 2.2 + m.ph) - pulse * 0.3, 0, 1)
+				end
+
+				-- [v30] film grain flicker
+				local gAmt = 0.05 + glitch * 0.3 + (scene == 5 and 0.14 or 0)
+				for _, f in ipairs(E.grain) do
+					if math.random() < gAmt then
+						f.Visible = true
+						f.Position = UDim2.fromScale(math.random(), math.random())
+						f.BackgroundTransparency = 0.8 + math.random() * 0.15
+					else
+						f.Visible = false
+					end
 				end
 
 				-- rays
@@ -2144,6 +2462,10 @@ Util.FX = (function()
 							shown[#shown + 1] = line:sub(1, n)
 						end
 					end
+					if #shown > bootLines then -- [v30] tick as each boot line lands
+						bootLines = #shown
+						itick(1.9, 0.35)
+					end
 					local cursor = (math.floor(t * 6) % 2 == 0) and "_" or " "
 					term.Text = table.concat(shown, "\n") .. cursor
 					term.TextSize = math.clamp(math.floor(sy * 0.045), 11, 20)
@@ -2201,8 +2523,17 @@ Util.FX = (function()
 				if scene == 3 then
 					local idx = math.min(#DATA.cards, math.floor((t - T2) / CARD_LEN) + 1)
 					local lt = (t - T2) - (idx - 1) * CARD_LEN
+					if idx ~= lastCard then -- [v30] card change: sparkle burst + tick + pip counter
+						lastCard = idx
+						FX.Sparks(world, col, 12, 150, 0.7)
+						itick(1.5, 0.5)
+					end
 					showCard(DATA.cards[idx], lt, CARD_LEN, col)
-					chyron.Text = ""
+					chyron.Text = spaced(string.format("%d / %d", idx, #DATA.cards))
+					chyron.Size = UDim2.new(0.4, 0, 0, math.clamp(sy * 0.035, 10, 15))
+					chyron.Position = UDim2.new(0.5, 0, 0, sy * 0.9)
+					chyron.TextColor3 = col
+					chyron.TextTransparency = 0.4
 				end
 
 				-- ═════ scene 4 : THE CREW ═════
@@ -2221,7 +2552,7 @@ Util.FX = (function()
 					chyron.TextColor3 = col
 					chyron.TextTransparency = (math.random() < 0.04) and 0.7 or 0.15
 				else
-					if scene ~= 6 and scene ~= 5 then chyron.Text = "" end
+					if scene ~= 3 and scene ~= 6 and scene ~= 5 then chyron.Text = "" end
 				end
 
 				-- ═════ scene 5 : CHAOS DROP ═════
@@ -2289,6 +2620,22 @@ Util.FX = (function()
 					detL.Text = "UI READY  -  MODULES LOAD IN THE BACKGROUND  -  YOU CAN REANIMATE NOW"
 					detL.TextColor3 = WHITE
 					detL.TextTransparency = (lt > 2.0) and (math.floor(t * 4) % 2 == 0 and 0 or 0.45) or 1
+					-- [v30] READY stamp slams in just before the hand-off
+					if lt > 2.3 then
+						if not readyFired then
+							readyFired = true
+							FX.Ring(world, col, 420, 0.6, 3)
+							itick(0.7, 0.9)
+						end
+						local rp = easeOutBack(clamp01((lt - 2.3) / 0.35))
+						hdr.Text = "READY"
+						hdr.Position = UDim2.new(0.5, 0, 0, sy * 0.5 - h * 0.5 - 34)
+						hdr.Size = UDim2.new(0.5, 0, 0, math.clamp(sy * 0.055, 15, 26) * math.max(0.05, rp))
+						hdr.TextColor3 = col
+						hdr.TextTransparency = 0
+					else
+						hdr.TextTransparency = 1
+					end
 					ul.Visible = false
 				end
 
@@ -2334,6 +2681,17 @@ Util.FX = (function()
 				progFill.BackgroundColor3 = col
 				skipStroke.Color = col
 				skipBtn.TextColor3 = col
+				-- [v30] glowing progress head, breathing skip button, beat edge-flash
+				progDot.BackgroundColor3 = col
+				progDot.BackgroundTransparency = math.clamp(0.15 - pulse * 0.3, 0, 1)
+				local dotS = 6 + pulse * 5
+				progDot.Size = UDim2.fromOffset(dotS, dotS)
+				skipStroke.Transparency = 0.2 + 0.22 * math.sin(t * 3)
+				for _, f in ipairs(E.edge) do
+					f.BackgroundColor3 = col
+					f.BackgroundTransparency = 1 - edgeFlash * 0.55
+					f.Visible = edgeFlash > 0.02
+				end
 
 				-- hand-off flash
 				local fa = clamp01((t - (tEnd - flashLen)) / flashLen)
@@ -28579,6 +28937,7 @@ Util.RunIntro = function(preview)
 	local okAll, errAll = pcall(Util.FX.Intro, UIMainFrame, UISound.Music, Util.FX.MarqueeText(""), {
 		Preview = preview,
 		Ready = function() return Util.IntroMusicReady end,
+		ClickSnd = UISound.Click, -- [v30] lets the intro play its little tick sounds
 	})
 	if not okAll then
 		warn("[Uhhhhhh] intro failed (UI is unaffected): " .. tostring(errAll))
@@ -36040,6 +36399,18 @@ end
 return MG
 end)()
 
+-- [custom] per-axis character proportions (width / height / depth), saved in SaveData
+Util.CharAxis = {
+	W = math.clamp(tonumber(SaveData.CharAxisW) or 1, 0.5, 3),
+	H = math.clamp(tonumber(SaveData.CharAxisH) or 1, 0.5, 3),
+	D = math.clamp(tonumber(SaveData.CharAxisD) or 1, 0.5, 3),
+}
+Util.ApplyAxis = function(cf)
+	local a = Util.CharAxis
+	if a.W == 1 and a.H == 1 and a.D == 1 then return cf end
+	local p = cf.Position
+	return cf.Rotation + Vector3.new(p.X * a.W, p.Y * a.H, p.Z * a.D)
+end
 do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 extra UI options
 	local FX = Util.FX
 	local CPage = UI.CreatePage()
@@ -36241,6 +36612,23 @@ do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 
 			pcall(Util.UIPlus.ApplyTrail)
 		end)
 
+		-- ═════ CHARACTER PROPORTIONS ═════
+		section("CHARACTER PROPORTIONS")
+		local axisselects = {}
+		for _,a in {{"Width (sides)", "W"}, {"Height", "H"}, {"Depth", "D"}} do
+			local sel = UI.CreateSlider(Canvas, a[1], Util.CharAxis[a[2]], 0.5, 3, 0.05)
+			sel.Changed:Connect(function(val)
+				val = math.clamp(val, 0.5, 3)
+				Util.CharAxis[a[2]] = val
+				SaveData["CharAxis" .. a[2]] = val
+			end)
+			table.insert(axisselects, sel)
+		end
+		UI.CreateButton(Canvas, "Reset Proportions", 20).Activated:Connect(function()
+			for _,sel in axisselects do sel.Value = 1 end
+		end)
+		UI.CreateText(Canvas, "Stretches how far the limbs and hats sit from each other on the reanimate character (1 = normal). It does not resize the hat meshes themselves.", 10, Enum.TextXAlignment.Center)
+
 		-- ═════ COMMAND TRIANGLE ═════
 		section("COMMAND TRIANGLE")
 		sw("Hide Command Triangle", "AdminTriHidden")
@@ -36255,6 +36643,8 @@ do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 
 	build()
 	UI.CreateButton(CPage, "Reset All Customization", 20).Activated:Connect(function()
 		FX.ResetCfg()
+		Util.CharAxis.W, Util.CharAxis.H, Util.CharAxis.D = 1, 1, 1
+		SaveData.CharAxisW, SaveData.CharAxisH, SaveData.CharAxisD = 1, 1, 1
 		pcall(Util.UIPlus.Apply)
 		Util.ClearAllChildrenGui(Canvas)
 		build()
@@ -36562,10 +36952,23 @@ local function CreateHumanoidCharacter()
 		motor.C0 = c0
 		motor.C1 = c1
 		motor.MaxVelocity = 0
+		local lastwritten, cleanwritten = nil, nil
 		Util.LinkDestroyI2C(motor, RunService.PreRender:Connect(function()
 			local scale = char:GetScale()
-			motor:SetAttribute("Transform", Util.ScaleCFrame(motor.Transform, 1 / scale))
-			motor.Transform = Util.ScaleCFrame(motor:GetAttribute("Transform") or CFrame.identity, scale)
+			local cur = motor.Transform
+			-- if nothing replaced our last write, use the version without the axis offset (avoids accumulating it)
+			if lastwritten ~= nil and cur == lastwritten then cur = cleanwritten end
+			motor:SetAttribute("Transform", Util.ScaleCFrame(cur, 1 / scale))
+			local out = Util.ScaleCFrame(motor:GetAttribute("Transform") or CFrame.identity, scale)
+			cleanwritten = out
+			local ax = Util.CharAxis
+			if name ~= "RootJoint" and ax and not (ax.W == 1 and ax.H == 1 and ax.D == 1) then
+				local c0p = motor.C0.Position
+				local extra = Vector3.new(c0p.X * (ax.W - 1), c0p.Y * (ax.H - 1), c0p.Z * (ax.D - 1))
+				out = CFrame.new(motor.C0.Rotation:Inverse() * extra) * out
+			end
+			lastwritten = out
+			motor.Transform = out
 		end))
 	end
 
@@ -38202,6 +38605,653 @@ function LimbReanimator.SetRootPartMode(mode)
 	assert(typeof(mode) == "number")
 	LimbReanimator.Mode = mode
 end
+-- [v29] Limb Reanimation Compatibility Checker. Checks exactly five things:
+--   1. Game-made animations  (Not Compatible)
+--   2. Other players in voice chat (Not Compatible if confirmed, Partial if only suspected)
+--   3. Dynamic faces         (Partial - may still work)
+--   4. Game environment      (anchoring / streaming / spawning)
+--   5. R6 vs R15             (R15 = Not Compatible)
+-- Everything lives inside functions so no new top-level locals are added to the main chunk.
+function LimbReanimator.RunCompatCheck(overrides)
+	local Players = game:GetService("Players")
+	local Workspace = game:GetService("Workspace")
+
+	local STATUS_COMPATIBLE = "Compatible!"
+	local STATUS_PARTIAL = "Partially compatible: please check."
+	local STATUS_INCOMPATIBLE = "Not compatible: *NOT ACCURATE PLEASE CHECK IF SO.*"
+
+	local DEFAULT_CONFIG = {
+		Character = nil, -- optional Model override (defaults to LocalPlayer.Character)
+		AnimationWatchTime = 1, -- seconds to watch the character for animation tracks being played
+		VoiceQueryTimeout = 1.5, -- seconds to wait for voice chat queries
+		MaxListedItems = 5,
+		Print = false,
+	}
+
+	-- Animation ids used by Roblox's stock R6 Animate script. Anything else on the character is game-made.
+	local DEFAULT_ANIMATION_IDS = {}
+	for _, id in {
+		180435571, 180435792, -- idle
+		180426354, -- walk / run
+		125750702, -- jump
+		180436148, -- fall
+		180436334, -- climb
+		178130996, -- sit
+		182393478, 129967390, 129967478, -- tool none / slash / lunge
+		128777973, 128853357, 129423131, 129423030, -- wave / point / laugh / cheer
+		182435998, 182491037, 182491065, -- dance
+		182436842, 182491248, 182491277, -- dance2
+		182436935, 182491368, 182491423, -- dance3
+	} do
+		DEFAULT_ANIMATION_IDS[tostring(id)] = true
+	end
+
+	local R6_PARTS = table.freeze({ "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg" })
+	local R15_PARTS = table.freeze({
+		"UpperTorso", "LowerTorso", "LeftUpperArm", "RightUpperArm", "LeftLowerArm", "RightLowerArm",
+		"LeftHand", "RightHand", "LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg",
+		"LeftFoot", "RightFoot",
+	})
+
+	local SEVERITY_WEIGHT = { FAIL = 1, REVIEW = 2, PASS = 3 }
+	local SEVERITY_TAG = { PASS = "[PASS]  ", FAIL = "[FAIL]  ", REVIEW = "[REVIEW]" }
+
+	local function getEnv()
+		local ok, env = pcall(function()
+			return typeof(getgenv) == "function" and getgenv() or getfenv()
+		end)
+		return if ok and type(env) == "table" then env else {}
+	end
+
+	local function capability(env, name)
+		local value = env[name]
+		return if typeof(value) == "function" then value else nil
+	end
+
+	local function read(instance, property)
+		local ok, value = pcall(function()
+			return instance[property]
+		end)
+		return if ok then value else nil
+	end
+
+	local function isA(instance, className)
+		local ok, result = pcall(function()
+			return instance:IsA(className)
+		end)
+		return ok and result == true
+	end
+
+	local function findClass(instance, className, recursive)
+		local ok, found = pcall(function()
+			return instance:FindFirstChildWhichIsA(className, recursive)
+		end)
+		return if ok then found else nil
+	end
+
+	local function getService(name)
+		local ok, service = pcall(function()
+			return game:GetService(name)
+		end)
+		return if ok then service else nil
+	end
+
+	local function summarizeList(items, limit)
+		local count = #items
+		if count <= limit then
+			return table.concat(items, ", ")
+		end
+		return string.format("%s (+%d more)", table.concat(items, ", ", 1, limit), count - limit)
+	end
+
+	-- Returns the numeric asset id when the animation is NOT one of Roblox's stock ones.
+	local function customAnimationId(animationId)
+		local id = string.match(tostring(animationId or ""), "%d+")
+		if id == nil or DEFAULT_ANIMATION_IDS[id] then
+			return nil
+		end
+		return id
+	end
+
+	local function formatReport(status, flags, counts, criticalFailures)
+		local sorted = table.clone(flags)
+		table.sort(sorted, function(a, b)
+			local wa, wb = SEVERITY_WEIGHT[a.Severity], SEVERITY_WEIGHT[b.Severity]
+			if wa ~= wb then
+				return wa < wb
+			end
+			if a.Critical ~= b.Critical then
+				return a.Critical
+			end
+			return a.Index < b.Index
+		end)
+
+		local lines = table.create(#sorted * 2 + 4)
+		lines[#lines + 1] = "=== Limb Reanimation Compatibility Check ==="
+		lines[#lines + 1] = "Status: " .. status
+		lines[#lines + 1] = string.format(
+			"Passed: %d | Failed: %d (critical: %d) | Manual review: %d",
+			counts.PASS,
+			counts.FAIL,
+			criticalFailures,
+			counts.REVIEW
+		)
+		for _, flag in sorted do
+			lines[#lines + 1] = string.format(
+				"%s %s/%s%s - %s",
+				SEVERITY_TAG[flag.Severity],
+				flag.Category,
+				flag.Id,
+				if flag.Critical then " (critical)" else "",
+				flag.Message
+			)
+			if flag.Detail then
+				lines[#lines + 1] = "           " .. flag.Detail
+			end
+		end
+		return table.concat(lines, "\n")
+	end
+
+	local cfg = table.clone(DEFAULT_CONFIG)
+	if type(overrides) == "table" then
+		for key, value in overrides do
+			cfg[key] = value
+		end
+	end
+
+	local env = getEnv()
+	local flags = {}
+	local counts = { PASS = 0, FAIL = 0, REVIEW = 0 }
+	local criticalFailures = 0
+
+	local function add(category, id, severity, critical, message, detail)
+		local index = #flags + 1
+		flags[index] = {
+			Index = index,
+			Category = category,
+			Id = id,
+			Severity = severity,
+			Critical = critical,
+			Message = message,
+			Detail = detail,
+		}
+		counts[severity] += 1
+		if severity == "FAIL" and critical then
+			criticalFailures += 1
+		end
+	end
+	local function pass(category, id, message, detail)
+		add(category, id, "PASS", false, message, detail)
+	end
+	local function fail(category, id, critical, message, detail)
+		add(category, id, "FAIL", critical, message, detail)
+	end
+	local function review(category, id, message, detail)
+		add(category, id, "REVIEW", false, message, detail)
+	end
+	local function section(category, fn)
+		local ok, err = pcall(fn)
+		if not ok then
+			review(category, "internal_error", "Check section errored; verify manually", tostring(err))
+		end
+	end
+
+	local limit = cfg.MaxListedItems
+	local player = Players.LocalPlayer
+	local character, humanoid
+	local targets = {} -- ordered { Name, Part } for physics checks
+
+	-- Resolve the character once; every other check uses it ----------------------
+	section("Character", function()
+		if not player then
+			return
+		end
+		local candidate = cfg.Character or player.Character
+		if typeof(candidate) ~= "Instance" or not candidate:IsA("Model") then
+			return
+		end
+		character = candidate
+		humanoid = character:FindFirstChildOfClass("Humanoid")
+		for _, child in character:GetChildren() do
+			if child:IsA("BasePart") then
+				targets[#targets + 1] = { Name = child.Name, Part = child }
+			end
+		end
+	end)
+
+	-- 5. R6 / R15 --------------------------------------------------------------
+	section("Rig", function()
+		if not character then
+			review("Rig", "rig_type", "Rig type could not be checked", "No character is loaded. Spawn a character, then run the check again.")
+			return
+		end
+
+		local r15Found, r6Missing = {}, {}
+		for _, name in R15_PARTS do
+			if character:FindFirstChild(name) then
+				r15Found[#r15Found + 1] = name
+			end
+		end
+		for _, name in R6_PARTS do
+			local part = character:FindFirstChild(name)
+			if not (part and part:IsA("BasePart")) then
+				r6Missing[#r6Missing + 1] = name
+			end
+		end
+
+		local rigType = humanoid and read(humanoid, "RigType")
+		local isR15 = (rigType == Enum.HumanoidRigType.R15) or #r15Found > 0
+
+		if isR15 then
+			fail("Rig", "rig_type", true, "R15 game: limb reanimation needs R6",
+				if #r15Found > 0 then "R15 parts found: " .. summarizeList(r15Found, limit) else "Humanoid.RigType is R15.")
+		elseif not humanoid then
+			fail("Rig", "rig_type", true, "No Humanoid: cannot confirm an R6 rig")
+		elseif #r6Missing > 0 then
+			fail("Rig", "rig_type", true, "Character is not a complete R6 rig", "Missing: " .. summarizeList(r6Missing, limit))
+		else
+			pass("Rig", "rig_type", "R6 rig detected")
+		end
+	end)
+
+	-- 1. Game-made animations ----------------------------------------------------
+	section("Animation", function()
+		local function scan(root, anims, toolAnims, systems)
+			local n = 0
+			for _, d in root:GetDescendants() do
+				n += 1
+				if n % 1500 == 0 then
+					task.wait()
+				end
+				if isA(d, "Animation") then
+					local id = customAnimationId(read(d, "AnimationId"))
+					if id then
+						local entry = string.format("%s/%s (%s)", d.Parent and d.Parent.Name or "?", d.Name, id)
+						if toolAnims and d:FindFirstAncestorWhichIsA("Tool") then
+							toolAnims[#toolAnims + 1] = entry
+						else
+							anims[#anims + 1] = entry
+						end
+					end
+				elseif systems and (isA(d, "AnimationController") or isA(d, "KeyframeSequence")
+					or (isA(d, "Animator") and not (d.Parent and isA(d.Parent, "Humanoid")))) then
+					systems[#systems + 1] = d.ClassName .. "/" .. d.Name
+				end
+			end
+		end
+
+		local charAnims, toolAnims, systems, animScripts = {}, {}, {}, {}
+
+		-- (a) Everything on the character right now (this includes StarterCharacterScripts clones)
+		if character then
+			scan(character, charAnims, toolAnims, systems)
+			for _, child in character:GetDescendants() do
+				if isA(child, "LuaSourceContainer") and child.Name ~= "Animate"
+					and string.find(string.lower(child.Name), "anim", 1, true) then
+					animScripts[#animScripts + 1] = child.Name
+				end
+			end
+		end
+		local starter = getService("StarterPlayer")
+		local starterChar = starter and starter:FindFirstChild("StarterCharacterScripts")
+		if starterChar then
+			scan(starterChar, charAnims, nil, nil)
+		end
+
+		-- (b) Tools the player carries
+		local backpack = player and player:FindFirstChildOfClass("Backpack")
+		if backpack then
+			scan(backpack, {}, toolAnims, nil)
+		end
+
+		-- (c) Tracks that are actually playing on the character (also watches for new ones)
+		local customTracks, seen = {}, {}
+		local function inspectTrack(track)
+			if seen[track] then
+				return
+			end
+			seen[track] = true
+			local label = tostring(read(track, "Name") or "track")
+			local anim = read(track, "Animation")
+			if typeof(anim) ~= "Instance" then
+				customTracks[#customTracks + 1] = label .. " (no Animation instance)"
+				return
+			end
+			local id = customAnimationId(read(anim, "AnimationId"))
+			if id then
+				customTracks[#customTracks + 1] = label .. " (" .. id .. ")"
+			end
+		end
+
+		if humanoid then
+			local animator = humanoid:FindFirstChildOfClass("Animator")
+			local connection
+			local okSignal, signal = pcall(function()
+				return if animator then animator.AnimationPlayed else humanoid.AnimationPlayed
+			end)
+			if okSignal and signal then
+				connection = signal:Connect(inspectTrack)
+			end
+
+			local deadline = os.clock() + cfg.AnimationWatchTime
+			repeat
+				local okH, list = pcall(humanoid.GetPlayingAnimationTracks, humanoid)
+				if okH and type(list) == "table" then
+					for _, track in list do
+						inspectTrack(track)
+					end
+				end
+				if animator then
+					local okA, list2 = pcall(animator.GetPlayingAnimationTracks, animator)
+					if okA and type(list2) == "table" then
+						for _, track in list2 do
+							inspectTrack(track)
+						end
+					end
+				end
+				task.wait(0.1)
+			until os.clock() >= deadline
+			if connection then
+				connection:Disconnect()
+			end
+		end
+
+		-- (d) Animation assets shipped to the client (game plays them from its own scripts)
+		local shipped = {}
+		for _, name in { "ReplicatedStorage", "ReplicatedFirst" } do
+			local service = getService(name)
+			if service then
+				scan(service, shipped, nil, nil)
+			end
+		end
+		local starterScripts = starter and starter:FindFirstChild("StarterPlayerScripts")
+		if starterScripts then
+			scan(starterScripts, shipped, nil, nil)
+		end
+		local playerScripts = player and player:FindFirstChild("PlayerScripts")
+		if playerScripts then
+			scan(playerScripts, shipped, nil, nil)
+		end
+
+		-- Verdicts
+		if #charAnims > 0 or #customTracks > 0 then
+			local parts = {}
+			if #charAnims > 0 then
+				parts[#parts + 1] = "On character: " .. summarizeList(charAnims, limit)
+			end
+			if #customTracks > 0 then
+				parts[#parts + 1] = "Playing: " .. summarizeList(customTracks, limit)
+			end
+			fail("Animation", "game_animations", true, "Game makes its own animations", table.concat(parts, " | "))
+		else
+			pass("Animation", "game_animations", "No game-made animations on the character")
+		end
+
+		if #systems > 0 then
+			fail("Animation", "animation_systems", true, "Custom animation objects on the character", summarizeList(systems, limit))
+		end
+
+		if #animScripts > 0 then
+			review("Animation", "animation_scripts", "Animation-related scripts inside the character", summarizeList(animScripts, limit))
+		end
+
+		if #toolAnims > 0 then
+			review("Animation", "tool_animations", "Held/owned tools carry their own animations", summarizeList(toolAnims, limit))
+		end
+
+		if #shipped > 0 then
+			review("Animation", "shipped_animations", "Game ships its own animation assets to the client",
+				summarizeList(shipped, limit) .. ". It probably plays them on your character.")
+		end
+	end)
+
+	-- 2. Other players + voice chat ---------------------------------------------
+	section("Voice", function()
+		if not player then
+			return
+		end
+
+		local others = {}
+		for _, p in Players:GetPlayers() do
+			if p ~= player then
+				others[#others + 1] = p
+			end
+		end
+
+		local voiceService = getService("VoiceChatService")
+		local results, pending = {}, 0
+		local function ask(userId)
+			pending += 1
+			task.spawn(function()
+				local ok, enabled = pcall(function()
+					return voiceService:IsVoiceEnabledForUserIdAsync(userId)
+				end)
+				if ok and type(enabled) == "boolean" then
+					results[userId] = enabled
+				end
+				pending -= 1
+			end)
+		end
+		if voiceService then
+			ask(player.UserId)
+			for i, p in others do
+				if i > 40 then
+					break
+				end
+				ask(p.UserId)
+			end
+			local deadline = os.clock() + cfg.VoiceQueryTimeout
+			while pending > 0 and os.clock() < deadline do
+				task.wait(0.05)
+			end
+		end
+
+		local strong, weak = {}, {}
+		for _, p in others do
+			local hasInput = findClass(p, "AudioDeviceInput", true) ~= nil
+			local char = p.Character
+			local hasEmitter = char ~= nil and findClass(char, "AudioEmitter", true) ~= nil
+			if results[p.UserId] == true or hasInput then
+				strong[#strong + 1] = p.Name
+			elseif hasEmitter then
+				weak[#weak + 1] = p.Name
+			end
+		end
+
+		local placeVoice = results[player.UserId] == true or #strong > 0
+			or findClass(player, "AudioDeviceInput", true) ~= nil
+
+		if #others == 0 then
+			pass("Voice", "voice_players", "No other players in the server",
+				if placeVoice then "Voice chat is available here. Run the check again if players join." else nil)
+		elseif #strong > 0 then
+			fail("Voice", "voice_players", true, "Other players are using voice chat",
+				summarizeList(strong, limit) .. ". Voice chat ruins limb reanimation.")
+		elseif #weak > 0 then
+			review("Voice", "voice_players", "Other players may be using voice chat", summarizeList(weak, limit))
+		elseif placeVoice then
+			review("Voice", "voice_players", "Voice chat is enabled and other players are present",
+				"Could not confirm whether any of them are using voice.")
+		else
+			pass("Voice", "voice_players", "Other players are present but no voice chat was detected")
+		end
+	end)
+
+	-- 3. Dynamic faces ------------------------------------------------------------
+	section("Face", function()
+		if not character then
+			review("Face", "dynamic_face", "Dynamic face could not be checked", "No character is loaded.")
+			return
+		end
+		local head = character:FindFirstChild("Head")
+		if not head then
+			review("Face", "dynamic_face", "Dynamic face could not be checked", "Head not found.")
+			return
+		end
+
+		local signs = {}
+		if findClass(head, "FaceControls", true) then
+			signs[#signs + 1] = "FaceControls"
+		end
+		if findClass(head, "Bone", true) then
+			signs[#signs + 1] = "Bones in head"
+		end
+		if findClass(head, "WrapTarget", true) then
+			signs[#signs + 1] = "WrapTarget"
+		end
+		if findClass(character, "FaceControls", true) and #signs == 0 then
+			signs[#signs + 1] = "FaceControls (on character)"
+		end
+
+		if #signs > 0 then
+			review("Face", "dynamic_face", "Dynamic face detected: incompatible, but it may still work",
+				table.concat(signs, ", "))
+		else
+			pass("Face", "dynamic_face", "No dynamic face")
+		end
+	end)
+
+	-- 4. Game environment -----------------------------------------------------------
+	section("Environment", function()
+		local okActive, active = pcall(function()
+			return Reanimate.Character ~= nil
+		end)
+		if okActive and active then
+			review("Environment", "reanimation_active", "Reanimation is currently running",
+				"Results describe the live character; stop reanimating for a clean pre-flight check.")
+		end
+
+		if player then
+			pass("Environment", "client_context", "Running on the client with a LocalPlayer")
+		else
+			fail("Environment", "client_context", true, "LocalPlayer unavailable", "This checker must run on the client.")
+			return
+		end
+
+		if read(Players, "CharacterAutoLoads") ~= false then
+			pass("Environment", "auto_spawn", "Game respawns characters normally")
+		else
+			review("Environment", "auto_spawn", "Game controls character spawning (CharacterAutoLoads is off)",
+				"Reset-based init modes may not bring the character back.")
+		end
+
+		if Workspace.StreamingEnabled then
+			review("Environment", "streaming", "StreamingEnabled is on",
+				"Parts placed far from the character may stream out and lose replication.")
+		else
+			pass("Environment", "streaming", "StreamingEnabled is off")
+		end
+
+		if not character then
+			review("Environment", "character", "Character-based environment checks skipped", "No character is loaded.")
+			return
+		end
+
+		if character:IsDescendantOf(Workspace) then
+			pass("Environment", "in_workspace", "Character is in Workspace")
+		else
+			fail("Environment", "in_workspace", true, "Character is not in Workspace", "It may be respawning or destroyed.")
+			return
+		end
+
+		if humanoid and (humanoid.Health <= 0 or humanoid:GetState() == Enum.HumanoidStateType.Dead) then
+			review("Environment", "alive", "Humanoid is dead", "Wait for the respawn to finish, then run the check again.")
+		end
+
+		if #targets == 0 then
+			return
+		end
+
+		local anchored, grounded = {}, {}
+		for _, target in targets do
+			if read(target.Part, "Anchored") == true then
+				anchored[#anchored + 1] = target.Name
+			else
+				local ok, isGrounded = pcall(target.Part.IsGrounded, target.Part)
+				if ok and isGrounded == true then
+					grounded[#grounded + 1] = target.Name
+				end
+			end
+		end
+
+		if #anchored > 0 then
+			fail("Environment", "anchored", true, "Character parts are anchored", summarizeList(anchored, limit))
+		else
+			pass("Environment", "anchored", "No anchored character parts")
+		end
+		if #grounded > 0 then
+			fail("Environment", "grounded", true, "Character is welded to anchored geometry", summarizeList(grounded, limit))
+		else
+			pass("Environment", "grounded", "Character is not welded to anchored geometry")
+		end
+
+		local getHidden = capability(env, "gethiddenproperty")
+		if getHidden then
+			local ok, radius = pcall(getHidden, player, "SimulationRadius")
+			if ok and type(radius) == "number" and radius <= 0 then
+				fail("Environment", "simulation_radius", false, "SimulationRadius is zero or negative",
+					"The client may not simulate nearby parts.")
+			end
+		end
+	end)
+
+	local status
+	if criticalFailures > 0 then
+		status = STATUS_INCOMPATIBLE
+	elseif counts.FAIL > 0 or counts.REVIEW > 0 then
+		status = STATUS_PARTIAL
+	else
+		status = STATUS_COMPATIBLE
+	end
+
+	local summary = formatReport(status, flags, counts, criticalFailures)
+	if cfg.Print then
+		print(summary)
+	end
+
+	return {
+		Status = status,
+		Flags = flags,
+		Counts = counts,
+		CriticalFailures = criticalFailures,
+		Summary = summary,
+	}
+end
+function LimbReanimator.FormatCompatRich(report)
+	local COLORS = { PASS = "#55ff7f", FAIL = "#ff5555", REVIEW = "#ffd24d" }
+	local WEIGHT = { FAIL = 1, REVIEW = 2, PASS = 3 }
+	local function esc(s)
+		return (string.gsub(string.gsub(string.gsub(tostring(s), "&", "&amp;"), "<", "&lt;"), ">", "&gt;"))
+	end
+	local statusColor = COLORS.REVIEW
+	if report.Status == "Compatible!" then
+		statusColor = COLORS.PASS
+	elseif report.Status == "Not compatible: *NOT ACCURATE PLEASE CHECK IF SO.*" then
+		statusColor = COLORS.FAIL
+	end
+	local sorted = table.clone(report.Flags)
+	table.sort(sorted, function(a, b)
+		local wa, wb = WEIGHT[a.Severity], WEIGHT[b.Severity]
+		if wa ~= wb then return wa < wb end
+		if a.Critical ~= b.Critical then return a.Critical end
+		return a.Index < b.Index
+	end)
+	local lines = {
+		string.format('<font color="%s"><b>%s</b></font>', statusColor, esc(report.Status)),
+		string.format("Passed: %d | Failed: %d (critical: %d) | Review: %d",
+			report.Counts.PASS, report.Counts.FAIL, report.CriticalFailures, report.Counts.REVIEW),
+		"",
+	}
+	for _, flag in sorted do
+		lines[#lines + 1] = string.format('<font color="%s">[%s]</font> %s/%s%s - %s',
+			COLORS[flag.Severity], flag.Severity, esc(flag.Category), esc(flag.Id),
+			flag.Critical and " (critical)" or "", esc(flag.Message))
+		if flag.Detail then
+			lines[#lines + 1] = '    <font color="#aaaaaa">' .. esc(flag.Detail) .. "</font>"
+		end
+	end
+	return table.concat(lines, "\n")
+end
 function LimbReanimator.Config(parent)
 	UI.CreateText(parent, "as mentioned in the README, this only works for SOME games,\nbecause 'modern' games create the Animator automatically which breaks limb reanimation", 10, Enum.TextXAlignment.Center)
 	local modenames = LimbReanimator.GetModeNames()
@@ -38231,6 +39281,24 @@ function LimbReanimator.Config(parent)
 	end)
 	UI.CreateText(parent, "vvv touch player = they lose ownership vvv", 10, Enum.TextXAlignment.Center)
 	UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / NaN State / Fling 1 / Fling 2 / Fling 3)", 10, Enum.TextXAlignment.Center)
+	UI.CreateSeparator(parent)
+	UI.CreateText(parent, "-=+ Compatibility Checker +=-", 12, Enum.TextXAlignment.Center)
+	local checkBtn, checkBtnText = UI.CreateButton(parent, "Check Limb Compatibility", 16)
+	local checkResult = UI.CreateText(parent, "Spawn a character, then press the button to check game animations, voice chat players, dynamic faces, the game environment and R6/R15.", 10, Enum.TextXAlignment.Left)
+	local checking = false
+	checkBtn.Activated:Connect(function()
+		if checking then return end
+		checking = true
+		checkBtnText.Text = "Checking..."
+		local ok, result = pcall(function()
+			return LimbReanimator.FormatCompatRich(LimbReanimator.RunCompatCheck())
+		end)
+		pcall(function()
+			checkResult.Text = ok and result or ("Checker failed: " .. tostring(result):gsub("<", "&lt;"):gsub(">", "&gt;"))
+			checkBtnText.Text = "Check Limb Compatibility"
+		end)
+		checking = false
+	end)
 	Util.LinkDestroyI2C(dmode, RunService.Heartbeat:Connect(function()
 		dmode.Value = math.min(LimbReanimator.Mode + 1, #modenames)
 		dvel.Value = LimbReanimator.Velocity + 1
@@ -38627,6 +39695,8 @@ SaveData.Reanimator.HatsFling = not not SaveData.Reanimator.HatsFling
 SaveData.Reanimator.HatsSpin = not not SaveData.Reanimator.HatsSpin
 SaveData.Reanimator.HatsFlingMethod = SaveData.Reanimator.HatsFlingMethod or 1
 SaveData.Reanimator.NoToolHolding = not not SaveData.Reanimator.NoToolHolding
+SaveData.Reanimator.HatsAutoForceRespawn = not not SaveData.Reanimator.HatsAutoForceRespawn
+SaveData.Reanimator.HatsStuckTimeout = math.clamp(tonumber(SaveData.Reanimator.HatsStuckTimeout) or 12, 5, 60)
 SaveData.Reanimator.HatsToolAnim = SaveData.Reanimator.HatsToolAnim or 0
 HatReanimator.HatCollide = SaveData.Reanimator.HatsCollide
 HatReanimator.HatCollideMethod = SaveData.Reanimator.HatsCollideMethod
@@ -38638,6 +39708,8 @@ HatReanimator.HatCollideMethod = SaveData.Reanimator.HatsCollideMethod
 -- 5 - least amount of chance to hat drop
 -- 6 - experimental
 -- 7 - idk honestly but this is just modified heavily for now
+-- 8 - VERY EXPERIMENTAL, do NOT use
+-- 9 - NOOBY'S METHOD *EXPERIMENTAL!!!* (v32: state lock + far from void + quick re-equip)
 HatReanimator.IWantAllHats = SaveData.Reanimator.IWantAllHats
 HatReanimator.IWantHatCollide = SaveData.Reanimator.IWantHatCollide
 HatReanimator.Permadeath = false--not SaveData.Reanimator.HatsPatchmahub
@@ -38646,6 +39718,7 @@ HatReanimator.RespawnPosition = SaveData.Reanimator.RespawnPosition
 -- 1 - behind character
 -- 2 - randomtp close
 -- 3 - stay at spawn
+-- 4 - under character (keep rootpart streamed, like the limb "Keep RootPart Streamed" mode)
 HatReanimator.HatFling = SaveData.Reanimator.HatsFling
 HatReanimator.HatSpin = SaveData.Reanimator.HatsSpin
 HatReanimator.FlingMethod = SaveData.Reanimator.HatsFlingMethod
@@ -38661,6 +39734,9 @@ HatReanimator.ToolAnimMethod = SaveData.Reanimator.HatsToolAnim
 -- 1 - sword
 HatReanimator.UseNaNFling = true
 HatReanimator.HasPermadeath = false
+HatReanimator.PermadeathMethod = "dolteddown" -- the only permadeath method now (the old default was removed)
+HatReanimator.AutoForceRespawn = SaveData.Reanimator.HatsAutoForceRespawn
+HatReanimator.StuckTimeout = SaveData.Reanimator.HatsStuckTimeout
 HatReanimator.HasHatCollide = false
 HatReanimator.RebuildRequired = true
 HatReanimator.HatMapSummary = "(no hat map yet, please * Reanimate * to build)"
@@ -38758,16 +39834,28 @@ function HatReanimator.Fling(target, duration)
 end
 HatReanimator.DontFireCharAddOnThisChar = nil
 function HatReanimator.Config(parent)
-	UI.CreateText(parent, "permadeath is patched, enable this switch if you want to", 10, Enum.TextXAlignment.Center)
-	UI.CreateSwitch(parent, "Permadeath", HatReanimator.Permadeath).Changed:Connect(function(val)
+	UI.CreateText(parent, "Permadeath uses dolteddown's method (the old default method was removed).\nNeeds replicatesignal support from your executor.", 10, Enum.TextXAlignment.Center)
+	UI.CreateSwitch(parent, "Permadeath (dolteddown's pd)", HatReanimator.Permadeath).Changed:Connect(function(val)
 		HatReanimator.Permadeath = val
 		SaveData.Reanimator.HatsPatchmahub = not val
 	end)
+	UI.CreateSwitch(parent, "Auto Force Respawn when stuck", HatReanimator.AutoForceRespawn).Changed:Connect(function(val)
+		HatReanimator.AutoForceRespawn = val
+		SaveData.Reanimator.HatsAutoForceRespawn = val
+	end)
+	local stucksl = UI.CreateSlider(parent, "Stuck timeout (seconds)", HatReanimator.StuckTimeout, 5, 60, 1)
+	stucksl.Changed:Connect(function(val)
+		val = math.clamp(val, 5, 60)
+		HatReanimator.StuckTimeout = val
+		SaveData.Reanimator.HatsStuckTimeout = val
+	end)
+	UI.CreateText(parent, "^^^ if the reanimate never finishes with dolteddown's pd, your character is force respawned after this long", 10, Enum.TextXAlignment.Center)
 	UI.CreateDropdown(parent, "respawntp", {
 		"The Void",
 		"Behind ReanimCharacter",
 		"Randomtp near",
 		"At spawn",
+		"Under ReanimCharacter (Keep Streamed)",
 	}, HatReanimator.RespawnPosition + 1).Changed:Connect(function(val)
 		HatReanimator.RespawnPosition = val - 1
 		SaveData.Reanimator.RespawnPosition = val - 1
@@ -38787,6 +39875,7 @@ function HatReanimator.Config(parent)
 		"7 - 6 but further from void (gl getting hatdrop)",
 		"8 - STEVE's method V3 (most stable)",
 		"9 - experimental do not use",
+		"10 - NOOBY'S METHOD *EXPERIMENTAL!!!*",
 	}, HatReanimator.HatCollideMethod + 1).Changed:Connect(function(val)
 		HatReanimator.HatCollideMethod = val - 1
 		SaveData.Reanimator.HatsCollideMethod = val - 1
@@ -38825,7 +39914,7 @@ function HatReanimator.Config(parent)
 	end)
 	UI.CreateSwitch(parent, "Tool Holding", HatReanimator.ToolHolding).Changed:Connect(function(val)
 		HatReanimator.ToolHolding = val
-		SaveData.Reanimator.NoToolHolding = val
+		SaveData.Reanimator.NoToolHolding = not val
 	end)
 	UI.CreateDropdown(parent, "toolanim Method", {
 		"Disabled",
@@ -38849,9 +39938,30 @@ function HatReanimator.Config(parent)
 		HatReanimator.RebuildRequired = true
 	end)
 	UI.CreateText(parent, "^^^ if ur rig built wrong or u switched to a new rig ^^^\nthis button is for you", 10, Enum.TextXAlignment.Center)
-	UI.CreateButton(parent, "Respawn", 20).Activated:Connect(function()
-		--HatReanimator.Status.Permadeath = "Fired CDSB Signal!"
+	UI.CreateButton(parent, "Force Respawn Now", 20).Activated:Connect(function()
+		HatReanimator.ForceRespawn("Manual force respawn.")
 	end)
+end
+-- Kills the real character so the game respawns you. Works even while stuck with dolteddown's pd
+-- (which disables the Dead state), because it re-enables it first.
+HatReanimator.LastForceRespawn = 0
+function HatReanimator.ForceRespawn(reason)
+	local char = Player.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	HatReanimator.LastForceRespawn = os.clock()
+	HatReanimator.Status.Permadeath = reason or "Force respawn!"
+	if not hum then return false end
+	pcall(function()
+		hum.EvaluateStateMachine = true
+		hum.BreakJointsOnDeath = true
+		hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+		hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+		hum.Health = 0
+		hum:ChangeState(Enum.HumanoidStateType.Dead)
+	end)
+	pcall(replicatesignal, hum.ServerBreakJoints)
+	pcall(function() char:BreakJoints() end)
+	return true
 end
 HatReanimator.GetHatMap = function() end
 HatReanimator.GetHatCFrameMeshAndTexture = function() end
@@ -39416,7 +40526,7 @@ function HatReanimator.Start()
 				if limb and limb:IsA("BasePart") then
 					-- weld-like
 					if hatmapped.C0 and hatmapped.C1 then
-						return limb.CFrame * Util.ScaleCFrame(hatmapped.C0, scale) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse(), limb.Velocity
+						return limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse(), limb.Velocity
 					end
 					-- legacy
 					if hatmapped.Offset then
@@ -40037,6 +41147,100 @@ function HatReanimator.Start()
 			return _counthats(hats)
 		end,
 	}
+	-- NOOBY'S METHOD *EXPERIMENTAL!!!* (v32)
+	-- Hybrid anti-hatdrop method:
+	--   1. STATE LOCK (from shownape's method): every hat's BackendAccoutrementState
+	--      is locked to None during the whole reset, so the server can't yank or
+	--      drop a hat mid-reset.
+	--   2. FAR FROM VOID (from STEVE's V2): the torso offset stays 60 studs away
+	--      from FallenPartsDestroyHeight, so loose hats never reach the void.
+	--   3. QUICK RE-EQUIP: hats are re-equipped the instant the torso is gone
+	--      (minimal time in the None state = minimal hat drop chance).
+	-- Pairs best with the "Under ReanimCharacter (Keep Streamed)" respawntp option,
+	-- which keeps the area streamed in so hats don't unstream while loose.
+	local noobymethod_lock = {}
+	HatCollideMethods[9] = {
+		NoAnim = true,
+		Wait1 = 0.1,
+		Wait2 = 0.1,
+		HRPTP = function(dt, character, Humanoid, RootPosition, RootPart, readystate)
+			local torsooffset = CFrame.new(0, 0, -60)
+			local rootcf = CFrame.new(RootPosition + Vector3.new(8, -8, 0)) * CFrame.Angles(math.pi * 0.5, 0, 0)
+			if readystate > 0 then
+				RootPart.CFrame = rootcf
+				RootPart.AssemblyLinearVelocity, RootPart.AssemblyAngularVelocity = Vector3.new(0, 26, 0), Vector3.zero
+			else
+				RootPart.CFrame = rootcf + Vector3.new(0, 141, 0)
+				RootPart.AssemblyLinearVelocity, RootPart.AssemblyAngularVelocity = Vector3.new(0, 26, 0), Vector3.zero
+			end
+			if Humanoid.RigType == Enum.HumanoidRigType.R15 then
+				for _,v in character:GetDescendants() do
+					if v:IsA("Motor6D") then
+						if v.Name == "Root" then
+							Util.SetMotor6DOffset(v, rootcf:ToObjectSpace(CFrame.new(RootPosition + Vector3.new(0, 0.75, 0)) * CFrame.Angles(math.pi * 0.5, 0, 0) * torsooffset))
+						elseif v.Name == "Neck" then
+							Util.SetMotor6DOffset(v, torsooffset.Rotation:Inverse() * CFrame.new(math.random() * 0.05, 1.5, -10))
+						else
+							Util.SetMotor6DTransform(v, CFrame.identity)
+						end
+					end
+				end
+			else
+				local i = 1
+				for _,v in character:GetDescendants() do
+					if v:IsA("Motor6D") then
+						if v.Name == "RootJoint" then
+							Util.SetMotor6DOffset(v, rootcf:ToObjectSpace(CFrame.new(RootPosition + Vector3.new(0, -0.25, 0)) * CFrame.Angles(math.pi * 0.5, 0, 0) * torsooffset))
+						elseif v.Name == "Neck" then
+							Util.SetMotor6DOffset(v, torsooffset.Rotation:Inverse() * CFrame.new(math.random() * 0.05, 1.5, -20))
+						else
+							Util.SetMotor6DOffset(v, torsooffset.Rotation:Inverse() * CFrame.new(i * -3, math.random() * 0.05, -3))
+							i += 1
+						end
+					end
+				end
+			end
+		end,
+		State1 = function(character, Humanoid, hats)
+			table.clear(noobymethod_lock)
+			for _,v in hats do
+				table.insert(noobymethod_lock, v.Changed:Connect(function(p)
+					if p == "BackendAccoutrementState" then
+						SetAccoutrementState(v, BackendAccoutrementState.None)
+					end
+				end))
+				SetAccoutrementState(v, BackendAccoutrementState.InWorkspace)
+				SetAccoutrementState(v, BackendAccoutrementState.None)
+			end
+			HatReanimator.Status.HatCollide = #hats .. " hats LOCKED (nooby mode)!"
+		end,
+		State2 = function(character, hats)
+			local torso = character:FindFirstChild("Torso")
+			if torso then
+				task.wait(calculatepartdestroytime(2, 26, workspace.Gravity) - 0.1)
+			end
+			HatReanimator.Status.HatCollide = "Torso gone, re-equipping ASAP."
+			for _,v in noobymethod_lock do
+				v:Disconnect()
+			end
+			table.clear(noobymethod_lock)
+			-- re-equip IMMEDIATELY: the less time a hat sits in None,
+			-- the less chance it drops
+			for _,v in hats do
+				SetAccoutrementState(v, BackendAccoutrementState.Equipped)
+			end
+			torso = character:FindFirstChild("Torso")
+			if torso and torso.Parent then
+				torso.AncestryChanged:Wait()
+			end
+			local head = character:FindFirstChild("Head")
+			if head and head.Parent then
+				head.AncestryChanged:Wait()
+			end
+			task.wait(0.5)
+			return _counthats(hats)
+		end,
+	}
 	local NumHats = 0
 	local function OnCharacter(character)
 		if HatReanimator.DontFireCharAddOnThisChar == character then return end
@@ -40135,9 +41339,21 @@ function HatReanimator.Start()
 						end
 						RootPosition = root.Position + dir * math.random(8, 12)
 					end
+					if HatReanimator.RespawnPosition == 4 then
+						-- keep rootpart streamed: reset right below the reanim character,
+						-- same trick as the limb "Keep RootPart Streamed" mode (-16 studs).
+						-- staying near the reanim character keeps the whole area streamed in,
+						-- so loose hats don't unstream (hat drop) during the reset.
+						RootPosition = root.Position + Vector3.new(0, -16, 0)
+					end
 				end
 			end
 			if HatReanimator.RespawnPosition == 3 then
+				RootPosition = RootPart.Position
+			end
+			if HatReanimator.RespawnPosition == 4 and not (ReanimCharacter and ReanimCharacter:FindFirstChild("HumanoidRootPart")) then
+				-- no reanim character yet: fall back to the current position so we never
+				-- get flung out of streaming range
 				RootPosition = RootPart.Position
 			end
 		end
@@ -40277,9 +41493,18 @@ function HatReanimator.Start()
 		pcall(replicatesignal, Humanoid.ServerBreakJoints)
 		Humanoid.EvaluateStateMachine = true
 		Humanoid.BreakJointsOnDeath = true
-		Humanoid.Health = 0
-		Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
-		Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
+		if perma then
+			-- dolteddown's permadeath: break joints, then keep the humanoid out of the Dead state
+			pcall(function() character:BreakJoints() end)
+			Humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+			Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+			Humanoid:ChangeState(Enum.HumanoidStateType.Climbing)
+			HatReanimator.Status.Permadeath = "Executed dolteddown's pd."
+		else
+			Humanoid.Health = 0
+			Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+			Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
+		end
 		readystate = 3
 		HatReanimator.Status.ReanimState = "Reanimate State: 3"
 		IsRespawning = false
@@ -40379,6 +41604,7 @@ function HatReanimator.Start()
 
 	Reanimate.Starting = false
 	local letitgo = 0
+	local stuckSince = nil
 	while not Reanimate.Stopping do
 		RunService.PreSimulation:Wait()
 		workspace.FallenPartsDestroyHeight = 0/0
@@ -40441,6 +41667,21 @@ function HatReanimator.Start()
 			end
 		end
 		debug.profileend()
+		-- stuck watchdog (dolteddown's pd): reanimate never became OK -> force respawn
+		if HatReanimator.AutoForceRespawn and HatReanimator.HasPermadeath then
+			local now = os.clock()
+			if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
+				stuckSince = stuckSince or now
+				if now - stuckSince > HatReanimator.StuckTimeout and now - HatReanimator.LastForceRespawn > 5 then
+					stuckSince = nil
+					HatReanimator.ForceRespawn("Stuck for " .. HatReanimator.StuckTimeout .. "s. Force respawning!")
+				end
+			else
+				stuckSince = nil
+			end
+		else
+			stuckSince = nil
+		end
 		debug.profilebegin("Uhhhhhh > BaseParts")
 		local RCRootPart = ReanimCharacter and ReanimCharacter:FindFirstChild("HumanoidRootPart")
 		local ltm = Reanimate.LocalTransparencyModifier
