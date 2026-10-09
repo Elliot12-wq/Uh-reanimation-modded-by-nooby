@@ -44,6 +44,11 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 stays streamed in during the hat reanimation reset; new hat reanimation Torso Offset method
                 "10 - NOOBY'S METHOD *EXPERIMENTAL!!!*" - accoutrement state lock + 60-stud far-from-void
                 offset + instant re-equip to make hat drop as unlikely as possible)
+       Custom mod (v34: LOW END UI MODE - Main page > Performance > "Low End UI Mode". ON: 3D triangles render 8 parts
+                instead of 18 at 30 fps, basic UI (no intro, blur, transitions, glow, particles, sheen, cursor trail,
+                hover / press animations, extra sounds, ring / spark effects, cool-scene particles), UI colour + hook updates
+                capped at 30 fps, minigames / arcade / plugins disabled. OFF: everything returns exactly as before;
+                your own settings are never overwritten. Saved in SaveData.Custom.LowEnd)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -68,7 +73,7 @@ IY (old ;iy command) and every mobile-fly implementation are removed.
 ]]
 
 local UhhhhhhVersion = "V10"
-local UHMergeBuild = "a_very_cool_script_v32"
+local UHMergeBuild = "a_very_cool_script_v34"
 if _G.UhhhhhhLoaded == UhhhhhhVersion then return end
 
 -- External-admin bootstrap compatibility. Optional executor helpers must be
@@ -252,9 +257,41 @@ Util.FX = (function()
 	local RealTweenService = TweenService
 	local Lighting = cloneref(game:GetService("Lighting"))
 
-	FX.Settings = {Blur = true, Transitions = true, ExtraSounds = true, Ambient = true}
+	-- ═════════════ [v34] LOW END UI MODE ═════════════
+	-- One saved switch (Cfg.LowEnd, Main page > Performance). While it is ON, reads of the effect settings go
+	-- through the two proxies below and return a "light" value (effects off, 3D triangle simplified, minigames
+	-- locked). The user's REAL values live in RawSettings / RawCfg and are never overwritten, so turning the mode
+	-- OFF brings back exactly what they had before.
+	local RawCfg = {}
+	local RawSettings = {Blur = true, Transitions = true, ExtraSounds = true, Ambient = true}
+	local LOWEND_SETTINGS = {Blur = false, Transitions = false, ExtraSounds = false, Ambient = false}
+	local LOWEND_CFG = {
+		UIParticles = false, UIGradient = false, UITrail = false, UIGlow = false,
+		TriNodes = false, TriFaces = true, TriExplode = false, TriMusic = false,
+		UIAnimSpeed = 3, NotifSpeed = 3,
+	}
+	FX.LowEndTriFPS = 30 -- 3D triangles update at this rate in low end mode
+	FX.LowEndUIFPS = 30  -- UI colour / animation hooks update at this rate in low end mode
+	FX.LowEndHooks = {}
+	function FX.IsLowEnd()
+		return RawCfg.LowEnd == true
+	end
+	function FX.OnLowEnd(fn)
+		FX.LowEndHooks[#FX.LowEndHooks + 1] = fn
+	end
+	FX.Settings = setmetatable({}, {
+		__index = function(_, k)
+			if RawCfg.LowEnd == true and LOWEND_SETTINGS[k] ~= nil then
+				return LOWEND_SETTINGS[k]
+			end
+			return RawSettings[k]
+		end,
+		__newindex = function(_, k, v)
+			RawSettings[k] = v
+		end,
+	})
 
-	local Quint, Quad, Back, Linear = Enum.EasingStyle.Quint, Enum.EasingStyle.Quad, Enum.EasingStyle.Back, Enum.EasingStyle.Linear
+	local Quint, Quad, Back, Linear =Enum.EasingStyle.Quint, Enum.EasingStyle.Quad, Enum.EasingStyle.Back, Enum.EasingStyle.Linear
 	local Bounce = Enum.EasingStyle.Bounce
 	local EOut, EIn, EInOut = Enum.EasingDirection.Out, Enum.EasingDirection.In, Enum.EasingDirection.InOut
 	local WHITE = Color3.new(1, 1, 1)
@@ -284,8 +321,24 @@ Util.FX = (function()
 		UIScale = 1, UIFont = 1, UIAnimSpeed = 1, UIParticles = false, UIGradient = false, UITrail = false,
 		-- [v24] minigames
 		MiniControls = 1,
+		-- [v34] low end UI mode (simple 3D triangle, basic UI, minigames disabled)
+		LowEnd = false,
 	}
-	FX.Cfg = {}
+	-- FX.Cfg is a proxy: reads return the low end override while LowEnd is on, writes always go to RawCfg.
+	FX.Cfg = setmetatable({}, {
+		__index = function(_, k)
+			if RawCfg.LowEnd == true then
+				local o = LOWEND_CFG[k]
+				if o ~= nil then
+					return o
+				end
+			end
+			return RawCfg[k]
+		end,
+		__newindex = function(_, k, v)
+			RawCfg[k] = v
+		end,
+	})
 	for k, v in pairs(DEFAULT_CFG) do
 		FX.Cfg[k] = v
 	end
@@ -311,8 +364,25 @@ Util.FX = (function()
 	end
 	function FX.ResetCfg()
 		for k, d in pairs(DEFAULT_CFG) do
-			FX.SetCfg(k, d)
+			if k ~= "LowEnd" then -- "Reset customization" must not silently flip the performance mode
+				FX.SetCfg(k, d)
+			end
 		end
+	end
+	-- [v34] turn Low End UI Mode on / off. Every module that needs to react registers FX.OnLowEnd(fn(on)).
+	function FX.SetLowEnd(on)
+		on = on == true
+		if RawCfg.LowEnd == on then
+			return false
+		end
+		FX.SetCfg("LowEnd", on)
+		for _, fn in ipairs(FX.LowEndHooks) do
+			local ok, err = pcall(fn, on)
+			if not ok then
+				warn("[LowEnd] hook failed: " .. tostring(err))
+			end
+		end
+		return true
 	end
 	function FX.TriColor(t)
 		local C = FX.Cfg
@@ -407,6 +477,7 @@ Util.FX = (function()
 
 	-- ───────────────────────── tiny fx: rings + sparks ─────────────────────────
 	function FX.Ring(parent, color, size, time, thick, pos)
+		if RawCfg.LowEnd == true then return end -- [v34] low end: no decorative rings
 		local r = Util.Instance("Frame", parent)
 		r.AnchorPoint = Vector2.new(0.5, 0.5)
 		r.Position = pos or UDim2.fromScale(0.5, 0.5)
@@ -426,6 +497,7 @@ Util.FX = (function()
 		return r
 	end
 	function FX.Sparks(parent, color, n, dist, time)
+		if RawCfg.LowEnd == true then return end -- [v34] low end: no spark particles
 		for _ = 1, n do
 			local f = Util.Instance("Frame", parent)
 			f.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -580,6 +652,21 @@ Util.FX = (function()
 		end
 		reseed()
 
+		-- [v34] LOW END UI MODE: keep only the 4 translucent faces (8 wedges). The 6 neon edges and the 4 node
+		-- balls are taken out of the ViewportFrame, so it renders 8 parts instead of 18. Turning the mode off puts
+		-- them straight back (the parts are only un-parented, never destroyed).
+		local lowApplied = false
+		local function applyQuality(low)
+			if low == lowApplied then return end
+			lowApplied = low
+			for _, ed in ipairs(edges) do
+				ed.part.Parent = (not low) and model or nil
+			end
+			for _, nd in ipairs(nodes) do
+				nd.part.Parent = (not low) and model or nil
+			end
+		end
+
 		-- ── optional segmented charge ring (the hold gauge) ──
 		local RING_N = 40
 		local ringHost, ringSegs = nil, {}
@@ -610,11 +697,13 @@ Util.FX = (function()
 		-- ── render the current state ──
 		local D = 2.3
 		local function draw(t)
+			local low = CFG.LowEnd == true -- [v34]
+			applyQuality(low)
 			local e = T.env + T.bloomEnv * 0.28
 			local S = math.max(0.001, T.scaleBase * T.popScale * (1 + T.pulseAmt) * (1 - 0.08 * T.pressAmt) * CFG.TriSize)
 			local M = CFrame.Angles(T.pitch + T.flipAngle, T.yaw, 0)
 			local sh = T.hot * T.hot * 0.07
-			if sh > 0 then
+			if sh > 0 and not low then
 				M = M + Vector3.new((math.random() - 0.5) * sh * 2, (math.random() - 0.5) * sh * 2, 0)
 			end
 			local spinMul = 1 + 0.5 * T.extra
@@ -632,7 +721,7 @@ Util.FX = (function()
 				local p3 = M * ((c + off + rot * (f.v[3] - c)) * S)
 				drawTri(p1, p2, p3, f.w1, f.w2, 0.03)
 				local col = base
-				if T.prism > 0 then
+				if T.prism > 0 and not low then
 					col = Color3.fromHSV((hue + i * 0.22) % 1, 0.75, 1):Lerp(base, 1 - T.prism)
 				end
 				col = col:Lerp(WHITE, (i - 1) * 0.07 + T.hot * 0.5)
@@ -640,6 +729,8 @@ Util.FX = (function()
 				f.w1.Color, f.w2.Color = col, col
 				f.w1.Transparency, f.w2.Transparency = tr, tr
 			end
+
+			if low then return end -- [v34] low end: faces only, edges + nodes are not rendered
 
 			local edgeCol = WHITE:Lerp(base, 0.3 * (1 - T.hot))
 			for _, ed in ipairs(edges) do
@@ -827,7 +918,11 @@ Util.FX = (function()
 				local basePitch = 0.35 + 0.1 * math.sin(t * 1.2) + self.trackY * 0.45
 				self.pitch = self.pitch + (basePitch - self.pitch) * (1 - math.exp(-1.5 * dt))
 			end
-			if ringHost then
+			local lowRing = CFG.LowEnd == true -- [v34] low end: the 40-segment hold gauge is hidden and not updated
+			if ringHost and ringHost.Visible == lowRing then
+				ringHost.Visible = not lowRing
+			end
+			if ringHost and not lowRing then
 				ringHost.Rotation = (t * (6 + self.hot * 40)) % 360
 				local lit = math.floor(self.charge * RING_N + 0.5)
 				if self.phase ~= "idle" then lit = RING_N end
@@ -955,10 +1050,19 @@ Util.FX = (function()
 			layer:Destroy()
 		end
 
+		local lowAcc = 0
 		conns[#conns + 1] = RunService.RenderStepped:Connect(function(dt)
 			if opts.IsVisible and not opts.IsVisible() then
 				if T.holding then T.holding, T.holdT = false, 0 end
 				return
+			end
+			-- [v34] low end: simulate + redraw at a capped rate (default 30 fps) instead of every frame
+			if CFG.LowEnd == true then
+				lowAcc = lowAcc + dt
+				if lowAcc < 1 / FX.LowEndTriFPS then return end
+				dt, lowAcc = lowAcc, 0
+			else
+				lowAcc = 0
 			end
 			local ok, err = pcall(T.Step, T, dt)
 			if not ok then
@@ -1116,6 +1220,7 @@ Util.FX = (function()
 			FX.Play("tick")
 		end)
 		b.MouseLeave:Connect(function()
+			if RawCfg.LowEnd == true and not hover and not down then return end -- [v34] low end: no hover animation was started
 			hover, down = false, false
 			refresh(Back, 0.32)
 			if stroke then tween(stroke, 0.2, Quad, EOut, {Thickness = 1}) end
@@ -1132,7 +1237,7 @@ Util.FX = (function()
 		b.InputEnded:Connect(function(input)
 			if not isPress(input) or not down then return end
 			down = false
-			refresh(Enum.EasingStyle.Elastic, 0.55)
+			refresh(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.55) -- [v34] low end: plain quick release
 			FX.Play("release")
 		end)
 	end
@@ -3134,8 +3239,17 @@ Util.FX = (function()
 		-- ANIM · beat pulse: window border + underglow breathe with the music
 		local stroke = win:FindFirstChildOfClass("UIStroke")
 		local last, pulse = 0, 0
+		local chromeAcc = 0
 		RunService.RenderStepped:Connect(function(dt)
 			if not win.Parent then return end
+			-- [v34] low end: the beat / underglow layer is hidden by S.Ambient anyway, so it only refreshes ~5x per second
+			if RawCfg.LowEnd == true then
+				chromeAcc = chromeAcc + dt
+				if chromeAcc < 0.2 then return end
+				dt, chromeAcc = chromeAcc, 0
+			else
+				chromeAcc = 0
+			end
 			pcall(function()
 				local t = env.Time and env.Time() or os.clock()
 				local bg, col = FX.GetBG(), FX.GetColor()
@@ -4262,7 +4376,16 @@ do
 		end
 
 		-- one driver for everything that moves (also drives the command bar's comet border + scan line)
+		local drvAcc = 0
 		RunService.RenderStepped:Connect(function(dt)
+			-- [v34] low end: the launcher / command bar animations update at a capped rate (default 30 fps)
+			if FX.IsLowEnd() then
+				drvAcc = drvAcc + dt
+				if drvAcc < 1 / FX.LowEndUIFPS then return end
+				dt, drvAcc = drvAcc, 0
+			else
+				drvAcc = 0
+			end
 			local ok, err = pcall(function()
 				local t = os.clock()
 				applyHidden(FX.Cfg.AdminTriHidden == true)
@@ -28906,6 +29029,12 @@ SaveData.MuteUISound = not not SaveData.MuteUISound
 Util.IntroTrackFile = "dm_change.ft2.mp3"
 Util.RunIntro = function(preview)
 	if Util.IntroRunning then return end
+	if Util.FX.IsLowEnd() then -- [v34] low end mode: no cinematic intro (it is the heaviest effect in the script)
+		if preview then
+			pcall(Util.UINotify, "Intro preview is disabled in Low End UI Mode")
+		end
+		return
+	end
 	Util.IntroRunning = true
 	Util.IntroMusicReady = false
 	Util.FX.IntroActive = true -- the window boot animation waits for this, so it unfolds right when the intro ends
@@ -28953,7 +29082,7 @@ Util.RunIntro = function(preview)
 	Util.IntroRunning = false
 end
 
-if SaveData.SkipIntro then
+if SaveData.SkipIntro or Util.FX.IsLowEnd() then -- [v34] low end mode always skips the intro (SkipIntro itself is not changed)
 	MusicPlayer.PlayMusic()
 	if SaveData.MuteUIMusic then
 		UISound.Music.Volume = 0
@@ -29497,8 +29626,21 @@ local function AddToRenderStep(func, linkto)
 	return func
 end
 local _totalrendertime = 0
+local _lowAcc = 0
 RunService:BindToRenderStep("Uhhhhhh_Render" .. Util.RandomString(), Enum.RenderPriority.Last.Value - 69, function(dt)
 	_totalrendertime += dt
+	-- [v34] LOW END UI MODE: the theme colours and every UI hook (AddToRenderStep) update at a capped rate
+	-- (Util.FX.LowEndUIFPS, default 30) instead of on every rendered frame.
+	if Util.FX.IsLowEnd() then
+		_lowAcc += dt
+		if _lowAcc < 1 / Util.FX.LowEndUIFPS then
+			WindowContent.Visible = UIMainWindow.Size.Y.Offset > 35
+			return
+		end
+		dt, _lowAcc = _lowAcc, 0
+	else
+		_lowAcc = 0
+	end
 	UpdateGrads(_totalrendertime)
 	WindowContent.Visible = UIMainWindow.Size.Y.Offset > 35
 	for _,func in _funcrefreshes do
@@ -29843,6 +29985,8 @@ do -- homepage
 		end,
 	}
 	local currentprocessor = 1
+	local lastLowScene = false -- [v34] low end: the 128 orbiting particles of the cool scene are not simulated
+	local NOPARTICLES = {}
 
 	AddToRenderStep(function(t, dt)
 		if Util.IsGuiVisible(CracktroFrame) then
@@ -29862,7 +30006,17 @@ do -- homepage
 				(1 - math.cos(((t / 7) % 2) * math.pi)) * math.pi * 0.5
 			)
 			local fov = 220
-			for i,v in particles do
+			local lowScene = Util.FX.IsLowEnd()
+			if lowScene ~= lastLowScene then
+				lastLowScene = lowScene
+				if lowScene then
+					for _, pv in particles do
+						pv[1].Visible = false
+						pv[5] = false
+					end
+				end
+			end
+			for i,v in (lowScene and NOPARTICLES or particles) do
 				local inst, pos, vel, zind, lvis, lzind = unpack(v)
 				local sp = ring:VectorToWorldSpace(pp(i, v, dt, pbl, spike))
 				local z = sp.Z
@@ -30785,6 +30939,15 @@ Util.FX.Bind({
 
 local MainPage = UI.CreatePage()
 MainPage.Interactable = false
+do -- [v36] FEATURE CENTER bookkeeping: remembers where each section of the main page starts (creation order)
+	Util.FCMarks = {}
+	Util.FCMark = function(key)
+		pcall(function()
+			local list = Util.FCMarks
+			list[#list + 1] = {Key = key, At = #MainPage:GetChildren()}
+		end)
+	end
+end
 CracktroFrame.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 		if _totalrendertime < 1 then return end -- [v23] no longer waits for the modules
@@ -31976,9 +32139,11 @@ UI.CreateButton(MainPage, " &lt; Back to cool scene", 20).Activated:Connect(func
 		CracktroFrame.Interactable = true
 	end)
 end)
+Util.FCMark("music")
 UI.CreateSwitch(MainPage, "Skip Intro", SaveData.SkipIntro).Changed:Connect(function(value)
 	SaveData.SkipIntro = value
 end)
+Util.FCMark("perf")
 UI.CreateSwitch(MainPage, "Transition Blur", SaveData.FXBlur ~= false).Changed:Connect(function(value)
 	SaveData.FXBlur = value
 	Util.FX.Settings.Blur = value
@@ -32473,15 +32638,53 @@ function UI.Label(parent, text, pos, size, o)
 	if o.theme then UI.Theme(l, "TextColor3", o.theme) end
 	return l
 end
+-- bars keep a pale "damage trail" that drains after a short hold; only bars that are draining are touched per frame
+UI.ghosts = {}
 function UI.Bar(parent, pos, size, o)
 	o = o or {}
+	local z = o.z or 5
 	local back = UI.Frame(parent, pos, size, {tr = 0.45, round = 3, stroke = 1, anchor = o.anchor, z = o.z})
-	local fill = new("Frame", back, {Size = U2(1, 0, 1, 0), BackgroundColor3 = o.color or C3(1, 0.2, 0.2), BorderSizePixel = 0, ZIndex = (o.z or 5) + 1})
+	local ghost = new("Frame", back, {Size = U2(1, 0, 1, 0), BackgroundColor3 = C3(1, 1, 1), BackgroundTransparency = 0.6, BorderSizePixel = 0, ZIndex = z})
+	new("UICorner", ghost, {CornerRadius = UDim.new(0, 3)})
+	local fill = new("Frame", back, {Size = U2(1, 0, 1, 0), BackgroundColor3 = o.color or C3(1, 0.2, 0.2), BorderSizePixel = 0, ZIndex = z + 1})
 	new("UICorner", fill, {CornerRadius = UDim.new(0, 3)})
 	if o.theme then UI.Theme(fill, "BackgroundColor3", o.theme) end
-	local bar = {back = back, fill = fill, v = 1}
-	function bar:Set(frac) self.v = clamp(frac, 0, 1) self.fill.Size = U2(self.v, 0, 1, 0) end
+	local bar = {back = back, fill = fill, ghost = ghost, v = 1, g = 1, hold = 0}
+	function bar:Set(frac)
+		if frac ~= frac then frac = 0 end
+		frac = clamp(frac, 0, 1)
+		if frac == self.v then return end -- called every frame by most HUDs: skip redundant property writes
+		if frac < self.v then
+			local drop = self.v - frac
+			if drop >= 0.04 then -- a real hit: leave a trail (smooth drains such as timers/stamina never do)
+				if self.g < self.v then self.g = self.v end
+				self.hold = 0.35
+				UI.ghosts[self] = true
+			elseif self.g > self.v then -- trail already draining: keep it, do not extend the hold
+				UI.ghosts[self] = true
+			else
+				self.g = frac
+				self.ghost.Size = U2(frac, 0, 1, 0)
+			end
+		elseif frac >= self.g then
+			self.g = frac
+			self.ghost.Size = U2(frac, 0, 1, 0)
+		end
+		self.v = frac
+		self.fill.Size = U2(frac, 0, 1, 0)
+	end
 	return bar
+end
+function UI.Tick(dt)
+	for bar in pairs(UI.ghosts) do
+		if not bar.back.Parent then UI.ghosts[bar] = nil
+		elseif bar.hold > 0 then bar.hold = bar.hold - dt
+		else
+			bar.g = math.max(bar.v, bar.g - dt * 0.7)
+			bar.ghost.Size = U2(bar.g, 0, 1, 0)
+			if bar.g <= bar.v then UI.ghosts[bar] = nil end
+		end
+	end
 end
 function UI.Button(parent, text, pos, size, cb, o)
 	o = o or {}
@@ -32491,17 +32694,47 @@ function UI.Button(parent, text, pos, size, cb, o)
 	local s = new("UIStroke", b, {Thickness = 1.5, Color = C3(1, 1, 1), Transparency = 0.15})
 	UI.Theme(s, "Color", "Accent")
 	local l = UI.Label(b, text, U2(0, 0, 0, 0), U2(1, 0, 1, 0), {xa = Enum.TextXAlignment.Center, size = o.size or 16, z = (o.z or 8) + 1, wrap = true})
-	b.MouseEnter:Connect(function() b.BackgroundTransparency = 0.05 end)
-	b.MouseLeave:Connect(function() b.BackgroundTransparency = o.tr or 0.25 end)
+	-- hover (mouse), press (mouse + touch) and release feedback; touch never fires MouseLeave so release resets it explicitly
+	local base = o.tr or 0.25
+	local TI = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local function glow(tr, th)
+		TweenService:Create(b, TI, {BackgroundTransparency = tr}):Play()
+		TweenService:Create(s, TI, {Thickness = th}):Play()
+	end
+	b.MouseEnter:Connect(function() glow(0.05, 2.2) end)
+	b.MouseLeave:Connect(function() glow(base, 1.5) end)
+	b.InputBegan:Connect(function(i)
+		local t = i.UserInputType
+		if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then glow(0, 3) end
+	end)
+	b.InputEnded:Connect(function(i)
+		local t = i.UserInputType
+		if t == Enum.UserInputType.Touch then glow(base, 1.5) elseif t == Enum.UserInputType.MouseButton1 then glow(0.05, 2.2) end
+	end)
 	if cb then b.Activated:Connect(function() safe(cb) end) end
 	return b, l
 end
+local toastSeq = 0
 function UI.Toast(root, text, secs)
 	local holder = root:FindFirstChild("MGToasts")
-	if not holder then holder = new("Frame", root, {Name = "MGToasts", BackgroundTransparency = 1, Size = U2(0.5, 0, 0.3, 0), Position = U2(0.25, 0, 0.08, 0), ZIndex = 40}) end
-	local l = UI.Label(holder, text, U2(0, 0, 0, 0), U2(1, 0, 0, 26), {size = 20, xa = Enum.TextXAlignment.Center, z = 41, theme = "Accent"})
-	l.Position = U2(0, 0, 0, #holder:GetChildren() * 24)
-	task.delay(secs or 2.2, function() if l.Parent then l:Destroy() end end)
+	if not holder then
+		holder = new("Frame", root, {Name = "MGToasts", BackgroundTransparency = 1, Size = U2(0.5, 0, 0.3, 0), Position = U2(0.25, 0, 0.08, 0), ZIndex = 40})
+		new("UIListLayout", holder, {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), HorizontalAlignment = Enum.HorizontalAlignment.Center})
+	end
+	-- the list layout stacks toasts without overlap (the old manual offsets collided once an earlier toast expired); keep at most 4
+	local live = {}
+	for _, c in ipairs(holder:GetChildren()) do if c:IsA("TextLabel") then live[#live + 1] = c end end
+	while #live >= 4 do table.remove(live, 1):Destroy() end
+	toastSeq = toastSeq + 1
+	local l = UI.Label(holder, text, U2(1, 0, 0, 26), U2(1, 0, 0, 26), {size = 20, xa = Enum.TextXAlignment.Center, z = 41, theme = "Accent"})
+	l.LayoutOrder = toastSeq
+	l.TextTransparency = 1
+	TweenService:Create(l, TweenInfo.new(0.15), {TextTransparency = 0}):Play()
+	task.delay(secs or 2.2, function()
+		if not l.Parent then return end
+		TweenService:Create(l, TweenInfo.new(0.3), {TextTransparency = 1, TextStrokeTransparency = 1}):Play()
+		task.delay(0.32, function() if l.Parent then l:Destroy() end end)
+	end)
 	return l
 end
 
@@ -32702,7 +32935,7 @@ function MG.NewStage()
 	local parent = nil
 	pcall(function() parent = SCREENGUI.Parent end)
 	sg.Parent = parent or CoreGui
-	local root = new("Frame", sg, {Size = U2(1, 0, 1, 0), BackgroundColor3 = C3(0, 0, 0), BorderSizePixel = 0, Active = true, ClipsDescendants = true})
+	local root = new("Frame", sg, {Size = U2(1, 0, 1, 0), BackgroundColor3 = C3(0, 0, 0), BorderSizePixel = 0, Active = true, ClipsDescendants = false})
 	return sg, root
 end
 
@@ -32713,8 +32946,11 @@ function MG.NewScene(root, o)
 	o = o or {}
 	local vp = new("ViewportFrame", root, {Size = U2(1, 0, 1, 0), BackgroundColor3 = o.sky or C3(0.5, 0.7, 1), BorderSizePixel = 0, ZIndex = 1,
 		Ambient = o.ambient or C3(0.55, 0.55, 0.6), LightColor = o.lightColor or C3(1, 0.97, 0.9), LightDirection = o.lightDir or V3(-0.5, -1, -0.3)})
-	local cam = new("Camera", vp, {FieldOfView = o.fov or 75})
+	local cam = new("Camera", nil, {FieldOfView = o.fov or 75, CFrame = CFrame.new(0, 8, 0)})
+	pcall(function() cam.NearPlaneZ = -0.1 end)
+	cam.Parent = vp
 	vp.CurrentCamera = cam
+	pcall(function() vp.Visible = true vp.ImageTransparency = 0 vp.BackgroundTransparency = 0 end)
 	local s = setmetatable({vp = vp, cam = cam, count = 0, shake = 0, fov = o.fov or 75}, Scene)
 	return s
 end
@@ -32730,7 +32966,10 @@ end
 function Scene:SetCam(pos, yaw, pitch, roll)
 	local sh = self.shake
 	local off = V3(0, 0, 0)
-	if sh > 0.001 then off = V3((math.random() - 0.5) * sh, (math.random() - 0.5) * sh, (math.random() - 0.5) * sh) self.shake = sh * 0.88 end
+	local now = os.clock()
+	local sdt = self._st and clamp(now - self._st, 0, 0.1) or 1 / 60
+	self._st = now
+	if sh > 0.001 then off = V3((math.random() - 0.5) * sh, (math.random() - 0.5) * sh, (math.random() - 0.5) * sh) self.shake = sh * (0.88 ^ (sdt * 60)) end
 	self.cam.CFrame = CFrame.new(pos + off) * CFrame.fromEulerAnglesYXZ(pitch, yaw, roll or 0)
 	self.cam.FieldOfView = self.fov
 end
@@ -33074,7 +33313,7 @@ function Input:Look()
 	return dx, dy
 end
 function Input:Wheel() local w = self.wheel self.wheel = 0 return w end
-function Input:EndFrame() self.pressed = {} end
+function Input:EndFrame() if next(self.pressed) ~= nil then self.pressed = {} end end -- no table churn on idle frames
 function Input:Help()
 	local out = {}
 	if not self.opts.noMove then
@@ -33243,12 +33482,21 @@ function Input:Connect()
 		elseif last == Enum.UserInputType.Keyboard or last == Enum.UserInputType.MouseMovement or last == Enum.UserInputType.MouseButton1 then newMode = "PC" end
 		if newMode and newMode ~= I.mode and (newMode == "PC" or UIS.TouchEnabled) then
 			I.mode = newMode
-			I.held, I.keys, I.joy = {}, {}, V2(0, 0)
+			I.held, I.keys, I.joy, I.pressed = {}, {}, V2(0, 0), {}
+			I.lookTouch, I.joyTouch = nil, nil -- a touch that began in the other mode must not stay captured
+			if I.joyKnob then I.joyKnob.Position = U2(0.5, 0, 0.5, 0) I.joyBase.BackgroundTransparency = 0.82 I.joyBase.Position = U2(0, 110, 1, -110) end
 			if I.touchGui then I.touchGui.Visible = (newMode == "Mobile") end
 			I:ApplyMouse()
 			I.ctx.Toast("Controls: " .. newMode)
 			if I.ctx.OnModeChanged then safe(I.ctx.OnModeChanged, newMode) end
 		end
+	end)
+	-- alt-tab / focus loss: drop every held input (no stuck keys) and open the pause menu on PC
+	c[#c + 1] = UIS.WindowFocusReleased:Connect(function()
+		I.held, I.keys, I.pressed, I.joy = {}, {}, {}, V2(0, 0)
+		I.lookTouch, I.joyTouch = nil, nil
+		local act = MG.Active
+		if act and act.input == I and not act.paused and not act.cover and I.mode == "PC" then I.ctx.TogglePause() end
 	end)
 	-- sink movement keys so the real character doesn't walk around while playing
 	pcall(function()
@@ -33263,10 +33511,11 @@ function Input:Connect()
 	end)
 end
 
+local function lockCenter() UIS.MouseBehavior = Enum.MouseBehavior.LockCenter end
 function Input:Flush()
-	-- called every frame by the runner: touch-driven look/joystick need no polling; just keep the mouse locked
-	if self.mode == "PC" and self.lockMouse and not self.neverLock and self.opts.look then
-		pcall(function() UIS.MouseBehavior = Enum.MouseBehavior.LockCenter end)
+	-- called every frame by the runner: touch-driven look/joystick need no polling; just keep the mouse locked (only touch the property when it drifted)
+	if self.mode == "PC" and self.lockMouse and not self.neverLock and self.opts.look and UIS.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
+		pcall(lockCenter)
 	end
 end
 function Input:Destroy()
@@ -33280,17 +33529,24 @@ end
 
 -- ═════ RUNNER ═════
 MG.Settings = {sens = 1}
-function MG.Quit()
+local function restoreUI()
+	pcall(function() UIMainFrame.Visible = true end)
+	if MG.Arena and MG.Arena.Show then safe(MG.Arena.Show) end
+end
+-- keepHidden (used by Restart) skips re-showing the menus so there is no one-frame flash between quit and relaunch
+function MG.Quit(keepHidden)
 	local A = MG.Active
 	if not A then return end
 	MG.Active = nil
+	A.dead = true
 	if A.conn then A.conn:Disconnect() end
 	for _, fn in ipairs(A.cleanups) do safe(fn) end
 	if A.game and A.game.Destroy then safe(A.game.Destroy, A.game) end
 	A.input:Destroy()
 	pcall(function() A.sg:Destroy() end)
-	pcall(function() UIMainFrame.Visible = true end)
-	if MG.Arena and MG.Arena.Show then safe(MG.Arena.Show) end
+	UI.ghosts = {}
+	pcall(UI.Retheme, os.clock()) -- prunes themed entries that belonged to the destroyed HUD
+	if keepHidden ~= true then restoreUI() end
 end
 
 local function buildPause(A)
@@ -33299,7 +33555,7 @@ local function buildPause(A)
 	ov.Visible = false
 	ov.Active = true
 	local panel = UI.Frame(ov, U2(0.5, 0, 0.5, 0), U2(0, 420, 0, 330), {tr = 0.15, round = 10, stroke = 2, anchor = V2(0.5, 0.5), z = 51})
-	new("UIScale", panel)
+	A.pauseScale = new("UIScale", panel)
 	UI.Label(panel, "<b>PAUSED</b>", U2(0, 0, 0, 8), U2(1, 0, 0, 30), {size = 26, xa = Enum.TextXAlignment.Center, z = 52, theme = "Accent"})
 	UI.Label(panel, A.def.name, U2(0, 0, 0, 38), U2(1, 0, 0, 18), {size = 14, xa = Enum.TextXAlignment.Center, z = 52})
 	local help = UI.Label(panel, "", U2(0, 18, 0, 64), U2(1, -36, 0, 130), {size = 13, ya = Enum.TextYAlignment.Top, z = 52, wrap = true})
@@ -33323,6 +33579,10 @@ local function buildPause(A)
 end
 
 function MG.Launch(def)
+	if Util.FX.IsLowEnd() then -- [v34] Low End UI Mode: minigames are locked (also covers the search bar + the arcade cards)
+		pcall(Util.UINotify, "Minigames are disabled in Low End UI Mode")
+		return false
+	end
 	if MG.Active then MG.Quit() end
 	local sg, root = MG.NewStage()
 	local A = {def = def, sg = sg, root = root, cleanups = {}, updates = {}, paused = false, time = 0}
@@ -33346,10 +33606,21 @@ function MG.Launch(def)
 	function ctx.OnCleanup(fn) A.cleanups[#A.cleanups + 1] = fn end
 	function ctx.NewScene(o) local s = MG.NewScene(root, o) ctx.OnCleanup(function() s:Destroy() end) return s end
 	ctx.NewFX, ctx.NewRig, ctx.NewBoxes, ctx.NewVoxels = MG.NewFX, MG.NewRig, MG.NewBoxes, MG.NewVoxels
-	function ctx.Exit() MG.Quit() end
-	function ctx.Restart() local d = def MG.Quit() task.defer(function() MG.Launch(d) end) end
+	-- every session-bound callback is ignored once its session is gone, so timers/buttons of a closed game can never hit the next one
+	function ctx.Exit() if MG.Active == A then MG.Quit() end end
+	function ctx.Restart()
+		if MG.Active ~= A then return end
+		local d = def
+		MG.Quit(true)
+		task.defer(function()
+			if MG.Active then return end
+			if not MG.Launch(d) and not MG.Active then restoreUI() end
+		end)
+	end
+	-- ctx.Delay(secs, fn): task.delay that is dropped (and error-isolated) when the game has been closed or replaced
+	function ctx.Delay(secs, fn) task.delay(secs or 0, function() if MG.Active == A then safe(fn) end end) end
 	function ctx.TogglePause()
-		if A.cover then return end
+		if MG.Active ~= A or A.cover then return end
 		A.paused = not A.paused
 		ctx.Paused = A.paused
 		A.pause.Visible = A.paused
@@ -33373,6 +33644,12 @@ function MG.Launch(def)
 	TweenService:Create(title, TweenInfo.new(0.5), {TextTransparency = 0}):Play()
 	TweenService:Create(sub, TweenInfo.new(0.7), {TextTransparency = 0.1}):Play()
 	TweenService:Create(tip, TweenInfo.new(0.9), {TextTransparency = 0.3}):Play()
+	-- genre colour stripe + loading line so the card reads as "loading", not "frozen"
+	local stripe = new("Frame", cover, {Position = U2(0.5, 0, 0.485, 0), AnchorPoint = V2(0.5, 0.5), Size = U2(0, 0, 0, 3), BackgroundColor3 = def.color or C3(1, 1, 1), BorderSizePixel = 0, ZIndex = 61})
+	TweenService:Create(stripe, TweenInfo.new(0.6, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {Size = U2(0, 220, 0, 3)}):Play()
+	local prog = new("Frame", cover, {Position = U2(0.5, 0, 0.78, 0), AnchorPoint = V2(0.5, 0.5), Size = U2(0, 0, 0, 3), BackgroundColor3 = C3(1, 1, 1), BorderSizePixel = 0, ZIndex = 61})
+	UI.Theme(prog, "BackgroundColor3", "Accent")
+	TweenService:Create(prog, TweenInfo.new(1.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = U2(0, 220, 0, 3)}):Play()
 	ctx.Sound("open", 0.9, 1)
 
 	local ok, g = pcall(def.Start, ctx)
@@ -33387,25 +33664,47 @@ function MG.Launch(def)
 	input:Rebuild()
 	tip.Text = ctx.IsMobile() and (def.controlsMobile or "Left thumb: move   Right thumb: look   Buttons: actions") or (def.controlsPC or "WASD move  -  Mouse look  -  P pause")
 	A.t0 = os.clock()
-	local errCount = 0
+	local errCount, lastErr = 0, -10
 	local acc = 0
+	-- keep the pause panel inside small / landscape-phone screens
+	local function fit()
+		local sc = A.pauseScale
+		if not sc then return end
+		local sz = root.AbsoluteSize
+		local want = clamp(math.min(sz.Y / 380, sz.X / 460), 0.5, 1)
+		if sc.Scale ~= want then sc.Scale = want end
+	end
+	-- the opaque title card is dropped from here AND from a timer, so it can never get stuck as a black screen
+	local function dropCover()
+		local cv = A.cover
+		if not cv then return end
+		A.cover = nil
+		pcall(function()
+			for _, o in ipairs(cv:GetChildren()) do
+				if o:IsA("TextLabel") then TweenService:Create(o, TweenInfo.new(0.4), {TextTransparency = 1}):Play()
+				elseif o:IsA("Frame") then TweenService:Create(o, TweenInfo.new(0.3), {BackgroundTransparency = 1}):Play() end
+			end
+			TweenService:Create(cv, TweenInfo.new(0.5), {BackgroundTransparency = 1}):Play()
+		end)
+		task.delay(0.6, function() if cv.Parent then cv:Destroy() end end)
+	end
+	task.delay(2.2, function() if MG.Active == A then dropCover() end end)
 	A.conn = RS.RenderStepped:Connect(function(dt)
 		dt = math.min(dt, 0.05)
 		acc = acc + dt
-		if acc > 0.08 then acc = 0 UI.Retheme(os.clock()) end
-		input:Flush()
+		if acc > 0.08 then acc = 0 pcall(UI.Retheme, os.clock()) pcall(fit) end
+		pcall(UI.Tick, dt)
+		pcall(input.Flush, input)
 		if A.paused then input.dx, input.dy, input.wheel = 0, 0, 0 end
-		if A.cover then
-			local el = os.clock() - A.t0
-			if el > 1.5 then
-				local cv = A.cover
-				A.cover = nil
-				for _, o in ipairs(cv:GetChildren()) do
-					if o:IsA("TextLabel") then TweenService:Create(o, TweenInfo.new(0.4), {TextTransparency = 1}):Play() end
+		if A.cover and os.clock() - A.t0 > 1.5 then dropCover() end
+		if not A.diag and A.time > 2 then
+			A.diag = true
+			pcall(function()
+				local vp = A.root:FindFirstChildOfClass("ViewportFrame")
+				if vp then
+					warn(string.format("[Minigames][diag] %s mode=%s vp=%s size=%s parts=%d cam=%s parent=%s", def.name, tostring(input.mode), tostring(vp.Visible), tostring(vp.AbsoluteSize), #vp:GetChildren(), tostring(vp.CurrentCamera and vp.CurrentCamera.CFrame), tostring(A.sg.Parent)))
 				end
-				TweenService:Create(cv, TweenInfo.new(0.5), {BackgroundTransparency = 1}):Play()
-				task.delay(0.6, function() if cv.Parent then cv:Destroy() end end)
-			end
+			end)
 		end
 		if not A.paused then
 			A.time = A.time + dt
@@ -33415,6 +33714,9 @@ function MG.Launch(def)
 				for _, fn in ipairs(A.updates) do fn(dt) end
 			end)
 			if not okk then
+				-- only errors that arrive in quick succession count (3 within ~2s each): a rare one-off must not end a long session
+				if os.clock() - lastErr > 2 then errCount = 0 end
+				lastErr = os.clock()
 				errCount = errCount + 1
 				if #MG.Errors < 40 then MG.Errors[#MG.Errors + 1] = tostring(err) end
 				warn("[Minigames] " .. def.name .. ": " .. tostring(err))
@@ -33519,6 +33821,7 @@ return {
 }
 ]==]
 function MG.ReloadPlugins()
+	if Util.FX.IsLowEnd() then return end -- [v34] Low End UI Mode: plugin files are not read or run
 	for _, d in ipairs({unpack(MG.Games)}) do if d.plugin then MG.Unregister(d.id) end end
 	MG.Plugins = {}
 	pcall(makefolder, "UhhhhhhReanim")
@@ -34039,6 +34342,11 @@ function FPS:Update(dt)
 	if self.msgT then self.msgT = self.msgT - dt if self.msgT <= 0 then h.msg.Text = "" self.msgT = nil end end
 	h.hit.TextTransparency = math.min(1, h.hit.TextTransparency + dt * 5)
 	if h.vig.BackgroundTransparency < 1 then h.vig.BackgroundTransparency = math.min(1, h.vig.BackgroundTransparency + dt * 0.8) end
+	-- low-health warning: a slow red pulse that never covers the screen
+	if not self.dead and self.hp > 0 and self.hp < self.maxhp * 0.3 then
+		local pulse = 0.84 + 0.05 * math.sin(self.t * 5)
+		if h.vig.BackgroundTransparency > pulse then h.vig.BackgroundTransparency = pulse end
+	end
 	-- look
 	local dx, dy = inp:Look()
 	if not self.dead then
@@ -34206,7 +34514,8 @@ function FPS:Update(dt)
 		if wt ~= self._wtS then self._wtS = wt h.wepTxt.Text = wt end
 	end
 	local spr = 30 + (self.onGround and 0 or 14) + self.kick * 14
-	h.ring.Size = U2(0, spr, 0, spr)
+	spr = math.floor(spr + 0.5)
+	if spr ~= self._spr then self._spr = spr h.ring.Size = U2(0, spr, 0, spr) end
 	h.cross.Visible = not (self.cfg.noCrosshair or (self.ads > 0.5 and w and w.scope))
 	h.ring.Visible = not self.cfg.noCrosshair
 	if self.cfg.hudUpdate then self.cfg.hudUpdate(self, dt) end
@@ -34323,7 +34632,7 @@ do
 						self2.leaving = true
 						self2:Msg("LEVEL COMPLETE", 1.5)
 						if self2.level > hi then hi = self2.level data.best = hi end
-						task.delay(1.2, function()
+						self2.ctx.Delay(1.2, function()
 							self2.level = self2.level + 1
 							self2.hp = math.min(self2.maxhp, self2.hp + 25)
 							buildLevel(self2, self2.level)
@@ -34413,7 +34722,7 @@ do
 						if killer and killer.team == "b" then scoreB = scoreB + 1 elseif killer and killer.team == "a" then scoreA = scoreA + 1 end
 					end
 					local team = b.team
-					task.delay(4, function() if MG.Active and not over then spawnBot(team) end end)
+					ctx.Delay(4, function() if not over then spawnBot(team) end end)
 				end,
 				onPlayerDead = function(self2, from)
 					streak = 0
@@ -34454,7 +34763,7 @@ do
 					self2:Msg(scoreA >= LIMIT and "VICTORY" or "DEFEAT", 99)
 					local d = ctx.Data()
 					if scoreA >= LIMIT then d.wins = (d.wins or 0) + 1 end
-					task.delay(4, function() if MG.Active then ctx.Restart() end end)
+					ctx.Delay(4, function() ctx.Restart() end)
 				end
 			end
 			return F
@@ -34681,7 +34990,7 @@ do
 								showMsg(st.wonA >= ROUNDS and "MATCH WON" or "MATCH LOST", 99)
 								local d = ctx.Data()
 								if st.wonA >= ROUNDS then d.wins = (d.wins or 0) + 1 end
-								task.delay(4, function() if MG.Active then ctx.Restart() end end)
+								ctx.Delay(4, function() ctx.Restart() end)
 							end
 						else
 							for _, w in ipairs(self2.weapons) do w.reserve = w.magSize * 3 end
@@ -34741,7 +35050,7 @@ do
 					over = true
 					F:Msg("BOUNTY COMPLETE - YOU ARE THE LAW", 99)
 					data.wins = (data.wins or 0) + 1
-					task.delay(4, function() if MG.Active then ctx.Restart() end end)
+					ctx.Delay(4, function() ctx.Restart() end)
 					return
 				end
 				if wave == 5 then
@@ -35666,7 +35975,7 @@ do
 				weapons = {{name = "Linked Sword", dmg = 30, rate = 2, melee = true, range = 9, vmLen = 1.4, vmColor = C3(0.6, 0.6, 0.7)}},
 				map = map,
 				respawnPos = function() return checkpoint end,
-				onBotDead = function(self2, b, byPlayer) coins = coins + 5 task.delay(6, function() if MG.Active and F.bots then F:AddBot(V3((math.random() - 0.5) * 80, 3, 30 + math.random() * 30), F.zdef) end end) end,
+				onBotDead = function(self2, b, byPlayer) coins = coins + 5 ctx.Delay(6, function() if F.bots then F:AddBot(V3((math.random() - 0.5) * 80, 3, 30 + math.random() * 30), F.zdef) end end) end,
 			})
 			F.zdef = {name = "Zombie", hp = 60, speed = 11, team = "b", reaction = 0.3, sight = 80, patrol = true, hear = 70, weapon = {dmg = 10, rate = 1.2, melee = true, range = 5},
 				rig = {shirt = C3(0.3, 0.5, 0.3), pants = C3(0.2, 0.3, 0.5), skin = C3(0.5, 0.7, 0.4), gun = false, kit = "zombie"}}
@@ -35710,7 +36019,7 @@ do
 					coins = coins + 50
 					data.wins = (data.wins or 0) + 1
 					self2:Msg("YOU WIN THE OBBY! +50", 3)
-					task.delay(3.5, function() if MG.Active then ctx.Restart() end end)
+					ctx.Delay(3.5, function() ctx.Restart() end)
 				end
 				if coins > (data.best or 0) then data.best = coins end
 				-- character faces the walking direction, like the old days
@@ -36273,22 +36582,26 @@ end
 do
 	local A = {}
 	MG.Arena = A
-	local sg, root, grid, filterTag, built = nil, nil, nil, "All", false
+	local sg, root, grid, layout, title, sub, reloadBtn, reloadLbl, bgGrad = nil, nil, nil, nil, nil, nil, nil, nil, nil
+	local filterTag = "All"
+	local FILTERS = {"All", "3D", "2D", "FPS", "Sandbox", "PC", "Mobile", "Plugin"}
+	local chips = {}
 	local motes = {}
-	local conn = nil
+	local conn, tickAcc, lastW, launching = nil, 0, -1, false
+	local TI_HOVER = TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
 	local function best(def)
 		local d = MG.Data(def.id)
 		return d.best or d.wins or d.ladder or d.champ
 	end
-	local function card(parent, def, idx)
-		local pal = MG.Palette(0)
+	MG.BestOf = best
+	local function card(parent, def, idx, order)
 		local c = new("TextButton", parent, {Text = "", AutoButtonColor = false, BackgroundColor3 = C3(0.05, 0.05, 0.08), BackgroundTransparency = 0.15, BorderSizePixel = 0, LayoutOrder = idx, ZIndex = 5})
 		new("UICorner", c, {CornerRadius = UDim.new(0, 10)})
 		local st = new("UIStroke", c, {Thickness = 1.5, Transparency = 0.3, Color = C3(1, 1, 1)})
 		UI.Theme(st, "Color", "Accent")
 		local banner = new("Frame", c, {Size = U2(1, 0, 0, 56), BackgroundColor3 = def.color, BorderSizePixel = 0, ZIndex = 6})
 		new("UICorner", banner, {CornerRadius = UDim.new(0, 10)})
-		local g = new("UIGradient", banner, {Rotation = 90, Transparency = NumberSequence.new(0, 0.55)})
+		new("UIGradient", banner, {Rotation = 90, Transparency = NumberSequence.new(0, 0.55)})
 		UI.Label(banner, "<b>" .. string.upper(def.name) .. "</b>", U2(0, 10, 0, 0), U2(1, -20, 1, 0), {size = 18, z = 7, wrap = true})
 		UI.Label(c, def.tagline or "", U2(0, 10, 0, 60), U2(1, -20, 0, 44), {size = 12, ya = Enum.TextYAlignment.Top, z = 7, wrap = true})
 		local tags = {}
@@ -36297,64 +36610,116 @@ do
 		UI.Label(c, table.concat(tags, " | "), U2(0, 10, 1, -40), U2(1, -20, 0, 16), {size = 11, z = 7, theme = "Secondary"})
 		local b = best(def)
 		UI.Label(c, b and ("Best / wins: " .. tostring(b)) or "New!", U2(0, 10, 1, -22), U2(1, -20, 0, 16), {size = 11, z = 7})
-		c.MouseEnter:Connect(function()
-			TweenService:Create(c, TweenInfo.new(0.15), {BackgroundTransparency = 0}):Play()
-			TweenService:Create(st, TweenInfo.new(0.15), {Thickness = 3, Transparency = 0}):Play()
+		UI.Label(c, "<b>PLAY</b>", U2(0, 10, 1, -22), U2(1, -20, 0, 16), {size = 11, z = 7, xa = Enum.TextXAlignment.Right, theme = "Accent"})
+		-- pop-in / hover / press all go through one UIScale: UIGridLayout overrides a cell's Size, so size tweens never worked
+		local sc = new("UIScale", c, {Scale = 0.01})
+		TweenService:Create(sc, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out, 0, false, order * 0.035), {Scale = 1}):Play()
+		local function look(scale, bg, thick, tr)
+			TweenService:Create(sc, TI_HOVER, {Scale = scale}):Play()
+			TweenService:Create(c, TI_HOVER, {BackgroundTransparency = bg}):Play()
+			TweenService:Create(st, TI_HOVER, {Thickness = thick, Transparency = tr}):Play()
+		end
+		c.MouseEnter:Connect(function() look(1.04, 0, 3, 0) end)
+		c.MouseLeave:Connect(function() look(1, 0.15, 1.5, 0.3) end)
+		c.InputBegan:Connect(function(i)
+			local t = i.UserInputType
+			if t == Enum.UserInputType.Touch or t == Enum.UserInputType.MouseButton1 then look(0.97, 0, 3, 0) end
 		end)
-		c.MouseLeave:Connect(function()
-			TweenService:Create(c, TweenInfo.new(0.2), {BackgroundTransparency = 0.15}):Play()
-			TweenService:Create(st, TweenInfo.new(0.2), {Thickness = 1.5, Transparency = 0.3}):Play()
+		c.InputEnded:Connect(function(i)
+			if i.UserInputType == Enum.UserInputType.Touch then look(1, 0.15, 1.5, 0.3) end
 		end)
-		c.Activated:Connect(function() Util.FX.Play("open", 1, 1) task.defer(function() MG.Launch(def) end) end)
-		-- pop-in animation
-		c.Size = U2(0, 0, 0, 0)
+		c.Activated:Connect(function()
+			if launching or MG.Active then return end -- double taps must not start (and tear down) a game twice
+			launching = true
+			Util.FX.Play("open", 1, 1)
+			task.defer(function() launching = false MG.Launch(def) end)
+		end)
 		return c
+	end
+	-- responsive layout: column count / card width follow the screen, header shrinks on phones
+	local function fit()
+		if not (grid and root) then return end
+		local w = root.AbsoluteSize.X
+		if w == lastW or w <= 0 then return end
+		lastW = w
+		local usable = w - 56
+		local cols = math.max(1, math.floor((usable + 14) / 224))
+		local cw = clamp(math.floor((usable - (cols - 1) * 14) / cols), 150, 320)
+		layout.CellSize = U2(0, cw, 0, 150)
+		local small = w < 640
+		title.TextSize = small and 26 or 38
+		sub.Visible = not small
+		reloadBtn.Size = small and U2(0, 74, 0, 44) or U2(0, 140, 0, 44)
+		reloadLbl.Text = small and "Reload" or "Reload Plugins"
+	end
+	local function loop(dt)
+		local t = os.clock()
+		for i = 1, #motes do
+			local m = motes[i]
+			m.y = m.y - m.s * dt
+			if m.y < 0 then m.y = 1 m.x = math.random() end
+			m.f.Position = U2(m.x, 0, m.y, 0)
+		end
+		tickAcc = tickAcc + dt
+		if tickAcc > 0.08 then -- palette work is throttled; positions stay per-frame for smooth motion
+			tickAcc = 0
+			local pal = MG.Palette(t)
+			bgGrad.Color = ColorSequence.new(pal.Bg:Lerp(pal.Accent, 0.18), pal.Bg:Lerp(pal.Secondary, 0.1))
+			for i = 1, #motes do motes[i].f.BackgroundColor3 = pal.Accent end
+			UI.Retheme(t)
+			fit()
+		end
+	end
+	-- the animation loop only exists while the arcade is on screen (it used to run forever, even during games)
+	local function startLoop()
+		if conn or not sg then return end
+		tickAcc = 1
+		conn = RS.RenderStepped:Connect(function(dt) pcall(loop, math.min(dt, 0.05)) end)
+	end
+	local function stopLoop()
+		if conn then conn:Disconnect() conn = nil end
 	end
 	function A.Build()
 		if sg then return end
 		sg, root = MG.NewStage()
 		root.BackgroundColor3 = C3(0.02, 0.02, 0.04)
 		sg.DisplayOrder = 2147482000
-		local bgGrad = new("UIGradient", root, {Rotation = 120})
-		for i = 1, 30 do
+		bgGrad = new("UIGradient", root, {Rotation = 120})
+		for i = 1, 22 do
 			local m = new("Frame", root, {Size = U2(0, 2 + (i % 3), 0, 2 + (i % 3)), BackgroundColor3 = C3(1, 1, 1), BorderSizePixel = 0, BackgroundTransparency = 0.6, ZIndex = 2})
 			motes[i] = {f = m, x = math.random(), y = math.random(), s = 0.01 + math.random() * 0.03}
 		end
-		local title = UI.Label(root, "<b>A R C A D E</b>", U2(0, 24, 0, 14), U2(0.6, 0, 0, 44), {size = 38, z = 6, theme = "Accent"})
-		UI.Label(root, "10 built-in minigames + your plugins  -  controls adapt to PC / mobile automatically", U2(0, 26, 0, 58), U2(0.8, 0, 0, 20), {size = 14, z = 6})
+		title = UI.Label(root, "<b>A R C A D E</b>", U2(0, 24, 0, 14), U2(0.6, 0, 0, 44), {size = 38, z = 6, theme = "Accent"})
+		sub = UI.Label(root, "10 built-in minigames + your plugins  -  controls adapt to PC / mobile automatically", U2(0, 26, 0, 58), U2(0.8, 0, 0, 20), {size = 14, z = 6})
 		UI.Button(root, "X", U2(1, -16, 0, 14), U2(0, 44, 0, 44), function() A.Close() end, {anchor = V2(1, 0), z = 10})
-		UI.Button(root, "Reload Plugins", U2(1, -68, 0, 14), U2(0, 140, 0, 44), function() MG.ReloadPlugins() A.Refresh() end, {anchor = V2(1, 0), z = 10, size = 14})
-		-- filter chips
-		local chips = new("Frame", root, {Position = U2(0, 24, 0, 86), Size = U2(1, -48, 0, 34), BackgroundTransparency = 1, ZIndex = 6})
-		new("UIListLayout", chips, {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder})
-		for i, t in ipairs({"All", "3D", "2D", "FPS", "Sandbox", "PC", "Mobile", "Plugin"}) do
-			local b = UI.Button(chips, t, U2(0, 0, 0, 0), U2(0, 22 + #t * 10, 1, 0), function() filterTag = t A.Refresh() end, {z = 7, size = 14})
+		reloadBtn, reloadLbl = UI.Button(root, "Reload Plugins", U2(1, -68, 0, 14), U2(0, 140, 0, 44), function() MG.ReloadPlugins() A.Refresh() end, {anchor = V2(1, 0), z = 10, size = 14})
+		-- filter chips: scrollable (8 chips do not fit a phone), the active one carries an accent underline
+		local row = new("ScrollingFrame", root, {Position = U2(0, 24, 0, 86), Size = U2(1, -48, 0, 38), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 0, ZIndex = 6,
+			CanvasSize = U2(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.X, ScrollingDirection = Enum.ScrollingDirection.X})
+		new("UIListLayout", row, {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder})
+		for i, t in ipairs(FILTERS) do
+			local b, l = UI.Button(row, t, U2(0, 0, 0, 0), U2(0, 22 + #t * 10, 1, -4), function() filterTag = t A.Refresh() end, {z = 7, size = 14})
 			b.LayoutOrder = i
+			local ind = UI.Frame(b, U2(0.12, 0, 1, -6), U2(0.76, 0, 0, 3), {tr = 0, round = 2, z = 9, color = C3(1, 1, 1)})
+			UI.Theme(ind, "BackgroundColor3", "Accent")
+			chips[t] = {l = l, ind = ind}
 		end
-		grid = new("ScrollingFrame", root, {Position = U2(0, 24, 0, 130), Size = U2(1, -48, 1, -170), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, ZIndex = 5,
+		grid = new("ScrollingFrame", root, {Position = U2(0, 24, 0, 132), Size = U2(1, -48, 1, -172), BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = 4, ZIndex = 5,
 			CanvasSize = U2(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y})
-		new("UIGridLayout", grid, {CellSize = U2(0, 230, 0, 150), CellPadding = U2(0, 14, 0, 14), SortOrder = Enum.SortOrder.LayoutOrder})
-		new("UIPadding", grid, {PaddingTop = UDim.new(0, 6), PaddingLeft = UDim.new(0, 4)})
-		local status = UI.Label(root, "", U2(0, 26, 1, -30), U2(1, -52, 0, 22), {size = 12, z = 6})
-		A.status = status
-		local t0 = os.clock()
-		conn = RS.RenderStepped:Connect(function(dt)
-			local t = os.clock()
-			local pal = MG.Palette(t)
-			bgGrad.Color = ColorSequence.new(pal.Bg:Lerp(pal.Accent, 0.18), pal.Bg:Lerp(pal.Secondary, 0.1))
-			for _, m in ipairs(motes) do
-				m.y = m.y - m.s * dt
-				if m.y < 0 then m.y = 1 m.x = math.random() end
-				m.f.Position = U2(m.x, 0, m.y, 0)
-				m.f.BackgroundColor3 = pal.Accent
-			end
-			UI.Retheme(t)
-		end)
+		layout = new("UIGridLayout", grid, {CellSize = U2(0, 230, 0, 150), CellPadding = U2(0, 14, 0, 14), SortOrder = Enum.SortOrder.LayoutOrder})
+		new("UIPadding", grid, {PaddingTop = UDim.new(0, 8), PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 4), PaddingBottom = UDim.new(0, 8)})
+		A.status = UI.Label(root, "", U2(0, 26, 1, -30), U2(1, -52, 0, 22), {size = 12, z = 6})
+		fit()
 		A.Refresh()
 	end
 	function A.Refresh()
 		if not grid then return end
 		for _, c in ipairs(grid:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+		for t, ch in pairs(chips) do
+			local on = t == filterTag
+			ch.ind.Visible = on
+			ch.l.Text = on and ("<b>" .. t .. "</b>") or t
+		end
 		local n = 0
 		for i, def in ipairs(MG.Games) do
 			local show = filterTag == "All"
@@ -36362,9 +36727,7 @@ do
 			if filterTag == "Plugin" and def.plugin then show = true end
 			if show then
 				n = n + 1
-				local c = card(grid, def, i)
-				local target = U2(0, 230, 0, 150)
-				task.delay(n * 0.04, function() if c.Parent then c.Size = target end end)
+				card(grid, def, i, n)
 			end
 		end
 		local errs = 0
@@ -36372,27 +36735,47 @@ do
 		A.status.Text = string.format("%d games shown   |   plugins: %d file(s), %d error(s)   |   folder: %s   |   input: %s", n, #MG.Plugins, errs, MG.PluginFolder, MG.DetectPlatform())
 	end
 	function A.Open()
+		if MG.Active then return end
 		if not MG.loaded then MG.loaded = true MG.ReloadPlugins() end
+		local fresh = sg == nil
 		A.Build()
 		sg.Enabled = true
 		pcall(function() UIMainFrame.Visible = false end)
 		root.Position = U2(0, 0, 0.08, 0)
 		root.BackgroundTransparency = 1
-		TweenService:Create(root, TweenInfo.new(0.35), {Position = U2(0, 0, 0, 0), BackgroundTransparency = 0}):Play()
+		TweenService:Create(root, TweenInfo.new(0.35, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {Position = U2(0, 0, 0, 0), BackgroundTransparency = 0}):Play()
+		if not fresh then A.Refresh() end -- replays the card pop-in and refreshes best scores
+		startLoop()
 	end
-	function A.Hide() A.wasOpen = (sg ~= nil and sg.Enabled) or false if sg then sg.Enabled = false end end
+	function A.Hide()
+		if sg and sg.Enabled then A.wasOpen = true end -- sticky: Restart hides twice without showing in between
+		if sg then sg.Enabled = false end
+		stopLoop()
+	end
 	function A.Show()
-		if A.wasOpen and sg then sg.Enabled = true pcall(function() UIMainFrame.Visible = false end)
-		else pcall(function() UIMainFrame.Visible = true end) end
+		if A.wasOpen and sg then
+			sg.Enabled = true
+			pcall(function() UIMainFrame.Visible = false end)
+			A.Refresh() -- new best scores
+			startLoop()
+		else
+			pcall(function() UIMainFrame.Visible = true end)
+		end
 		A.wasOpen = false
 	end
 	function A.Close()
+		A.wasOpen = false
+		stopLoop()
 		if sg then sg.Enabled = false end
 		pcall(function() UIMainFrame.Visible = true end)
 	end
 end
 
 function MG.Launcher()
+	if Util.FX.IsLowEnd() then -- [v34] Low End UI Mode: the arcade does not open
+		pcall(Util.UINotify, "The Arcade is disabled in Low End UI Mode")
+		return
+	end
 	MG.Arena.Open()
 end
 
@@ -36418,6 +36801,7 @@ do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 
 	CPage.Position = UDim2.new(0.5, 360, 0.5, 0)
 	CPage.Interactable = false
 	CPage.Visible = false
+	Util.FCMark("custom")
 	UI.CreateButton(MainPage, "Customization &gt;", 20).Activated:Connect(function()
 		CPage.Interactable = false
 		CPage.Visible = true
@@ -36660,7 +37044,13 @@ do -- [v24] MINIGAMES PAGE (Main UI > Minigames)
 	MPage.Position = UDim2.new(0.5, 360, 0.5, 0)
 	MPage.Interactable = false
 	MPage.Visible = false
-	UI.CreateButton(MainPage, "Minigames &gt;", 20).Activated:Connect(function()
+	Util.FCMark("mini")
+	local MiniNavBtn = UI.CreateButton(MainPage, "Minigames &gt;", 20) -- [v34] kept so Low End UI Mode can hide it
+	MiniNavBtn.Activated:Connect(function()
+		if FX.IsLowEnd() then
+			Util.UINotify("Minigames are disabled in Low End UI Mode")
+			return
+		end
 		MPage.Interactable = false
 		MPage.Visible = true
 		MainPage.Interactable = false
@@ -36682,12 +37072,19 @@ do -- [v24] MINIGAMES PAGE (Main UI > Minigames)
 	UI.CreateText(MPage, "10 built-in games + plugins. Controls adapt to your device automatically (keyboard + mouse on PC, joystick / look pad / buttons on mobile) and switch live if you change input.", 10, Enum.TextXAlignment.Center)
 	UI.CreateButton(MPage, "Open Arcade (fullscreen)", 20).Activated:Connect(function() Mini.Launcher() end)
 	local Canvas = UI.CreateCanvas(MPage)
+	-- best score / wins shown next to each built-in game (read-only, never throws)
+	local function bestTxt(def)
+		local ok, b = pcall(function() return Mini.BestOf and Mini.BestOf(def) end)
+		if ok and b ~= nil then return "  -  best " .. tostring(b):gsub("<", "&lt;") end
+		return ""
+	end
 	local function build()
-		if not Mini.loaded then Mini.loaded = true pcall(Mini.ReloadPlugins) end
+		-- [v34] in Low End UI Mode the plugin folder is not read; the lists are rebuilt when the mode is turned off
+		if not Mini.loaded and not FX.IsLowEnd() then Mini.loaded = true pcall(Mini.ReloadPlugins) end
 		UI.CreateText(Canvas, "<b>BUILT-IN</b>", 14, Enum.TextXAlignment.Center)
 		for _, def in ipairs(Mini.Games) do
 			if not def.plugin then
-				UI.CreateButton(Canvas, def.name .. "  [" .. table.concat(def.tags or {}, " / ") .. "]", 16).Activated:Connect(function() Mini.Launch(def) end)
+				UI.CreateButton(Canvas, def.name .. "  [" .. table.concat(def.tags or {}, " / ") .. "]" .. bestTxt(def), 16).Activated:Connect(function() Mini.Launch(def) end)
 			end
 		end
 		UI.CreateSeparator(Canvas)
@@ -36700,10 +37097,11 @@ do -- [v24] MINIGAMES PAGE (Main UI > Minigames)
 			end
 		end
 		for _, p in ipairs(Mini.Plugins) do
-			if p.err then UI.CreateText(Canvas, "<font color=\"#ff6060\">" .. p.file .. ": " .. tostring(p.err):gsub("<", "&lt;"):sub(1, 140) .. "</font>", 10, Enum.TextXAlignment.Left) end
+			if p.err then UI.CreateText(Canvas, "<font color=\"#ff6060\">" .. p.file .. ": " .. tostring(p.err):sub(1, 140):gsub("&", "&amp;"):gsub("<", "&lt;") .. "</font>", 10, Enum.TextXAlignment.Left) end
 		end
 		if not any then UI.CreateText(Canvas, "No plugins loaded. Drop .lua files into the folder above (README.txt and _example.lua.txt were created for you).", 10, Enum.TextXAlignment.Center) end
 		UI.CreateButton(Canvas, "Reload Plugins", 18).Activated:Connect(function()
+			if FX.IsLowEnd() then Util.UINotify("Plugins are disabled in Low End UI Mode") return end
 			pcall(Mini.ReloadPlugins)
 			Util.ClearAllChildrenGui(Canvas)
 			build()
@@ -36716,9 +37114,31 @@ do -- [v24] MINIGAMES PAGE (Main UI > Minigames)
 		UI.CreateText(Canvas, "Detected right now: " .. Mini.DetectPlatform() .. ". Inside a game press P (or the II button) for the pause menu with a generated controls list and look sensitivity.", 10, Enum.TextXAlignment.Center)
 	end
 	build()
+
+	-- [v34] LOW END UI MODE: the Minigames button disappears from the main page, a running game / the arcade is closed,
+	-- and everything comes back (including the plugin lists) when the mode is turned off.
+	local function applyMiniLowEnd()
+		pcall(function()
+			MiniNavBtn.Parent.Visible = not FX.IsLowEnd() -- the button sits inside a layout container; hide the container so no gap is left
+		end)
+	end
+	applyMiniLowEnd()
+	FX.OnLowEnd(function(on)
+		if on then
+			pcall(Mini.Quit)
+			pcall(function()
+				if Mini.Arena and Mini.Arena.Close then Mini.Arena.Close() end
+			end)
+		elseif not Mini.loaded then
+			Util.ClearAllChildrenGui(Canvas)
+			build()
+		end
+		applyMiniLowEnd()
+	end)
 end
 
 pcall(Util.UIPlus.Init)
+Util.FCMark("custom")
 UI.CreateDropdown(MainPage, "UI Theme", {
 	"RGB/Default",
 	"ALONE",
@@ -36741,6 +37161,7 @@ UI.CreateDropdown(MainPage, "UI Theme", {
 	SaveData.UITheme = val
 	SetUITheme(SaveData.UITheme)
 end)
+Util.FCMark("music")
 UI.CreateSeparator(MainPage)
 
 local MusicName = UI.CreateText(MainPage, "", 15, Enum.TextXAlignment.Center)
@@ -42066,6 +42487,7 @@ end
 
 do
 	SaveData.SelectedReanimator = SaveData.SelectedReanimator or 1
+	Util.FCMark("reanim")
 	local ReanimateMethodSelect = UI.CreateDropdown(MainPage, "Reanimator", {"Limb Reanimator", "Hats Reanimator"}, SaveData.SelectedReanimator)
 	local ReanimatorConfigTitle = UI.CreateText(MainPage, "-=+ Limb Reanimator Config +=-", 15, Enum.TextXAlignment.Center)
 	local SelectedReanimator = LimbReanimator
@@ -42320,11 +42742,35 @@ do
 		Reanimate.PlaceholderTransparency = val
 		SaveData.PlaceholderTransparency = val
 	end)
+	Util.FCMark("perf")
 	UI.CreateSeparator(MainPage)
 	-- [custom] PERFORMANCE: Anti Lag (strip textures) + Hide All Players -----------
 	do
 		UI.CreateText(MainPage, "Performance", 15, Enum.TextXAlignment.Center)
 		pcall(function() Util.Search.Section(MainPage, "Performance") end)
+
+		-- ===================== LOW END UI MODE (v34) =====================
+		-- ON : 3D triangles drop from 18 parts to 8 and update at 30 fps, the UI becomes basic (no intro, blur,
+		--      transitions, glow, particles, sheen, cursor trail, hover / press animations, extra sounds, ring + spark
+		--      effects, cool-scene particles), UI colours update at 30 fps, minigames + arcade + plugins are disabled.
+		-- OFF: everything returns exactly as the user had it (their saved settings are never overwritten).
+		-- The state is saved in SaveData.Custom (key LowEnd), so it survives rejoining.
+		do
+			local FX = Util.FX
+			local LowEndSwitch = UI.CreateSwitch(MainPage, "Low End UI Mode", FX.IsLowEnd())
+			LowEndSwitch.Changed:Connect(function(val)
+				if FX.SetLowEnd(val) then
+					Util.UINotify("Low End UI Mode " .. (val and "ON" or "OFF"))
+				end
+			end)
+			FX.OnLowEnd(function(on)
+				pcall(Util.UIPlus.Apply) -- hides / restores the particles, sheen and trail layers
+				if LowEndSwitch.Value ~= on then
+					LowEndSwitch.Value = on
+				end
+			end)
+			UI.CreateText(MainPage, "Fixes lag spikes on weak devices: simpler 3D triangle, basic UI without effects, minigames disabled. Turn it off to get everything back.", 10, Enum.TextXAlignment.Center)
+		end
 
 		-- ===================== ANTI LAG =====================
 		-- ON : blanks every texture in the Workspace (Decal, Texture, SurfaceAppearance,
@@ -42520,6 +42966,7 @@ do
 			end
 		end
 	end
+	Util.FCMark("fling")
 	local FlingMethodDropdown = UI.CreateDropdown(MainPage, "Fling Method", Util.Fling.Names, Util.Fling.Method)
 	local FlingMethodDesc = UI.CreateText(MainPage, Util.Fling.Descriptions[Util.Fling.Method], 10, Enum.TextXAlignment.Center)
 	Util.Fling.UISelect = FlingMethodDropdown -- main-page selector for all seven fling methods
@@ -43093,6 +43540,7 @@ do
 			end
 		end
 	end)
+	Util.FCMark("tp")
 	UI.CreateButton(MainPage, "Teleport to 0, highest, 0", 20).Activated:Connect(function()
 		local hit = workspace:Raycast(Vector3.new(0, 4500, 0), Vector3.new(0, -4500 + FallenPartsDestroyHeight, 0))
 		if hit and hit.Position == hit.Position then
@@ -43371,6 +43819,7 @@ do
 		end)
 	end)
 end
+Util.FCMark("reanim")
 UI.CreateSeparator(MainPage)
 do
 	UI.CreateText(MainPage, "Internals Settings", 15, Enum.TextXAlignment.Center)
@@ -43913,6 +44362,7 @@ MovesetsPage.ZIndex = 1
 MovesetsPage.Position = UDim2.new(0.5, 360, 0.5, 0)
 MovesetsPage.Interactable = false
 MovesetsPage.Visible = false
+Util.FCMark("moves")
 UI.CreateButton(MainPage, "Movesets &gt;", 20).Activated:Connect(function()
 	MovesetsPage.Interactable = false
 	MovesetsPage.Visible = true
@@ -44006,6 +44456,7 @@ MarketPage.ZIndex = 1
 MarketPage.Position = UDim2.new(0.5, 360, 0.5, 0)
 MarketPage.Interactable = false
 MarketPage.Visible = false
+Util.FCMark("market")
 UI.CreateButton(MainPage, (math.random() < 0.5 and "Store" or "Marketplace") .. " &gt;", 20).Activated:Connect(function()
 	MarketPage.Interactable = false
 	MarketPage.Visible = true
@@ -44034,6 +44485,7 @@ end)
 UI.CreateSeparator(MarketPage)
 
 SaveData.KeybindsEnabled = not not SaveData.KeybindsEnabled
+Util.FCMark("moves")
 UI.CreateSwitch(MainPage, "Dance Keybinds Enabled", SaveData.KeybindsEnabled).Changed:Connect(function(val)
 	SaveData.KeybindsEnabled = val
 end)
@@ -44689,6 +45141,7 @@ task.spawn(function()
 		end
 	end, dt) end
 end)
+Util.FCMark("hub")
 UI.CreateSeparator(MainPage)
 -- [nooby mod V12] Nooby's Script Hub (NOT FROM SCRIPTHUB): its own page on the main UI.
 -- Separate from the built-in ScriptHub. Wrapped in do...end so it adds zero top-level locals.
@@ -44795,6 +45248,7 @@ CreditsPage.ZIndex = 1
 CreditsPage.Position = UDim2.new(0.5, 360, 0.5, 0)
 CreditsPage.Interactable = false
 CreditsPage.Visible = false
+Util.FCMark("info")
 UI.CreateButton(MainPage, "Credits", 15).Activated:Connect(function()
 	CreditsPage.Interactable = false
 	CreditsPage.Visible = true
@@ -45920,6 +46374,7 @@ local function ForceModuleReload(force)
 	if not Reanimate.Character then return end
 	Reanimate.CreateCharacter()
 end
+Util.FCMark("hub")
 UI.CreateSeparator(MainPage)
 UI.CreateText(MainPage, "<b>MODULES MANAGEMENT</b>", 15, Enum.TextXAlignment.Center)
 do -- [custom] module loading mode
@@ -45975,6 +46430,7 @@ UI.CreateButton(MainPage, "Reload User Modules", 20).Activated:Connect(function(
 	end)
 	ForceModuleReload("SKIPHASH")
 end)
+Util.FCMark("sec")
 UI.CreateSeparator(MainPage)
 UI.CreateText(MainPage, "<b>SECURITY</b>", 15, Enum.TextXAlignment.Center)
 if Util.Security then
@@ -46044,6 +46500,191 @@ clearcontenthash.Activated:Connect(function()
 		end
 	end
 end)
+do -- [v36] FEATURE CENTER: groups the original main page controls (same instances, same callbacks) into categorised pages
+	local built, buildErr = pcall(function()
+		local CATS = {
+			{"perf", "Performance / Graphics", "Anti Lag, Hide All Players, Low End UI Mode, blur, transitions, UI sounds, ambient FX"},
+			{"reanim", "Reanimation / Character", "Reanimator, hitboxes, character options, Fly, WalkSpeed, scale, internals"},
+			{"moves", "Movesets / Dances", "Movesets, Dances, Dance Keybinds"},
+			{"fling", "Fling / Interaction", "Fling Method, Click Fling, Toggle Kill, Key+Click Teleport"},
+			{"tp", "Teleport / Servers", "Teleports, LastSafe, Server Hop, Rejoin, Auto Execute"},
+			{"mini", "Minigames / Arcade", "10 built-in games, fullscreen Arcade, plugins"},
+			{"custom", "Customization / Theme", "UI theme, colours, triangle, intro, notifications"},
+			{"music", "Music / Sound", "UI Music, mute options, Skip Intro"},
+			{"hub", "Script Hub / Modules", "Script Hub, module loading mode, reload modules"},
+			{"market", "Marketplace", "Store / Marketplace and downloaded content"},
+			{"sec", "Security / Danger Zone", "Malware scan, Scan Now, clear downloaded content"},
+			{"info", "Info / Logs", "Credits, Changelogs, Init Logs"},
+		}
+		local marks = Util.FCMarks or {}
+		local function catOf(order)
+			local key
+			for _, m in ipairs(marks) do
+				if order > m.At then key = m.Key else break end
+			end
+			return key
+		end
+		local groups = {}
+		for _, k in ipairs(MainPage:GetChildren()) do
+			if k:IsA("GuiObject") then
+				local key = catOf(k.LayoutOrder)
+				if key then
+					groups[key] = groups[key] or {}
+					table.insert(groups[key], k)
+				end
+			end
+		end
+		for _, list in pairs(groups) do
+			table.sort(list, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+		end
+
+		-- page stack: Main -> Feature Center -> category (original sub pages still open on top and return here)
+		local Stack, busy = {}, false
+		local function newPage()
+			local p = UI.CreatePage()
+			p.ZIndex = 0
+			p.Position = UDim2.new(0.5, 360, 0.5, 0)
+			p.Interactable = false
+			p.Visible = false
+			p.Active = true
+			return p
+		end
+		local function slide(p, x, dir, done)
+			local tw = TweenService:Create(p, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, dir), {Position = UDim2.new(0.5, x, 0.5, 0)})
+			tw:Play()
+			tw.Completed:Connect(done)
+		end
+		-- the original sub pages (Customization, Minigames, Movesets, Credits ...) toggle MainPage.Interactable when they open / close;
+		-- while a Feature Center page is on screen that state is handed to the page that is on top
+		MainPage:GetPropertyChangedSignal("Interactable"):Connect(function()
+			local top = Stack[#Stack]
+			if top then
+				top.Interactable = MainPage.Interactable
+			end
+		end)
+		local function openPage(p)
+			if busy then return end
+			busy = true
+			local below = Stack[#Stack]
+			if below then below.Interactable = false else MainPage.Interactable = false end
+			table.insert(Stack, p)
+			p.Interactable = false
+			p.Visible = true
+			slide(p, 0, Enum.EasingDirection.In, function()
+				if not below then
+					MainPage.Visible = false
+					MainPage.Interactable = true
+				end
+				p.Interactable = true
+				busy = false
+			end)
+		end
+		local function closePage()
+			if busy then return end
+			local p = Stack[#Stack]
+			if not p then return end
+			busy = true
+			local below = Stack[#Stack - 1]
+			p.Interactable = false
+			if not below then
+				MainPage.Visible = true
+				MainPage.Interactable = false
+			end
+			slide(p, 360, Enum.EasingDirection.Out, function()
+				table.remove(Stack)
+				p.Visible = false
+				if below then below.Interactable = true else MainPage.Interactable = true end
+				busy = false
+			end)
+		end
+
+		local Hub = newPage()
+		UI.CreateButton(Hub, "&lt; Back", 20).Activated:Connect(closePage)
+		UI.CreateText(Hub, "<b>FEATURE CENTER</b>", 15, Enum.TextXAlignment.Center)
+		UI.CreateText(Hub, "<font color=\"#AAAAAA\">Every option of the main page, sorted into categories.</font>", 10, Enum.TextXAlignment.Center)
+		UI.CreateSeparator(Hub)
+
+		local pages = {}
+		local moves = {}
+		local function openCat(page)
+			if busy then return end
+			if #Stack == 0 then -- opened from the search: put the hub underneath first, then slide the category in
+				MainPage.Visible = false
+				Hub.Position = UDim2.new(0.5, 0, 0.5, 0)
+				Hub.Visible = true
+				table.insert(Stack, Hub)
+				MainPage.Interactable = true
+			end
+			if Stack[#Stack] == Hub then openPage(page) end
+		end
+		for _, c in ipairs(CATS) do
+			local list = groups[c[1]]
+			if list and #list > 0 then
+				local page = newPage()
+				pages[c[1]] = page
+				UI.CreateButton(page, "&lt; Back", 20).Activated:Connect(closePage)
+				UI.CreateText(page, "<b>" .. c[2]:upper() .. "</b>", 15, Enum.TextXAlignment.Center)
+				for _, obj in ipairs(list) do
+					table.insert(moves, {obj, page})
+				end
+				pcall(function() Util.Search.Titles[page] = c[2] end)
+				UI.CreateButton(Hub, c[2] .. " &gt;", 20).Activated:Connect(function()
+					openCat(page)
+				end)
+				UI.CreateText(Hub, "<font color=\"#AAAAAA\">" .. c[3] .. "</font>", 10, Enum.TextXAlignment.Center)
+			end
+		end
+		pcall(function() Util.Search.Titles[Hub] = "Feature Center" end)
+
+		-- main page entry, right under "Back to cool scene" (created before anything is moved, so a failure never hides controls)
+		local fcBtn = UI.CreateButton(MainPage, "Feature Center &gt;", 20)
+		fcBtn.Activated:Connect(function()
+			if #Stack == 0 then openPage(Hub) end
+		end)
+		for _, m in ipairs(moves) do
+			m[1].Parent = m[2]
+		end
+
+		-- the global search keeps pointing at the right page name for the moved controls
+		pcall(function()
+			for _, e in ipairs(Util.Search.Entries) do
+				if e.Parent == MainPage and e.Obj then
+					for _, page in pairs(pages) do
+						if e.Obj:IsDescendantOf(page) then
+							e.Parent = page
+							break
+						end
+					end
+				end
+			end
+		end)
+
+		pcall(function()
+			local fcCont = fcBtn.Parent
+			local backLO
+			for _, k in ipairs(MainPage:GetChildren()) do
+				if k:IsA("GuiObject") and k ~= fcCont then
+					for _, d in ipairs(k:GetDescendants()) do
+						if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text:find("Back to cool scene", 1, true) then
+							backLO = k.LayoutOrder
+						end
+					end
+				end
+			end
+			if backLO then
+				for _, k in ipairs(MainPage:GetChildren()) do
+					if k:IsA("GuiObject") and k ~= fcCont and k.LayoutOrder > backLO then
+						k.LayoutOrder = k.LayoutOrder + 1
+					end
+				end
+				fcCont.LayoutOrder = backLO + 1
+			end
+		end)
+	end)
+	if not built then
+		warn("[v36] Feature Center failed to build: " .. tostring(buildErr))
+	end
+end
 
 UI.CreateText(MarketPage, "welcome to <b>the user generated content marketplace thing</b>", 15, Enum.TextXAlignment.Center)
 UI.CreateText(MarketPage, "this where you download ur movesets and dances made by actual people and totally not ai", 15, Enum.TextXAlignment.Center)
