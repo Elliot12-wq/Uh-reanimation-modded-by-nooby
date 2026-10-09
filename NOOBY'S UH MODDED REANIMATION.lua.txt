@@ -41338,7 +41338,7 @@ function HatReanimator.Start()
 							Util.SetMotor6DOffset(v, rootcf:ToObjectSpace(CFrame.new(RootPosition + Vector3.new(0, 0.75, 0)) * CFrame.Angles(math.pi * 0.5, 0, 0) * torsooffset))
 						elseif v.Name == "Neck" then
 							Util.SetMotor6DOffset(v, torsooffset.Rotation:Inverse() * CFrame.new(math.random() * 0.05, 1.5, -10))
-						elseif v.Name:FindFirstChild("Shoulder") or v.Name:FindFirstChild("Hip") then
+						elseif v.Name:find("Shoulder") or v.Name:find("Hip") then -- [v38] was v.Name:FindFirstChild (string has no such method -> errored every frame on R15)
 							Util.SetMotor6DOffset(v, torsooffset.Rotation:Inverse() * CFrame.new(v.C0.X - v.C1.X, v.C0.Y - v.C1.Y, -0.5 + math.random() * 0.05))
 						else
 							Util.SetMotor6DTransform(v, CFrame.identity)
@@ -41623,6 +41623,7 @@ function HatReanimator.Start()
 			end
 		end,
 		State1 = function(character, Humanoid, hats)
+			for _,c in noobymethod_lock do c:Disconnect() end -- [v38] don't leak locks from an aborted run
 			table.clear(noobymethod_lock)
 			for _,v in hats do
 				table.insert(noobymethod_lock, v.Changed:Connect(function(p)
@@ -41637,8 +41638,10 @@ function HatReanimator.Start()
 		end,
 		State2 = function(character, hats)
 			local torso = character:FindFirstChild("Torso")
-			if torso then
-				task.wait(calculatepartdestroytime(2, 26, workspace.Gravity) - 0.1)
+			-- [v38] was a fixed ~0.23s timer: hats were re-equipped while the torso (60 studs out) was still attached -> hatdrop.
+			-- Now wait for the torso to really be removed (same as methods 0/1/6), then re-equip immediately.
+			if torso and torso.Parent then
+				torso.AncestryChanged:Wait()
 			end
 			HatReanimator.Status.HatCollide = "Torso gone, re-equipping ASAP."
 			for _,v in noobymethod_lock do
@@ -41649,10 +41652,6 @@ function HatReanimator.Start()
 			-- the less chance it drops
 			for _,v in hats do
 				SetAccoutrementState(v, BackendAccoutrementState.Equipped)
-			end
-			torso = character:FindFirstChild("Torso")
-			if torso and torso.Parent then
-				torso.AncestryChanged:Wait()
 			end
 			local head = character:FindFirstChild("Head")
 			if head and head.Parent then
@@ -46355,6 +46354,164 @@ local function ForceModuleReload(force)
 		end
 		local np = LoadExtensionFolder("UhhhhhhReanim/Plugins", "PLUGIN", LimbReanimator.RegisterMode)
 		local nf = LoadExtensionFolder("UhhhhhhReanim/FlingMethods", "FLING", HatReanimator.RegisterFlingMethod)
+		do -- [v37] built-in "Nooby's style" RootPart method (same code as Plugins/NoobysStyle.lua; skipped if that file is installed)
+			local haveNooby = false
+			for _,pm in LimbReanimator.PluginModes do
+				if pm.Name == "Nooby's style" then haveNooby = true break end
+			end
+			if not haveNooby then
+				local okn, errn = pcall(function()
+					LimbReanimator.RegisterMode((function()
+					-- Nooby's style: "leashed spring shadow" RootPart placement for the Limb Reanimator.
+					-- Save as: <executor workspace>/UhhhhhhReanim/Plugins/NoobysStyle.lua
+					-- Only places the real RootPart. No targeting / fling / kill logic.
+
+					local STREAM_DEPTH   = 16    -- studs under the character when streaming is on (same offset the built-in streamed mode uses)
+					local DEEP_DEPTH     = 64    -- studs under the character when streaming is off
+					local FLOOR_MARGIN   = 32    -- never go lower than FallenPartsDestroyHeight + this
+					local DEFAULT_FPDH   = -500  -- used if FallenPartsDestroyHeight is not a finite number
+					local SMOOTH_TIME_XZ = 0.20  -- seconds for the horizontal critically-damped spring to settle (bigger = smoother, laggier)
+					local SMOOTH_TIME_Y  = 0.40  -- vertical is slower so jumps / landings / stairs don't bob the root
+					local STREAM_LEASH   = 8     -- max lag (studs) behind the target while streaming
+					local DEEP_LEASH     = 48    -- max lag (studs) behind the target while not streaming
+					local TELEPORT_DIST  = 200   -- farther than this from the target = snap instead of glide
+					local MAX_DT         = 0.1   -- dt clamp, protects against frame hitches
+					local DEFAULT_DT     = 1 / 60
+					local MAX_COORD      = 1e8   -- anything beyond this is treated as invalid
+					local MAX_VEL        = 1e5
+					local MAX_FAILS      = 30    -- consecutive internal errors before we let the host disable the plugin
+
+					local OMEGA_XZ = 2 / SMOOTH_TIME_XZ
+					local OMEGA_Y  = 2 / SMOOTH_TIME_Y
+
+					local sqrt, min, max = math.sqrt, math.min, math.max
+
+					-- persistent state (plain numbers, so a frame only allocates one CFrame)
+					local ready = false
+					local sx, sy, sz = 0, 0, 0       -- position
+					local vx, vy, vz = 0, 0, 0       -- spring velocity (keeps motion continuous = no sudden speed changes)
+					local lastT = nil
+					local fails = 0
+
+					local function finite(n)
+						return type(n) == "number" and n == n and n > -MAX_COORD and n < MAX_COORD
+					end
+
+					local function readPosition(part)
+						return part.Position
+					end
+
+					-- returns x, y, z of a usable part, or nil
+					local function samplePart(part)
+						if typeof(part) ~= "Instance" or part.Parent == nil then return nil end
+						local ok, pos = pcall(readPosition, part)
+						if not ok or typeof(pos) ~= "Vector3" then return nil end
+						local x, y, z = pos.X, pos.Y, pos.Z
+						if finite(x) and finite(y) and finite(z) then return x, y, z end
+						return nil
+					end
+
+					-- critically damped spring (exact-ish SmoothDamp): stable for any dt, no overshoot at rest,
+					-- position AND velocity stay continuous. Returns newPosition, newVelocity.
+					local function damp(cur, target, vel, omega, dt)
+						local x = omega * dt
+						local e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x)
+						local change = cur - target
+						local temp = (vel + omega * change) * dt
+						return target + (change + temp) * e, (vel - omega * temp) * e
+					end
+
+					local function step(ctx)
+						-- floor
+						local fpdh = ctx.FallenPartsDestroyHeight
+						if not finite(fpdh) then fpdh = DEFAULT_FPDH end
+						local floorY = fpdh + FLOOR_MARGIN
+
+						-- source position: fake RootPart first, then Torso
+						local px, py, pz = samplePart(ctx.RootPart)
+						if px == nil then px, py, pz = samplePart(ctx.Torso) end
+
+						-- frame time
+						local t = ctx.Time
+						local dt = DEFAULT_DT
+						if finite(t) and lastT ~= nil and t >= lastT then
+							dt = min(t - lastT, MAX_DT)
+						end
+						if finite(t) then lastT = t end
+
+						if px ~= nil then
+							local streaming = ctx.Streaming == true
+							local tx, tz = px, pz
+							local ty = max(py - (streaming and STREAM_DEPTH or DEEP_DEPTH), floorY)
+
+							local dx, dy, dz = tx - sx, ty - sy, tz - sz
+							local dist = sqrt(dx * dx + dy * dy + dz * dz)
+							local stateOk = finite(sx) and finite(sy) and finite(sz)
+								and finite(vx) and finite(vy) and finite(vz)
+
+							if not ready or dist > TELEPORT_DIST or not stateOk then
+								sx, sy, sz = tx, ty, tz
+								vx, vy, vz = 0, 0, 0
+								ready = true
+							else
+								sx, vx = damp(sx, tx, vx, OMEGA_XZ, dt)
+								sz, vz = damp(sz, tz, vz, OMEGA_XZ, dt)
+								sy, vy = damp(sy, ty, vy, OMEGA_Y, dt)
+								-- leash: never lag more than the allowed distance (keeps the part inside the streamed area)
+								local leash = streaming and STREAM_LEASH or DEEP_LEASH
+								dx, dy, dz = tx - sx, ty - sy, tz - sz
+								local rem = sqrt(dx * dx + dy * dy + dz * dz)
+								if rem > leash then
+									local k = (rem - leash) / rem
+									sx, sy, sz = sx + dx * k, sy + dy * k, sz + dz * k
+								end
+								-- runaway guard
+								if vx > MAX_VEL or vx < -MAX_VEL or vy > MAX_VEL or vy < -MAX_VEL or vz > MAX_VEL or vz < -MAX_VEL then
+									vx, vy, vz = 0, 0, 0
+								end
+							end
+							if sy < floorY then
+								sy = floorY
+								if vy < 0 then vy = 0 end
+							end
+						elseif not ready then
+							-- nothing to follow yet and nothing remembered: park at a safe, finite spot
+							sx, sy, sz = 0, floorY, 0
+							vx, vy, vz = 0, 0, 0
+							ready = true
+						else
+							-- parts temporarily missing -> hold the last good position, let the motion die out
+							vx, vy, vz = 0, 0, 0
+						end
+
+						return CFrame.new(sx, sy, sz)
+					end
+
+					return {
+						Name = "Nooby's style",
+
+						GetRootCFrame = function(ctx)
+							local ok, cf = pcall(step, ctx)
+							if ok and typeof(cf) == "CFrame" then
+								fails = 0
+								return cf
+							end
+							fails = fails + 1
+							if fails > MAX_FAILS then
+								-- persistent failure: raise it so the host's normal fallback ("Keep RootPart Streamed") takes over
+								error("Nooby's style failed repeatedly: " .. tostring(cf), 0)
+							end
+							if ready and finite(sx) and finite(sy) and finite(sz) then
+								return CFrame.new(sx, sy, sz)
+							end
+							return CFrame.new(0, DEFAULT_FPDH + FLOOR_MARGIN, 0)
+						end,
+					}
+					end)(), "built-in")
+				end)
+				if not okn then InitLogsText.Text ..= "\n[ERROR] Failed to register built-in Nooby's style: " .. tostring(errn) end
+			end
+		end
 		LimbReanimator.ResolveSavedMode()
 		HatReanimator.ResolveSavedFling()
 		InitLogsText.Text ..= "\n[LOG] Loaded " .. #LimbReanimator.PluginModes .. " RootPart plugin(s), " .. #HatReanimator.PluginFlingMethods .. " fling method(s)."
