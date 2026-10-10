@@ -7,7 +7,7 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
  "YmmMMMM""MMM    YMMMMM    YMMMMM    YMMMMM    YMMMMM    YMMMMM    YMM
        "DREAMS WILL NEVER COME TRUE UNTIL YOU ACTUALLY MAKE IT."       
 
-       Nooby's Uh Modded Reanimation 1.1.1v
+       A Very Cool Script v42  (formerly Nooby's Uh Modded Reanimation 1.1.1v)
        Modded by Nooby (based on "Uhhhhhh" v1.0.9 BETA)
 
        Original Creator: STEVETHEREALONE
@@ -58,6 +58,10 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 echo out of register and release snaps it home; WINDOW FOLD: minimize peels the window off two trailing
                 outline ghosts (height snaps shut, width narrows into the pill), open fires a laser plate + tall plate,
                 unfolds width-first and locks both onto the frame with a focus rack)
+       Custom mod (v42: ANIMATED PREVIEW - opening a Moveset or Dance page now shows a live, isolated ViewportFrame preview of your
+                own avatar (R6 rig built from your HumanoidDescription, cached) playing that module's own .anim data, with Play / Pause /
+                Stop / Loop / Rotate / Next anim. Never touches the live character, reanimation, keybinds, CurrentDance or
+                MovementStyleIndex; cleans up on page close; 30 fps stepping in Low End UI Mode. Script renamed "A Very Cool Script v42")
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -82,7 +86,7 @@ IY (old ;iy command) and every mobile-fly implementation are removed.
 ]]
 
 local UhhhhhhVersion = "V10"
-local UHMergeBuild = "a_very_cool_script_v34"
+local UHMergeBuild = "a_very_cool_script_v42"
 if _G.UhhhhhhLoaded == UhhhhhhVersion then return end
 
 -- External-admin bootstrap compatibility. Optional executor helpers must be
@@ -146,7 +150,7 @@ Util.Notify = function(text)
 		end
 	end
 	StarterGui:SetCore("SendNotification", {
-		Title = (cfg and cfg.NotifTitle ~= "" and cfg.NotifTitle) or "Nooby's Uh Modded Reanimation",
+		Title = (cfg and cfg.NotifTitle ~= "" and cfg.NotifTitle) or "A Very Cool Script v42",
 		Text = text,
 		Duration = (cfg and cfg.NotifDuration + 1) or 5
 	})
@@ -202,7 +206,7 @@ if not game:IsLoaded() then
 	end, function()
 		notLoaded.Parent = workspace
 	end)
-	notLoaded.Text = "Nooby's Uh Modded Reanimation is waiting for the game to load"
+	notLoaded.Text = "A Very Cool Script v42 is waiting for the game to load"
 	game.Loaded:Wait()
 	for i=1, 60 do
 		while task.wait() > 1 / 10 do end
@@ -317,7 +321,7 @@ Util.FX = (function()
 		IntroTitle = "STEVETHEREALONE", IntroSub = "", IntroMarquee = "", IntroColorMode = 1, IntroColor = "#FFFFFF",
 		IntroStars = true, IntroRays = true, IntroScan = true, IntroHud = true, IntroIntensity = 1,
 		-- notifications
-		NotifMode = 1, NotifDuration = 4, NotifTitle = "Nooby's Uh Modded Reanimation", NotifPos = 1, NotifWidth = 300,
+		NotifMode = 1, NotifDuration = 4, NotifTitle = "A Very Cool Script v42", NotifPos = 1, NotifWidth = 300,
 		NotifSize = 18, NotifProgress = true, NotifColor = "", NotifSound = false, NotifSpeed = 1,
 		-- extra ui
 		UIBgTr = 0, UIBorder = 1, UIRound = 8, UIGlow = true, UIAccent = "",
@@ -3212,7 +3216,7 @@ Util.FX = (function()
 					local h = math.clamp(sy * 0.15, 34, 92)
 					box.Visible = true
 					placeBig(0.5, h, 0.96)
-					setBig(scr("NOOBY'S UH MODDED REANIMATION", lt / 0.7))
+					setBig(scr("A VERY COOL SCRIPT V42", lt / 0.7))
 					bigAlpha(1 - e)
 					chroma((1 - e) * 18 + pulse * 5)
 					boxScale.Scale = 1 + (1 - e) * 0.8 + pulse * 0.03
@@ -29957,7 +29961,7 @@ end
 SaveData.UITheme = SaveData.UITheme or 1
 SetUITheme(SaveData.UITheme)
 
-local CracktroFrameText = "Nooby's Uh Modded Reanimation " .. UhhhhhhVersion
+local CracktroFrameText = "A Very Cool Script v42"
 local UIMainWindow, WindowContent do
 	UIMainWindow = Util.Instance("Frame", UIMainFrame)
 	UIMainWindow.Active = true
@@ -30017,13 +30021,13 @@ local UIMainWindow, WindowContent do
 	TopBarText.TextColor3 = Color3.new(1, 1, 1)
 	TopBarText.TextSize = 20
 	TopBarText.TextXAlignment = Enum.TextXAlignment.Left
-	TopBarText.Text = "Nooby's Uh Modded Reanimation | " .. UhhhhhhVersion
+	TopBarText.Text = "A Very Cool Script v42"
 	TopBarText.RichText = true
 	RegisterTextLabel(TopBarText)
 	Util.ForceTextSize(TopBarText)
 	if (SaveData.SkipIntro and math.random(2) == 1) or os.date("%m %d") ~= "04 01" then
 		local quotes = {
-			"Nooby's Uh Modded Reanimation | " .. UhhhhhhVersion,
+			"A Very Cool Script v42",
 			"jumpscare",
 			"you'll never see it coming",
 			Player.Name .. "'s Nooby's Uh Session",
@@ -30095,7 +30099,7 @@ local UIMainWindow, WindowContent do
 		TopBarText.Text = quotes[math.random(1, #quotes)]
 		if not aprilfools then
 			task.delay(2, function()
-				TopBarText.Text = "Nooby's Uh Modded Reanimation | " .. UhhhhhhVersion
+				TopBarText.Text = "A Very Cool Script v42"
 			end)
 		end
 	end
@@ -30304,7 +30308,7 @@ do
 			if prog == nil or prog >= 1 then
 				pcall(function()
 					StarterGui:SetCore("SendNotification", {
-						Title = CFG.NotifTitle ~= "" and CFG.NotifTitle or "Nooby's Uh Modded Reanimation",
+						Title = CFG.NotifTitle ~= "" and CFG.NotifTitle or "A Very Cool Script v42",
 						Text = tostring(text),
 						Duration = CFG.NotifDuration + 1,
 					})
@@ -32771,7 +32775,7 @@ task.spawn(function()
 	end)
 	switchart()
 end)
-UI.CreateText(MainPage, `Nooby's Uh Modded Reanimation {UhhhhhhVersion} | Original by STEVETHEREALONE | Modded by Nooby`, 15, Enum.TextXAlignment.Right)
+UI.CreateText(MainPage, `A Very Cool Script v42 | Original by STEVETHEREALONE | Modded by Nooby`, 15, Enum.TextXAlignment.Right)
 UI.CreateSeparator(MainPage)
 UI.CreateButton(MainPage, " &lt; Back to cool scene", 20).Activated:Connect(function()
 	CracktroFrame.Interactable = false
@@ -37600,7 +37604,7 @@ do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 
 			"Silent",
 		})
 		sl("Duration (seconds)", "NotifDuration", 1, 15, 1)
-		tb("Roblox popup title", "NotifTitle", "Nooby's Uh Modded Reanimation", 40)
+		tb("Roblox popup title", "NotifTitle", "A Very Cool Script v42", 40)
 		dd("UI bar position", "NotifPos", {"Below window", "Above window", "Top of screen", "Bottom of screen"})
 		sl("UI bar width", "NotifWidth", 200, 600, 10)
 		sl("UI bar text size", "NotifSize", 12, 26, 1)
@@ -45439,6 +45443,413 @@ local function GetModuleHash(m)
 	m.Hash = str
 	return str
 end
+-- [v42] ANIMATED PREVIEW ------------------------------------------------------------------------------------------
+-- Live, isolated preview of the avatar playing a Moveset / Dance's own .anim data inside its detail page.
+-- It never runs the module's Init / Update / Destroy / Config code and never touches Reanimate.Character,
+-- CurrentDance, MovementStyleIndex, keybinds or music overrides. One cached R6 rig (built from the avatar's
+-- HumanoidDescription) lives in a WorldModel inside a ViewportFrame; a single RenderStepped connection exists
+-- only while a preview is playing. Wrapped in a closure so it adds no top-level locals.
+Util.Preview = (function()
+	local P = {Enabled = true, AutoDownload = true, Loop = true}
+	local S = {rig = nil, rigFor = nil, building = false, session = nil, stash = Instance.new("Folder")}
+	local JOINTS = {Torso = true, Head = true, ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true}
+	local STATE = {loading = "Loading", playing = "Playing", paused = "Paused", stopped = "Stopped", finished = "Finished", failed = "Unavailable"}
+
+	local function fileExists(path)
+		local ok, r = pcall(isfile, path)
+		return ok and r == true
+	end
+
+	-- every distinct .anim file the module declares (same parsing as AssetDownload: "name@url" -> "name")
+	local function animFiles(m, kind)
+		local list, order = {}, {}
+		if type(m.Assets) == "table" then
+			for _, entry in ipairs(m.Assets) do
+				if type(entry) == "string" then
+					local name = string.split(entry, "@")[1]
+					if name:sub(-5) == ".anim" and not order[name] then
+						table.insert(list, name)
+						order[name] = #list
+					end
+				end
+			end
+		end
+		local function rank(n)
+			n = n:lower()
+			if kind == "MOVESET" then
+				if n:find("walk") then return 1 elseif n:find("run") then return 2 elseif n:find("idle") then return 3 end
+			end
+			return 9
+		end
+		table.sort(list, function(a, b)
+			local ra, rb = rank(a), rank(b)
+			if ra ~= rb then return ra < rb end
+			return order[a] < order[b]
+		end)
+		return list
+	end
+
+	-- R6 copy of the avatar (the script's puppet and every .anim file use R6 joint names)
+	local function buildRig()
+		local desc
+		pcall(function()
+			local ch = Player.Character
+			local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+			if hum then desc = hum:GetAppliedDescription() end
+		end)
+		if not desc then
+			pcall(function() desc = Players:GetHumanoidDescriptionFromUserId(Player.UserId) end)
+		end
+		if not desc then return nil end
+		local ok, rig = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType.R6)
+		if not ok or typeof(rig) ~= "Instance" then return nil end
+		rig.Name = "PreviewRig"
+		for _, d in ipairs(rig:GetDescendants()) do
+			if d:IsA("BasePart") then
+				d.Anchored = d.Name == "HumanoidRootPart"
+				d.CanCollide, d.CanTouch, d.CanQuery = false, false, false
+			elseif d:IsA("LuaSourceContainer") or d:IsA("Sound") then
+				d:Destroy()
+			end
+		end
+		pcall(function()
+			local hum = rig:FindFirstChildOfClass("Humanoid")
+			hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+			hum.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+		end)
+		return rig
+	end
+
+	-- cached rig; rebuilt only after a respawn / new character or if it was destroyed. While idle it sits in S.stash
+	-- (never inside the UI), so destroying a page can no longer take it down with it.
+	local function getRig(wm)
+		if S.rig and S.rig.Parent == wm then return S.rig end
+		for _ = 1, 200 do
+			if not S.building then break end
+			task.wait(0.1)
+		end
+		local ch = Player.Character
+		if S.rig then
+			-- moving to a DIFFERENT parent errors if the rig was destroyed (same-parent writes never error)
+			local alive = pcall(function() S.rig.Parent = S.stash end)
+			if alive and (not ch or S.rigFor == ch) then return S.rig end
+			pcall(S.rig.Destroy, S.rig)
+			S.rig = nil
+		end
+		S.building = true
+		local ok, rig = pcall(buildRig)
+		S.building = false
+		if ok and rig then
+			rig.Parent = S.stash
+			S.rig, S.rigFor = rig, ch
+			return rig
+		end
+		return nil
+	end
+
+	function P.Attach(page, m, kind)
+		if P.Enabled == false or type(m) ~= "table" then return end
+		if S.session then S.session.Close() end
+		local ses = {conns = {}, alive = true, token = 0}
+		S.session = ses
+		local files = animFiles(m, kind)
+		local idx, state, looped = 1, "loading", P.Loop ~= false
+		local track, animator, hb
+		local t, yaw, dist, focus = 0, 0, 6, Vector3.new(0, 3, 0)
+		local playBtn, loopBtn
+		local function link(c) table.insert(ses.conns, c) return c end
+
+		-- UI (theme helpers come from the main UI: Stylize / RegisterTextLabel) --------------------------------
+		local compact = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+		local vpH = compact and 150 or 190
+		local holder = Util.Instance("Frame", page)
+		holder.AnchorPoint = Vector2.new(0.5, 0)
+		holder.Size = UDim2.new(1, 0, 0, vpH + 72)
+		holder.BackgroundTransparency = 1
+		holder.LayoutOrder = #page:GetChildren()
+		UI.CreateSeparator(page)
+		local function label(y, h, size)
+			local l = Util.Instance("TextLabel", holder)
+			l.BackgroundTransparency = 1
+			l.Position = UDim2.new(0, 5, 0, y)
+			l.Size = UDim2.new(1, -10, 0, h)
+			l.Font = Enum.Font.Code
+			l.TextSize = size
+			l.TextXAlignment = Enum.TextXAlignment.Left
+			l.TextTruncate = Enum.TextTruncate.AtEnd
+			RegisterTextLabel(l)
+			return l
+		end
+		local title = label(0, 18, 14)
+		title.Text = (kind == "MOVESET" and "MOVESET" or "DANCE") .. " PREVIEW - " .. tostring(m.Name)
+		local vp = Util.Instance("ViewportFrame", holder)
+		vp.Position = UDim2.new(0, 5, 0, 20)
+		vp.Size = UDim2.new(1, -10, 0, vpH)
+		vp.BackgroundTransparency = 0
+		vp.BackgroundColor3 = Color3.new(0.04, 0.04, 0.06)
+		vp.Ambient = Color3.fromRGB(170, 170, 170)
+		vp.LightColor = Color3.new(1, 1, 1)
+		vp.LightDirection = Vector3.new(-0.3, -0.5, 1)
+		vp.ClipsDescendants = true
+		Stylize(vp)
+		local wm = Util.Instance("WorldModel", vp)
+		local cam = Util.Instance("Camera", vp)
+		cam.FieldOfView = 50
+		vp.CurrentCamera = cam
+		local overlay = Util.Instance("TextLabel", vp)
+		overlay.BackgroundTransparency = 1
+		overlay.Position = UDim2.new(0, 8, 0, 0)
+		overlay.Size = UDim2.new(1, -16, 1, 0)
+		overlay.Font = Enum.Font.Code
+		overlay.TextSize = 13
+		overlay.TextWrapped = true
+		overlay.ZIndex = 3
+		RegisterTextLabel(overlay)
+		local status = label(vpH + 22, 16, 12)
+
+		local function refresh()
+			if not ses.alive then return end
+			status.Text = (STATE[state] or state) .. (looped and " | loop" or "")
+				.. (#files > 1 and (" | " .. idx .. "/" .. #files) or "") .. (files[idx] and (" | " .. files[idx]) or "")
+			playBtn.Text = state == "playing" and "Pause" or (state == "finished" and "Replay" or "Play")
+			loopBtn.Text = looped and "Loop: ON" or "Loop: OFF"
+			overlay.Visible = state == "loading" or state == "failed"
+		end
+		local function fail(reason)
+			if not ses.alive then return end
+			state = "failed"
+			overlay.Text = reason
+			refresh()
+		end
+
+		-- camera / rig helpers ------------------------------------------------------------------------------------
+		local function updateCam()
+			local dir = (CFrame.Angles(0, yaw, 0) * Vector3.new(0, 0.12, -1)).Unit
+			cam.CFrame = CFrame.lookAt(focus + dir * dist, focus)
+		end
+		local function frameRig(rig)
+			pcall(function()
+				rig:PivotTo(CFrame.new(0, 3, 0))
+				local cf, size = rig:GetBoundingBox()
+				focus = cf.Position
+				dist = (math.max(size.Y, size.X * 0.6) / 2) / math.tan(math.rad(cam.FieldOfView / 2)) * 1.3 + size.Z / 2
+			end)
+			updateCam()
+		end
+		local function resetPose()
+			if not S.rig then return end
+			for _, d in ipairs(S.rig:GetDescendants()) do
+				if d:IsA("Motor6D") then d.Transform = CFrame.identity end
+			end
+		end
+
+		-- playback (the only per-frame connection; exists only while playing) --------------------------------
+		local function halt()
+			if hb then hb:Disconnect() hb = nil end
+		end
+		local function startLoop()
+			halt()
+			if not (animator and track) then return end
+			local acc, bad = 0, 0
+			hb = RunService.RenderStepped:Connect(function(dt)
+				if not WindowContent.Visible then return end
+				acc += dt
+				if acc < (Util.FX.IsLowEnd() and 1 / 30 or 0) then return end -- Low End UI Mode: 30 fps stepping
+				t += acc
+				acc = 0
+				local done = false
+				if not looped and t >= track.Time then t, done = track.Time, true end
+				if pcall(animator.Step, animator, t) then bad = 0 else bad += 1 end
+				if done then
+					halt()
+					state = "finished"
+					refresh()
+				elseif bad >= 3 then
+					halt()
+					fail("Preview stopped: the animation data errored while playing.")
+				end
+			end)
+		end
+
+		local function loadAnim()
+			ses.token += 1
+			local tok = ses.token
+			halt()
+			track, animator, t, state = nil, nil, 0, "loading"
+			overlay.Text = "Loading preview..."
+			refresh()
+			local function stale() return not ses.alive or tok ~= ses.token end
+			local function run()
+				local file = files[idx]
+				if not file then
+					return fail("No .anim file is listed in this module's Assets, so there is nothing to preview (it may animate procedurally in code).")
+				end
+				local rig = getRig(wm)
+				if stale() then return end
+				if not rig then return fail("Could not build a preview rig from your avatar (avatar data unavailable).") end
+				if rig.Parent ~= wm then
+					rig.Parent = wm
+					frameRig(rig)
+				end
+				local path = AssetGetPathFromFilename(file)
+				if not fileExists(path) then
+					if not P.AutoDownload then return fail("Animation file not downloaded yet: " .. file) end
+					pcall(AssetDownload, file) -- same cached downloader the real dance / moveset uses (.anim files only)
+					local waited = 0
+					while not stale() and not fileExists(path) and waited < 20 do
+						task.wait(0.25)
+						waited += 0.25
+					end
+					if stale() then return end
+					if not fileExists(path) then return fail("Could not download " .. file .. ".") end
+				end
+				local ok, tr = pcall(AnimLib.Track.fromfile, path)
+				if stale() then return end
+				if not ok or type(tr) ~= "table" or type(tr.Keyframes) ~= "table" or #tr.Keyframes == 0 then
+					return fail(file .. " could not be read.")
+				end
+				local matched = false
+				for _, kf in ipairs(tr.Keyframes) do
+					for _, p in ipairs(kf.Poses) do
+						if JOINTS[p.Name] then matched = true break end
+					end
+					if matched then break end
+				end
+				if not matched then return fail(file .. " does not target an R6 rig, so it cannot be previewed.") end
+				local a = AnimLib.Animator.new()
+				a.rig, a.track, a.speed = rig, tr, 1
+				a.looped = looped and tr.Time > 0
+				track, animator, t, state = tr, a, 0, "playing"
+				refresh()
+				startLoop()
+			end
+			task.spawn(function()
+				local ok, err = pcall(run)
+				if not ok and not stale() then fail("Preview error: " .. tostring(err)) end
+			end)
+		end
+
+		-- controls ------------------------------------------------------------------------------------------------
+		local ctrl = Util.Instance("Frame", holder)
+		ctrl.BackgroundTransparency = 1
+		ctrl.Position = UDim2.new(0, 5, 0, vpH + 40)
+		ctrl.Size = UDim2.new(1, -10, 0, 26)
+		local lay = Util.Instance("UIListLayout", ctrl)
+		lay.FillDirection = Enum.FillDirection.Horizontal
+		lay.Padding = UDim.new(0, 4)
+		lay.SortOrder = Enum.SortOrder.LayoutOrder
+		local n, order = (#files > 1) and 5 or 4, 0
+		local function mkBtn(text, cb)
+			order += 1
+			local b = Util.Instance("TextButton", ctrl)
+			b.LayoutOrder = order
+			b.Size = UDim2.new(1 / n, -4 * (n - 1) / n, 1, 0)
+			b.BorderSizePixel = 0
+			b.AutoButtonColor = true
+			b.Font = Enum.Font.Code
+			b.TextSize = 13
+			b.Text = text
+			RegisterTextLabel(b)
+			Stylize(b)
+			link(b.Activated:Connect(cb))
+			return b
+		end
+		playBtn = mkBtn("Play", function()
+			if not (animator and track) then return end
+			if state == "playing" then
+				halt()
+				state = "paused"
+			else
+				if state == "finished" or state == "stopped" then t = 0 end
+				state = "playing"
+				startLoop()
+			end
+			refresh()
+		end)
+		mkBtn("Stop", function()
+			if not (animator and track) then return end
+			halt()
+			t = 0
+			resetPose()
+			state = "stopped"
+			refresh()
+		end)
+		loopBtn = mkBtn("Loop: ON", function()
+			looped = not looped
+			if animator and track then
+				animator.looped = looped and track.Time > 0
+				if looped and state == "finished" then
+					t, state = 0, "playing"
+					startLoop()
+				end
+			end
+			refresh()
+		end)
+		mkBtn("Rotate", function()
+			yaw += math.pi / 4
+			updateCam()
+		end)
+		if #files > 1 then
+			mkBtn("Next anim", function()
+				idx = idx % #files + 1
+				loadAnim()
+			end)
+		end
+
+		-- mouse drag to orbit (touch uses the Rotate button so page scrolling keeps working)
+		local dragging, lastX = false, 0
+		link(vp.InputBegan:Connect(function(i)
+			if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging, lastX = true, i.Position.X end
+		end))
+		link(vp.InputChanged:Connect(function(i)
+			if not dragging or i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+			if not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then dragging = false return end
+			yaw -= (i.Position.X - lastX) * 0.012
+			lastX = i.Position.X
+			updateCam()
+		end))
+		link(vp.InputEnded:Connect(function(i)
+			if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
+		end))
+
+		-- release: stop playback and give the rig back to the stash (the UI stays, so the page can slide out intact)
+		function ses.Release()
+			ses.token += 1
+			halt()
+			track, animator = nil, nil
+			if S.rig then
+				pcall(resetPose)
+				pcall(function() S.rig.Parent = S.stash end)
+			end
+		end
+
+		-- cleanup: playback loop, connections, animator / track refs, rig unmounted (kept cached), UI removed
+		function ses.Close()
+			if not ses.alive then return end
+			ses.alive = false
+			ses.Release()
+			for _, c in ipairs(ses.conns) do pcall(c.Disconnect, c) end
+			table.clear(ses.conns)
+			if S.session == ses then S.session = nil end
+			pcall(holder.Destroy, holder)
+		end
+		page.Destroying:Once(ses.Close)
+
+		updateCam()
+		loadAnim()
+		return ses
+	end
+
+	function P.Release()
+		if S.session and S.session.alive then S.session.Release() end
+	end
+
+	function P.Close()
+		if S.session then S.session.Close() end
+	end
+
+	return P
+end)()
 local function AddMoveset(m)
 	if type(m) == "table" then
 		if not m.Name then return end
@@ -45491,6 +45902,7 @@ local function AddMoveset(m)
 			page.Visible = true
 			UI.CreateButton(page, " &lt; Hurry back", 20).Activated:Connect(function()
 				page.Interactable = false
+				pcall(Util.Preview.Release) -- [v42]
 				MovesetsPage.Interactable = false
 				local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 					Position = UDim2.new(0.5, 360, 0.5, 0),
@@ -45504,6 +45916,7 @@ local function AddMoveset(m)
 			UI.CreateSeparator(page)
 			UI.CreateText(page, m.Name, 20, Enum.TextXAlignment.Left)
 			UI.CreateText(page, m.Description, 15, Enum.TextXAlignment.Left)
+			pcall(Util.Preview.Attach, page, m, "MOVESET") -- [v42] animated preview
 			local equip, equiptext = UI.CreateButton(page, "Use Moveset", 20)
 			if MovementStyleIndex == table.find(MovementStyles, m) then
 				equiptext.Text = "* ACTIVE *"
@@ -45577,6 +45990,7 @@ local function AddDance(m)
 			page.Visible = true
 			UI.CreateButton(page, " &lt; Hurry back", 20).Activated:Connect(function()
 				page.Interactable = false
+				pcall(Util.Preview.Release) -- [v42]
 				DancesPage.Interactable = false
 				local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 					Position = UDim2.new(0.5, 360, 0.5, 0),
@@ -45590,6 +46004,7 @@ local function AddDance(m)
 			UI.CreateSeparator(page)
 			UI.CreateText(page, m.Name, 20, Enum.TextXAlignment.Left)
 			UI.CreateText(page, m.Description, 15, Enum.TextXAlignment.Left)
+			pcall(Util.Preview.Attach, page, m, "DANCE") -- [v42] animated preview
 			local equip, equiptext = UI.CreateButton(page, "Play Dance", 20)
 			if CurrentDance == m then
 				equiptext.Text = "Stop Dance"
