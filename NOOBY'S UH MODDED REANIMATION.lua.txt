@@ -49,6 +49,15 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 hover / press animations, extra sounds, ring / spark effects, cool-scene particles), UI colour + hook updates
                 capped at 30 fps, minigames / arcade / plugins disabled. OFF: everything returns exactly as before;
                 your own settings are never overwritten. Saved in SaveData.Custom.LowEnd)
+       Custom mod (v40: UI POLISH - 3D buttons (accent lip, glossy bevel, centre-anchored squish / lift / elastic spring),
+                bubbly toggles + slider knobs + dropdown selector / rows + text-field focus glow, rounder default corners (8), upgraded 3D triangle: per-face
+                lighting, rounded cylinder edges, depth cueing, inner glow core, soft halo, float / sway / hover boing)
+       Custom mod (v41: SIGNATURE MOTION "REGISTER LOCK" - the UI hands over from the intro as three misregistered outline
+                plates that burst out of the pill on different axes, hang, then snap onto the window frame (Expo, no wobble)
+                while the world blur racks out; buttons snap open in an accelerating stagger; presses knock an accent
+                echo out of register and release snaps it home; WINDOW FOLD: minimize peels the window off two trailing
+                outline ghosts (height snaps shut, width narrows into the pill), open fires a laser plate + tall plate,
+                unfolds width-first and locks both onto the frame with a focus rack)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -294,6 +303,7 @@ Util.FX = (function()
 	local Quint, Quad, Back, Linear =Enum.EasingStyle.Quint, Enum.EasingStyle.Quad, Enum.EasingStyle.Back, Enum.EasingStyle.Linear
 	local Bounce = Enum.EasingStyle.Bounce
 	local EOut, EIn, EInOut = Enum.EasingDirection.Out, Enum.EasingDirection.In, Enum.EasingDirection.InOut
+	FX.Expo = Enum.EasingStyle.Exponential -- [v41]
 	local WHITE = Color3.new(1, 1, 1)
 
 	-- ═════════════ CUSTOMIZATION (saved in SaveData.Custom) ═════════════
@@ -310,7 +320,7 @@ Util.FX = (function()
 		NotifMode = 1, NotifDuration = 4, NotifTitle = "Nooby's Uh Modded Reanimation", NotifPos = 1, NotifWidth = 300,
 		NotifSize = 18, NotifProgress = true, NotifColor = "", NotifSound = false, NotifSpeed = 1,
 		-- extra ui
-		UIBgTr = 0, UIBorder = 1, UIRound = 5, UIGlow = true, UIAccent = "",
+		UIBgTr = 0, UIBorder = 1, UIRound = 8, UIGlow = true, UIAccent = "",
 		-- command triangle (floating button that opens the command bar)
 		AdminTriHidden = false,
 		AdminTriTab = true,   -- tiny restore tab at the top edge while the triangle is hidden
@@ -608,13 +618,34 @@ Util.FX = (function()
 		layer.Active = false
 		T.Layer = layer
 
+		-- soft layered glow that sits under the viewport (theme coloured, scales with the shape)
+		local halo = {}
+		if opts.Halo ~= false then
+			for i, hd in ipairs({{0.95, 0.955}, {0.68, 0.925}, {0.44, 0.88}}) do
+				local fr = Util.Instance("Frame", layer)
+				fr.AnchorPoint = Vector2.new(0.5, 0.5)
+				fr.Position = UDim2.fromScale(0.5, 0.5)
+				fr.Size = UDim2.fromScale(hd[1], hd[1])
+				fr.BackgroundColor3 = WHITE
+				fr.BackgroundTransparency = hd[2]
+				fr.BorderSizePixel = 0
+				fr.ZIndex = 0
+				fr.Interactable = false -- leaf frame only; never set this on the layer itself (see note above)
+				Util.Instance("UICorner", fr).CornerRadius = UDim.new(1, 0)
+				local ar = Util.Instance("UIAspectRatioConstraint", fr)
+				ar.AspectRatio = 1
+				ar.AspectType = Enum.AspectType.FitWithinMaxSize
+				halo[i] = {fr = fr, k = hd[1], tr = hd[2]}
+			end
+		end
+
 		local vp = Util.Instance("ViewportFrame", layer)
 		vp.Size = UDim2.fromScale(1, 1)
 		vp.BackgroundTransparency = 1
 		vp.BorderSizePixel = 0
-		vp.Ambient = Color3.fromRGB(120, 120, 145)
-		vp.LightColor = Color3.fromRGB(255, 255, 255)
-		vp.LightDirection = Vector3.new(-0.4, -0.9, -0.6)
+		vp.Ambient = Color3.fromRGB(150, 150, 178)
+		vp.LightColor = Color3.fromRGB(255, 246, 232)
+		vp.LightDirection = Vector3.new(-0.45, -0.8, -0.55)
 		local cam = Util.Instance("Camera", vp)
 		cam.FieldOfView = 35
 		cam.CFrame = CFrame.new(0, 0, 5.4)
@@ -625,11 +656,14 @@ Util.FX = (function()
 		local faces, edges, nodes = {}, {}, {}
 		for i, idx in ipairs(TET_FACES) do
 			local a, b, c = TET[idx[1]], TET[idx[2]], TET[idx[3]]
-			faces[i] = {v = {a, b, c}, center = (a + b + c) / 3, w1 = newPart("WedgePart", model), w2 = newPart("WedgePart", model)}
+			local nrm = (b - a):Cross(c - a).Unit
+			if nrm:Dot((a + b + c) / 3) < 0 then nrm = -nrm end -- always point away from the centre
+			faces[i] = {v = {a, b, c}, n = nrm, center = (a + b + c) / 3, w1 = newPart("WedgePart", model), w2 = newPart("WedgePart", model)}
 		end
 		for i, pair in ipairs(TET_EDGES) do
 			local a, b = TET[pair[1]], TET[pair[2]]
 			local part = newPart("Part", model)
+			part.Shape = Enum.PartType.Cylinder -- rounded edges instead of boxes (axis = X, set up in draw)
 			part.Material = Enum.Material.Neon
 			edges[i] = {a = a, b = b, mid = (a + b) / 2, part = part}
 		end
@@ -639,6 +673,10 @@ Util.FX = (function()
 			part.Material = Enum.Material.Neon
 			nodes[i] = {pos = TET[i], part = part}
 		end
+		-- inner glow core: one neon ball inside the translucent faces gives the shape real depth
+		local core = newPart("Part", model)
+		core.Shape = Enum.PartType.Ball
+		core.Material = Enum.Material.Neon
 		local function reseed()
 			for _, f in ipairs(faces) do
 				f.dir, f.axis, f.spin = rndOut(f.center), rndUnit(), (math.random() * 2 - 1) * 7
@@ -665,6 +703,7 @@ Util.FX = (function()
 			for _, nd in ipairs(nodes) do
 				nd.part.Parent = (not low) and model or nil
 			end
+			core.Parent = (not low) and model or nil
 		end
 
 		-- ── optional segmented charge ring (the hold gauge) ──
@@ -695,13 +734,26 @@ Util.FX = (function()
 		end
 
 		-- ── render the current state ──
+		-- Lighting is computed per face from its real normal (lambert body, soft specular, glassy rim), edges are
+		-- rounded cylinders, and everything is depth-cued (far parts thinner / dimmer) so the shape reads as 3D.
 		local D = 2.3
+		local LIGHT = Vector3.new(-0.45, 0.8, 0.55).Unit -- direction TO the light: upper left, in front
+		local lastLow = nil
 		local function draw(t)
 			local low = CFG.LowEnd == true -- [v34]
 			applyQuality(low)
+			if low ~= lastLow then
+				lastLow = low
+				for _, h in ipairs(halo) do
+					h.fr.Visible = not low
+				end
+			end
 			local e = T.env + T.bloomEnv * 0.28
-			local S = math.max(0.001, T.scaleBase * T.popScale * (1 + T.pulseAmt) * (1 - 0.08 * T.pressAmt) * CFG.TriSize)
-			local M = CFrame.Angles(T.pitch + T.flipAngle, T.yaw, 0)
+			local ae = math.min(1, math.abs(e))
+			local S = math.max(0.001, T.scaleBase * T.popScale * (1 + T.pulseAmt) * (1 - 0.08 * T.pressAmt) * (1 + 0.07 * T.hoverAmt) * CFG.TriSize)
+			local bob = low and 0 or math.sin(t * 1.7) * 0.08 * (1 - ae) -- gentle float
+			local roll = low and 0 or (0.05 * math.sin(t * 0.9) - T.trackX * 0.07) -- subtle sway + lean toward the cursor
+			local M = CFrame.Angles(T.pitch + T.flipAngle, T.yaw, roll) + Vector3.new(0, bob, 0)
 			local sh = T.hot * T.hot * 0.07
 			if sh > 0 and not low then
 				M = M + Vector3.new((math.random() - 0.5) * sh * 2, (math.random() - 0.5) * sh * 2, 0)
@@ -712,6 +764,17 @@ Util.FX = (function()
 			local hue = (t * 0.8) % 1
 			local fadeOut = e > 0 and math.min(1, e) * 0.12 or 0
 
+			if not low then
+				local glow = base:Lerp(WHITE, 0.2)
+				local hs = S * (1 + 0.22 * T.hot + 0.5 * math.max(0, math.min(1, e)))
+				for _, h in ipairs(halo) do
+					local sz = math.min(h.k * hs, 1.6)
+					h.fr.Size = UDim2.fromScale(sz, sz)
+					h.fr.BackgroundColor3 = glow
+					h.fr.BackgroundTransparency = math.clamp(h.tr - T.hot * 0.08 - T.hoverAmt * 0.02, 0, 1)
+				end
+			end
+
 			for i, f in ipairs(faces) do
 				local rot = CFrame.fromAxisAngle(f.axis, f.spin * e * spinMul)
 				local c = f.center
@@ -720,18 +783,23 @@ Util.FX = (function()
 				local p2 = M * ((c + off + rot * (f.v[2] - c)) * S)
 				local p3 = M * ((c + off + rot * (f.v[3] - c)) * S)
 				drawTri(p1, p2, p3, f.w1, f.w2, 0.03)
+				local nv = M:VectorToWorldSpace(rot:VectorToWorldSpace(f.n))
+				local lam = math.max(0, nv:Dot(LIGHT))
+				local rim = 1 - math.abs(nv.Z)
 				local col = base
 				if T.prism > 0 and not low then
 					col = Color3.fromHSV((hue + i * 0.22) % 1, 0.75, 1):Lerp(base, 1 - T.prism)
 				end
-				col = col:Lerp(WHITE, (i - 1) * 0.07 + T.hot * 0.5)
-				local tr = CFG.TriFaces and math.clamp(CFG.TriFaceTr - T.hot * 0.22 + fadeOut, 0, 1) or 1
+				local k = 0.6 + 0.4 * lam
+				col = Color3.new(col.R * k, col.G * k, col.B * k):Lerp(WHITE, math.min(1, lam * lam * 0.4 + rim * 0.05 + T.hot * 0.5))
+				local tr = CFG.TriFaces and math.clamp(CFG.TriFaceTr - T.hot * 0.22 + fadeOut - rim * 0.07, 0, 1) or 1
 				f.w1.Color, f.w2.Color = col, col
 				f.w1.Transparency, f.w2.Transparency = tr, tr
 			end
 
-			if low then return end -- [v34] low end: faces only, edges + nodes are not rendered
+			if low then return end -- [v34] low end: faces only, edges + nodes + core are not rendered
 
+			local zr = S * 2.4 -- depth range used for depth cueing
 			local edgeCol = WHITE:Lerp(base, 0.3 * (1 - T.hot))
 			for _, ed in ipairs(edges) do
 				local rot = CFrame.fromAxisAngle(ed.axis, ed.spin * e * spinMul)
@@ -743,22 +811,37 @@ Util.FX = (function()
 				if len < 1e-3 then
 					part.CFrame = FAR
 				else
-					part.Size = Vector3.new(th, th, len)
-					part.CFrame = CFrame.lookAt((a + b) / 2, b)
+					local front = math.clamp(((a.Z + b.Z) * 0.5) / zr + 0.5, 0, 1)
+					local w = th * (0.7 + 0.6 * front)
+					part.Size = Vector3.new(len, w, w)
+					part.CFrame = CFrame.lookAt((a + b) / 2, b) * CFrame.Angles(0, math.pi / 2, 0) -- cylinder axis is X
+					part.Color = edgeCol:Lerp(base, (1 - front) * 0.5)
+					part.Transparency = (1 - front) * 0.3
 				end
-				part.Color = edgeCol
 			end
 
-			local nodeSize = 0.14 + T.hot * 0.12 + T.pulse * 0.06
+			local nodeSize = 0.15 + T.hot * 0.12 + T.pulse * 0.06
 			for _, nd in ipairs(nodes) do
 				if CFG.TriNodes then
 					local p = M * ((nd.pos + nd.dir * (D * e * 1.3)) * S)
-					nd.part.Size = Vector3.new(nodeSize, nodeSize, nodeSize)
+					local front = math.clamp(p.Z / zr + 0.5, 0, 1)
+					local ns = nodeSize * (0.8 + 0.4 * front)
+					nd.part.Size = Vector3.new(ns, ns, ns)
 					nd.part.CFrame = CFrame.new(p)
-					nd.part.Color = base:Lerp(WHITE, 0.55)
+					nd.part.Color = base:Lerp(WHITE, 0.45 + 0.4 * front)
 				else
 					nd.part.CFrame = FAR
 				end
+			end
+
+			if CFG.TriFaces then
+				local cs = math.clamp((0.3 + 0.1 * T.pulse + 0.18 * T.hot) * S * (1 - math.min(1, e)), 0.001, 1.5)
+				core.Size = Vector3.new(cs, cs, cs)
+				core.CFrame = CFrame.new(M.Position)
+				core.Color = base:Lerp(WHITE, math.min(1, 0.55 + 0.3 * T.hot))
+				core.Transparency = math.clamp(0.3 - T.hot * 0.2, 0, 1)
+			else
+				core.CFrame = FAR
 			end
 		end
 
@@ -1000,6 +1083,7 @@ Util.FX = (function()
 			end)
 			hit.MouseEnter:Connect(function()
 				T.hover = true
+				T.pulse = math.max(T.pulse, 0.3) -- tiny springy "boing" when the cursor lands on it
 			end)
 			hit.MouseLeave:Connect(function()
 				T.hover = false
@@ -1037,6 +1121,9 @@ Util.FX = (function()
 			self.active = a
 			vp.Visible = a
 			if ringHost then ringHost.Visible = a end
+			for _, h in ipairs(halo) do
+				h.fr.Visible = a and CFG.LowEnd ~= true
+			end
 			if not a then
 				self.holding, self.holdT, self.charge = false, 0, 0
 				self.hover = false
@@ -1074,6 +1161,89 @@ Util.FX = (function()
 	end
 
 	-- ═════════════════════════ BUTTON FX ═════════════════════════
+	-- [v40] UI POLISH: shared "skin" helpers. One light Heartbeat loop (10 Hz, 2.5 Hz in low end) keeps every
+	-- decorative rounded corner in sync with the Corner Roundness setting and tints the 3D button lips with the
+	-- live accent colour. It is created on first use and entries are dropped when their instances are destroyed.
+	local Skin = {corners = setmetatable({}, {__mode = "k"}), lips = {}, conn = nil, round = nil, acc = 0}
+	local function skinTick(dt)
+		Skin.acc = Skin.acc + dt
+		if Skin.acc < (RawCfg.LowEnd == true and 0.4 or 0.1) then return end
+		Skin.acc = 0
+		local round = FX.Cfg.UIRound
+		if round ~= Skin.round then
+			Skin.round = round
+			for c, d in pairs(Skin.corners) do
+				if c.Parent then
+					c.CornerRadius = UDim.new(0, math.max(0, round + d))
+				else
+					Skin.corners[c] = nil
+				end
+			end
+		end
+		for lip, paint in pairs(Skin.lips) do
+			if lip.Parent then
+				paint()
+			else
+				Skin.lips[lip] = nil
+			end
+		end
+	end
+	local function skinStart()
+		if not Skin.conn then
+			Skin.conn = RunService.Heartbeat:Connect(skinTick)
+		end
+	end
+	-- a UICorner that follows the Corner Roundness setting (delta = pixels added to the global radius)
+	function FX.RoundCorner(frame, delta)
+		delta = delta or 0
+		local c = Util.Instance("UICorner", frame)
+		c.CornerRadius = UDim.new(0, math.max(0, FX.Cfg.UIRound + delta))
+		Skin.corners[c] = delta
+		skinStart()
+		return c
+	end
+	-- glossy bevel inside a stylized frame: top highlight, hairline rim light, soft bottom shade.
+	-- Sits behind the label (ZIndex 0). Returns the gloss + shade frames so callers can animate them.
+	function FX.Bevel(b)
+		local host = Util.Instance("Frame", b)
+		host.Size = UDim2.fromScale(1, 1)
+		host.BackgroundTransparency = 1
+		host.BorderSizePixel = 0
+		host.ZIndex = 0
+		host.ClipsDescendants = true
+		host.Interactable = false
+		FX.RoundCorner(host)
+		local gloss = Util.Instance("Frame", host)
+		gloss.Size = UDim2.fromScale(1, 0.52)
+		gloss.BackgroundColor3 = WHITE
+		gloss.BackgroundTransparency = 0.84
+		gloss.BorderSizePixel = 0
+		gloss.Interactable = false
+		local gg = Util.Instance("UIGradient", gloss)
+		gg.Rotation = 90
+		gg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1)})
+		local rim = Util.Instance("Frame", host)
+		rim.AnchorPoint = Vector2.new(0.5, 0)
+		rim.Position = UDim2.new(0.5, 0, 0, 1)
+		rim.Size = UDim2.new(1, -14, 0, 1)
+		rim.BackgroundColor3 = WHITE
+		rim.BackgroundTransparency = 0.7
+		rim.BorderSizePixel = 0
+		rim.Interactable = false
+		local shade = Util.Instance("Frame", host)
+		shade.AnchorPoint = Vector2.new(0, 1)
+		shade.Position = UDim2.fromScale(0, 1)
+		shade.Size = UDim2.fromScale(1, 0.42)
+		shade.BackgroundColor3 = Color3.new(0, 0, 0)
+		shade.BackgroundTransparency = 0.78
+		shade.BorderSizePixel = 0
+		shade.Interactable = false
+		local sg = Util.Instance("UIGradient", shade)
+		sg.Rotation = 90
+		sg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0)})
+		return gloss, shade
+	end
+
 	local rippleHosts = setmetatable({}, {__mode = "k"})
 	local btnScale = setmetatable({}, {__mode = "k"})
 	local function ripple(b, input)
@@ -1086,7 +1256,7 @@ Util.FX = (function()
 			host.ZIndex = 0
 			host.ClipsDescendants = true
 			host.Interactable = false
-			Util.Instance("UICorner", host).CornerRadius = UDim.new(0, 5)
+			FX.RoundCorner(host)
 			rippleHosts[b] = host
 		end
 		local mp
@@ -1115,20 +1285,24 @@ Util.FX = (function()
 		if f then f() end
 	end
 	-- staggered pop-in + light-sweep across the first buttons of a page as it enters (v30: bubbly pop)
-	function FX.Cascade(page)
+	function FX.Cascade(page, onlyVisible)
 		if not FX.Settings.Transitions then return end
 		local n = 0
 		for _, d in ipairs(page:GetDescendants()) do
-			if d:IsA("TextButton") and d:GetAttribute("FXB") then
+			if d:IsA("TextButton") and d:GetAttribute("FXB") and (not onlyVisible or Util.IsGuiVisible(d)) then
 				n = n + 1
 				if n > 14 then break end
 				local sc = btnScale[d]
 				if sc and sc.Parent then
 					sc.Scale = 0.001
 				end
-				task.delay(0.1 + n * 0.05, function()
+				-- [v41] accelerating stagger (the gaps shrink) + alternating twist that untwists: snap-open, no wobble
+				local tilt = (n % 2 == 0) and 2.5 or -2.5
+				task.delay(0.08 + 0.36 * (1 - 0.86 ^ n), function()
 					if sc and sc.Parent then
-						tween(sc, 0.55, Enum.EasingStyle.Elastic, EOut, {Scale = 1})
+						d.Rotation = tilt
+						tween(sc, 0.42, FX.Expo, EOut, {Scale = 1})
+						tween(d, 0.5, FX.Expo, EOut, {Rotation = 0})
 					end
 					FX.Sheen(d)
 				end)
@@ -1139,14 +1313,80 @@ Util.FX = (function()
 	function FX.EnhanceButton(b)
 		if b:GetAttribute("FXB") then return end
 		b:SetAttribute("FXB", true)
+		local container = b.Parent
 		local sc = Util.Instance("UIScale", b)
 		local stroke = b:FindFirstChildOfClass("UIStroke")
 		local hover, down = false, false
 
+		-- [v41] REGISTER LOCK on press: an accent outline is knocked out of register, release snaps it home (Expo)
+		local echo
+		local function echoKnock()
+			if echo or RawCfg.LowEnd == true then return end
+			echo = Util.Instance("Frame", b)
+			echo.Size = UDim2.fromScale(1, 1)
+			echo.Position = UDim2.fromOffset(4, -3)
+			echo.BackgroundTransparency, echo.BorderSizePixel = 1, 0
+			echo.ZIndex, echo.Interactable = b.ZIndex + 3, false
+			local bc = b:FindFirstChildOfClass("UICorner")
+			Util.Instance("UICorner", echo).CornerRadius = bc and bc.CornerRadius or UDim.new(0, FX.Cfg.UIRound)
+			local es = Util.Instance("UIStroke", echo)
+			es.Color, es.Thickness, es.Transparency = FX.GetColor and FX.GetColor() or WHITE, 1.5, 0.25
+		end
+		local function echoSnap()
+			local e = echo
+			if not e then return end
+			echo = nil
+			tween(e, 0.26, FX.Expo, EOut, {Position = UDim2.fromOffset(0, 0)})
+			local es = e:FindFirstChildOfClass("UIStroke")
+			if es then tween(es, 0.3, Quad, EIn, {Transparency = 1}) end
+			Debris:AddItem(e, 0.4)
+		end
+
+		-- scale / tilt around the button's centre (the layout default anchors it top-left, which made it grow sideways)
+		if b.AnchorPoint == Vector2.zero and b.Size.X.Scale == 1 and b.Position.X.Scale == 0 then
+			b.AnchorPoint = Vector2.new(0.5, 0.5)
+			b.Position = UDim2.new(0.5, 0, 0.5, 0)
+		end
+		local basePos = b.Position
+
 		-- depth: soft vertical gradient (multiplies the themed colour; the label is a child so it is unaffected)
 		local depth = Util.Instance("UIGradient", b)
 		depth.Rotation = 90
-		depth.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(212, 212, 212))
+		depth.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 205, 205))
+
+		-- 3D slab: an accent-tinted lip under the face (sibling behind the button), glossy bevel on the face
+		local lip, lipSc, lipK = nil, nil, 0.6
+		if container and container:IsA("GuiObject") then
+			lip = Util.Instance("Frame", container)
+			lip.AnchorPoint = Vector2.new(0.5, 0.5)
+			lip.Position = basePos + UDim2.fromOffset(0, 3)
+			lip.Size = b.Size + UDim2.fromOffset(-2, 0)
+			lip.BackgroundColor3 = Color3.new(0, 0, 0)
+			lip.BorderSizePixel = 0
+			lip.ZIndex = b.ZIndex - 1
+			lip.Interactable = false
+			lip.Visible = b.Visible
+			FX.RoundCorner(lip)
+			lipSc = Util.Instance("UIScale", lip)
+			Util.LinkDestroyI2I(b, lip)
+			local function paintLip()
+				lip.BackgroundColor3 = (stroke and stroke.Color or WHITE):Lerp(Color3.new(0, 0, 0), lipK)
+			end
+			paintLip()
+			Skin.lips[lip] = paintLip
+			skinStart()
+			-- the lip follows every scale / tilt / visibility change of the face (hover, press, page pop-in cascade...)
+			sc:GetPropertyChangedSignal("Scale"):Connect(function()
+				lipSc.Scale = sc.Scale
+			end)
+			b:GetPropertyChangedSignal("Rotation"):Connect(function()
+				lip.Rotation = b.Rotation
+			end)
+			b:GetPropertyChangedSignal("Visible"):Connect(function()
+				lip.Visible = b.Visible
+			end)
+		end
+		local gloss, shade = FX.Bevel(b)
 
 		-- lazily built: diagonal light streak + accent edge bar
 		local rec = nil
@@ -1159,7 +1399,7 @@ Util.FX = (function()
 			host.ZIndex = 0
 			host.ClipsDescendants = true
 			host.Interactable = false
-			Util.Instance("UICorner", host).CornerRadius = UDim.new(0, 5)
+			FX.RoundCorner(host)
 			local streak = Util.Instance("Frame", host)
 			streak.Size = UDim2.fromScale(1, 1)
 			streak.BackgroundColor3 = WHITE
@@ -1196,17 +1436,24 @@ Util.FX = (function()
 		end
 
 		btnScale[b] = sc
-		-- [v30] BUBBLY MOTION: hover overshoots with a slight tilt, press squishes flat,
-		-- release springs back elastic. Every button feels like a toy, not a rectangle.
+		-- [v30] BUBBLY MOTION + [v40] 3D: hover lifts the face and overshoots, press compresses it onto the lip,
+		-- release springs back elastic. The tilt is deliberately small so the lip stays visually glued to the face.
 		local function refresh(style, time)
-			local s, rot = 1, 0
+			local s, rot, lift = 1, 0, 0
 			if down then
-				s, rot = 0.925, 1.2
+				s, rot, lift = 0.95, 0.5, 2.5
 			elseif hover then
-				s, rot = 1.055, -1.8
+				s, rot, lift = 1.045, -0.7, -1.5
 			end
 			tween(sc, time, style, EOut, {Scale = s})
-			tween(b, time, style, EOut, {Rotation = rot})
+			tween(b, time, style, EOut, {Rotation = rot, Position = basePos + UDim2.fromOffset(0, lift)})
+			if lip then
+				tween(lip, time, style, EOut, {Position = basePos + UDim2.fromOffset(0, 3 + ((hover and not down) and 1 or 0))})
+				lipK = down and 0.5 or (hover and 0.3 or 0.6)
+				lip.BackgroundColor3 = (stroke and stroke.Color or WHITE):Lerp(Color3.new(0, 0, 0), lipK)
+			end
+			tween(gloss, time, Quad, EOut, {BackgroundTransparency = down and 0.93 or (hover and 0.72 or 0.84)})
+			tween(shade, time, Quad, EOut, {BackgroundTransparency = down and 0.6 or 0.78})
 		end
 		b.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
@@ -1222,6 +1469,7 @@ Util.FX = (function()
 		b.MouseLeave:Connect(function()
 			if RawCfg.LowEnd == true and not hover and not down then return end -- [v34] low end: no hover animation was started
 			hover, down = false, false
+			echoSnap()
 			refresh(Back, 0.32)
 			if stroke then tween(stroke, 0.2, Quad, EOut, {Thickness = 1}) end
 			if rec then tween(rec.bar, 0.18, Quad, EOut, {Size = UDim2.new(0, 3, 0, 0)}) end
@@ -1230,6 +1478,7 @@ Util.FX = (function()
 			if not isPress(input) or not FX.Settings.Transitions then return end
 			down = true
 			refresh(Quad, 0.07)
+			echoKnock()
 			ripple(b, input)
 			FX.Ring(b, FX.GetColor and FX.GetColor() or WHITE, 52, 0.35, 2)
 			if input.UserInputType == Enum.UserInputType.Touch then sheen() end
@@ -1237,8 +1486,262 @@ Util.FX = (function()
 		b.InputEnded:Connect(function(input)
 			if not isPress(input) or not down then return end
 			down = false
+			echoSnap()
 			refresh(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.55) -- [v34] low end: plain quick release
 			FX.Play("release")
+		end)
+	end
+
+	-- [v40] toggles: glossy bead that pops in / shrinks out with overshoot, squishy hover + press on the box.
+	-- hit = the full-row button, sw = the toggle box, dot = the "on" bead, lever = the BoolValue.
+	function FX.EnhanceSwitch(hit, sw, dot, lever)
+		if sw:GetAttribute("FXS") then return end
+		sw:SetAttribute("FXS", true)
+		-- scale around the centre instead of the right edge
+		if sw.AnchorPoint == Vector2.new(1, 0.5) then
+			sw.AnchorPoint = Vector2.new(0.5, 0.5)
+			sw.Position = UDim2.new(sw.Position.X.Scale, math.floor(sw.Position.X.Offset - sw.Size.X.Offset / 2), sw.Position.Y.Scale, sw.Position.Y.Offset)
+		end
+		local sc = Util.Instance("UIScale", sw)
+		local dsc = Util.Instance("UIScale", dot)
+
+		-- box: soft top shine; bead: round, shaded, with a glint
+		local shine = Util.Instance("Frame", sw)
+		shine.AnchorPoint = Vector2.new(0.5, 0)
+		shine.Position = UDim2.new(0.5, 0, 0, 2)
+		shine.Size = UDim2.new(1, -8, 0.4, 0)
+		shine.BackgroundColor3 = WHITE
+		shine.BackgroundTransparency = 0.82
+		shine.BorderSizePixel = 0
+		shine.ZIndex = 0
+		shine.Interactable = false
+		FX.RoundCorner(shine, -3)
+		local sgr = Util.Instance("UIGradient", shine)
+		sgr.Rotation = 90
+		sgr.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1)})
+
+		dot.Size = UDim2.fromOffset(15, 15)
+		local dc = dot:FindFirstChildOfClass("UICorner")
+		if dc then dc.CornerRadius = UDim.new(0.5, 0) end
+		local bead = Util.Instance("UIGradient", dot)
+		bead.Rotation = 90
+		bead.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(190, 190, 190))
+		local glint = Util.Instance("Frame", dot)
+		glint.AnchorPoint = Vector2.new(0.5, 0.5)
+		glint.Position = UDim2.fromScale(0.36, 0.3)
+		glint.Size = UDim2.fromScale(0.42, 0.26)
+		glint.Rotation = -25
+		glint.BackgroundColor3 = WHITE
+		glint.BackgroundTransparency = 0.5
+		glint.BorderSizePixel = 0
+		glint.Interactable = false
+		Util.Instance("UICorner", glint).CornerRadius = UDim.new(1, 0)
+
+		local token = 0
+		lever.Changed:Connect(function()
+			token = token + 1
+			local my = token
+			if not FX.Settings.Transitions then
+				dsc.Scale = 1
+				return
+			end
+			if lever.Value then
+				dot.Visible = true
+				dsc.Scale = 0.15
+				tween(dsc, 0.34, Back, EOut, {Scale = 1})
+				FX.Ring(sw, FX.GetColor and FX.GetColor() or WHITE, 38, 0.4, 2)
+				FX.Play("tick", 1.3)
+			else
+				-- the original handler hides the bead instantly; keep it visible while it shrinks away
+				task.defer(function()
+					if my == token then dot.Visible = true end
+				end)
+				tween(dsc, 0.18, Quad, EIn, {Scale = 0.01})
+				task.delay(0.2, function()
+					if my == token and not lever.Value then
+						dot.Visible = false
+						dsc.Scale = 1
+					end
+				end)
+			end
+		end)
+
+		local hov, dn = false, false
+		local function squish(style, time)
+			tween(sc, time, style, EOut, {Scale = dn and 0.86 or (hov and 1.1 or 1)})
+		end
+		hit.MouseEnter:Connect(function()
+			if not FX.Settings.Transitions then return end
+			hov = true
+			squish(Back, 0.22)
+		end)
+		hit.MouseLeave:Connect(function()
+			if not hov and not dn then return end
+			hov, dn = false, false
+			squish(Back, 0.3)
+		end)
+		hit.InputBegan:Connect(function(input)
+			if not isPress(input) or not FX.Settings.Transitions then return end
+			dn = true
+			squish(Quad, 0.07)
+		end)
+		hit.InputEnded:Connect(function(input)
+			if not isPress(input) or not dn then return end
+			dn = false
+			squish(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.5)
+		end)
+	end
+
+	-- [v40] slider knob: shaded bead with a glint that grows when grabbed and springs back on release.
+	-- track = the full-width drag button, knob = the handle frame (already centred on its anchor).
+	function FX.EnhanceKnob(track, knob)
+		if knob:GetAttribute("FXK") then return end
+		knob:SetAttribute("FXK", true)
+		local sc = Util.Instance("UIScale", knob)
+		local bead = Util.Instance("UIGradient", knob)
+		bead.Rotation = 90
+		bead.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(195, 195, 195))
+		local glint = Util.Instance("Frame", knob)
+		glint.AnchorPoint = Vector2.new(0.5, 0.5)
+		glint.Position = UDim2.fromScale(0.36, 0.3)
+		glint.Size = UDim2.fromScale(0.4, 0.24)
+		glint.Rotation = -25
+		glint.BackgroundColor3 = WHITE
+		glint.BackgroundTransparency = 0.55
+		glint.BorderSizePixel = 0
+		glint.Interactable = false
+		Util.Instance("UICorner", glint).CornerRadius = UDim.new(1, 0)
+		local hov, dn = false, false
+		local function grow(style, time)
+			tween(sc, time, style, EOut, {Scale = dn and 1.3 or (hov and 1.15 or 1)})
+		end
+		track.MouseEnter:Connect(function()
+			if not FX.Settings.Transitions then return end
+			hov = true
+			grow(Back, 0.2)
+		end)
+		track.MouseLeave:Connect(function()
+			if not hov then return end
+			hov = false
+			if not dn then grow(Back, 0.25) end
+		end)
+		track.InputBegan:Connect(function(input)
+			if not isPress(input) or not FX.Settings.Transitions then return end
+			dn = true
+			grow(Back, 0.15)
+		end)
+		-- released anywhere (the drag keeps going outside the track)
+		local conn = UserInputService.InputEnded:Connect(function(input)
+			if not dn or not isPress(input) then return end
+			dn = false
+			grow(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.5)
+		end)
+		knob.Destroying:Once(function()
+			conn:Disconnect()
+		end)
+	end
+
+	-- [v40] text fields: soft inner gloss + a springy focus glow (border thickens, gloss brightens).
+	function FX.EnhanceField(box, tb)
+		if box:GetAttribute("FXF") then return end
+		box:SetAttribute("FXF", true)
+		local stroke = box:FindFirstChildOfClass("UIStroke")
+		local gloss = FX.Bevel(box)
+		gloss.BackgroundTransparency = 0.92
+		tb.Focused:Connect(function()
+			if not FX.Settings.Transitions then return end
+			if stroke then tween(stroke, 0.2, Back, EOut, {Thickness = math.max(2, FX.Cfg.UIBorder + 1)}) end
+			tween(gloss, 0.2, Quad, EOut, {BackgroundTransparency = 0.8})
+		end)
+		tb.FocusLost:Connect(function()
+			if stroke then tween(stroke, 0.25, Quad, EOut, {Thickness = FX.Cfg.UIBorder}) end -- UpdateGrads only re-syncs on change
+			tween(gloss, 0.25, Quad, EOut, {BackgroundTransparency = 0.92})
+		end)
+	end
+
+	-- [v40] dropdown list rows: soft hover / press highlight (white veil above the themed row colour)
+	function FX.EnhanceItem(item)
+		if item:GetAttribute("FXI") then return end
+		item:SetAttribute("FXI", true)
+		local hl = Util.Instance("Frame", item)
+		hl.Size = UDim2.fromScale(1, 1)
+		hl.BackgroundColor3 = WHITE
+		hl.BackgroundTransparency = 1
+		hl.BorderSizePixel = 0
+		hl.Interactable = false
+		local hover = false
+		item.MouseEnter:Connect(function()
+			if not FX.Settings.Transitions then return end
+			hover = true
+			tween(hl, 0.12, Quad, EOut, {BackgroundTransparency = 0.88})
+			FX.Play("tick", 1.2)
+		end)
+		item.MouseLeave:Connect(function()
+			hover = false
+			tween(hl, 0.2, Quad, EOut, {BackgroundTransparency = 1})
+		end)
+		item.InputBegan:Connect(function(input)
+			if not isPress(input) or not FX.Settings.Transitions then return end
+			tween(hl, 0.06, Quad, EOut, {BackgroundTransparency = 0.78})
+		end)
+		item.InputEnded:Connect(function(input)
+			if not isPress(input) then return end
+			tween(hl, 0.2, Quad, EOut, {BackgroundTransparency = hover and 0.88 or 1})
+		end)
+		-- the list hides without a MouseLeave: clear the veil so it never reopens stuck highlighted
+		local list = item.Parent
+		if list then
+			list:GetPropertyChangedSignal("Visible"):Connect(function()
+				if not list.Visible then
+					hover = false
+					hl.BackgroundTransparency = 1
+				end
+			end)
+		end
+	end
+
+	-- [v40] lighter treatment for buttons whose anchor / size is managed elsewhere (dropdown selector):
+	-- glossy bevel + depth gradient, hover tilt + lift, press dip. Position / Rotation only, so layout code is unaffected.
+	function FX.EnhanceLite(b)
+		if b:GetAttribute("FXL") then return end
+		b:SetAttribute("FXL", true)
+		local depth = Util.Instance("UIGradient", b)
+		depth.Rotation = 90
+		depth.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 205, 205))
+		local gloss, shade = FX.Bevel(b)
+		local basePos = b.Position
+		local hover, down = false, false
+		local function refresh(style, time)
+			local rot, lift = 0, 0
+			if down then
+				rot, lift = 0.4, 1.5
+			elseif hover then
+				rot, lift = -0.7, -1
+			end
+			tween(b, time, style, EOut, {Rotation = rot, Position = basePos + UDim2.fromOffset(0, lift)})
+			tween(gloss, time, Quad, EOut, {BackgroundTransparency = down and 0.93 or (hover and 0.72 or 0.84)})
+			tween(shade, time, Quad, EOut, {BackgroundTransparency = down and 0.6 or 0.78})
+		end
+		b.MouseEnter:Connect(function()
+			if not FX.Settings.Transitions then return end
+			hover = true
+			refresh(Back, 0.22)
+			FX.Play("tick", 1.1)
+		end)
+		b.MouseLeave:Connect(function()
+			if not hover and not down then return end
+			hover, down = false, false
+			refresh(Back, 0.3)
+		end)
+		b.InputBegan:Connect(function(input)
+			if not isPress(input) or not FX.Settings.Transitions then return end
+			down = true
+			refresh(Quad, 0.07)
+		end)
+		b.InputEnded:Connect(function(input)
+			if not isPress(input) or not down then return end
+			down = false
+			refresh(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.5)
 		end)
 	end
 
@@ -3111,6 +3614,134 @@ Util.FX = (function()
 	end
 
 	-- ═════════════════════════ CHROME / AMBIENT LAYER ═════════════════════════
+	-- [v41] outline plate that sits beside the window (same anchor / rounding) - the building block of the register motif
+	function FX.Plate(win, color, thick, tr, size, pos)
+		local p = Util.Instance("Frame", win.Parent)
+		p.AnchorPoint, p.Position, p.Size = win.AnchorPoint, pos or win.Position, size or win.Size
+		p.BackgroundTransparency, p.BorderSizePixel = 1, 0
+		p.ZIndex, p.Interactable = 90, false
+		Util.Instance("UICorner", p).CornerRadius = UDim.new(0, FX.Cfg.UIRound)
+		local s = Util.Instance("UIStroke", p)
+		s.Color, s.Thickness, s.Transparency = color, thick, tr
+		Debris:AddItem(p, 6) -- safety net if anything errors later
+		return p, s
+	end
+
+	-- [v41] WINDOW FOLD - minimize / open choreography, same register motif as the boot reveal but its own shape.
+	--   MINIMIZE: the window peels away from two trailing outline ghosts: height snaps shut first (Expo), the width narrows
+	--             into the pill after (Quint, bar -> pill morph) while the ghosts lag behind and fold into the dock; tick on arrival.
+	--   OPEN:     a laser plate shoots wider than the pill, a tall plate crosses it, the window unfolds width-first, then both
+	--             plates close down onto the frame as the height opens, buttons snap open behind it, the world rack-focuses.
+	-- Returns the duration (the caller releases its toggle lock then) or nil to fall back to the plain tween.
+	function FX.WindowFold(win, content, closing, pos, full)
+		if not FX.Settings.Transitions or not win.Parent then return nil end
+		local Expo, Cubic = FX.Expo, Enum.EasingStyle.Cubic
+		local k = 1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
+		local total = 1 -- seconds, before the UI animation speed option; the beats below were written for 0.6s / 0.8s and are stretched to it
+		local T = total / (closing and 0.6 or 0.8)
+		local function tw(o, t, style, dir, props) return tween(o, t * T, style, dir, props) end
+		local function after(t, fn) task.delay(t * T * k, fn) end
+		local col = FX.GetColor and FX.GetColor() or WHITE
+		local pill = UDim2.fromOffset(112, 30)
+		local dest = pos or win.Position
+		local fx, fy = full.X.Offset, full.Y.Offset
+		local function fade(p, s, t)
+			tw(s, t, Quad, EOut, {Transparency = 1, Thickness = 0.5})
+			Debris:AddItem(p, t * T * k + 0.2)
+		end
+		if closing then
+			local from = win.Size
+			local g1, s1 = FX.Plate(win, col, 1.5, 0.15, from)
+			local g2, s2 = FX.Plate(win, WHITE, 1, 0.5, from)
+			FX.Play("close", 0.9)
+			tw(win, 0.5, Cubic, EOut, {Position = dest})
+			tw(win, 0.24, Expo, EOut, {Size = UDim2.fromOffset(from.X.Offset, 30)})
+			after(0.2, function()
+				tw(win, 0.34, Quint, EInOut, {Size = pill})
+			end)
+			after(0.04, function()
+				tw(g1, 0.46, Quint, EOut, {Size = pill, Position = dest})
+				after(0.16, function() fade(g1, s1, 0.28) end)
+			end)
+			after(0.1, function()
+				tw(g2, 0.4, Quint, EOut, {Size = pill, Position = dest})
+				after(0.12, function() fade(g2, s2, 0.24) end)
+			end)
+			after(0.48, function()
+				FX.Ring(win.Parent, col, 66, 0.4, 2, dest)
+				FX.Play("tick", 0.8)
+			end)
+			return total * k
+		end
+		local a, sa = FX.Plate(win, col, 2, 0.1, pill)
+		local b, sb = FX.Plate(win, WHITE, 1.5, 0.3, pill)
+		FX.Play("open", 0.85)
+		tw(win, 0.5, Cubic, EOut, {Position = dest})
+		tw(a, 0.5, Cubic, EOut, {Position = dest})
+		tw(b, 0.5, Cubic, EOut, {Position = dest})
+		tw(a, 0.3, Expo, EOut, {Size = UDim2.fromOffset(fx + 56, 34)})
+		after(0.06, function()
+			FX.BlurPulse(10, 0.06, 1)
+			tw(b, 0.34, Expo, EOut, {Size = UDim2.fromOffset(46, fy + 40)})
+		end)
+		after(0.08, function()
+			tw(win, 0.3, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)})
+		end)
+		after(0.34, function()
+			tw(win, 0.46, Expo, EOut, {Size = full})
+			tw(a, 0.24, Expo, EOut, {Size = full})
+			tw(b, 0.3, Expo, EOut, {Size = full})
+			FX.Play("hit", 0.85)
+			pcall(FX.Cascade, content, true) -- buttons collapse (still clipped) and snap open as the height opens
+		end)
+		after(0.62, function()
+			FX.Ring(win.Parent, col, math.max(fx, fy) * 1.1, 0.5, 2, dest)
+			fade(a, sa, 0.3)
+			fade(b, sb, 0.3)
+		end)
+		return total * k
+	end
+
+	-- [v41] SIGNATURE MOTION - "REGISTER LOCK". The window leaves its pill as three misregistered outline plates (laser bar,
+	-- tall bar, twisted dark echo) on different axes / easings, they hang for a beat, then lock onto the real frame one
+	-- after another with a hard Expo snap while the world blur racks out. Stillness -> burst -> lock -> stillness.
+	function FX.RegisterLock(win, full, content)
+		local Expo, parent = FX.Expo, win.Parent
+		local col = FX.GetColor and FX.GetColor() or WHITE
+		local fx, fy = full.X.Offset, full.Y.Offset
+		local plates = {}
+		local function plate(color, thick, tr)
+			local p, s = FX.Plate(win, color, thick, tr, UDim2.fromOffset(44, 30))
+			plates[#plates + 1] = {p, s}
+			return p
+		end
+		local a = plate(col, 2, 0.1)
+		local b = plate(WHITE, 1.5, 0.3)
+		local c = plate(col:Lerp(Color3.new(0, 0, 0), 0.5), 3, 0.35)
+		FX.BlurPulse(16, 0.04, 1) -- world drops out of focus, racks back as the plates lock
+		task.wait(0.14) -- stillness before the burst
+		FX.Play("open", 0.8)
+		tween(a, 0.34, Expo, EOut, {Size = UDim2.fromOffset(fx + 64, 34)})
+		tween(b, 0.4, Expo, EOut, {Size = UDim2.fromOffset(52, fy + 56)})
+		tween(c, 0.5, Quint, EOut, {Size = UDim2.fromOffset(fx * 0.74, fy * 0.74), Rotation = -5})
+		task.wait(0.12)
+		tween(win, 0.34, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)})
+		task.wait(0.3) -- hang: the plates hold their misregistration
+		FX.Cascade(content, true) -- buttons collapse (still clipped) and snap open in an accelerating stagger as the frame opens
+		tween(win, 0.5, Expo, EOut, {Size = full})
+		tween(a, 0.2, Expo, EOut, {Size = full})
+		tween(b, 0.26, Expo, EOut, {Size = full})
+		tween(c, 0.34, Expo, EOut, {Size = full, Rotation = 0})
+		FX.Play("hit", 0.85)
+		task.wait(0.2)
+		FX.Ring(parent, col, math.max(fx, fy) * 1.25, 0.55, 2, win.Position)
+		FX.Sparks(parent, col, 10, math.max(fx, fy) * 0.55, 0.5)
+		for _, pr in ipairs(plates) do
+			tween(pr[2], 0.35, Quad, EOut, {Transparency = 1, Thickness = 0.5})
+			Debris:AddItem(pr[1], 0.5)
+		end
+	end
+
 	function FX.Chrome(env)
 		local win, content = env.UIMainWindow, env.WindowContent
 		local music = env.UISound and env.UISound.Music
@@ -3139,10 +3770,9 @@ Util.FX = (function()
 					win.Size = full
 					return
 				end
-				tween(win, 0.32, Quint, EOut, {Size = UDim2.fromOffset(full.X.Offset, 30)})
-				task.wait(0.32)
-				FX.Play("open", 0.9)
-				tween(win, 0.6, Back, EOut, {Size = full})
+				if not pcall(FX.RegisterLock, win, full, content) then -- [v41] signature reveal; plain fallback
+					win.Size = full
+				end
 			end)
 		end)
 
@@ -29527,17 +30157,22 @@ local UIMainWindow, WindowContent do
 		MainWindowClosed = not MainWindowClosed
 		if MainWindowClosed then
 			MainWindowPosOpen = UIMainWindow.Position
-			TweenService:Create(UIMainWindow, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
-				Position = MainWindowPosClose,
-				Size = UDim2.fromOffset(112, 30)
-			}):Play()
+			local okF, foldT = pcall(Util.FX.WindowFold, UIMainWindow, WindowContent, true, MainWindowPosClose, UDim2.fromOffset(360, 240)) -- [v41]
+			if not okF then foldT = nil end
+			if not foldT then
+				TweenService:Create(UIMainWindow, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+					Position = MainWindowPosClose,
+					Size = UDim2.fromOffset(112, 30)
+				}):Play()
+			end
 			TweenService:Create(TopBarClose.A, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 				Rotation = 180
 			}):Play()
 			TweenService:Create(TopBarClose.A.B, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 				Size = UDim2.new(0, 2, 0, 16)
 			}):Play()
-			task.delay(0.6, function()
+			task.delay(foldT or 0.6, function()
+				if foldT then UIMainWindow.Size = UDim2.fromOffset(112, 30) end -- [v41] failsafe: land exactly on the pill
 				WindowContent.Visible = false
 				MainWindowTweening = false
 			end)
@@ -29545,17 +30180,22 @@ local UIMainWindow, WindowContent do
 			WindowContent.Visible = true
 			MainWindowPosClose = UIMainWindow.Position
 			SaveData.WindowClosedPosition = {MainWindowPosClose.X.Scale, MainWindowPosClose.X.Offset, MainWindowPosClose.Y.Scale, MainWindowPosClose.Y.Offset}
-			TweenService:Create(UIMainWindow, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
-				Position = MainWindowPosOpen,
-				Size = UDim2.fromOffset(360, 240)
-			}):Play()
+			local okF, foldT = pcall(Util.FX.WindowFold, UIMainWindow, WindowContent, false, MainWindowPosOpen, UDim2.fromOffset(360, 240)) -- [v41]
+			if not okF then foldT = nil end
+			if not foldT then
+				TweenService:Create(UIMainWindow, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+					Position = MainWindowPosOpen,
+					Size = UDim2.fromOffset(360, 240)
+				}):Play()
+			end
 			TweenService:Create(TopBarClose.A, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 				Rotation = 0
 			}):Play()
 			TweenService:Create(TopBarClose.A.B, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 				Size = UDim2.new(0, 2, 0, 0)
 			}):Play()
-			task.delay(0.6, function()
+			task.delay(foldT or 0.6, function()
+				if foldT then UIMainWindow.Size = UDim2.fromOffset(360, 240) end -- [v41] failsafe: land exactly on full size
 				MainWindowTweening = false
 			end)
 		end
@@ -30280,6 +30920,7 @@ function UI.CreateSwitch(parent, text, value)
 	Button.Activated:Connect(function()
 		Lever.Value = not Lever.Value
 	end)
+	pcall(Util.FX.EnhanceSwitch, Button, Switch, SwitchDot, Lever) -- [v40] bubbly toggle
 	return Lever, ButtonText
 end
 function UI.CreateTextbox(parent, text, placeholder, size)
@@ -30317,6 +30958,7 @@ function UI.CreateTextbox(parent, text, placeholder, size)
 	Stylize(Box, {
 		Depthed = true,
 	})
+	pcall(Util.FX.EnhanceField, Box, BoxText) -- [v40] focus glow
 	local function update()
 		local x = parent.AbsoluteSize.X
 		if not BoxText.TextWrapped then
@@ -30389,6 +31031,7 @@ function UI.CreateSlider(parent, text, value, min, max, step)
 	Stylize(Box, {
 		Depthed = true,
 	})
+	pcall(Util.FX.EnhanceField, Box, BoxText) -- [v40] focus glow
 	local SliderC = Util.Instance("TextButton", Container)
 	SliderC.AnchorPoint = Vector2.new(0, 0)
 	SliderC.Position = UDim2.new(0, 0, 0, 40)
@@ -30415,6 +31058,7 @@ function UI.CreateSlider(parent, text, value, min, max, step)
 		Depthed = true,
 	})
 	Stylize(SliderB)
+	pcall(Util.FX.EnhanceKnob, SliderC, SliderB) -- [v40] bubbly slider knob
 	local range = max - min
 	if step > 0 then
 		if range / step < 20 then
@@ -30548,6 +31192,7 @@ function UI.CreateDropdown(parent, text, array, value)
 	DropdownText.TextSize = 15
 	RegisterTextLabel(DropdownText)
 	Stylize(Dropdown)
+	pcall(Util.FX.EnhanceLite, Dropdown) -- [v40] glossy bevel + hover / press feel
 	local function update()
 		local x = parent.AbsoluteSize.X
 		local size1 = TextService:GetTextSize(Text.ContentText, Text.TextSize, Text.Font, Vector2.new(x - margin * 2, math.huge))
@@ -30613,6 +31258,7 @@ function UI.CreateDropdown(parent, text, array, value)
 		Item.TextWrapped = false
 		RegisterTextLabel(Item)
 		table.insert(items, Item)
+		pcall(Util.FX.EnhanceItem, Item) -- [v40] hover / press veil
 		local size = TextService:GetTextSize(itemname, Item.TextSize, Item.Font, Vector2.new(math.huge, math.huge))
 		sizex = math.max(sizex, size.X + 12)
 		Item.Activated:Connect(function()
