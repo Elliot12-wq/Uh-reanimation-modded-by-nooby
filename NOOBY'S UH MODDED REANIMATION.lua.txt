@@ -7,7 +7,7 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
  "YmmMMMM""MMM    YMMMMM    YMMMMM    YMMMMM    YMMMMM    YMMMMM    YMM
        "DREAMS WILL NEVER COME TRUE UNTIL YOU ACTUALLY MAKE IT."       
 
-       A Very Cool Script v42  (formerly Nooby's Uh Modded Reanimation 1.1.1v)
+       Nooby's uh modded reanimation v1.1.1
        Modded by Nooby (based on "Uhhhhhh" v1.0.9 BETA)
 
        Original Creator: STEVETHEREALONE
@@ -61,7 +61,7 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
        Custom mod (v42: ANIMATED PREVIEW - opening a Moveset or Dance page now shows a live, isolated ViewportFrame preview of your
                 own avatar (R6 rig built from your HumanoidDescription, cached) playing that module's own .anim data, with Play / Pause /
                 Stop / Loop / Rotate / Next anim. Never touches the live character, reanimation, keybinds, CurrentDance or
-                MovementStyleIndex; cleans up on page close; 30 fps stepping in Low End UI Mode. Script renamed "A Very Cool Script v42")
+                MovementStyleIndex; cleans up on page close; 30 fps stepping in Low End UI Mode. Script renamed "Nooby's uh modded reanimation v1.1.1")
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -150,7 +150,7 @@ Util.Notify = function(text)
 		end
 	end
 	StarterGui:SetCore("SendNotification", {
-		Title = (cfg and cfg.NotifTitle ~= "" and cfg.NotifTitle) or "A Very Cool Script v42",
+		Title = (cfg and cfg.NotifTitle ~= "" and cfg.NotifTitle) or "Nooby's uh modded reanimation v1.1.1",
 		Text = text,
 		Duration = (cfg and cfg.NotifDuration + 1) or 5
 	})
@@ -206,7 +206,7 @@ if not game:IsLoaded() then
 	end, function()
 		notLoaded.Parent = workspace
 	end)
-	notLoaded.Text = "A Very Cool Script v42 is waiting for the game to load"
+	notLoaded.Text = "Nooby's uh modded reanimation v1.1.1 is waiting for the game to load"
 	game.Loaded:Wait()
 	for i=1, 60 do
 		while task.wait() > 1 / 10 do end
@@ -321,7 +321,7 @@ Util.FX = (function()
 		IntroTitle = "STEVETHEREALONE", IntroSub = "", IntroMarquee = "", IntroColorMode = 1, IntroColor = "#FFFFFF",
 		IntroStars = true, IntroRays = true, IntroScan = true, IntroHud = true, IntroIntensity = 1,
 		-- notifications
-		NotifMode = 1, NotifDuration = 4, NotifTitle = "A Very Cool Script v42", NotifPos = 1, NotifWidth = 300,
+		NotifMode = 1, NotifDuration = 4, NotifTitle = "Nooby's uh modded reanimation v1.1.1", NotifPos = 1, NotifWidth = 300,
 		NotifSize = 18, NotifProgress = true, NotifColor = "", NotifSound = false, NotifSpeed = 1,
 		-- extra ui
 		UIBgTr = 0, UIBorder = 1, UIRound = 8, UIGlow = true, UIAccent = "",
@@ -3216,7 +3216,7 @@ Util.FX = (function()
 					local h = math.clamp(sy * 0.15, 34, 92)
 					box.Visible = true
 					placeBig(0.5, h, 0.96)
-					setBig(scr("A VERY COOL SCRIPT V42", lt / 0.7))
+					setBig(scr("NOOBY'S UH MODDED REANIMATION V1.1.1", lt / 0.7))
 					bigAlpha(1 - e)
 					chroma((1 - e) * 18 + pulse * 5)
 					boxScale.Scale = 1 + (1 - e) * 0.8 + pulse * 0.03
@@ -29961,7 +29961,7 @@ end
 SaveData.UITheme = SaveData.UITheme or 1
 SetUITheme(SaveData.UITheme)
 
-local CracktroFrameText = "A Very Cool Script v42"
+local CracktroFrameText = "Nooby's uh modded reanimation v1.1.1"
 local UIMainWindow, WindowContent do
 	UIMainWindow = Util.Instance("Frame", UIMainFrame)
 	UIMainWindow.Active = true
@@ -30021,13 +30021,13 @@ local UIMainWindow, WindowContent do
 	TopBarText.TextColor3 = Color3.new(1, 1, 1)
 	TopBarText.TextSize = 20
 	TopBarText.TextXAlignment = Enum.TextXAlignment.Left
-	TopBarText.Text = "A Very Cool Script v42"
+	TopBarText.Text = "Nooby's uh modded reanimation v1.1.1"
 	TopBarText.RichText = true
 	RegisterTextLabel(TopBarText)
 	Util.ForceTextSize(TopBarText)
 	if (SaveData.SkipIntro and math.random(2) == 1) or os.date("%m %d") ~= "04 01" then
 		local quotes = {
-			"A Very Cool Script v42",
+			"Nooby's uh modded reanimation v1.1.1",
 			"jumpscare",
 			"you'll never see it coming",
 			Player.Name .. "'s Nooby's Uh Session",
@@ -30099,7 +30099,7 @@ local UIMainWindow, WindowContent do
 		TopBarText.Text = quotes[math.random(1, #quotes)]
 		if not aprilfools then
 			task.delay(2, function()
-				TopBarText.Text = "A Very Cool Script v42"
+				TopBarText.Text = "Nooby's uh modded reanimation v1.1.1"
 			end)
 		end
 	end
@@ -30308,7 +30308,7 @@ do
 			if prog == nil or prog >= 1 then
 				pcall(function()
 					StarterGui:SetCore("SendNotification", {
-						Title = CFG.NotifTitle ~= "" and CFG.NotifTitle or "A Very Cool Script v42",
+						Title = CFG.NotifTitle ~= "" and CFG.NotifTitle or "Nooby's uh modded reanimation v1.1.1",
 						Text = tostring(text),
 						Duration = CFG.NotifDuration + 1,
 					})
@@ -32775,7 +32775,7 @@ task.spawn(function()
 	end)
 	switchart()
 end)
-UI.CreateText(MainPage, `A Very Cool Script v42 | Original by STEVETHEREALONE | Modded by Nooby`, 15, Enum.TextXAlignment.Right)
+UI.CreateText(MainPage, `Nooby's uh modded reanimation v1.1.1 | Original by STEVETHEREALONE | Modded by Nooby`, 15, Enum.TextXAlignment.Right)
 UI.CreateSeparator(MainPage)
 UI.CreateButton(MainPage, " &lt; Back to cool scene", 20).Activated:Connect(function()
 	CracktroFrame.Interactable = false
@@ -37604,7 +37604,7 @@ do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 
 			"Silent",
 		})
 		sl("Duration (seconds)", "NotifDuration", 1, 15, 1)
-		tb("Roblox popup title", "NotifTitle", "A Very Cool Script v42", 40)
+		tb("Roblox popup title", "NotifTitle", "Nooby's uh modded reanimation v1.1.1", 40)
 		dd("UI bar position", "NotifPos", {"Below window", "Above window", "Top of screen", "Bottom of screen"})
 		sl("UI bar width", "NotifWidth", 200, 600, 10)
 		sl("UI bar text size", "NotifSize", 12, 26, 1)
