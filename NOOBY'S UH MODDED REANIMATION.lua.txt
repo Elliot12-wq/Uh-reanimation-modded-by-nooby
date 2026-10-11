@@ -2547,6 +2547,59 @@ Util.FX = (function()
 		local worldZoom = Util.Instance("UIScale", world)
 		local cam = {x = 0, y = 0, z = 1, r = 0}
 		local punch, rollKick, flashK = 0, 0, 0
+		-- [v58] weighted camera (damped spring + overshoot, X.spring), random crash zooms, visible handheld drift, typography depth planes (title /
+		-- captions parallax against each other), title motion echoes, liquid RGB split; camera speed (X.sp) also feeds the lens: edge fringe,
+		-- anamorphic streak, smear, jitter, whooshes, bokeh swell, ember + star streaks.
+		-- [v58b] 3D: every layer sits at its own depth d (haze 5, stars 2.4, title 1.07, captions .86, motes .74, foreground .6) and is scaled /
+		-- shifted by a pinhole camera (X.plane): dolly = parallax scale, truck = parallax shift, orbit (X.bx / X.by) swings the layers against a
+		-- title-locked subject, dolly-zoom (X.dd) stretches the world around a steady title; the title is an extruded slab (E.ext) that follows the
+		-- camera angle. Action shots: arc / vertigo / jaws / rise / slam with speed ramps (X.ramp); handheld energy per act (X.hsk).
+		-- [v57] cinematic rig state (one table, so the big function stays under Luau's local limit): smooth noise shake, cut-settle,
+		-- handheld sway, depth layers, lens light. XI scales every extra layer with the Intro Intensity option (0 = off).
+		local X = {
+			seed = 13.37 + math.random() * 50, cut = {x = 0, y = 0, z = 0, r = 0}, prev = {x = 0, y = 0, z = 1, r = 0}, cutHit = false,
+			sp = 0, sd = 1, vk = 0, ready = false, crash = 0, crashR = 0, crashAt = -10, dd = 0, bx = 0, by = 0, sdd = 0, sbx = 0, sby = 0, pdd = 0, pbx = 0, pby = 0, hitch = 0, hitchAt = 10, leak = 0, leakAt = 8.2, leakDir = 1, leakRot = 0, lastW = 0,
+		}
+		local XI = math.clamp(INTENSITY, 0, 1.5)
+		X.n = function(a, b) return math.noise(a, X.seed + b, 0.31) * 2 end -- smooth noise, roughly -1..1
+		-- [v58] damped spring (w = stiffness in rad/s, z = damping ratio; z < 1 overshoots), sub-stepped so any frame time stays stable
+		X.follow = function(st, target, w, z, dt)
+			local n = math.max(1, math.ceil(dt * 90))
+			local h = dt / n
+			for _ = 1, n do
+				st[2] = st[2] + (w * w * (target - st[1]) - 2 * z * w * st[2]) * h
+				st[1] = st[1] + st[2] * h
+			end
+			return st[1]
+		end
+		X.spring = function(x, y, z, r, dd, bx, by, dt, scene)
+			local S = X.spr
+			if not S then
+				S = {{x, 0}, {y, 0}, {z, 0}, {r, 0}, {dd, 0}, {bx, 0}, {by, 0}}
+				X.spr = S
+			end
+			local m, k = scene == 5 and 1.3 or 1, math.min(1, XI) -- the chaos act is stiffer so its rapid cuts still land on the beat
+			return lerp(x, X.follow(S[1], x, 15 * m, 0.58, dt), k), lerp(y, X.follow(S[2], y, 15 * m, 0.58, dt), k),
+				lerp(z, X.follow(S[3], z, 10 * m, 0.62, dt), k), lerp(r, X.follow(S[4], r, 11 * m, 0.42, dt), k),
+				lerp(dd, X.follow(S[5], dd, 9 * m, 0.7, dt), k), -- the dolly / orbit channels are softer: the depth layers float a beat behind the subject
+				lerp(bx, X.follow(S[6], bx, 8 * m, 0.66, dt), k), lerp(by, X.follow(S[7], by, 8 * m, 0.66, dt), k)
+		end
+		-- [v58b] speed ramp for action shots: a slow creep, a sudden burst, a long settle
+		X.ramp = function(u)
+			if u < 0.28 then
+				local a = u / 0.28
+				return 0.06 * a * a
+			end
+			return 0.06 + 0.94 * (1 - (1 - (u - 0.28) / 0.72) ^ 5)
+		end
+		X.hsk = {0.5, 0.85, 1.15, 1.0, 1.9, 1.4} -- handheld energy per act (cold open ... final push)
+		-- [v58b] pinhole depth plane: a layer at depth d (title = 1) under dolly dz. dz = 1 -> no parallax; dz > 1 the near layers rush past and
+		-- the far ones barely move; dz < 1 the reverse. (ox, oy) is the camera truck / orbit offset, (fx, fy) a layer's own float.
+		X.plane = function(f, sc, d, ox, oy, dz, fx, fy)
+			local k = 1 / d - 1
+			f.Position = UDim2.new(0.5, ox * k + (fx or 0), 0.5, oy * k + (fy or 0))
+			sc.Scale = math.clamp(d / math.max(0.22, 1 + dz * (d - 1)), 0.4, 2.4)
+		end
 
 		local skipped = false
 		local function doSkip()
@@ -2561,6 +2614,106 @@ Util.FX = (function()
 				end
 			end
 		end)
+
+		-- ── [v57] depth + lens rig: far haze (behind the stars), foreground bokeh / embers / whoosh streaks (in front), lens light on the stage ──
+		E.fog, E.bokeh, E.embers, E.whoosh, E.streak, E.fringe = {}, {}, {}, {}, {}, {}
+		do
+			local kp = NumberSequenceKeypoint.new
+			local function layer(z, scale)
+				local f = mk("Frame", world, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(scale, scale),
+					BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = z, Interactable = false,
+				})
+				return f, Util.Instance("UIScale", f)
+			end
+			-- far layer: lags the pan and barely zooms. Near layer: over-shoots the pan and zooms harder (see the depth block in the loop)
+			E.bg, E.bgS = layer(1, 1.9)
+			E.fgL, E.fgS = layer(8, 1.6)
+			for i = 1, (XI > 0 and 3 or 0) do -- slow haze banks
+				local f = mk("Frame", E.bg, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromScale(1, 0.14 + 0.05 * i), BackgroundColor3 = WHITE,
+					BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1, Interactable = false,
+				})
+				local g = Util.Instance("UIGradient", f)
+				g.Rotation = 90
+				g.Transparency = NumberSequence.new({kp(0, 1), kp(0.5, 0.88), kp(1, 1)})
+				E.fog[i] = {f = f, y = 0.28 + 0.2 * i, ph = math.random() * 6.28}
+			end
+			for i = 1, math.floor(8 * XI) do -- out-of-focus lens orbs
+				local d = math.random(26, 96)
+				local f = mk("Frame", E.fgL, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(d, d), BackgroundColor3 = WHITE,
+					BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 8, Interactable = false,
+				})
+				Util.Instance("UICorner", f).CornerRadius = UDim.new(1, 0)
+				local st = mk("UIStroke", f, {Thickness = 1, Color = WHITE, Transparency = 1})
+				E.bokeh[i] = {
+					f = f, st = st, d = d, x = math.random(), y = math.random(), ph = math.random() * 6.28, i = i,
+					vx = (math.random() - 0.5) * 0.012, vy = -0.004 - math.random() * 0.01,
+				}
+			end
+			for i = 1, math.floor(14 * XI) do -- rising embers
+				local f = mk("Frame", E.fgL, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(2, 5), BackgroundColor3 = WHITE,
+					BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 8, Interactable = false,
+				})
+				E.embers[i] = {
+					f = f, x = math.random(), y = math.random(), v = 0.03 + math.random() * 0.07, sw = 0.01 + math.random() * 0.02,
+					ph = math.random() * 6.28, fl = 3 + math.random() * 5,
+				}
+			end
+			for i = 1, (XI > 0 and 3 or 0) do -- passing foreground streaks (spawned by impacts / cuts)
+				local f = mk("Frame", E.fgL, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(10, 2), BackgroundColor3 = WHITE,
+					BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 8, Visible = false, Interactable = false,
+				})
+				local g = Util.Instance("UIGradient", f)
+				g.Transparency = NumberSequence.new({kp(0, 1), kp(0.5, 0.1), kp(1, 1)})
+				E.whoosh[i] = {f = f, life = 0, dur = 1, y = 0.5, dir = 1, len = 0.5}
+			end
+			X.spawn = function(k, dir)
+				local now = os.clock()
+				if now - X.lastW < 0.22 or math.random() > 0.3 + 0.45 * k then return end
+				for _, w in ipairs(E.whoosh) do
+					if w.life <= 0 then
+						X.lastW = now
+						w.dur = 0.28 + math.random() * 0.26
+						w.life = w.dur
+						w.y = 0.25 + math.random() * 0.5
+						w.dir = dir or (math.random() < 0.5 and -1 or 1)
+						w.len = 0.35 + 0.35 * math.random() + 0.2 * k
+						return
+					end
+				end
+			end
+			-- lens light (stage level): anamorphic streak + glow at the focal point, chromatic edge fringes, a sweeping light leak
+			for i = 1, (XI > 0 and 2 or 0) do
+				local f = mk("Frame", stage, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(1.3, 0, 0, i == 1 and 2 or 18), BackgroundColor3 = WHITE,
+					BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 9, Visible = false, Interactable = false,
+				})
+				Util.Instance("UIGradient", f).Transparency = NumberSequence.new({kp(0, 1), kp(0.5, 0), kp(1, 1)})
+				E.streak[i] = f
+			end
+			for i = 1, (XI > 0 and 2 or 0) do
+				local f = mk("Frame", stage, {
+					AnchorPoint = Vector2.new(i - 1, 0), Position = UDim2.fromScale(i - 1, 0), Size = UDim2.new(0, 6, 1, 0),
+					BackgroundColor3 = i == 1 and Color3.fromRGB(40, 200, 255) or Color3.fromRGB(255, 40, 80),
+					BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 10, Visible = false, Interactable = false,
+				})
+				local g = Util.Instance("UIGradient", f)
+				g.Rotation = i == 1 and 0 or 180
+				g.Transparency = NumberSequence.new({kp(0, 0.2), kp(1, 1)})
+				E.fringe[i] = f
+			end
+			if XI > 0 then
+				E.leakF = mk("Frame", stage, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(0.55, 0, 1.8, 0),
+					BackgroundColor3 = WHITE, BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 9, Visible = false, Interactable = false,
+				})
+				Util.Instance("UIGradient", E.leakF).Transparency = NumberSequence.new({kp(0, 1), kp(0.5, 0), kp(1, 1)})
+			end
+		end
 
 		-- ── starfield + god rays ──
 		E.stars, E.rays = {}, {}
@@ -2670,6 +2823,9 @@ Util.FX = (function()
 		local lblB = big(2, Color3.fromRGB(40, 200, 255))
 		local lblM = big(3, WHITE)
 		lblM.TextStrokeTransparency = 0.45
+		E.echo = {big(1, WHITE), big(1, WHITE)} -- [v58] motion echoes of the title (shown while the camera moves fast)
+		E.ext = {}
+		for i = 1, (XI > 0 and 7 or 0) do E.ext[i] = big(0, WHITE) end -- [v58b] extrusion slab behind the title (depth direction follows the camera)
 		local roleL = txt(world, 6, Enum.Font.Code, 0.5, 0.5, UDim2.fromScale(0.5, 0.5), UDim2.new(0.9, 0, 0, 20))
 		local detL = txt(world, 6, Enum.Font.Code, 0.5, 0.5, UDim2.fromScale(0.5, 0.5), UDim2.new(0.9, 0, 0, 18))
 		local ul = mk("Frame", world, {
@@ -2690,6 +2846,27 @@ Util.FX = (function()
 			r.name = txt(world, 7, Enum.Font.Arcade, 0, 0.5, UDim2.fromScale(0.5, 0.5), UDim2.new(0.46, 0, 0, 24), Enum.TextXAlignment.Left)
 			r.role.TextColor3 = Color3.fromRGB(190, 190, 200)
 			E.rows[i] = r
+		end
+
+		-- ── [v58] typography depth planes: title + plate on one plane, every caption on another; same coordinate space as `world`, so the scene
+		-- code is untouched, but the camera block can now parallax them against each other (children keep their own ZIndex inside the plane) ──
+		do
+			local function plane(z)
+				local f = mk("Frame", world, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 1),
+					BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = z, Interactable = false,
+				})
+				return f, Util.Instance("UIScale", f)
+			end
+			E.pT, E.pTS = plane(5)
+			E.pC, E.pCS = plane(7)
+			E.pS, E.pSS = plane(1) -- far star field
+			E.pM, E.pMS = plane(2) -- near dust motes
+			for _, st in ipairs(E.stars) do st.f.Parent = E.pS end
+			for _, m in ipairs(E.motes) do m.f.Parent = E.pM end
+			plate.Parent, box.Parent = E.pT, E.pT
+			for _, o in ipairs({roleL, detL, ul, chyron, hdr, term}) do o.Parent = E.pC end
+			for _, r in ipairs(E.rows) do r.role.Parent, r.name.Parent = E.pC, E.pC end
 		end
 
 		-- ── letterbox bars, HUD, flash ──
@@ -2820,6 +2997,7 @@ Util.FX = (function()
 			shake = math.max(shake, 5 + 9 * k)
 			punch = math.max(punch, 0.02 + 0.03 * k)
 			rollKick = rollKick + (math.random() < 0.5 and -1 or 1) * (0.8 + 1.6 * k)
+			X.spawn(k) -- [v57] occasional foreground streak whips past on the hit
 		end
 		-- impact: jolt + lighting flash + glitch + shockwave ring + sparks (k = 0..2; the last two are budgeted)
 		local function impact(k, col)
@@ -2859,6 +3037,12 @@ Util.FX = (function()
 				elseif spend(1) then
 					FX.Sparks(world, accent(), 8, 150, 0.7)
 				end
+			end
+			-- [v58] unpredictable crash zoom: some downbeats slam the lens in (the camera spring gives it the whip, the overshoot and the settle)
+			if XI > 0 and bpos == 0 and lastScene >= 3 and t - X.crashAt > 2.2 and math.random() < (lastScene == 5 and 0.55 or 0.4) then
+				X.crashAt = t
+				X.crash = (lastScene == 5 and 0.17 or 0.1) + 0.07 * math.random()
+				X.crashR = (math.random() < 0.5 and -1 or 1) * (2 + 3 * math.random())
 			end
 		end
 		local function pollBeat(dt, t)
@@ -2902,15 +3086,17 @@ Util.FX = (function()
 			lblB.TextTransparency = math.min(1, 0.35 + a * 0.65 + (extra or 0))
 		end
 		local function chroma(off)
-			lblR.Position = UDim2.new(0.5, -off, 0.5, 0)
-			lblB.Position = UDim2.new(0.5, off, 0.5, 0)
+			off = off + X.vk -- [v58] camera-speed lens split (X.vk is 0 when Intro Intensity is 0)
+			local ly = X.n(os.clock() * 0.9, 11) * 3.5 * XI -- liquid drift: the two colour layers float vertically + tilt against each other
+			lblR.Position, lblB.Position = UDim2.new(0.5, -off, 0.5, ly), UDim2.new(0.5, off, 0.5, -ly)
+			lblR.Rotation, lblB.Rotation = ly * 0.12, -ly * 0.12
 		end
 		local function layoutTri(k)
 			pcall(function()
 				local L = tri.Layer
 				local sm = sy * 0.4
 				L.Size = UDim2.fromOffset(lerp(sw.X, sm, k), lerp(sw.Y, sm, k))
-				L.Position = UDim2.new(0.5, 0, lerp(0.5, 0.27, k), 0)
+				L.Position = UDim2.new(0.5, -cam.x * 0.18, lerp(0.5, 0.27, k), -cam.y * 0.18) -- [v57] the emblem sits behind the text: it lags the pan
 			end)
 		end
 		local function hideCardStuff()
@@ -3005,14 +3191,36 @@ Util.FX = (function()
 			elseif kind == "dutch" then return dir * -24 * u * k, 0, 1.06 + 0.1 * e, dir * (10 + 3 * u) -- dutch angle
 			elseif kind == "orbit" then -- orbital arc around the subject
 				local a = dir * (-1 + 2 * e)
-				return math.sin(a) * 130 * k, (1 - math.cos(a)) * -40 * k, 1.1 + 0.06 * e, -a * 7
+				X.bx = math.sin(a) * 170 * k -- [v58b] the camera really circles the subject: layers at other depths slide against it
+				return math.sin(a) * 45 * k, (1 - math.cos(a)) * -40 * k, 1.1 + 0.06 * e, -a * 7
 			elseif kind == "whip" then -- whip pan that settles
 				local w = 1 - easeOutCubic(math.min(1, u * 1.6))
 				return dir * 420 * w * k, 0, 1 + 0.1 * w, dir * 6 * w
+			elseif kind == "arc" then -- [v58b] title-locked orbit on a speed ramp: the depth layers swing against the subject
+				local r = X.ramp(u)
+				local a = dir * (-1 + 2 * r)
+				X.bx, X.by = a * 210 * k, math.sin(a * 1.6) * 40 * k
+				return 0, 0, 1.06 + 0.1 * r, -a * 6
+			elseif kind == "vertigo" then -- dolly zoom: the title holds while the world stretches around it
+				local r = X.ramp(u)
+				X.dd, X.bx = 0.6 * r, dir * 40 * k * r
+				return 0, 0, 1.03 + 0.04 * r, dir * 2.5 * r
+			elseif kind == "jaws" then -- the reverse: the world squeezes in behind the title
+				local r = X.ramp(u)
+				X.dd = -0.4 * r
+				return 0, 0, 1.04 + 0.04 * r, dir * -2 * r
+			elseif kind == "rise" then -- hero crane-up: starts low, looking up, and lifts into frame
+				local r = X.ramp(u)
+				X.by = -140 * k * r
+				return 0, -(1 - r) * 70 * k, 1.22 - 0.16 * r, dir * 3 * (1 - r)
+			elseif kind == "slam" then -- impact push: slams in tight, rebounds and settles
+				local w = 1 - easeOutCubic(math.min(1, u * 1.8))
+				X.dd = 0.5 * w
+				return dir * 40 * w * k, 0, 1.08 + 0.4 * w, dir * 7 * w
 			end
 			return 0, 0, 1, 0
 		end
-		local CARD_SHOTS = {"push", "sweep", "dutch", "crane", "orbit", "whip", "pull"} -- one per credit card
+		local CARD_SHOTS = {"arc", "vertigo", "whip", "rise", "slam", "jaws", "dutch"} -- one per credit card
 		local CUTS = { -- chaos-act framings {x, y, zoom, roll}: rapid cuts walk through them on the beat
 			{0, 0, 1.0, 0}, {-70, 18, 1.28, -9}, {85, -26, 1.38, 7}, {10, -44, 1.62, -3}, {-95, 36, 1.18, 12}, {40, 12, 1.7, 5},
 		}
@@ -3144,6 +3352,7 @@ Util.FX = (function()
 				if scene ~= lastScene then
 					lastScene = scene
 					if scene >= 2 then
+						X.cutHit = scene ~= 4 -- [v57] act changes ease in (the crew act opens with its own whip pan, so it keeps the hard start)
 						shake = math.max(shake, 14)
 						glitch = 1
 						flashK = math.max(flashK, 0.22) -- lighting flash on every act change
@@ -3163,7 +3372,7 @@ Util.FX = (function()
 				end
 
 				-- warp field
-				local warp = ({0.4, 1.6, 1.0, 0.8, 5.5, 3.0})[scene] + pulse * 2.2
+				local warp = ({0.4, 1.6, 1.0, 0.8, 5.5, 3.0})[scene] + pulse * 2.2 + X.sp * 3
 				for _, s in ipairs(E.stars) do
 					s.r = s.r + s.v * dt * (0.5 + warp)
 					if s.r > 1.05 then
@@ -3508,6 +3717,7 @@ Util.FX = (function()
 				-- ═════ [v48] virtual camera: the shot for this moment (pan / push-in / dutch / orbit / cuts) ═════
 				local kpx = math.clamp(sy / 450, 0.55, 1.6)
 				local cx, cy, cz, cr = 0, 0, 1, 0
+				X.dd, X.bx, X.by = 0, 0, 0 -- [v58b] dolly-zoom / orbit channels: set by the shot, if it uses them
 				if scene == 1 then -- cold open: slow push-in with a lazy crane down
 					cx, cy, cz, cr = shot("push", t / T1, 1)
 					cy = cy + (1 - t / T1) * 30 * kpx
@@ -3538,11 +3748,13 @@ Util.FX = (function()
 					local cutN = math.floor((t - T4) / step)
 					if cutN ~= lastCut then -- the cut itself: a short lighting flash + a glitch tick
 						lastCut = cutN
+						X.cutHit = true
 						flashK = math.max(flashK, 0.09)
 						glitch = math.max(glitch, 0.35)
 					end
 					local c = CUTS[(cutN * 5) % #CUTS + 1] -- stride 5 over 6 framings: varied order, no immediate repeats
 					cx, cy, cz, cr = c[1] * kpx, c[2] * kpx, c[3] + ((t - T4) - cutN * step) * 0.12, c[4]
+					X.bx, X.dd = (((cutN * 3) % 5) - 2) * 55 * kpx, (cutN % 2 == 0) and 0.28 or -0.18 -- every cut also changes the camera's depth angle
 				else -- scene 6
 					if t < REVEAL then -- extreme push-in with a tightening dutch angle and a rising vibration
 						local u = clamp01((t - T5) / (REVEAL - T5))
@@ -3561,17 +3773,178 @@ Util.FX = (function()
 				punch = math.max(0, punch - dt * 4.5)
 				rollKick = rollKick * math.exp(-9 * dt)
 				flashK = math.max(0, flashK - dt * 3.2)
+				-- [v57] cut settle: act changes and the chaos-act cuts ease in as a fast whip-settle instead of snapping; the card / page
+				-- shots (which already start displaced on purpose) and every continuous move are untouched
+				local cs, pv = X.cut, X.prev
+				if X.cutHit then
+					X.cutHit = false
+					cs.x, cs.y, cs.z = (pv.x + cs.x - cx) * 0.8, (pv.y + cs.y - cy) * 0.8, (pv.z + cs.z - cz) * 0.8
+					cs.r = math.clamp((pv.r + cs.r - cr) * 0.8, -14, 14)
+					if XI > 0 then cs.x, cs.y, cs.z, cs.r = 0, 0, 0, 0 end -- [v58] the camera spring does the whip-settle instead
+				end
+				-- [v57] signal dropout: an unpredictable micro-hitch (every 2.4-5.8 s, never inside a musical hold or on the final reveal)
+				if XI > 0 and scene >= 2 and holdK < 0.01 and t >= X.hitchAt and t < tEnd - 1.5 and not (scene == 6 and t >= REVEAL - 0.5) then
+					X.hitchAt = t + 2.4 + math.random() * 3.4
+					X.hitch = 1
+					glitch = math.max(glitch, 0.75)
+					edgeFlash = math.max(edgeFlash, 0.8)
+					cs.x = cs.x + (math.random() < 0.5 and -1 or 1) * (18 + math.random() * 28) * kpx * XI
+					cs.r = cs.r + (math.random() - 0.5) * 3
+					X.spawn(0.6)
+				end
+				local cd = math.exp(-12 * dt)
+				cs.x, cs.y, cs.z, cs.r = cs.x * cd, cs.y * cd, cs.z * cd, cs.r * cd
+				pv.x, pv.y, pv.z, pv.r = cx, cy, cz, cr
+				-- [v58] weighted camera: the shot is only the TARGET and the lens follows it on a damped spring (overshoot, a floaty zoom, a wobbling roll),
+				-- so cuts become whips that settle instead of rigid keyframes. Crash zooms ride the same spring; the signal-dropout hitch is added after the spring, so it stays a hard snap.
+				X.crash, X.crashR = X.crash * math.exp(-3.4 * dt), X.crashR * math.exp(-3.4 * dt)
+				if XI > 0 then
+					cx, cy, cz, cr, X.sdd, X.sbx, X.sby = X.spring(cx, cy, cz + X.crash, cr + X.crashR, X.dd, X.bx, X.by, dt, scene)
+				end
+				cx, cy, cz, cr = cx + cs.x, cy + cs.y, cz + cs.z, cr + cs.r
+				-- [v58] camera speed (0..1, fast attack / ~0.15 s release): pans, cuts, whips and zooms drive the lens response below
+				local vdx, vdy = cx - cam.x, cy - cam.y
+				if X.ready and dt > 0.001 and dt < 0.25 then
+					X.sp = math.max(math.min(1, (math.sqrt(vdx * vdx + vdy * vdy) / sy + math.abs(cz - cam.z) * 0.8 + (math.abs(X.sbx - X.pbx) + math.abs(X.sby - X.pby)) / sy * 0.6 + math.abs(X.sdd - X.pdd) * 0.5) / dt / 3), X.sp * math.exp(-7 * dt))
+					if math.abs(vdx) > 0.5 then X.sd = vdx > 0 and 1 or -1 end
+				end
+				X.ready = true
+				X.pbx, X.pby, X.pdd = X.sbx, X.sby, X.sdd
 				cam.x, cam.y, cam.z, cam.r = cx, cy, cz, cr
-				local sh = shake * INTENSITY
-				world.Position = UDim2.new(0.5, cx + (math.random() - 0.5) * sh, 0.5, cy + (math.random() - 0.5) * sh)
-				world.Rotation = cr + rollKick * INTENSITY + (((scene == 5 or scene == 6) and ((math.random() - 0.5) * sh * 0.12)) or 0)
-				worldZoom.Scale = math.max(0.5, cz * (1 + punch * INTENSITY) * (1 - 0.05 * holdK))
+				-- [v57] shake = smooth two-octave noise (no per-frame random jitter), scaled to the screen and capped, plus a slow handheld sway
+				local amp = math.min(shake * INTENSITY * (0.6 + 0.4 * kpx) * 0.9 + X.sp * 4 * kpx * XI, sy * 0.05)
+				local hs = XI * X.hsk[scene] * (1 - 0.7 * holdK)
+				local nx = (X.n(t * 21, 0) + 0.5 * X.n(t * 53, 1)) * 0.67
+				local ny = (X.n(t * 19, 2) + 0.5 * X.n(t * 47, 3)) * 0.57
+				world.Position = UDim2.new(0.5, cx + amp * nx + hs * kpx * (16 * X.n(t * 0.55, 5) + 4.5 * X.n(t * 1.4, 6)),
+					0.5, cy + amp * ny + hs * kpx * (12 * X.n(t * 0.5, 7) + 3.5 * X.n(t * 1.7, 8)))
+				world.Rotation = cr + rollKick * INTENSITY + amp * 0.07 * X.n(t * 17, 4) + hs * 1.1 * X.n(t * 0.45, 9)
+				worldZoom.Scale = math.max(0.5, cz * (1 + punch * INTENSITY + 0.018 * hs * X.n(t * 0.8, 10)) * (1 - 0.05 * holdK))
+				local sq = (math.min(0.045, punch * 0.3) + X.sp * 0.025) * XI -- anamorphic squash on every impact (a touch wider, a touch flatter)
+				world.Size = UDim2.fromScale(1 + sq, 1 - sq * 0.5)
+				-- [v58b] 3D depth stack: every layer is a plane at its own distance (see X.plane); dolly scales them in perspective, truck / orbit shift them
+				-- by depth, so a push flies through the layers and an arc swings them against the title. Captions and title also float on slow drifts.
+				if XI > 0 then
+					local fl = XI * kpx
+					local dz = math.max(0.3, cz + X.sdd)
+					local ox, oy = cx - X.sbx, cy - X.sby
+					X.plane(E.bg, E.bgS, 5, ox, oy, dz)
+					X.plane(E.pS, E.pSS, 2.4, -X.sbx, -X.sby, dz) -- the stars already follow the pan themselves
+					X.plane(E.pT, E.pTS, 1.07, ox, oy, dz, -X.sd * X.sp * 5 * fl + math.sin(t * 0.8) * 2.5 * fl, math.cos(t * 0.65) * 2 * fl)
+					X.plane(E.pC, E.pCS, 0.86, ox, oy, dz, X.sd * X.sp * 12 * fl + math.sin(t * 1.1 + 1) * 4 * fl, math.cos(t * 0.9 + 2) * 3 * fl)
+					X.plane(E.pM, E.pMS, 0.74, -X.sbx, -X.sby, dz) -- the motes already follow the pan themselves
+					X.plane(E.fgL, E.fgS, 0.6, ox, oy, dz)
+					-- extruded title: a slab of dark layers behind the type; its depth direction follows the camera angle, so the name reads as a solid object
+					local onE = box.Visible
+					local ex = math.clamp(X.sbx * 0.1 + cx * 0.04, -20, 20) * fl + 4 * kpx
+					local ey = math.clamp(X.sby * 0.1 + cy * 0.04, -12, 12) * fl + 3 * kpx
+					local tx = lblM.Text
+					for i, l in ipairs(E.ext) do
+						l.Visible = onE
+						if onE then
+							local u = i / #E.ext
+							if l.Text ~= tx then l.Text = tx end
+							l.Position = UDim2.new(0.5, ex * u, 0.5, ey * u)
+							l.TextColor3 = col:Lerp(Color3.new(0, 0, 0), 0.45 + 0.5 * u)
+							l.TextTransparency = 1 - (1 - lblM.TextTransparency) * 0.85
+						end
+					end
+					for i, l in ipairs(E.echo) do
+						local on = box.Visible and X.sp > 0.05
+						l.Visible = on
+						if on then
+							l.Text, l.TextColor3 = lblM.Text, (i == 1) and col or WHITE
+							l.Position = UDim2.new(0.5, -X.sd * X.sp * 30 * i * fl, 0.5, 0)
+							l.TextTransparency = math.min(1, 1 - (1 - lblM.TextTransparency) * math.min(0.55, X.sp * 0.7) / i)
+						end
+					end
+				end
+
+				-- ═════ [v57] depth layers, particles and lens light ═════
+				if XI > 0 then
+					X.hitch = math.max(0, X.hitch - dt * 6)
+					X.vk = X.sp * 9 * kpx * XI
+					if X.sp > 0.3 and scene >= 2 then X.spawn(X.sp, X.sd) end -- foreground streaks whip past in the direction of the pan
+					-- (haze / stars / title / captions / motes / foreground are placed in perspective by X.plane, above)
+					local lit = (scene == 1 and 0.55 or 1) * clamp01((t - 0.6) / 2.4)
+					for _, f in ipairs(E.fog) do
+						f.f.Position = UDim2.fromScale(0.5 + math.sin(t * 0.09 + f.ph) * 0.07, f.y + math.sin(t * 0.23 + f.ph) * 0.025)
+						f.f.BackgroundColor3 = col
+						f.f.BackgroundTransparency = 1 - math.min(1, lit * (0.5 + 0.2 * math.sin(t * 0.5 + f.ph) + 0.5 * pulse + flashK))
+					end
+					for _, b in ipairs(E.bokeh) do
+						b.x, b.y = (b.x + b.vx * dt) % 1, (b.y + b.vy * dt) % 1
+						local d = b.d * kpx * (1 + 0.1 * math.sin(t * 1.3 + b.ph) + 0.12 * pulse + 0.35 * X.sp)
+						local bc = (b.i % 2 == 0) and col or WHITE
+						b.f.Size = UDim2.fromOffset(d, d)
+						b.f.Position = UDim2.new(b.x, math.sin(t * 0.7 + b.ph) * 12 * kpx, b.y, 0)
+						b.f.BackgroundColor3, b.st.Color = bc, bc
+						b.f.BackgroundTransparency = 1 - lit * (0.05 + 0.08 * pulse + 0.2 * flashK)
+						b.st.Transparency = 1 - lit * (0.18 + 0.2 * pulse)
+					end
+					local emK = lit * (scene >= 2 and 1 or 0.3) * (scene == 5 and 1.5 or 1)
+					for _, m in ipairs(E.embers) do
+						m.y = m.y - m.v * dt * (1 + pulse * 2.5)
+						if m.y < -0.05 then m.y, m.x = 1.05, math.random() end
+						m.f.Position = UDim2.new(m.x + math.sin(t * 1.2 + m.ph) * m.sw, 0, m.y, 0)
+						m.f.Size = UDim2.fromOffset(math.max(1, 2 * kpx), (4 + 8 * pulse + 14 * X.sp) * kpx)
+						m.f.BackgroundColor3 = (m.ph > 3.14) and col or Color3.fromRGB(255, 190, 120)
+						m.f.BackgroundTransparency = 1 - math.min(0.95, emK * clamp01(0.55 + 0.45 * math.sin(t * m.fl + m.ph)) * clamp01(math.sin(m.y * math.pi)) * 0.9)
+					end
+					for _, w in ipairs(E.whoosh) do
+						if w.life > 0 then
+							w.life = w.life - dt
+							local u = 1 - clamp01(w.life / w.dur)
+							local sn = math.sin(u * math.pi)
+							w.f.Visible = w.life > 0
+							w.f.Position = UDim2.fromScale(w.dir > 0 and (-0.1 + 1.2 * u) or (1.1 - 1.2 * u), w.y)
+							w.f.Size = UDim2.fromOffset(sw.X * w.len * (0.4 + 0.6 * sn), math.max(1, math.floor(2 * kpx)))
+							w.f.BackgroundColor3 = (w.dir > 0) and col or WHITE
+							w.f.BackgroundTransparency = 1 - 0.55 * sn
+						end
+					end
+					-- lens light: anamorphic streak + glow riding the focal point (the title when there is one), flaring on beats / impacts
+					local sk = clamp01(pulse * 0.3 + flashK * 1.1 + glitch * 0.2 + X.hitch * 0.4 + X.sp * 0.3)
+					local fy = box.Visible and box.Position.Y.Offset or sy * 0.5
+					local scrY = sy * 0.5 + cy + (fy - sy * 0.5) * cz
+					for i, f in ipairs(E.streak) do
+						f.Visible = scene >= 2
+						f.Position = UDim2.new(0.5, cx * 0.4, 0, scrY)
+						f.Size = UDim2.new(1.3 * (0.55 + 0.45 * math.min(1, sk * 2)), 0, 0, math.max(1, math.floor((i == 1 and 2 or 18) * kpx)))
+						f.BackgroundColor3 = (i == 1) and WHITE:Lerp(col, 0.4) or col
+						f.BackgroundTransparency = 1 - ((i == 1) and math.min(0.9, 0.1 * (1 - holdK) + sk) or math.min(0.3, 0.03 + sk * 0.3))
+					end
+					-- chromatic fringe on the frame edges: blooms with glitches, impacts and shake
+					local fk = clamp01(glitch * 0.8 + punch * 3.5 + shake / 40 + X.hitch + X.sp * 0.6)
+					for _, f in ipairs(E.fringe) do
+						f.Visible = fk > 0.04
+						f.Size = UDim2.new(0, math.floor((3 + 34 * fk) * kpx), 1, 0)
+						f.BackgroundTransparency = 1 - math.min(0.7, (0.08 + 0.55 * fk) * XI)
+					end
+					-- light leak: a warm sweep across the frame at random intervals
+					if scene >= 2 and holdK < 0.01 and X.leak <= 0 and t >= X.leakAt then
+						X.leak = 1
+						X.leakAt = t + 3.5 + math.random() * 4.5
+						X.leakDir = math.random() < 0.5 and -1 or 1
+						X.leakRot = math.random(-26, 26)
+					end
+					if X.leak > 0 then
+						X.leak = X.leak - dt / 1.7
+						local u = 1 - math.max(0, X.leak)
+						E.leakF.Visible = X.leak > 0
+						E.leakF.Rotation = X.leakRot
+						E.leakF.Position = UDim2.fromScale(X.leakDir > 0 and (-0.2 + 1.4 * u) or (1.2 - 1.4 * u), 0.5)
+						E.leakF.BackgroundColor3 = WHITE:Lerp(col, 0.5):Lerp(Color3.fromRGB(255, 150, 60), 0.35)
+						E.leakF.BackgroundTransparency = 1 - 0.2 * math.sin(u * math.pi) * math.min(1, XI)
+					end
+				end
 
 				-- HUD
 				local hin = easeOutCubic(clamp01((t - 0.2) / 0.9))
 				local inset = 22 + (1 - hin) * 80
 				for _, b in ipairs(E.hud) do
 					b.host.Position = UDim2.new(b.ax, b.ax == 0 and inset or -inset, b.ay, b.ay == 0 and inset or -inset)
+					b.host.Size = UDim2.fromOffset(30 + pulse * 7, 30 + pulse * 7) -- [v57] corner brackets breathe with the beat
 					local tr = 1 - hin
 					if math.random() < 0.04 then tr = math.min(1, tr + 0.5) end
 					b.h.BackgroundTransparency, b.v.BackgroundTransparency = tr, tr
@@ -55390,6 +55763,499 @@ local function AddModules(list)
 	logging ..= "\n[LOG] Loaded " .. #names .. " modules."
 	return names, logging
 end
+-- [v56] GTA V-style radial quick wheels. PC: hold N (dances / emotes) or Y (movesets) for 3s to toggle. Mobile: on-screen buttons.
+-- Each wheel has its own favorites (SaveData.WheelFavs -> tree.ehehetilde). Type a name in the box + Enter (or tap a suggestion) to favorite / unfavorite.
+-- Aim with the mouse / stick and click, tap a slot, or press 1-8. Scroll wheel / arrows flip pages when there are more than 8 favorites.
+xpcall(function()
+	local HOLD_TIME, SLOTS = 3, 8
+	local I = Util.Instance
+	local WHITE, DARK, INK = Color3.new(1, 1, 1), Color3.fromRGB(14, 14, 16), Color3.fromRGB(12, 12, 14)
+	local NUM = {Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four, Enum.KeyCode.Five, Enum.KeyCode.Six, Enum.KeyCode.Seven, Enum.KeyCode.Eight}
+
+	local WF = type(SaveData.WheelFavs) == "table" and SaveData.WheelFavs or {}
+	SaveData.WheelFavs = WF
+	WF.dance = type(WF.dance) == "table" and WF.dance or {}
+	WF.moveset = type(WF.moveset) == "table" and WF.moveset or {}
+
+	local function say(t) pcall(Util.UINotify or Util.Notify, t) end
+	local function first(s) return (tostring(s or ""):match("^[^\n]*")) end
+
+	-- wheel definitions: they read the existing registries and call the same state the Dances / Movesets pages use
+	local Kinds = {
+		dance = {
+			Title = "DANCES & EMOTES", Short = "DANCE", Key = Enum.KeyCode.N, Live = "PLAYING",
+			List = function() return DanceableDances end,
+			On = function(m) return CurrentDance == m end,
+			Use = function(m)
+				if CurrentDance == m then
+					CurrentDance = nil
+					say("Dance stopped: " .. m.Name)
+				else
+					CurrentDance = m
+					say("Dance: " .. m.Name)
+				end
+			end,
+		},
+		moveset = {
+			Title = "MOVESETS", Short = "MOVE", Key = Enum.KeyCode.Y, Live = "ACTIVE",
+			List = function() return MovementStyles end,
+			On = function(m) return MovementStyleIndex == table.find(MovementStyles, m) end,
+			Use = function(m)
+				local idx = table.find(MovementStyles, m)
+				if idx then
+					MovementStyleIndex = idx
+					Util.MovesetPickedByUser = true
+					say("Moveset: " .. m.Name)
+				end
+			end,
+		},
+	}
+
+	local function search(kind, q)
+		q = string.lower(tostring(q or "")):match("^%s*(.-)%s*$")
+		local out = {}
+		if q == "" then return out end
+		for _, m in Kinds[kind].List() do
+			local n = string.lower(tostring(m.Name))
+			local sc = nil
+			if n == q then sc = 0
+			elseif n:sub(1, #q) == q then sc = 1
+			elseif n:find(q, 1, true) then sc = 2
+			elseif string.lower(tostring(m.Description or "")):find(q, 1, true) then sc = 3 end
+			if sc then out[#out + 1] = {m = m, s = sc} end
+		end
+		table.sort(out, function(a, b)
+			if a.s ~= b.s then return a.s < b.s end
+			return tostring(a.m.Name) < tostring(b.m.Name)
+		end)
+		return out
+	end
+	local function favItems(kind)
+		local out = {}
+		for _, name in WF[kind] do
+			for _, m in Kinds[kind].List() do
+				if tostring(m.Name) == name then
+					out[#out + 1] = m
+					break
+				end
+			end
+		end
+		return out
+	end
+	local function toggleFav(kind, name)
+		local i = table.find(WF[kind], name)
+		if i then table.remove(WF[kind], i) else table.insert(WF[kind], name) end
+		return i == nil
+	end
+
+	-- ui helpers
+	local function round(o, r) I("UICorner", o).CornerRadius = r or UDim.new(0, 8) end
+	local function stroke(o, th, tr)
+		local s = I("UIStroke", o)
+		s.Thickness, s.Transparency, s.Color = th, tr, WHITE
+		return s
+	end
+	local function text(p, txt, font, maxSize)
+		local l = I("TextLabel", p)
+		l.BackgroundTransparency, l.Text, l.TextColor3, l.Font = 1, txt, WHITE, font or Enum.Font.GothamBold
+		l.TextScaled, l.TextWrapped = true, true
+		local c = I("UITextSizeConstraint", l)
+		c.MaxTextSize, c.MinTextSize = maxSize or 18, 8
+		return l
+	end
+	local function btn(p, txt)
+		local b = I("TextButton", p)
+		b.BackgroundColor3, b.BackgroundTransparency, b.BorderSizePixel = DARK, 0.2, 0
+		b.AutoButtonColor, b.Text, b.TextColor3, b.Font = false, txt or "", WHITE, Enum.Font.GothamBold
+		return b
+	end
+	local function set(l, s) if l.Text ~= s then l.Text = s end end
+	local function inRect(g, p)
+		local ap, as = g.AbsolutePosition, g.AbsoluteSize
+		return p.X >= ap.X and p.X <= ap.X + as.X and p.Y >= ap.Y and p.Y <= ap.Y + as.Y
+	end
+
+	-- state
+	local cur, lastK, anim, page, nFav, nPages, hoverSel = nil, "dance", 0, 1, 0, 1, nil
+	local slotMod, lastTouch, stick = {}, false, Vector2.zero
+	local held, heldAt, fired, stable = nil, 0, false, nil
+	local pick, close, open, refresh
+
+	-- root + backdrop
+	local root = I("Frame", SCREENGUI)
+	root.Size, root.BackgroundTransparency, root.ZIndex, root.Visible = UDim2.fromScale(1, 1), 1, 2147483647, false
+	local dim = btn(root)
+	dim.Size, dim.BackgroundColor3, dim.BackgroundTransparency = UDim2.fromScale(1, 1), Color3.new(0, 0, 0), 1
+
+	-- wheel (square, fits any screen; everything inside is scale based)
+	local cont = I("Frame", root)
+	cont.AnchorPoint, cont.Position, cont.Size, cont.BackgroundTransparency = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.44), UDim2.fromScale(0.9, 0.78), 1
+	local ar = I("UIAspectRatioConstraint", cont)
+	ar.AspectRatio, ar.AspectType = 1, Enum.AspectType.FitWithinMaxSize
+	I("UISizeConstraint", cont).MaxSize = Vector2.new(660, 660)
+	local contScale = I("UIScale", cont)
+
+	local ring = I("Frame", cont)
+	ring.AnchorPoint, ring.Position, ring.Size, ring.BackgroundTransparency = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), UDim2.fromScale(0.74, 0.74), 1
+	round(ring, UDim.new(0.5, 0))
+	local ringStroke = stroke(ring, 2, 0.6)
+
+	local disc = I("Frame", cont)
+	disc.AnchorPoint, disc.Position, disc.Size, disc.BackgroundColor3 = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), UDim2.fromScale(0.34, 0.34), INK
+	round(disc, UDim.new(0.5, 0))
+	local discStroke = stroke(disc, 2, 0.3)
+	local kindLbl = text(disc, "", Enum.Font.GothamMedium, 13)
+	kindLbl.Position, kindLbl.Size, kindLbl.TextColor3 = UDim2.fromScale(0.1, 0.13), UDim2.fromScale(0.8, 0.12), Color3.fromRGB(170, 170, 176)
+	local nameLbl = text(disc, "", Enum.Font.GothamBlack, 26)
+	nameLbl.Position, nameLbl.Size = UDim2.fromScale(0.1, 0.28), UDim2.fromScale(0.8, 0.32)
+	local descLbl = text(disc, "", Enum.Font.Gotham, 13)
+	descLbl.Position, descLbl.Size, descLbl.TextColor3 = UDim2.fromScale(0.12, 0.61), UDim2.fromScale(0.76, 0.17), Color3.fromRGB(190, 190, 196)
+	local stateLbl = text(disc, "", Enum.Font.GothamBold, 13)
+	stateLbl.Position, stateLbl.Size = UDim2.fromScale(0.15, 0.8), UDim2.fromScale(0.7, 0.09)
+
+	local tiles = {}
+	for i = 1, SLOTS do
+		local a = math.rad((i - 1) * 360 / SLOTS)
+		local b = btn(cont)
+		b.AnchorPoint, b.Position, b.Size = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5 + math.sin(a) * 0.37, 0.5 - math.cos(a) * 0.37), UDim2.fromScale(0.25, 0.14)
+		round(b)
+		local tl = {b = b, st = stroke(b, 2, 0.5), sc = I("UIScale", b), h = 0}
+		tl.nm = text(b, "", Enum.Font.GothamBold, 20)
+		tl.nm.Position, tl.nm.Size = UDim2.fromScale(0.08, 0.1), UDim2.fromScale(0.84, 0.54)
+		tl.sub = text(b, "", Enum.Font.GothamBold, 11)
+		tl.sub.Position, tl.sub.Size = UDim2.fromScale(0.08, 0.66), UDim2.fromScale(0.84, 0.22)
+		tl.num = text(b, tostring(i), Enum.Font.GothamMedium, 11)
+		tl.num.Position, tl.num.Size = UDim2.fromScale(0.04, 0.04), UDim2.fromScale(0.12, 0.2)
+		b.Activated:Connect(function() pick(i) end)
+		tiles[i] = tl
+	end
+
+	local prevB, nextB = btn(cont, "<"), btn(cont, ">")
+	local pageLbl = text(cont, "", Enum.Font.GothamBold, 14)
+	for _, o in {prevB, nextB} do
+		o.AnchorPoint, o.Size, o.Visible = Vector2.new(0.5, 0.5), UDim2.fromScale(0.08, 0.06), false
+		round(o)
+	end
+	prevB.Position, nextB.Position = UDim2.fromScale(0.39, 0.745), UDim2.fromScale(0.61, 0.745)
+	pageLbl.AnchorPoint, pageLbl.Position, pageLbl.Size = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.745), UDim2.fromScale(0.12, 0.05)
+
+	-- favorite box + suggestions
+	local panel = I("Frame", root)
+	panel.AnchorPoint, panel.Position, panel.Size, panel.BackgroundColor3, panel.Active = Vector2.new(0.5, 1), UDim2.new(0.5, 0, 1, -12), UDim2.new(0.9, 0, 0, 40), INK, true
+	I("UISizeConstraint", panel).MaxSize = Vector2.new(460, 40)
+	round(panel, UDim.new(0, 10))
+	local panelStroke = stroke(panel, 2, 0.4)
+	local box = I("TextBox", panel)
+	box.BackgroundTransparency, box.Position, box.Size, box.ClearTextOnFocus = 1, UDim2.fromOffset(12, 0), UDim2.new(1, -24, 1, 0), false
+	box.Font, box.TextSize, box.TextColor3, box.TextXAlignment = Enum.Font.GothamMedium, 15, WHITE, Enum.TextXAlignment.Left
+	box.PlaceholderText, box.PlaceholderColor3, box.Text = "Type a name, press Enter to favorite / unfavorite", Color3.fromRGB(140, 140, 148), ""
+	box.ClipsDescendants = true
+
+	local sugg = I("Frame", root)
+	sugg.AnchorPoint, sugg.Position, sugg.Size, sugg.BackgroundTransparency, sugg.AutomaticSize = Vector2.new(0.5, 1), UDim2.new(0.5, 0, 1, -58), UDim2.new(0.9, 0, 0, 0), 1, Enum.AutomaticSize.Y
+	I("UISizeConstraint", sugg).MaxSize = Vector2.new(460, 9999)
+	local lay = I("UIListLayout", sugg)
+	lay.Padding, lay.SortOrder, lay.VerticalAlignment = UDim.new(0, 4), Enum.SortOrder.LayoutOrder, Enum.VerticalAlignment.Bottom
+	local rows = {}
+	for i = 1, 5 do
+		local r = {b = btn(sugg)}
+		r.b.Size, r.b.LayoutOrder, r.b.Visible, r.b.TextSize, r.b.TextXAlignment = UDim2.new(1, 0, 0, 32), 6 - i, false, 14, Enum.TextXAlignment.Left
+		r.b.BackgroundTransparency = 0.12
+		round(r.b)
+		I("UIPadding", r.b).PaddingLeft = UDim.new(0, 12)
+		r.b.Activated:Connect(function()
+			if r.m and cur then
+				local added = toggleFav(cur, tostring(r.m.Name))
+				say((added and "Favorite added: " or "Favorite removed: ") .. tostring(r.m.Name))
+				refresh()
+			end
+		end)
+		rows[i] = r
+	end
+
+	local closeB = btn(root, "X")
+	closeB.AnchorPoint, closeB.Position, closeB.Size, closeB.TextSize = Vector2.new(1, 0), UDim2.new(1, -16, 0, 16), UDim2.fromOffset(42, 42), 18
+	round(closeB, UDim.new(0.5, 0))
+	local closeStroke = stroke(closeB, 2, 0.4)
+
+	-- hold progress (PC)
+	local hold = I("Frame", SCREENGUI)
+	hold.AnchorPoint, hold.Position, hold.Size, hold.BackgroundColor3, hold.BackgroundTransparency = Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, 70), UDim2.fromOffset(260, 40), INK, 0.15
+	hold.ZIndex, hold.Visible = 2147483647, false
+	round(hold, UDim.new(0, 20))
+	local holdStroke = stroke(hold, 2, 0.3)
+	local htxt = text(hold, "", Enum.Font.GothamBold, 13)
+	htxt.Position, htxt.Size = UDim2.fromOffset(10, 5), UDim2.new(1, -20, 0, 18)
+	local hbar = I("Frame", hold)
+	hbar.Position, hbar.Size, hbar.BackgroundColor3, hbar.BackgroundTransparency, hbar.BorderSizePixel = UDim2.new(0, 14, 1, -11), UDim2.new(1, -28, 0, 4), WHITE, 0.85, 0
+	round(hbar, UDim.new(0.5, 0))
+	local hfill = I("Frame", hbar)
+	hfill.Size, hfill.BorderSizePixel = UDim2.fromScale(0, 1), 0
+	round(hfill, UDim.new(0.5, 0))
+
+	-- mobile buttons
+	local mob = {}
+	local function mobBtn(kind, dx, dy)
+		local saved = type(WF.btn) == "table" and WF.btn[kind]
+		local px = type(saved) == "table" and tonumber(saved[1]) or dx
+		local py = type(saved) == "table" and tonumber(saved[2]) or dy
+		local b = btn(SCREENGUI, Kinds[kind].Short)
+		b.AnchorPoint, b.Position, b.Size, b.TextSize, b.BackgroundTransparency = Vector2.new(0.5, 0.5), UDim2.fromScale(px, py), UDim2.fromOffset(40, 40), 9, 0.25
+		b.ZIndex, b.Visible = 2147483646, UserInputService.TouchEnabled
+		round(b, UDim.new(0.5, 0))
+		mob[kind] = {b = b, st = stroke(b, 1.5, 0.2)}
+		-- drag to move (position is saved as a screen fraction); a tap without dragging opens the wheel
+		local dragFrom, startPos, moved = nil, nil, false
+		b.InputBegan:Connect(function(input)
+			local ut = input.UserInputType
+			if ut == Enum.UserInputType.Touch or ut == Enum.UserInputType.MouseButton1 then
+				dragFrom, startPos, moved = input.Position, Vector2.new(px, py), false
+				local conn
+				conn = input.Changed:Connect(function()
+					if input.UserInputState == Enum.UserInputState.End then
+						conn:Disconnect()
+						if moved then
+							if type(WF.btn) ~= "table" then WF.btn = {} end
+							WF.btn[kind] = {px, py}
+						end
+						dragFrom = nil
+					end
+				end)
+			end
+		end)
+		UserInputService.InputChanged:Connect(function(input)
+			if not dragFrom then return end
+			local ut = input.UserInputType
+			if ut ~= Enum.UserInputType.Touch and ut ~= Enum.UserInputType.MouseMovement then return end
+			local d = Vector2.new(input.Position.X, input.Position.Y) - Vector2.new(dragFrom.X, dragFrom.Y)
+			if not moved and d.Magnitude < 8 then return end
+			moved = true
+			local vs = SCREENGUI.AbsoluteSize
+			px, py = math.clamp(startPos.X + d.X / vs.X, 0.03, 0.97), math.clamp(startPos.Y + d.Y / vs.Y, 0.05, 0.95)
+			b.Position = UDim2.fromScale(px, py)
+		end)
+		b.Activated:Connect(function()
+			if moved then moved = false return end
+			if cur == kind then close() else open(kind) end
+		end)
+	end
+	mobBtn("dance", 0.94, 0.4)
+	mobBtn("moveset", 0.94, 0.52)
+
+	-- logic
+	function refresh()
+		if not cur then return end
+		local K = Kinds[cur]
+		local favs = favItems(cur)
+		nFav, nPages = #favs, math.max(1, math.ceil(#favs / SLOTS))
+		page = math.clamp(page, 1, nPages)
+		for i = 1, SLOTS do
+			local m = favs[(page - 1) * SLOTS + i]
+			slotMod[i] = m
+			set(tiles[i].nm, m and tostring(m.Name) or "-")
+			tiles[i].b.Interactable = m ~= nil
+		end
+		set(pageLbl, nPages > 1 and (page .. " / " .. nPages) or "")
+		prevB.Visible, nextB.Visible = nPages > 1, nPages > 1
+		local res = search(cur, box.Text)
+		for i, r in rows do
+			local x = res[i]
+			r.m = x and x.m or nil
+			r.b.Visible = x ~= nil
+			if x then r.b.Text = (table.find(WF[cur], tostring(x.m.Name)) and "★  " or "+  ") .. tostring(x.m.Name) end
+		end
+	end
+	function pick(i)
+		local m, k = slotMod[i], cur
+		if not m or not k then return end
+		pcall(Kinds[k].Use, m)
+		close()
+	end
+	function open(k)
+		if cur == k then return end
+		cur, lastK, page = k, k, 1
+		box.Text = ""
+		refresh()
+	end
+	function close()
+		if not cur then return end
+		cur = nil
+		pcall(box.ReleaseFocus, box)
+	end
+	local function flip(d)
+		if cur then
+			page = (page - 1 + d) % nPages + 1
+			refresh()
+		end
+	end
+
+	dim.Activated:Connect(function()
+		if hoverSel and not lastTouch then pick(hoverSel) else close() end
+	end)
+	closeB.Activated:Connect(close)
+	prevB.Activated:Connect(function() flip(-1) end)
+	nextB.Activated:Connect(function() flip(1) end)
+	box:GetPropertyChangedSignal("Text"):Connect(refresh)
+	box.FocusLost:Connect(function(enter)
+		if not enter or not cur then return end
+		local res = search(cur, box.Text)
+		if res[1] then
+			local added = toggleFav(cur, tostring(res[1].m.Name))
+			say((added and "Favorite added: " or "Favorite removed: ") .. tostring(res[1].m.Name))
+		elseif box.Text ~= "" then
+			say("No match for '" .. box.Text .. "' in " .. Kinds[cur].Title:lower())
+		end
+		box.Text = ""
+		refresh()
+	end)
+
+	-- input
+	UserInputService.InputBegan:Connect(function(input, gp)
+		local ut, kc = input.UserInputType, input.KeyCode
+		if ut == Enum.UserInputType.Touch then lastTouch = true
+		elseif ut == Enum.UserInputType.MouseButton1 then lastTouch = false end
+		if gp then return end
+		if ut == Enum.UserInputType.Keyboard then
+			if not held then
+				for k, K in Kinds do
+					if kc == K.Key then held, heldAt, fired = k, os.clock(), false end
+				end
+			end
+			if cur then
+				if kc == Enum.KeyCode.Escape then
+					close()
+				else
+					local n = table.find(NUM, kc)
+					if n then pick(n) end
+				end
+			end
+		elseif ut == Enum.UserInputType.Gamepad1 and cur then
+			if kc == Enum.KeyCode.ButtonA then
+				if hoverSel then pick(hoverSel) end
+			elseif kc == Enum.KeyCode.ButtonB then
+				close()
+			end
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input, gp)
+		local ut = input.UserInputType
+		if ut == Enum.UserInputType.MouseMovement then
+			lastTouch = false
+		elseif ut == Enum.UserInputType.Gamepad1 and input.KeyCode == Enum.KeyCode.Thumbstick1 then
+			stick = Vector2.new(input.Position.X, input.Position.Y)
+		elseif ut == Enum.UserInputType.MouseWheel and cur then
+			flip(input.Position.Z > 0 and -1 or 1)
+		end
+	end)
+
+	-- per-frame: hold timer, theme, selection, smooth animation
+	AddToRenderStep(function(t, dt)
+		dt = dt or 0.016
+		local acc = Util.Color.Resolve(t, GetUIColor(t))
+		if held then
+			local K = Kinds[held]
+			if not UserInputService:IsKeyDown(K.Key) then
+				held = nil
+			elseif not fired then
+				local p = (os.clock() - heldAt) / HOLD_TIME
+				hold.Visible = p > 0.1
+				hfill.Size, hfill.BackgroundColor3, holdStroke.Color = UDim2.fromScale(math.clamp(p, 0, 1), 1), acc, acc
+				set(htxt, "HOLD " .. K.Key.Name .. "  -  " .. K.Title)
+				if p >= 1 then
+					fired = true
+					hold.Visible = false
+					if held == "dance" then CurrentDance = stable end -- undo the dance-keybind that the N press itself may have fired
+					if cur == held then close() else open(held) end
+				end
+			end
+		end
+		if not held then
+			hold.Visible = false
+			stable = CurrentDance
+		end
+
+		local touch = UserInputService.TouchEnabled
+		for _, mb in mob do
+			mb.b.Visible = touch and not cur
+			mb.st.Color = acc
+		end
+
+		anim = anim + ((cur and 1 or 0) - anim) * (1 - math.exp(-14 * dt))
+		if anim < 0.01 and not cur then
+			if root.Visible then root.Visible = false end
+			return
+		end
+		root.Visible = true
+		local K = Kinds[cur or lastK]
+
+		-- which slot is aimed at (mouse direction / thumbstick)
+		local sel, vec = nil, nil
+		local ctr = cont.AbsolutePosition + cont.AbsoluteSize / 2
+		if stick.Magnitude > 0.5 then
+			vec = Vector2.new(stick.X, -stick.Y)
+		elseif not lastTouch then
+			local mp = UserInputService:GetMouseLocation()
+			if not (inRect(panel, mp) or inRect(sugg, mp) or inRect(closeB, mp)) then vec = mp - ctr end
+		end
+		if vec and vec.Magnitude > cont.AbsoluteSize.X * 0.11 then
+			local ang = math.atan2(vec.X, -vec.Y) % (math.pi * 2)
+			local i = math.floor((ang + math.pi / SLOTS) / (math.pi * 2 / SLOTS)) % SLOTS + 1
+			if slotMod[i] then sel = i end
+		end
+		hoverSel = sel
+
+		local a = anim
+		dim.BackgroundTransparency = 1 - 0.58 * a
+		contScale.Scale = 0.86 + 0.14 * a
+		ringStroke.Color, ringStroke.Transparency = acc, 1 - 0.6 * a
+		discStroke.Color, discStroke.Transparency = acc, 1 - 0.8 * a
+		panelStroke.Color, panelStroke.Transparency = acc, 1 - 0.7 * a
+		closeStroke.Color, closeStroke.Transparency = acc, 1 - 0.7 * a
+		disc.BackgroundTransparency = 1 - 0.9 * a
+		panel.BackgroundTransparency = 1 - 0.9 * a
+		closeB.BackgroundTransparency, closeB.TextTransparency = 1 - 0.8 * a, 1 - a
+		box.TextTransparency = 1 - a
+		for _, o in {kindLbl, nameLbl, descLbl, stateLbl} do o.TextTransparency = 1 - a end
+
+		for i = 1, SLOTS do
+			local tl, m = tiles[i], slotMod[i]
+			tl.h = tl.h + ((i == sel and 1 or 0) - tl.h) * (1 - math.exp(-18 * dt))
+			local h = tl.h
+			local pop = math.clamp(a * 1.5 - (i - 1) * 0.05, 0, 1)
+			local live = m and K.On(m)
+			tl.sc.Scale = (0.6 + 0.4 * pop) * (1 + 0.1 * h)
+			tl.b.BackgroundColor3 = INK:Lerp(Color3.fromRGB(245, 245, 245), h)
+			tl.b.BackgroundTransparency = 1 - pop * (m and (0.82 + 0.15 * h) or 0.4)
+			tl.st.Color = acc:Lerp(WHITE, h)
+			tl.st.Thickness = live and 3 or 2
+			tl.st.Transparency = 1 - pop * (m and (0.55 + 0.45 * h) or 0.15)
+			local ink = WHITE:Lerp(Color3.fromRGB(15, 15, 18), h)
+			tl.nm.TextColor3, tl.nm.TextTransparency = ink, 1 - pop * (m and 1 or 0.35)
+			tl.num.TextColor3, tl.num.TextTransparency = ink, 1 - pop * (m and 0.55 or 0.2)
+			set(tl.sub, live and K.Live or "")
+			tl.sub.TextColor3, tl.sub.TextTransparency = h > 0.5 and Color3.fromRGB(15, 15, 18) or acc, 1 - pop
+		end
+
+		local m = sel and slotMod[sel]
+		if m then
+			set(kindLbl, K.Title)
+			set(nameLbl, tostring(m.Name))
+			set(descLbl, first(m.Description))
+			set(stateLbl, K.On(m) and K.Live or (lastTouch and "TAP TO SELECT" or "CLICK TO SELECT"))
+		elseif nFav == 0 then
+			set(kindLbl, K.Title)
+			set(nameLbl, "NO FAVORITES")
+			set(descLbl, "Type a name below and press Enter")
+			set(stateLbl, "")
+		else
+			set(kindLbl, K.Title)
+			set(nameLbl, nFav .. (nFav == 1 and " FAVORITE" or " FAVORITES"))
+			set(descLbl, lastTouch and "Tap a slot" or "Aim and click - or press 1-8")
+			set(stateLbl, "")
+		end
+		stateLbl.TextColor3 = acc
+	end, root)
+end, function(e) warn("[v56 wheels] " .. tostring(e)) end)
 task.spawn(function()
 	local function SaveConfig(m)
 		if m.SaveConfig then
