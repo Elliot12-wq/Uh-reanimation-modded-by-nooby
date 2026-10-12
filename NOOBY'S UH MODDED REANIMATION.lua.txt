@@ -249809,6 +249809,11 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 			end)
 		end
 		UI.CreateButton(MusicPage, "&lt; Back", 20).Activated:Connect(closePage)
+		do -- second Back button below Now Playing (the page auto-scrolls to the track list, so the top one is out of view)
+			local backBottom = UI.CreateButton(MusicPage, "&lt; Back", 20)
+			backBottom.Parent.LayoutOrder = 1001
+			backBottom.Activated:Connect(closePage)
+		end
 
 		local np = mk("Frame", {
 			Name = "NowPlaying",
@@ -249845,10 +249850,6 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 			return mk("TextButton", { Name = txt, BackgroundTransparency = 1, AutoButtonColor = false, Text = txt, TextColor3 = WHITE, Font = Enum.Font.GothamMedium, TextSize = 14, Position = UDim2.new(x, 0, 0, 0), Size = UDim2.new(0.5, 0, 1, 0), ZIndex = 4, Parent = segs })
 		end
 		local songB, vidB = segBtn("Song", 0), segBtn("Video", 0.5)
-		local dotsB = mk("TextButton", { Name = "More", BackgroundTransparency = 1, AutoButtonColor = false, Text = "", AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -6, 0.5, 0), Size = UDim2.new(0, 36, 0, 36), ZIndex = 3, Parent = top })
-		for i = -1, 1 do
-			mk("Frame", { BackgroundColor3 = WHITE, BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, i * 8), Size = UDim2.new(0, 4, 0, 4), ZIndex = 4, Parent = dotsB }, { corner() })
-		end
 
 		----------------------------------------------------------------- 2 · art area (live spectrum / spinning disc)
 		local art, artCv = section("Art", 0, 2)
@@ -249896,6 +249897,9 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 		local ttl = section("Title", 54, 3, 0.05)
 		local now = mk("TextLabel", { Name = "Title", BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, 0, 0, 30), Text = "", TextColor3 = WHITE, Font = Enum.Font.GothamBold, TextSize = 24, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = ttl })
 		local sub = mk("TextLabel", { Name = "Artist", BackgroundTransparency = 1, Position = UDim2.new(0, 0, 0, 31), Size = UDim2.new(1, 0, 0, 20), Text = "", TextColor3 = GREY, Font = Enum.Font.Gotham, TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, Parent = ttl })
+		now.Size = UDim2.new(1, -28, 0, 30)
+		mk("TextLabel", { Name = "Caret", BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, 0, 0, 0), Size = UDim2.new(0, 24, 0, 30), Text = "\u{25BE}", TextColor3 = accent, Font = Enum.Font.GothamBold, TextSize = 22, Parent = ttl })
+		local pickB = mk("TextButton", { Name = "PickTrack", BackgroundTransparency = 1, AutoButtonColor = false, Text = "", Size = UDim2.new(1, 0, 1, 0), ZIndex = 5, Parent = ttl })
 
 		----------------------------------------------------------------- 4 · action pills (Random + the three mute settings)
 		local pbox = section("Pills", 38, 4)
@@ -250087,7 +250091,7 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 			mk("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }),
 			mk("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 10), PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 4) }),
 		})
-		local open
+		local open, closeDrawer
 		local function artistOf(name)
 			return (tostring(name):match("^(.-) %- ") or "")
 		end
@@ -250096,6 +250100,12 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 				if c:IsA("TextButton") or c:IsA("TextLabel") then c:Destroy() end
 			end
 			local rows, cur = 0, artistOf(snd.Name)
+			local backRow = mk("TextButton", { Name = "BackRow", AutoButtonColor = false, BackgroundColor3 = PILL, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 34), Text = "&lt; Back", TextColor3 = accent, Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, LayoutOrder = 0, Parent = list }, {
+				corner(UDim.new(0, 8)),
+				mk("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 8) }),
+			})
+			juice(backRow, backRow, PILL, PILLH, 1.02)
+			backRow.MouseButton1Click:Connect(function() if closeDrawer then closeDrawer() end end)
 			for i, hi in ipairs(MusicPlayer.Database) do
 				if which == "up" or (artistOf(hi[2]) == cur and i ~= MusicPlayer.LastMusic) then
 					rows += 1
@@ -250120,7 +250130,7 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 				rows = 1
 				mk("TextLabel", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 34), Text = "No related tracks", TextColor3 = DIMC, Font = Enum.Font.GothamMedium, TextSize = 13, Parent = list })
 			end
-			return math.min(rows * 38 + 6, 230)
+			return math.min((rows + 1) * 38 + 6, 230)
 		end
 		local function setDrawer(which)
 			if which == open then which = nil end
@@ -250142,13 +250152,16 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 		end
 		upB.MouseButton1Click:Connect(function() setDrawer("up") end)
 		reB.MouseButton1Click:Connect(function() setDrawer("rel") end)
-		dotsB.MouseButton1Click:Connect(function() setDrawer("up") end)
+		pickB.MouseButton1Click:Connect(function() setDrawer("up") end) -- tap the song title to open / close the track list
+		closeDrawer = function() -- Back row in the track list: close the list and return to the top of the player
+			if open then setDrawer(open) end
+			tw(MusicPage, 0.35, { CanvasPosition = Vector2.new(0, 0) })
+		end
 		chevB.MouseButton1Click:Connect(closePage)
 		songB.MouseButton1Click:Connect(function() setMode("Song") end)
 		vidB.MouseButton1Click:Connect(function() setMode("Video") end)
 		for _, b in { songB, vidB } do juice(b, b, nil, nil, 1.05) end
 		juice(chevB, chevB, nil, nil, 1.15)
-		juice(dotsB, dotsB, nil, nil, 1.15)
 
 		----------------------------------------------------------------- opening stagger
 		playIntro = function()
