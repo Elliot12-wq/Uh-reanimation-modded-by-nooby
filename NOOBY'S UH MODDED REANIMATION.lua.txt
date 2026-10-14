@@ -13733,58 +13733,133 @@ do
 		else
 			mobile = try(function() return UIS.TouchEnabled and not (UIS.KeyboardEnabled or UIS.MouseEnabled) end) == true
 		end
+		-- [ram v2] Physical RAM, process usage and limits are kept apart. Only device-reported TOTAL/PHYSICAL memory is ever
+		-- used as RAM; Roblox Stats memory is only a pressure signal. No data -> RAM stays nil (never invented) + Confidence "none".
 		local function toGB(v)
 			v = tonumber(v)
-			if not v or v <= 0 then return nil end
-			if v >= 1e8 then return v / 2 ^ 30 end
-			if v >= 256 then return v / 1024 end
-			return v
+			if not v or v ~= v or v <= 0 then return nil end
+			local g
+			if v < 256 then g = v                    -- GB
+			elseif v < 131072 then g = v / 1024      -- MB
+			elseif v < 2e8 then g = v / 1048576      -- KB
+			else g = v / 2 ^ 30 end                  -- bytes
+			if g < 0.5 or g > 256 then return nil end
+			return g
 		end
-		local gb = toGB(genv.NA_RAM_GB or _G.NA_RAM_GB)
+		local BAD = {"avail", "free", "used", "usage", "limit", "process", "heap", "swap", "virtual", "cache"}
+		local function badKey(k)
+			for _, w in ipairs(BAD) do if k:find(w, 1, true) then return true end end
+			return false
+		end
+		local function fromTable(t, depth) -- returns gb, rank (2 = explicit total/physical key, 1 = bare ram/memory key)
+			if type(t) ~= "table" or depth > 2 then return nil, 0 end
+			local best, bestRank = nil, 0
+			for k, v in pairs(t) do
+				local ks = type(k) == "string" and k:lower() or ""
+				local g, rank = nil, 0
+				if type(v) == "table" then
+					g, rank = fromTable(v, depth + 1)
+				elseif ks ~= "" and not badKey(ks) then
+					local mem = ks:find("memory", 1, true) or ks:find("^ram") or ks:find("[^a-z]ram") or ks:find("ram$")
+					if mem and (ks:find("total", 1, true) or ks:find("physical", 1, true) or ks:find("install", 1, true)) then
+						rank = 2
+					elseif ks == "ram" or ks == "memory" or ks == "ramgb" or ks == "ram_gb" or ks == "memorygb" then
+						rank = 1
+					end
+					if rank > 0 then g = toGB(v) end
+				end
+				if g and rank > bestRank then best, bestRank = g, rank end
+			end
+			return best, bestRank
+		end
+		local function procMB() return tonumber(try(function() return game:GetService("Stats"):GetTotalMemoryUsageMb() end)) end
+		local gb, src, conf
+		gb = toGB(genv.NA_RAM_GB or _G.NA_RAM_GB)
+		if gb then src, conf = "manual", "exact" end
 		if not gb then
-			for _, n in ipairs({"getdeviceram", "getdevicememory", "gettotalram", "getsystemram", "getsystemmemory", "getramsize"}) do
+			for _, n in ipairs({"getdeviceram", "getdevicememory", "gettotalram", "getsystemram", "getsystemmemory", "getramsize", "getphysicalmemory", "gettotalmemory", "getdeviceinfo", "getsysteminfo"}) do
 				local fn = genv[n] or _G[n]
 				if type(fn) == "function" then
-					gb = toGB(try(fn))
-					if gb then break end
+					local r = try(fn)
+					local g, rank
+					if type(r) == "table" then g, rank = fromTable(r, 0) else g, rank = toGB(r), 2 end
+					if g then
+						gb, src, conf = g, n, (rank >= 2) and "high" or "medium"
+						break
+					end
 				end
 			end
 		end
-		local tier = tonumber(genv.NA_PERF_TIER or _G.NA_PERF_TIER)
-		if not tier then
-			gb = gb or (mobile and 4 or 16) -- fallback when RAM cannot be read: mobile = aggressive, PC = original
+		local manualTier = tonumber(genv.NA_PERF_TIER or _G.NA_PERF_TIER)
+		local tier = manualTier
+		if tier then
+			src, conf = src or "manual-tier", conf or "exact"
+		elseif gb then
 			tier = (gb < 2.5 and 1) or (gb < 5 and 2) or (gb < 9 and 3) or 4
+			-- OS-reported totals sit a bit under the marketing size; an unsure (medium) mobile reading just above a boundary steps down one tier
+			if mobile and conf == "medium" then
+				for _, bd in ipairs({2.5, 5, 9}) do
+					if gb >= bd and gb < bd + 0.4 then tier = math.max(1, tier - 1) break end
+				end
+			end
+		else
+			tier = mobile and 2 or 4 -- RAM unreadable: mobile = aggressive, PC = original (no RAM number is made up)
+			src, conf = "fallback", "none"
 		end
 		tier = math.clamp(math.floor(tier), 1, 4)
-		local prof = {Tier = tier, Mobile = mobile, RAM = gb, LowEnd = tier == 1, AntiLag = tier == 1, AssetMode = ({"Batch", "Medium", "Medium"})[tier]}
+		local prof = {Mobile = mobile, RAM = gb, PhysicalGB = gb, RAMSource = src, Confidence = conf, ProcessMB = procMB(), Pressure = false}
 		FX.Device = prof
 		_G.UHDevProfile = prof
 		pcall(function() genv.UHDevProfile = prof end)
-		FX.LowEndTriFPS = tier == 1 and 20 or 30
-		FX.LowEndUIFPS = tier == 1 and 20 or 30
-		local store = FX.Store
-		if store then -- applied once per change, so a manual Low End toggle afterwards is respected
-			local want = tier == 1
-			local was = store.AutoLow
-			if was == nil and type(store.AutoTier) == "number" then was = store.AutoTier <= 2 end -- older build auto-enabled it on tiers 1-2
-			if was ~= want then
-				if want then FX.SetLowEnd(true) elseif was then FX.SetLowEnd(false) end
-				store.AutoLow = want
+		local function apply(t)
+			prof.Tier, prof.Class = t, ({"low", "low", "mid", "high"})[t]
+			prof.LowEnd, prof.AntiLag, prof.AssetMode = t == 1, t == 1, ({"Batch", "Medium", "Medium"})[t]
+			FX.LowEndTriFPS = t == 1 and 20 or 30
+			FX.LowEndUIFPS = t == 1 and 20 or 30
+			local store = FX.Store
+			if store then -- applied once per change, so a manual Low End toggle afterwards is respected
+				local want = t == 1
+				local was = store.AutoLow
+				if was == nil and type(store.AutoTier) == "number" then was = store.AutoTier <= 2 end -- older build auto-enabled it on tiers 1-2
+				if was ~= want then
+					if want then FX.SetLowEnd(true) elseif was then FX.SetLowEnd(false) end
+					store.AutoLow = want
+				end
+			end
+			if t < 4 then
+				try(function() settings().Rendering.QualityLevel = string.format("Level%02d", ({1, 3, 5})[t]) end)
+				try(function() game:GetService("Lighting").GlobalShadows = false end)
+				if t <= 2 then
+					try(function()
+						local tr = workspace.Terrain
+						tr.WaterWaveSize = 0
+						tr.WaterWaveSpeed = 0
+						tr.WaterReflectance = 0
+					end)
+				elseif type(setfpscap) == "function" then
+					try(setfpscap, mobile and 120 or 999)
+				end
+				if mobile and t <= 2 then -- low/mid-memory mobile extras (PC untouched)
+					try(function() workspace.Terrain.Decoration = false end)
+					try(function() settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04 end)
+					if type(setfpscap) == "function" then try(setfpscap, t == 1 and 30 or 60) end
+				end
 			end
 		end
-		if tier < 4 then
-			try(function() settings().Rendering.QualityLevel = string.format("Level%02d", ({1, 3, 5})[tier]) end)
-			try(function() game:GetService("Lighting").GlobalShadows = false end)
-			if tier <= 2 then
-				try(function()
-					local t = workspace.Terrain
-					t.WaterWaveSize = 0
-					t.WaterWaveSpeed = 0
-					t.WaterReflectance = 0
+		apply(tier)
+		-- one-shot pressure check (mobile, RAM known, no manual tier): process memory vs PHYSICAL RAM. Steps down one tier, never up.
+		if mobile and gb and not manualTier then
+			task.delay(20, function()
+				pcall(function()
+					local used = procMB()
+					if not used then return end
+					prof.ProcessMB = used
+					if used / 1024 > gb * 0.6 and prof.Tier > 1 then
+						prof.Pressure = true
+						apply(prof.Tier - 1)
+					end
 				end)
-			elseif type(setfpscap) == "function" then
-				try(setfpscap, mobile and 120 or 999)
-			end
+			end)
 		end
 		if SaveData.ModuleLoadMode == nil and tier <= 2 then
 			SaveData.ModuleLoadMode = tier == 1 and 4 or 2 -- Slow / Splitted
@@ -262910,6 +262985,7 @@ do
 	-- Everything lives in one table so this block only adds a single local.
 	local NoobyKill = {
 		Enabled = false,
+		YaKids = SaveData.YaKidsToolKill == true, -- [ya kids tool kill option]
 		Targets = {},          -- [character] = {Esp, Attempts, FocusStart, InRun, Name}
 		Queue = {},            -- ordered list of characters; the FIRST one is attacked
 		Run = nil,             -- state of the current Kill All run (nil when none)
@@ -263091,7 +263167,27 @@ do
 
 	-- Full burst on one character: firetouchinterest(handle, part) on every body part.
 	-- The tool stays equipped the whole time.
+	-- [Ya kids tool kill option] (main.lua) extra pass on the target's root part: both argument orders, both touch
+	-- states, plus a tool swing. Same-team players are skipped (friendly fire) unless the team is Neutral; NPCs
+	-- (e.g. Ya Kids workspace.Enemies) are always allowed.
+	function NoobyKill.YaKidsBurst(handle, char)
+		local part = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChildWhichIsA("BasePart")
+		if not part then return end
+		local plr = Players:GetPlayerFromCharacter(char)
+		if plr then
+			local t = plr.Team
+			if t ~= nil and t == Player.Team and t.Name ~= "Neutral" then return end
+		end
+		local tool = handle.Parent
+		if tool and tool:IsA("Tool") then pcall(function() tool:Activate() end) end
+		firetouchinterest(part, handle, 1)
+		firetouchinterest(part, handle, 0)
+		firetouchinterest(handle, part, 1)
+		firetouchinterest(handle, part, 0)
+	end
+
 	function NoobyKill.Burst(handle, char)
+		if NoobyKill.YaKids then pcall(NoobyKill.YaKidsBurst, handle, char) end
 		for _, name in ipairs(KILL_PRIMARY_PARTS) do
 			local p = char:FindFirstChild(name)
 			if p and p:IsA("BasePart") then killFire(handle, p) end
@@ -263280,6 +263376,11 @@ do
 			NoobyKill.Enabled = false
 			NoobyKill.StopAll()
 		end
+	end)
+	NoobyKill.YaKidsSwitch = UI.CreateSwitch(MainPage, "Ya kids tool kill option", NoobyKill.YaKids)
+	NoobyKill.YaKidsSwitch.Changed:Connect(function(val)
+		NoobyKill.YaKids = val and true or false
+		SaveData.YaKidsToolKill = NoobyKill.YaKids
 	end)
 	UI.CreateText(MainPage, '<font color="rgb(100,200,255)"><b>NOTE:</b> Toggle Kill needs <b>Target Fling</b> enabled and a damage tool (sword) <b>equipped</b>. Turn on <b>Click Fling</b> to pick targets by clicking them. While Toggle Kill is on, clicks only kill (they never fling).</font>', 10, Enum.TextXAlignment.Center)
 	-- Warning: Toggle Kill touches targets with your real character's tool, so reanimation modes where
@@ -267490,7 +267591,7 @@ do -- [v36] FEATURE CENTER: groups the original main page controls (same instanc
 			{"perf", "Performance / Graphics", "Anti Lag, Hide All Players, Low End UI Mode, blur, transitions, UI sounds, ambient FX"},
 			{"reanim", "Reanimation / Character", "Reanimator, hitboxes, character options, Fly, WalkSpeed, scale, internals"},
 			{"moves", "Movesets / Dances", "Movesets, Dances, Dance Keybinds"},
-			{"fling", "Fling / Interaction", "Fling Method, Click Fling, Toggle Kill, Key+Click Teleport"},
+			{"fling", "Fling / Interaction", "Fling Method, Click Fling, Toggle Kill, Ya kids tool kill option, Key+Click Teleport"},
 			{"tp", "Teleport / Servers", "Teleports, LastSafe, Server Hop, Rejoin, Auto Execute"},
 			{"mini", "Minigames / Arcade", "10 built-in games, fullscreen Arcade, plugins"},
 			{"custom", "Customization / Settings", "UI theme, Roblox engine settings, particles, asset loading"},
