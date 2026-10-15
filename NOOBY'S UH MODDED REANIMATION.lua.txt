@@ -24982,21 +24982,6 @@ end
  game.Players.LocalPlayer.Character.HumanoidRootPart.CFrame = oldcframe
  end)
  
- glueloop = false
- cmd.add({"glue"}, {"glue <player>", "Bangs the player by attaching to them"}, function(...)
-	glueloop = true
-User = (...)
-Target = getPlr(User)
- 
-repeat wait()
-LocalPlayer.Character.HumanoidRootPart.CFrame = Target.Character.HumanoidRootPart.CFrame
-until glueloop == false
- end)
- 
- cmd.add({"unglue"}, {"unglue", "stops glueing"}, function()
-	glueloop = false
- end)
- 
  cmd.add({"spook", "scare"}, {"spook <player> (scare)", "Teleports next to a player for a few seconds"}, function(...)
  Username = (...)
  Target = getPlr(Username)
