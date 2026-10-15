@@ -1538,6 +1538,46 @@ Util.FX = (function()
 		end)
 	end
 
+	-- [bubbly pass] springy hover / press / focus feel for controls the earlier passes skipped (text boxes). Works with mouse and touch.
+	function FX.EnhancePop(obj)
+		if not obj or obj:GetAttribute("FXPop") then return end
+		obj:SetAttribute("FXPop", true)
+		local sc = Util.Instance("UIScale", obj)
+		local hov, dn, foc = false, false, false
+		local function settle(style, time)
+			tween(sc, time, style, EOut, {Scale = dn and 0.96 or ((hov or foc) and 1.035 or 1)})
+		end
+		obj.MouseEnter:Connect(function()
+			if not FX.Settings.Transitions then return end
+			hov = true
+			settle(Back, 0.22)
+		end)
+		obj.MouseLeave:Connect(function()
+			hov, dn = false, false
+			settle(Back, 0.3)
+		end)
+		obj.InputBegan:Connect(function(input)
+			if not isPress(input) or not FX.Settings.Transitions then return end
+			dn = true
+			settle(Quad, 0.07)
+		end)
+		obj.InputEnded:Connect(function(input)
+			if not isPress(input) or not dn then return end
+			dn = false
+			settle(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.5)
+		end)
+		if obj:IsA("TextBox") then
+			obj.Focused:Connect(function()
+				foc = true
+				settle(Back, 0.25)
+			end)
+			obj.FocusLost:Connect(function()
+				foc = false
+				settle(Back, 0.3)
+			end)
+		end
+	end
+
 	-- [v40] toggles: glossy bead that pops in / shrinks out with overshoot, squishy hover + press on the box.
 	-- hit = the full-row button, sw = the toggle box, dot = the "on" bead, lever = the BoolValue.
 	function FX.EnhanceSwitch(hit, sw, dot, lever)
@@ -10031,18 +10071,24 @@ Util.FX = (function()
 		local hint = label(12, 0.5, 0, UDim2.new(0.5, 0, 0, 8), UDim2.new(1, -20, 0, 14))
 		hint.Text = "tap anywhere to open the UI now  ·  triangle: drag / tap / hold 5s"
 		hint.TextTransparency = 0.55
-		local cap = label(14, 0.5, 1, UDim2.new(0.5, 0, 1, -50), UDim2.new(1, -20, 0, 16))
-		local status = label(13, 0.5, 1, UDim2.new(0.5, 0, 1, -20), UDim2.new(1, -20, 0, 16))
+		local cap = label(14, 0.5, 1, UDim2.new(0.5, 0, 1, -104), UDim2.new(1, -20, 0, 16))
+		local status = label(13, 0.5, 1, UDim2.new(0.5, 0, 1, -30), UDim2.new(1, -20, 0, 16))
 		status.Text = "Loading modules..."
+		-- [loader progress] live percentage + module / moveset / dance counters (fed by Util.ModuleProgress / Util.GetModuleStatus)
+		local pctLabel = label(26, 0.5, 1, UDim2.new(0.5, 0, 1, -66), UDim2.new(1, -20, 0, 30))
+		pctLabel.Text = "0%"
+		local detail = label(12, 0.5, 1, UDim2.new(0.5, 0, 1, -48), UDim2.new(1, -20, 0, 14))
+		detail.TextTransparency = 0.25
+		detail.Text = ""
 		if env.UITextColor then
 			env.UITextColor.Changed:Connect(function(v)
-				hint.TextColor3, cap.TextColor3, status.TextColor3 = v, v, v
+				hint.TextColor3, cap.TextColor3, status.TextColor3, pctLabel.TextColor3, detail.TextColor3 = v, v, v, v, v
 			end)
 		end
 
 		local chargeTrack = Util.Instance("Frame", root)
 		chargeTrack.AnchorPoint = Vector2.new(0.5, 1)
-		chargeTrack.Position = UDim2.new(0.5, 0, 1, -44)
+		chargeTrack.Position = UDim2.new(0.5, 0, 1, -98)
 		chargeTrack.Size = UDim2.new(0, 160, 0, 2)
 		chargeTrack.BackgroundColor3 = WHITE
 		chargeTrack.BackgroundTransparency = 1
@@ -10057,8 +10103,8 @@ Util.FX = (function()
 
 		local track = Util.Instance("Frame", root)
 		track.AnchorPoint = Vector2.new(0.5, 1)
-		track.Position = UDim2.new(0.5, 0, 1, -10)
-		track.Size = UDim2.new(1, -40, 0, 3)
+		track.Position = UDim2.new(0.5, 0, 1, -14)
+		track.Size = UDim2.new(1, -40, 0, 10)
 		track.BackgroundColor3 = WHITE
 		track.BackgroundTransparency = 0.88
 		track.BorderSizePixel = 0
@@ -10067,6 +10113,30 @@ Util.FX = (function()
 		fill.Size = UDim2.new(0, 0, 1, 0)
 		fill.BorderSizePixel = 0
 		fill.ZIndex = 6
+		-- [loader progress] bubbly bar: rounded track + fill, scrolling shimmer, and a springy knob riding the leading edge
+		Util.Instance("UICorner", track).CornerRadius = UDim.new(1, 0)
+		Util.Instance("UICorner", fill).CornerRadius = UDim.new(1, 0)
+		fill.ClipsDescendants = true
+		local shimmer = Util.Instance("Frame", fill)
+		shimmer.Size = UDim2.fromScale(0.35, 1)
+		shimmer.BackgroundColor3 = WHITE
+		shimmer.BackgroundTransparency = 0.45
+		shimmer.BorderSizePixel = 0
+		shimmer.ZIndex = 7
+		local shimmerGrad = Util.Instance("UIGradient", shimmer)
+		shimmerGrad.Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 1),
+			NumberSequenceKeypoint.new(0.5, 0),
+			NumberSequenceKeypoint.new(1, 1),
+		})
+		local knob = Util.Instance("Frame", track)
+		knob.AnchorPoint = Vector2.new(0.5, 0.5)
+		knob.Size = UDim2.fromOffset(14, 14)
+		knob.Position = UDim2.new(0, 0, 0.5, 0)
+		knob.BackgroundColor3 = WHITE
+		knob.BorderSizePixel = 0
+		knob.ZIndex = 8
+		Util.Instance("UICorner", knob).CornerRadius = UDim.new(1, 0)
 
 		local tri = FX.NewTriangle3D(root, {
 			Interactive = true, ZIndex = 2, Ring = true, Track = true, RingSize = 176,
@@ -10088,8 +10158,35 @@ Util.FX = (function()
 			local c = env.GetUIColor and env.GetUIColor(t) or WHITE
 			fill.BackgroundColor3 = c
 			chargeFill.BackgroundColor3 = c
-			L.p = L.p + (L.target - L.p) * (1 - math.exp(-8 * dt))
-			fill.Size = UDim2.new(L.p, 0, 1, 0)
+			-- [loader progress] the real module counter (Util.ModuleProgress) drives the bar together with the phase targets from UINotify
+			local MP = Util.ModuleProgress
+			local real = (type(MP) == "table" and (MP.Total or 0) > 0) and math.clamp((MP.Done or 0) / MP.Total, 0, 1) or 0
+			local goal = math.max(L.target, math.min(real, 0.98))
+			L.p = L.p + (goal - L.p) * (1 - math.exp(-8 * dt))
+			-- springy visual position: overshoots a touch, then settles (bubbly)
+			local sdt = math.min(dt, 1 / 30)
+			L.bv = (L.bv or 0) + ((L.p - (L.bp or 0)) * 140 - (L.bv or 0) * 13) * sdt
+			L.bp = math.clamp((L.bp or 0) + L.bv * sdt, 0, 1)
+			fill.Size = UDim2.new(L.bp, 0, 1, 0)
+			shimmer.Position = UDim2.new(((t * 0.9) % 1.5) - 0.4, 0, 0, 0)
+			local kn = 14 + 3 * math.sin(t * 7) + math.clamp(math.abs(L.bv) * 14, 0, 9)
+			knob.Size = UDim2.fromOffset(kn, kn)
+			knob.Position = UDim2.new(L.bp, 0, 0.5, 0)
+			knob.BackgroundColor3 = c
+			local pct = math.floor(L.p * 100 + 0.5)
+			if pct ~= L.lastPct then
+				L.lastPct = pct
+				L.pulse = 1
+				pctLabel.Text = pct .. "%"
+			end
+			L.pulse = math.max(0, (L.pulse or 0) - dt * 3.2)
+			pctLabel.TextSize = math.floor(26 + 8 * L.pulse * L.pulse + 1.5 * math.sin(t * 5))
+			L.detT = (L.detT or 0) - dt
+			if L.detT <= 0 then
+				L.detT = 0.1
+				local okD, st = pcall(Util.GetModuleStatus)
+				if okD and type(st) == "string" then detail.Text = st end
+			end
 			local ch = tri.charge
 			chargeFill.Size = UDim2.new(ch, 0, 1, 0)
 			chargeFill.BackgroundTransparency = ch > 0.02 and 0 or 1
@@ -10107,6 +10204,7 @@ Util.FX = (function()
 			L.Visible = true
 			showToken = showToken + 1
 			L.p, L.target = 0, 0
+			L.bp, L.bv, L.lastPct, L.pulse = 0, 0, nil, 1
 			root.Visible = true
 			tri:SetActive(true)
 			tri.scaleBase = 1
@@ -10664,6 +10762,23 @@ Util.FX = (function()
 				if b then pcall(FX.EnhanceButton, b) end
 				return b, txt
 			end
+			-- [bubbly pass] text boxes get the same springy hover / press / focus feel
+			local origTextbox = UI.CreateTextbox
+			if origTextbox then
+				UI.CreateTextbox = function(parent, ...)
+					local r = table.pack(origTextbox(parent, ...))
+					pcall(function()
+						local kids = parent:GetChildren()
+						local cont = kids[#kids]
+						if cont then
+							for _, v in ipairs(cont:GetDescendants()) do
+								if v:IsA("TextBox") then FX.EnhancePop(v) end
+							end
+						end
+					end)
+					return table.unpack(r, 1, r.n)
+				end
+			end
 		end
 
 		local oldNotify = Util.UINotify
@@ -10744,7 +10859,7 @@ Util.FX = (function()
 				name = (n:lower():gsub("^%s+", ""):gsub("%s+$", ""))
 			end
 			D.Executor = name
-			D.Detected = name == "delta"
+			D.Detected = name == "delta" or name:find("^delta") ~= nil
 			return D.Detected
 		end
 
@@ -10757,6 +10872,10 @@ Util.FX = (function()
 			end
 			local root = type(reg) == "table" and rawget(reg, "__nameless_admin_private") or nil
 			local env = type(root) == "table" and rawget(root, "delta_customization") or nil
+			if type(env) ~= "table" then -- [v60] fallback: env published by the customizer itself
+				local okG, g = pcall(function() return rawget((getgenv and getgenv()) or _G, "__UhDeltaCustomEnv") end)
+				env = okG and type(g) == "table" and g or nil
+			end
 			return type(env) == "table" and env or nil
 		end
 
@@ -11518,23 +11637,30 @@ Util.FX = (function()
 		end
 
 		function D.Apply() -- called by the Customization page whenever a Delta option changes
-			if D.Detected and D.Active then pcall(D.ApplyLogo) end
+			if D.Detected and D.Active then pcall(D.ApplyLogo) return end
+			-- [v60] bridge never came up (or was switched off): retry now that an option changed
+			if D.Detected and not D.Starting and cfg("DeltaEnabled") ~= false then
+				D.Started = false
+				task.spawn(D.Start)
+			end
 		end
 
 		function D.Start()
-			if D.Started then return end
-			D.Started = true
+			if D.Started or D.Starting then return end
+			D.Started, D.Starting = true, true
 			if not D.Detected then
 				D.Status = "skipped (executor: " .. (D.Executor ~= "" and D.Executor or "unknown") .. ")"
+				D.Starting = false
 				return
 			end
 			if cfg("DeltaEnabled") == false then
 				D.Status = "turned off on the Customization page (applies on the next start)"
+				D.Starting = false
 				return
 			end
 			local ok, err = pcall(function()
 				if not D.Boot() then error(D.Status, 0) end
-				local btn, api = D.WaitIcon(20)
+				local btn, api = D.WaitIcon(75)
 				if not btn then error("Delta icon not found", 0) end
 				D.Button, D.Api = btn, api
 				D.Main = btn:FindFirstAncestorWhichIsA("ScreenGui")
@@ -11549,6 +11675,7 @@ Util.FX = (function()
 				D.Status = tostring(err)
 				warn("[UhhhhhhFX] Delta bridge off (script unaffected): " .. tostring(err))
 			end
+			D.Starting = false
 		end
 
 		pcall(D.Detect)
@@ -230540,6 +230667,10 @@ return P
 			return false
 		end
 		NA.Stage = "ready"
+		-- [auto-init] merge any command the live runtime has that the catalogue did not list (never duplicates)
+		task.defer(function()
+			if NA.SyncExtras then pcall(NA.SyncExtras) end
+		end)
 		-- best effort: keep only the v53 bar/triangle visible, not NA's own window
 		task.spawn(function()
 			for _ = 1, 40 do
@@ -230618,6 +230749,81 @@ return P
 		pcall(function() if gui and gui.loadCommands then gui.loadCommands() end end)
 		pcall(Util.Notify, ("Nameless Admin: %d commands added (handlers load on first use), %d already native, %d blocked."):format(NA.Added, NA.Native, NA.Blocked))
 	end
+
+	-- [auto-init] extra commands: once the embedded runtime is up, every command it really registered (cmds.Commands / cmds.Aliases)
+	-- that the catalogue missed is exposed in the Uh Admin bar / list. Uh natives, existing registrations, blocked (fling) names and
+	-- already-taken aliases always win, so nothing is ever duplicated or overridden, and running it twice adds nothing.
+	function NA.SyncExtras()
+		local env = ready()
+		if not env then return 0 end
+		local okS, store = pcall(function() return env.cmds end)
+		if not okS or type(store) ~= "table" then return 0 end
+		local okC, cmTbl = pcall(function() return store.Commands end)
+		if not okC or type(cmTbl) ~= "table" then return 0 end
+		local okA, alTbl = pcall(function() return store.Aliases end)
+		alTbl = (okA and type(alTbl) == "table") and alTbl or {}
+		local aliasesOf = {}
+		for aname, data in pairs(alTbl) do
+			if type(data) == "table" then
+				local bucket = aliasesOf[data]
+				if not bucket then bucket = {}; aliasesOf[data] = bucket end
+				bucket[#bucket + 1] = lower(aname)
+			end
+		end
+		local added = 0
+		for rawPrimary, data in pairs(cmTbl) do
+			local primary = lower(rawPrimary)
+			if primary ~= "" and type(data) == "table" and not Commands[primary] and not Aliases[primary] and not byName[primary] then
+				local names = { primary }
+				for _, a in ipairs(aliasesOf[data] or {}) do names[#names + 1] = a end
+				if not UH.IsBlocked(names) then
+					local kept = {}
+					for _, key in ipairs(names) do
+						if key ~= primary and not Commands[key] and not Aliases[key] and not byName[key] then kept[#kept + 1] = key end
+					end
+					local info = type(data[2]) == "table" and data[2] or {}
+					local usage = tostring(info[1] or primary)
+					if usage == "" then usage = primary end
+					local reg = {
+						function(...) return NA.Run(primary, { ... }) end,
+						{ usage, tostring(info[2] or "Nameless Admin command.") },
+						aliases = kept,
+					}
+					Commands[primary] = reg
+					byName[primary] = primary
+					for _, key in ipairs(kept) do
+						Aliases[key] = reg
+						byName[key] = primary
+					end
+					commandcount += 1
+					NA.Added += 1
+					added += 1
+				end
+			end
+		end
+		NA.Extra = (NA.Extra or 0) + added
+		if added > 0 then
+			pcall(function() if gui and gui.loadCommands then gui.loadCommands() end end)
+			pcall(Util.Notify, ("Nameless Admin: %d extra command(s) merged into Uh Admin."):format(added))
+		end
+		return added
+	end
+
+	-- [auto-init] start the embedded Nameless Admin loader by itself (no first command needed). It waits for the mod's own
+	-- module loading to finish so the two never compete (60 s cap), then boots once. getgenv().UhNAAutoBoot = false opts out.
+	task.spawn(function()
+		if rawget(host(), "UhNAAutoBoot") == false then return end
+		local t0 = os.clock()
+		while os.clock() - t0 < 60 do
+			local okM, st = pcall(function() return Util.GetModuleStatus and Util.GetModuleStatus() end)
+			if okM and type(st) == "string" and st:find("^MODULES READY") then break end
+			task.wait(0.5)
+		end
+		task.wait(1)
+		if NA.Stage ~= "ready" and not ready() then
+			pcall(NA.Boot)
+		end
+	end)
 end
 
 -- ============================================================================
@@ -231252,6 +231458,7 @@ __dcm_boot.privateRegistry = __dcm_boot.getPrivateRegistry()
 __dcm_boot.privateRoot = __dcm_boot.ensureTable(__dcm_boot.privateRegistry, "__nameless_admin_private")
 local __dcm_env = __dcm_boot.ensureTable(__dcm_boot.privateRoot, "delta_customization")
 local __dcm_shared = __dcm_boot.ensureTable(__dcm_env, "shared")
+pcall(function() rawset(__dcm_boot.hostEnv, "__UhDeltaCustomEnv", __dcm_env) end) -- [v60]
 __dcm_boot.runtimeEnv = __dcm_boot.ensureTable(__dcm_env, "runtime")
 
 __dcm_boot.runtimeEnv.shared = __dcm_shared
@@ -231293,29 +231500,55 @@ local __lt = (function()
 	if type(cached) == "table" then
 		return cached
 	end
-	local loader = __dcm_boot.getLoader()
-	if type(loader) ~= "function" then
-		error("Service resolver loader unavailable")
+	-- [v60] the NA GitHub host is blocked by the offline gate, so the real resolver is only tried when UhNAOffline == false;
+	-- otherwise (or on any failure) an inline offline stand-in with the same API is used so the customizer never aborts.
+	if rawget(__dcm_boot.hostEnv, "UhNAOffline") == false then
+		local loader = __dcm_boot.getLoader()
+		local okSrc, src = pcall(function()
+			return game:HttpGet("https://ltseverydayyou.github.io/ServiceResolver.luau")
+		end)
+		if type(loader) == "function" and okSrc and type(src) == "string" and src ~= "" then
+			local okC, resolver = pcall(loader, src, "@ServiceResolver.luau")
+			if okC and type(resolver) == "function" then
+				if type(__dcm_boot.hostSetfenv) == "function" then
+					pcall(__dcm_boot.hostSetfenv, resolver, __dcm_boot.runtimeEnv)
+				end
+				local okL, loaded = pcall(resolver)
+				if okL and type(loaded) == "table" then
+					__dcm_boot.privateRoot.serviceResolver = loaded
+					return loaded
+				end
+			end
+		end
 	end
-	local okSrc, src = pcall(function()
-		return game:HttpGet("https://ltseverydayyou.github.io/ServiceResolver.luau")
-	end)
-	if not (okSrc and type(src) == "string" and src ~= "") then
-		error("Service resolver HTTP failed: " .. tostring(typeof and typeof(src) or type(src)))
+	local cr = rawget(__dcm_boot.hostEnv, "cloneref") or cloneref
+	if type(cr) ~= "function" then cr = nil end
+	local R = {}
+	R.cloneref = cr or function(v) return v end
+	R.cv = function(value)
+		if cr and typeof(value) == "Instance" then
+			local ok, c = pcall(cr, value)
+			if ok and c ~= nil then return c end
+		end
+		return value
 	end
-	local resolver = loader(src, "@ServiceResolver.luau")
-	if type(resolver) ~= "function" then
-		error("Service resolver failed to compile")
+	R.gs = function(name) return R.cv(game:GetService(name)) end
+	R.cs = function(name, clone)
+		local svc = game:GetService(name)
+		if type(clone) == "function" then
+			local ok, c = pcall(clone, svc)
+			if ok and c ~= nil then return c end
+		end
+		return svc
 	end
-	if type(__dcm_boot.hostSetfenv) == "function" then
-		pcall(__dcm_boot.hostSetfenv, resolver, __dcm_boot.runtimeEnv)
+	R.cm = function(target, member, ...)
+		local obj = target
+		if type(target) == "string" then obj = R.gs(target) end
+		local v = obj[member]
+		if type(v) == "function" then return v(obj, ...) end
+		return v
 	end
-	local loaded = resolver()
-	if type(loaded) ~= "table" then
-		error("Service resolver failed to load")
-	end
-	__dcm_boot.privateRoot.serviceResolver = loaded
-	return loaded
+	return R
 end)()
 local __NAUIProtector = (function()
 	local cacheHost = __dcm_env;
@@ -231324,6 +231557,14 @@ local __NAUIProtector = (function()
 		if type(cached) == "table" then
 			return cached;
 		end;
+	end;
+	local pr = rawget(__dcm_boot.privateRoot, "uiProtector");
+	if type(pr) == "table" then
+		return pr;
+	end;
+	-- [v60] offline gate: the remote protector is only fetched when UhNAOffline == false; nil falls back to the plain gethui
+	if rawget(__dcm_boot.hostEnv, "UhNAOffline") ~= false then
+		return nil;
 	end;
 	local loader = __dcm_boot.getLoader();
 	if type(loader) ~= "function" then
@@ -231335,8 +231576,8 @@ local __NAUIProtector = (function()
 	if not okSource or type(source) ~= "string" or source == "" then
 		return nil;
 	end;
-	local chunk = loader(source, "@UIprotector.luau");
-	if type(chunk) ~= "function" then
+	local okC, chunk = pcall(loader, source, "@UIprotector.luau");
+	if not okC or type(chunk) ~= "function" then
 		return nil;
 	end;
 	if type(__dcm_boot.hostSetfenv) == "function" then
@@ -231377,7 +231618,7 @@ local function __NAProtectUI(gui, options)
 	return nil;
 end;
 
-if (identifyexecutor()):lower() ~= "delta" then
+if not tostring(identifyexecutor()):lower():find("^delta") then
 	return
 end
 
@@ -236963,7 +237204,7 @@ __lt.deltaPatchState.visualEnv = __dcm_env
 if type(__lt.deltaPatchState.visualEnv) == "table" and not __lt.deltaPatchState.visualEnv.__DeltaVisualPatchLoaded then
 	__lt.deltaPatchState.visualEnv.__DeltaVisualPatchLoaded = true
 	task.defer(function()
-		if (identifyexecutor and identifyexecutor() or ""):lower() ~= "delta" then
+		if not (identifyexecutor and identifyexecutor() or ""):lower():find("^delta") then
 			return
 		end
 		local function S(n)
@@ -237474,7 +237715,7 @@ end
 do
 local __lt = __lt
 
-if (identifyexecutor and identifyexecutor() or ""):lower() ~= "delta" then
+if not (identifyexecutor and identifyexecutor() or ""):lower():find("^delta") then
 	return
 end
 
@@ -240783,7 +241024,7 @@ do
 	if type(previousThemeRuntime) == "table" and type(previousThemeRuntime.stop) == "function" then
 		pcall(previousThemeRuntime.stop)
 	end
-	if (identifyexecutor and identifyexecutor() or ""):lower() == "delta" then
+	if (identifyexecutor and identifyexecutor() or ""):lower():find("^delta") then
 		task.defer(function()
 			local themeRuntime = {
 				alive = true,
@@ -257221,6 +257462,20 @@ end
 function LimbReanimator.Fling(target, duration)
 	if not LimbReanimator.FlingEnabled then return end
 	if not target then return false end
+	-- [limb fling fix 1] only real, finite, living targets are queued. A Player resolves to its Character; dead / destroyed / NaN'd / partless
+	-- targets used to be queued anyway and left the queue "flinging" (placeholder shown, no movement) until the engine finally dropped them.
+	if typeof(target) == "Instance" and target:IsA("Player") then target = target.Character end
+	if not target then return false end
+	if typeof(target) == "Instance" then
+		local fpart = Util.Fling.GetPart(target)
+		if not fpart or not fpart:IsDescendantOf(workspace) then return false end
+		local fp = fpart.Position
+		if fp.X ~= fp.X or fp.Y ~= fp.Y or fp.Z ~= fp.Z or fp.Magnitude > 1e6 then return false end
+		if target:IsA("Model") then
+			local fh = target:FindFirstChildOfClass("Humanoid")
+			if fh and fh.Health <= 0 then return false end
+		end
+	end
 	for _,v in LimbReanimator.FlingTargets do
 		if v.Target == target then
 			return false
@@ -258040,6 +258295,9 @@ function LimbReanimator.Config(parent)
 	end))
 end
 function LimbReanimator.Start()
+	-- [limb fling fix 2] a stale queue from a previous run (targets queued while stopped / before a reset) made the new run start "flinging" the moment it spawned
+	table.clear(LimbReanimator.FlingTargets)
+	table.clear(LimbReanimator._TempNotFling)
 	local LimbNames = {"Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
 	local rootposition = Vector3.new(
 		math.random(-65536, 65536),
@@ -258433,9 +258691,45 @@ function LimbReanimator.Start()
 						end
 					end
 				end
+				-- [limb fling fix 3] prune dead / destroyed / NaN'd targets from the WHOLE queue (Step only looks at the head, so one bad
+				-- entry waiting behind a long fling kept ReanimOkay false and the placeholder visible)
+				do
+					local q = LimbReanimator.FlingTargets
+					for qi = #q, 2, -1 do
+						local qt = q[qi] and q[qi].Target
+						if typeof(qt) == "Instance" then
+							local qp = Util.Fling.GetPart(qt)
+							local gone = (not qp) or (not qp:IsDescendantOf(workspace))
+							if not gone then
+								local pp = qp.Position
+								gone = pp.X ~= pp.X or pp.Y ~= pp.Y or pp.Z ~= pp.Z
+							end
+							if gone then table.remove(q, qi) end
+						end
+					end
+				end
 				local flingtarget, flingcf = Util.Fling.Step(LimbReanimator.FlingTargets, t, Util.Fling.UseGlue() and 0.5 or 2)
+				-- [limb fling fix 4] a target CFrame with NaN / absurd values would teleport our own RootPart to NaN (character gone, nothing
+				-- flings afterwards): drop that entry and sit this frame out
+				if flingtarget then
+					local fpos, frv = flingcf.Position, flingcf.RightVector
+					if fpos.X ~= fpos.X or fpos.Y ~= fpos.Y or fpos.Z ~= fpos.Z or fpos.Magnitude > 1e7 or frv.X ~= frv.X then
+						table.remove(LimbReanimator.FlingTargets, 1)
+						flingtarget, flingcf = nil, CFrame.identity
+					end
+				end
 				UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf)
-				Util.Fling.ApplyHumanoid(Humanoid, flingtarget, lastspawn)
+				-- [limb fling fix 5] Util.Fling.ApplyHumanoid keeps writing a NaN MoveDirection every frame while the "NaN State" method is selected,
+				-- even with no target, so the hidden humanoid stayed NaN'd between flings (broken movement / replication afterwards). Outside an
+				-- active fling the Limb reanimator now sends the clean state; Fling 1 / 2 / 3 and the shared fling engine are untouched.
+				if flingtarget then
+					Util.Fling.ApplyHumanoid(Humanoid, flingtarget, lastspawn)
+				else
+					if Util.Fling.Method == 4 then
+						pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.zero)
+					end
+					pcall(sethiddenproperty, Humanoid, "NetworkHumanoidState", Enum.HumanoidStateType.Flying.Value)
+				end
 			end
 			RunService.PreRender:Wait()
 			if Reanimate:ShouldRotationType() then
@@ -258464,6 +258758,9 @@ function LimbReanimator.Start()
 			end
 		end
 	end
+	-- [limb fling fix 6] never carry queued targets / re-fling cooldowns into the next run
+	table.clear(LimbReanimator.FlingTargets)
+	table.clear(LimbReanimator._TempNotFling)
 	CharConn:Disconnect()
 	if Player.Character then
 		local h = Player.Character:FindFirstChild("Humanoid")
