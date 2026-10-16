@@ -103,6 +103,7 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
        Custom mod (v87: INTRO 8 "THE AURA FARMER" - new selectable intro locked to the bundled "The Aura Farmer - Horror Skunx (official song)" MP3 (122 BPM grid, drops on bars 7 / 19 / 26 measured from the audio); scenes follow the official video: golden-hour beach + aviator reveal, neon gym drop, pier + ferris-wheel disco, heat-flare break, dusk pier, gold-chain close-up, spotlight + title; layered parallax, kick-locked camera punches, whip cuts, glitch slices, anamorphic streaks, light leaks, lyric captions; the main page "Intro" selector now also lists The Aura Farmer)
        Custom mod (v88: INTRO 8 "THE AURA FARMER" UPGRADE - the intro now runs the real lyrics: line timing read from the official video (its audio matches the bundled MP3 to the sample), per-word onsets measured on the MP3 vocal band; karaoke word pops, 8 line styles, chromatic ghosts, sparks, per-line camera dolly + cut punch, impact frames on drops / key words, scene cuts on the video shot cuts; clock = Sound.TimePosition with extrapolation + drift correction; the bundled song is now the FULL track (138.6 s) and loops as the UI soundtrack while Intro 8 is selected)
        Custom mod (v89: INTRO REMASTER - intros 2-8 each get their own song-locked overlay on top of the v86 layer: Moonlight constellation + meteors + eclipse corona / Jealousy lock-on reticle + REC + whispers / Lil Peep ECG heartbeat + VHS tracking + datamosh / Liquid Smooth caustics + ripples + depth gauge / Thriller horror-print + ground fog + lit floor / Perfect Face manga speed lines + impact words + feathers / Aura Farmer live aura counter + popups + aura waves; compiled at run time so it can never break the script; the Original intro is untouched)
+       Custom mod (v96: the Nameless Admin integrated inside the Uh Admin now uses "." as its main prefix (default, prefix.txt with a one-time migration of the old ";" default, command bar / open key / chat / admin message / embedded runtime) so the external Nameless Admin keeps ";" and the two no longer both react to the same line when flinging)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -17731,15 +17732,21 @@ end
 	 makefolder(NA_PLUGIN_FOLDER)
  end
 
+ local NA_PREFIX_MARK = NA_FOLDER .. "/prefix_dot.flag"
  if not isfile(NA_PREFIX_FILE) then
- writefile(NA_PREFIX_FILE, ';')
- else
+ writefile(NA_PREFIX_FILE, '.')
+ pcall(writefile, NA_PREFIX_MARK, '1')
+ elseif not isfile(NA_PREFIX_MARK) then
+ -- one-time migration: the old default ';' now belongs to the external Nameless Admin
+ local okOld, oldPrefix = pcall(readfile, NA_PREFIX_FILE)
+ if okOld and tostring(oldPrefix):gsub("%s", "") == ';' then pcall(writefile, NA_PREFIX_FILE, '.') end
+ pcall(writefile, NA_PREFIX_MARK, '1')
  end
  end
  
  -- [[ PREFIX AND OTHER STUFF. ]] -- 
  local opt = {
-	 prefix = (FileSupport and isfile(NA_PREFIX_FILE) and readfile(NA_PREFIX_FILE)) or ';', -- [uh integration] prefix read from the UhhhhhhReanim folder
+	 prefix = (FileSupport and isfile(NA_PREFIX_FILE) and (readfile(NA_PREFIX_FILE):gsub("%s", ""))) or '.', -- [uh integration] prefix read from the UhhhhhhReanim folder (default '.', ';' stays with the external Nameless Admin)
 	 tupleSeparator = ',',	-- ;ff me,others,all | ;ff me/others/all
 	 ui = {					-- never did anything with this
 		 
@@ -18204,8 +18211,8 @@ end
 
 lib.parseCommand = function(text, requirePrefix)
 	if type(text) ~= "string" then return false end
-	local prefix=tostring(opt.prefix or ";")
-	if prefix == "" then prefix = ";" end
+	local prefix=tostring(opt.prefix or ".")
+	if prefix == "" then prefix = "." end
 	local source=text
 	if requirePrefix and source:sub(1,#prefix) ~= prefix then return false end
 	while source:sub(1,#prefix)==prefix do source=source:sub(#prefix+1) end
@@ -23489,7 +23496,7 @@ end
 	 local Player = getPlr(...)
 	 if Player ~= nil and not Admin[Player.UserId] then
 		 Admin[Player.UserId] = {Player = Player}
-		 ChatMessage("/w "..Player.Name.." [Nameless Admin] You've got admin. Prefix: ';'")
+		 ChatMessage("/w "..Player.Name.." [Nameless Admin] You've got admin. Prefix: '"..tostring(opt.prefix or ".").."'")
 		 wait(0.2)
 		 ChatMessage("/w "..Player.Name.." [Nameless Admin Commands] glue, unglue, fcd, fti, fpp, fireremotes, holdhat")
 		 ChatMessage("/w "..Player.Name.." reset, commitoof, seizure, unseizure, toolorbit, lay, fall, toolspin, hatspin, sit, joke, kanye")
@@ -32335,7 +32342,7 @@ Util.UhAdmin.OpenBar = function()
  gui.searchCommands = function()
 	if not cmdInput or not cmdAutofill then return end
 	local str = tostring(cmdInput.Text or "")
-	local prefix = tostring(opt.prefix or ";")
+	local prefix = tostring(opt.prefix or ".")
 	if prefix ~= "" then
 		while str:sub(1, #prefix) == prefix do str = str:sub(#prefix + 1) end
 	end
@@ -32373,7 +32380,7 @@ end
 	 local ok, keyText = pcall(function() return UserInputService:GetStringForKeyCode(input.KeyCode) end)
 	 local ch = ok and type(keyText) == "string" and keyText:sub(1,1):lower() or ""
 	 if ch == "" then return end
-	 if ch == tostring(opt.prefix or ";"):sub(1,1):lower() then
+	 if ch == tostring(opt.prefix or "."):sub(1,1):lower() then
 		 gui.barSelect()
 		 cmdInput.Text = ''
 		 cmdInput:CaptureFocus()
@@ -32394,7 +32401,7 @@ end
 		 end
 		 wrap(function()
 			 local entered=cmdInput.Text or ""
-			 local prefix=tostring(opt.prefix or ";")
+			 local prefix=tostring(opt.prefix or ".")
 			 if entered:sub(1,#prefix)==prefix then entered=entered:sub(#prefix+1) end
 			 lib.parseCommand(prefix .. entered)
 		 end)
@@ -35715,7 +35722,7 @@ NA_TABS = {
 }
 
 NAStuff = {
-	prefixCheck = ";";
+	prefixCheck = ".";
 	Notification = nil;
 	CmdBar2 = (NAStuff and NAStuff.CmdBar2) or {
 		defaultWidth = 340;
@@ -61024,6 +61031,7 @@ NAStuff.DevConsoleOverscan = math.clamp(math.floor((tonumber(NAStuff.DevConsoleO
 
 if FileSupport then
 	NAStuff.prefixCheck = NAmanage.NASettingsGet("prefix")
+	NAStuff.prefixCheck = "." -- [uh] integrated NA owns '.', the external Nameless Admin keeps ';' (in-memory only, never saved to Settings.json)
 	NAsavedScale = NAmanage.NASettingsGet("buttonSize")
 	NAUISavedScale = NAmanage.NASettingsGet("uiScale")
 	NAQoTEnabled = NAmanage.NASettingsGet("queueOnTeleport")
@@ -61927,7 +61935,7 @@ if FileSupport then
 
 	NAmanage.ApplyTextChatSettings()
 else
-	NAStuff.prefixCheck = ";"
+	NAStuff.prefixCheck = "."
 	NAScale = 1
 	NAQoTEnabled = false
 	NAiconSaveEnabled = false
@@ -193249,12 +193257,12 @@ do
 				end
 
 				if pfxSt.invalid then
-					if opt.prefix ~= ";" then
-						opt.prefix = ";"
-						pfxSt.value = ";"
+					if opt.prefix ~= "." then
+						opt.prefix = "."
+						pfxSt.value = "."
 						pfxSt.invalid = false
-						DoNotif("Invalid prefix detected. Resetting to default ';'")
-						lastPrefix = ";"
+						DoNotif("Invalid prefix detected. Resetting to default '.'")
+						lastPrefix = "."
 						if NAmanage.SyncPrefixUI then
 							NAmanage.SyncPrefixUI()
 						end
@@ -250107,7 +250115,7 @@ do
 		Animation = 1,
 		ProgressSm = 0,
 	}
-	Util.UINotify = function(text, prog)
+	Util.UINotify = function(text, prog, wrap)
 		local CFG = Util.FX.Cfg
 		if CFG.NotifMode == 4 then return end -- silent
 		if CFG.NotifMode == 3 then -- Roblox popups only (skip loading-progress updates)
@@ -250123,6 +250131,7 @@ do
 			return
 		end
 		uinotif.Text, uinotif.Progress = text, prog or 1
+		uinotif.Wrap = wrap
 		uinotif.LastNotif = _totalrendertime
 		if CFG.NotifSound and (prog == nil or prog >= 1) then
 			pcall(function()
@@ -250189,6 +250198,16 @@ do
 		if uinotif.Animation < 1 then
 			UINotifyFrame.Visible = true
 			local nh = math.max(30, CFG.NotifSize + 12)
+			if uinotif.Wrap then -- [v93] long announcements wrap onto several lines
+				local wkey = tostring(uinotif.Text) .. "|" .. CFG.NotifSize .. "|" .. CFG.NotifWidth
+				if uinotif.WrapKey ~= wkey then
+					uinotif.WrapKey = wkey
+					local wok, wsz = pcall(TextService.GetTextSize, TextService, tostring(uinotif.Text), CFG.NotifSize, Enum.Font.Code, Vector2.new(CFG.NotifWidth - 12, 1000))
+					uinotif.WrapH = wok and math.min(wsz.Y + 14, 160) or nil
+				end
+				if uinotif.WrapH then nh = math.max(nh, uinotif.WrapH) end
+			end
+			NotifyText.TextWrapped = uinotif.Wrap == true
 			UINotifyFrame.Size = UDim2.new(0, CFG.NotifWidth, 0, nh)
 			NotifyText.TextSize = CFG.NotifSize
 			NotifyText.Size = UDim2.new(1, 0, 0, nh)
@@ -252616,6 +252635,116 @@ UI.CreateButton(MainPage, " &lt; Back to cool scene", 20).Activated:Connect(func
 		CracktroFrame.Interactable = true
 	end)
 end)
+-- [v93 OWNER BROADCAST] compose panel exists only for "Kingbaconnon19"; every running copy polls the shared backend and shows each announcement in the notification UI
+if not pcall(function()
+	local OWNER = "Kingbaconnon19"
+	local BROADCAST_URL = "https://nooby-reanimation.onrender.com" -- SET to your deployed backend, e.g. "https://your-app.onrender.com" (no trailing slash); getgenv().UH_BROADCAST_URL overrides
+	local BASE = tostring((type(getgenv) == "function" and getgenv().UH_BROADCAST_URL) or BROADCAST_URL):gsub("/+$", "")
+	local function call(method, path, body, key)
+		local headers = {["Content-Type"] = "application/json"}
+		if key then headers.Authorization = "Bearer " .. key end
+		return pcall(request, {Url = BASE .. path, Method = method, Headers = headers, Body = body and HttpService:JSONEncode(body) or nil})
+	end
+	local function clean(s)
+		return (tostring(s):gsub("[%c<>]", " "):sub(1, 200))
+	end
+	if BASE ~= "" and type(request) == "function" then
+		task.spawn(function()
+			local last
+			while true do
+				local ok, res = call("GET", last and ("/poll?after=" .. string.format("%d", last)) or "/poll")
+				if ok and type(res) == "table" and res.StatusCode == 200 then
+					local ok2, data = pcall(HttpService.JSONDecode, HttpService, res.Body)
+					if ok2 and type(data) == "table" then
+						if last == nil then
+							last = tonumber(data.id) or 0
+						else
+							for _, m in ipairs(type(data.msgs) == "table" and data.msgs or {}) do
+								local id = tonumber(m.id)
+								if id and id > last and type(m.text) == "string" then
+									last = id
+									Util.UINotify(OWNER .. ": " .. clean(m.text), nil, true)
+									task.wait(math.max(2, (Util.FX.Cfg.NotifDuration or 3) + 1))
+								end
+							end
+						end
+					end
+				end
+				task.wait(4)
+			end
+		end)
+	end
+	if Player.Name == OWNER then
+		local KEYFILE = "UhhhhhhReanim/owner_key.txt"
+		local saved = tostring((type(getgenv) == "function" and getgenv().UH_OWNER_KEY) or "")
+		if saved == "" then
+			local ok, v = pcall(function() return isfile(KEYFILE) and readfile(KEYFILE) or "" end)
+			saved = ok and tostring(v) or ""
+		end
+		UI.CreateText(MainPage, "<b>OWNER BROADCAST</b> <font color=\"#AAAAAA\">(" .. OWNER .. " only)</font>", 15, Enum.TextXAlignment.Center)
+		local keyBox = UI.CreateTextbox(MainPage, saved, "Owner key (stored on this device only)", 14)
+		keyBox.FocusLost:Connect(function()
+			pcall(writefile, KEYFILE, (keyBox.Text:gsub("%s", "")))
+		end)
+		local msgBox = UI.CreateTextbox(MainPage, "", "Announcement for all users (max 200 chars)", 14)
+		local sending = false
+		UI.CreateButton(MainPage, "Send announcement", 20).Activated:Connect(function()
+			if sending then return end
+			local text = (msgBox.Text:gsub("^%s+", ""):gsub("%s+$", ""))
+			local key = (keyBox.Text:gsub("%s", ""))
+			if text == "" then Util.UINotify("Type an announcement first") return end
+			if BASE == "" or type(request) ~= "function" then Util.UINotify("Broadcast backend not configured - NOT sent") return end
+			if key == "" then Util.UINotify("Enter the owner key first") return end
+			sending = true
+			local ok, res = call("POST", "/send", {user = Player.Name, text = text:sub(1, 200)}, key)
+			sending = false
+			if ok and type(res) == "table" and res.StatusCode == 200 then
+				msgBox.Text = ""
+			else
+				Util.UINotify("Not sent: " .. tostring(ok and type(res) == "table" and (res.StatusCode or res.StatusMessage) or res))
+			end
+		end)
+		local SERVER_JS = [==[
+// node broadcast_server.js   (env: OWNER_KEY = long random secret, PORT optional)
+const http = require("http"), crypto = require("crypto");
+const OWNER = "Kingbaconnon19", KEY = process.env.OWNER_KEY || "";
+const h = s => crypto.createHash("sha256").update(String(s)).digest();
+let msgs = [], lastId = 0, lastSend = 0;
+http.createServer((req, res) => {
+  const u = new URL(req.url, "http://x");
+  const out = (c, o) => { res.writeHead(c, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+  if (req.method === "GET" && u.pathname === "/poll") {
+    const a = u.searchParams.get("after");
+    return out(200, { id: lastId, msgs: a === null ? [] : msgs.filter(m => m.id > Number(a)) });
+  }
+  if (req.method === "POST" && u.pathname === "/send") {
+    let b = "";
+    req.on("data", d => { b += d; if (b.length > 4096) req.destroy(); });
+    req.on("end", () => {
+      let j; try { j = JSON.parse(b); } catch { return out(400, {}); }
+      const tok = (req.headers.authorization || "").replace(/^Bearer /, "");
+      if (!KEY || !crypto.timingSafeEqual(h(tok), h(KEY)) || j.user !== OWNER) return out(403, {});
+      const text = String(j.text || "").replace(/[\u0000-\u001f<>]/g, " ").trim().slice(0, 200);
+      if (!text || Date.now() - lastSend < 2000) return out(400, {});
+      lastSend = Date.now();
+      lastId = Math.max(Date.now(), lastId + 1);
+      msgs.push({ id: lastId, text });
+      msgs = msgs.slice(-50);
+      out(200, { id: lastId });
+    });
+    return;
+  }
+  out(404, {});
+}).listen(process.env.PORT || 3000);
+]==]
+		UI.CreateButton(MainPage, "Export backend (broadcast_server.js)", 16).Activated:Connect(function()
+			pcall(makefolder, "UhhhhhhReanim")
+			local ok = pcall(writefile, "UhhhhhhReanim/broadcast_server.js", SERVER_JS)
+			Util.UINotify(ok and "Saved UhhhhhhReanim/broadcast_server.js - run it on a Node host" or "Could not write the file", nil, true)
+		end)
+		UI.CreateSeparator(MainPage)
+	end
+end) then warn("[v93] owner broadcast failed to build") end
 UI.CreateDropdown(MainPage, "Intro", {"Original", "Moonlight", "Jealousy", "lil peep", "Liquid Smooth", "Thriller", "Perfect Face", "The Aura Farmer"}, (SaveData.IntroStyle == 8 and 8) or (SaveData.IntroStyle == 7 and 7) or (SaveData.IntroStyle == 6 and 6) or (SaveData.IntroStyle == 5 and 5) or (SaveData.IntroStyle == 4 and 4) or (SaveData.IntroStyle == 3 and 3) or (SaveData.IntroStyle == 2 and 2) or 1).Changed:Connect(function(value) -- [v72] the selector lives right under "Back to cool scene" / Feature Center; Original stays the default
 	SaveData.IntroStyle = (value == 8 and 8) or (value == 7 and 7) or (value == 6 and 6) or (value == 5 and 5) or (value == 4 and 4) or (value == 3 and 3) or (value == 2 and 2) or 1
 	local song = (value == 8 and Util.Intro8Song) or (value == 7 and Util.Intro7Song) or (value == 6 and Util.Intro6Song) or (value == 5 and Util.Intro5Song) or (value == 4 and Util.Intro4Song) or (value == 3 and Util.Intro3Song) or (value == 2 and Util.Intro2Song) or nil
@@ -259947,6 +260076,7 @@ Util.Fling.Names = {
 	"Fling 1 (Nameless / Source)",
 	"Fling 2 (Carpet)",
 	"Fling 3 (Hidden / Flight)",
+	"Alt-fling (Nameless Admin alt)",
 }
 Util.Fling.Descriptions = {
 	"default fling: spins into the target at crazy velocity and sends them flying",
@@ -259956,6 +260086,7 @@ Util.Fling.Descriptions = {
 	"Fling 1: adapted from Nameless Admin's classic high-velocity multi-position fling sequence",
 	"Fling 2: adapted from the carpet-animation target-following fling sequence",
 	"Fling 3: adapted from the hidden-fling target sweep + flight sequence",
+	"Alt-fling: your Nameless Admin alt does the flinging. Your own character never flings.",
 }
 Util.Fling.WeakDuration = 0.4        -- how long a weak fling lasts (seconds)
 Util.Fling.NaNWindow = 0.6           -- seconds to wait for the NaN state to work before escalating
@@ -259980,6 +260111,7 @@ Util.Fling.SetMethod = function(m)
 	SaveData.Reanimator = SaveData.Reanimator or {}
 	SaveData.Reanimator.LimbUseNaNFling = (m == 4) -- keeps old saves in sync
 	Util.Notify("Fling method: " .. Util.Fling.Names[m])
+	if Util.AltFling then if m == 8 then Util.AltFling.Enable() else Util.AltFling.Disable() end end
 end
 Util.Fling.GetPart = function(target)
 	if typeof(target) == "Instance" then
@@ -263984,6 +264116,7 @@ local function ReanimateShowHitboxes()
 	end
 end
 local function ReanimateFling(target, duration)
+	if Util.Fling.Method == 8 and Util.AltFling then return Util.AltFling.Request(target) end
 	local Reanimator = Reanimate.Current
 	if Reanimator and Reanimator.Fling then
 		return Reanimator.Fling(target, duration)
@@ -264500,6 +264633,10 @@ do
 	FlingMethodDropdown.Changed:Connect(function(val)
 		Util.Fling.SetMethod(val)
 		FlingMethodDesc.Text = Util.Fling.Descriptions[Util.Fling.Method]
+	end)
+	Util.AltFlingUI = UI.CreateText(MainPage, "Alt-fling: pick it above, then click a target", 10, Enum.TextXAlignment.Center)
+	UI.CreateButton(MainPage, "Alt-fling: resend command", 15).Activated:Connect(function()
+		if Util.Fling.Method == 8 and Util.AltFling then Util.AltFling.Send() end
 	end)
 	UI.CreateSwitch(MainPage, "Click Fling", Reanimate.ClickFling).Changed:Connect(function(val)
 		Reanimate.ClickFling = val
@@ -265894,6 +266031,137 @@ TextChatService.MessageReceived:Connect(function(message)
 	end
 end)
 task.wait()
+-- [alt-fling] Nameless Admin alt = the flinger (your character never flings)
+do
+	local AF = {Prefix = ";", Admins = {}, Notified = {}, Hide = {}, Conns = {}, Enabled = false, LastSend = 0}
+	Util.AltFling = AF
+	local function status(t)
+		local l = Util.AltFlingUI
+		if l then pcall(function() l.Text = t end) end
+	end
+	local function isWhisper(m)
+		return m.TextChannel ~= nil and string.find(m.TextChannel.Name, "^RBXWhisper") ~= nil
+	end
+	function AF.Refresh()
+		local adm = AF.Active and AF.Admins[AF.Active]
+		AF.Command = (adm and AF.Target) and (adm.Prefix .. "fling " .. AF.Target.Name) or nil
+		if not adm then status("Alt-fling: waiting for an admin whitelist whisper")
+		elseif AF.Command then status("Alt-fling via " .. adm.Player.Name .. ": " .. AF.Command)
+		else status("Alt-fling via " .. adm.Player.Name .. ": click a target") end
+	end
+	function AF.Send()
+		local adm = AF.Active and AF.Admins[AF.Active]
+		if not (adm and adm.Player.Parent and AF.Command) then return false end
+		if os.clock() - AF.LastSend < 1 then return false end
+		AF.LastSend = os.clock()
+		local msg = "/w @" .. adm.Player.Name .. " " .. AF.Command
+		AF.Hide[AF.Command] = true
+		AF.Hide[msg] = true
+		local ch = adm.Channel
+		if ch and ch.Parent and pcall(function() ch:SendAsync(AF.Command, Util.RandomString(64)) end) then
+			return true
+		end
+		ProtectedChat(msg)
+		return true
+	end
+	function AF.Request(target)
+		if not AF.Enabled then return false end
+		if typeof(target) == "Instance" and not target:IsA("Player") then target = Players:GetPlayerFromCharacter(target) end
+		if typeof(target) ~= "Instance" or not target:IsA("Player") or target == Player or AF.Admins[target.UserId] then return false end
+		AF.Target = target
+		AF.Refresh()
+		return AF.Send()
+	end
+	local function onMessage(m)
+		local src = m.TextSource
+		if not src or src.UserId == Player.UserId or not isWhisper(m) then return end
+		local low = m.Text:lower()
+		if not (low:find("got admin", 1, true) and low:find("prefix", 1, true)) then return end
+		local plr = Players:GetPlayerByUserId(src.UserId)
+		if not plr then return end
+		local pfx = m.Text:match("[Pp]refix%s*is%s*(%p)")
+		if pfx == "'" or pfx == '"' then pfx = nil end
+		AF.Admins[plr.UserId] = {Player = plr, Prefix = pfx or AF.Prefix, Channel = m.TextChannel}
+		AF.Active = plr.UserId
+		if not AF.Notified[plr.UserId] then
+			AF.Notified[plr.UserId] = true
+			Util.UINotify("Nameless Admin whitelist from " .. plr.Name)
+			local reply = "/w @" .. plr.Name .. " uh mod connected."
+			AF.Hide["uh mod connected."] = true
+			AF.Hide[reply] = true
+			if not pcall(function() m.TextChannel:SendAsync("uh mod connected.", Util.RandomString(64)) end) then
+				ProtectedChat(reply)
+			end
+		end
+		AF.Refresh()
+	end
+	local function hideOwn(m)
+		local src = m.TextSource
+		if src and src.UserId == Player.UserId and AF.Hide[m.Text] then
+			local p = Instance.new("TextChatMessageProperties")
+			p.Text = ""
+			p.PrefixText = ""
+			return p
+		end
+	end
+	function AF.Enable()
+		if AF.Enabled then return end
+		AF.Enabled = true
+		if type(getcallbackvalue) == "function" then
+			local ok, prev = pcall(getcallbackvalue, TextChatService, "OnIncomingMessage")
+			AF.Prev = ok and prev or nil
+		end
+		pcall(function()
+			TextChatService.OnIncomingMessage = function(m)
+				local ok, res = pcall(hideOwn, m)
+				if ok and res then return res end
+				if AF.Prev then return AF.Prev(m) end
+			end
+		end)
+		if type(getcallbackvalue) == "function" then
+			local okb, prevb = pcall(getcallbackvalue, TextChatService, "OnBubbleAdded")
+			AF.PrevBubble = okb and prevb or nil
+		end
+		pcall(function()
+			TextChatService.OnBubbleAdded = function(m, adornee)
+				local src = m.TextSource
+				if src and src.UserId == Player.UserId and AF.Hide[m.Text] then
+					local p = Instance.new("BubbleChatMessageProperties")
+					for k, v in pairs({Transparency = 1, TextTransparency = 1, BackgroundTransparency = 1, TailVisible = false, TextSize = 1}) do
+						pcall(function() p[k] = v end)
+					end
+					return p
+				end
+				if AF.PrevBubble then return AF.PrevBubble(m, adornee) end
+			end
+		end)
+		table.insert(AF.Conns, TextChatService.MessageReceived:Connect(onMessage))
+		table.insert(AF.Conns, Players.PlayerRemoving:Connect(function(p)
+			AF.Admins[p.UserId] = nil
+			AF.Notified[p.UserId] = nil
+			if AF.Active == p.UserId then AF.Active = nil end
+			if AF.Target == p then AF.Target = nil end
+			AF.Refresh()
+		end))
+		AF.Refresh()
+	end
+	function AF.Disable()
+		if not AF.Enabled then return end
+		AF.Enabled = false
+		for _, c in ipairs(AF.Conns) do pcall(function() c:Disconnect() end) end
+		table.clear(AF.Conns)
+		pcall(function() TextChatService.OnIncomingMessage = AF.Prev end)
+		pcall(function() TextChatService.OnBubbleAdded = AF.PrevBubble end)
+		AF.PrevBubble = nil
+		AF.Prev = nil
+		table.clear(AF.Admins)
+		table.clear(AF.Notified)
+		table.clear(AF.Hide)
+		AF.Active, AF.Target, AF.Command = nil, nil, nil
+		status("Alt-fling: disabled")
+	end
+	if Util.Fling.Method == 8 then AF.Enable() end
+end
 
 local MovementStyles = {}
 local DanceableDances = {}
