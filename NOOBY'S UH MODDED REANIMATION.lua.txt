@@ -99,6 +99,7 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 collapse into the silence, then bead rails, a rising tide, plucked liquid threads and a title whose letters fall in and drip away; the main page "Intro" selector now also lists Liquid Smooth)
        Custom mod (v76: INTRO 7 "PERFECT FACE" - new selectable intro locked to the bundled "Laydownrot - Perfect Face (Slowed)" MP3 (106.75 BPM grid, drops on bars 9 / 25 measured from the audio); embedded MP3s re-encoded to mono 40 kbps to keep the file under 20 MB)
        Custom mod (v77: INTRO 7 "PERFECT FACE" redrawn as the Mighty Eagle - frame-built eagle (white head, big beak with jaw, yellow eye, muscular torso, elbow-jointed wings, rock perch) over a sunburst, halo rings and clouds; the wing pose, jaw, head, eye, rays and glow are locked to the measured kicks / hats / vocal phrases / drops, with a double-biceps flex slam on the drops)
+       Custom mod (v86: INTRO UPGRADE - Moonlight / Jealousy / lil peep / Liquid Smooth / Thriller / Perfect Face get a shared song-locked cinematic layer (letterbox tension + snap, anamorphic streaks, light leaks, vignette, edge fringes, parallax particles, additive camera punch, decoding chapter captions, ghost kicker words) and a signature drop hit each; the Original intro is untouched)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -4078,6 +4079,381 @@ Util.FX = (function()
 		end)
 	end
 
+	-- =====================================================================================================================================
+	--  [v86] INTRO UPGRADE LAYER (intros 2-7 only - the ORIGINAL intro is not touched, selector / songs / timing are unchanged)
+	-- One shared, song-locked cinematic layer that every selectable intro mounts on its own `stage` (FX.IntroUpgrade) and drives from its own
+	-- loop (E.up(t, dt, S) right after the intro has written its camera). It never replaces anything the intro draws, it adds on top:
+	--   * widescreen letterbox that opens with the picture, tightens into every drop ("tension") and snaps open on the hit, hairline accent edge
+	--   * anamorphic lens streaks, drifting light leaks, depth vignette, chromatic edge fringes, parallax bokeh / rain / embers (all kick-reactive)
+	--   * additive camera layer on the intro's own world: drop punch-in with overshoot, alternating dutch kick, handheld drift, tension push
+	--   * chapter captions that decode out of noise in the bottom bar + a giant ghost kicker word on every big drop
+	--   * a SIGNATURE hit per intro: lunar rings / emerald-crimson eye / glitch slices / liquid ellipses / lightning bolt / golden starburst
+	-- Honors Intro Intensity (0 = off), fades out before the hand-off, and any error inside it disables only the layer, never the intro.
+	-- =====================================================================================================================================
+	FX.IUProfiles = (function()
+		local function C(r, g, b) return Color3.fromRGB(r, g, b) end
+		return {
+			[2] = {name = "MOONLIGHT", a = C(176, 200, 255), b = C(196, 164, 255), l1 = C(70, 90, 255), l2 = C(190, 130, 255),
+				bar = 0.075, bm = "drift", tb = 0.03, sig = "rings", pk = "orb", pn = 16, psz = {10, 34}, pdx = 0.004, pdy = -0.014, wob = 1,
+				sway = 1, drift = 1, dutch = 1.6, punch = 0.07, fire = {{1, 1}, {2, 0.75}, {3, 1}},
+				caps = function(d, K) return {{0.9, "I / NIGHTFALL"}, {d[1], "II / FULL MOON", "FULL MOON"}, {d[1] + K.BAR, "III / ECLIPSE"},
+					{d[2], "IV / LUNAR CREW", "LUNAR CREW"}, {d[3], "V / ZENITH", "ZENITH"}} end},
+			[3] = {name = "JEALOUSY", a = C(70, 255, 150), b = C(255, 54, 96), l1 = C(0, 190, 110), l2 = C(210, 24, 64),
+				bar = 0.085, bm = "drift", tb = 0.17, sig = "eye", pk = "drop", pn = 22, psz = {14, 34}, pdx = -0.012, pdy = 0.07, wob = 0,
+				sway = 0.6, drift = 1.4, dutch = 2.2, punch = 0.06, fire = {{1, 1}, {2, 1}, {3, 0.8}, {4, 0.5}},
+				caps = function(d, K) return {{0.8, "I / WATCHING"}, {d[1], "II / ENVY", "ENVY"}, {d[2], "III / POSSESSION", "POSSESSION"},
+					{d[3], "IV / OBSESSION", "OBSESSION"}} end},
+			[4] = {name = "LIL PEEP", a = C(255, 46, 150), b = C(70, 226, 255), l1 = C(255, 20, 120), l2 = C(130, 70, 255),
+				bar = 0.06, bm = "glitch", tb = 0.05, sig = "glitch", pk = "drop", pn = 26, psz = {10, 26}, pdx = -0.02, pdy = 0.38, wob = 0,
+				sway = 0.5, drift = 1, dutch = 2.8, punch = 0.085, fire = {{1, 1}, {3, 0.6}, {4, 1}, {5, 1}},
+				caps = function(d, K) return {{0.5, "I / STATIC"}, {d[1], "II / DROP 01", "DROP 01"}, {d[2], "III / BREAKDOWN", "BREAKDOWN"},
+					{d[4], "IV / DROP 02", "DROP 02"}, {d[5], "V / THE FALL", "THE FALL"}} end},
+			[5] = {name = "LIQUID SMOOTH", a = C(90, 226, 240), b = C(96, 150, 255), l1 = C(30, 160, 230), l2 = C(70, 230, 200),
+				bar = 0.07, bm = "wave", tb = 0.03, sig = "ellipse", pk = "bubble", pn = 20, psz = {10, 38}, pdx = 0.006, pdy = -0.05, wob = 1,
+				sway = 1.2, drift = 1.2, dutch = 1.4, punch = 0.06, fire = {{1, 1}, {4, 1}, {5, 0.7}, {6, 0.8}, {7, 1}},
+				caps = function(d, K) return {{0.9, "I / SURFACE"}, {d[1], "II / THE PLUNGE", "THE PLUNGE"}, {d[2], "III / SUBMERGED"}, {d[3], "IV / THE STILL"},
+					{d[4], "V / FLOW", "FLOW"}, {d[5], "VI / FLOW II"}, {d[6], "VII / GOLDEN HOUR", "GOLDEN HOUR"}, {d[7], "VIII / THE FLOOD", "THE FLOOD"}} end},
+			[6] = {name = "THRILLER", a = C(230, 34, 44), b = C(255, 150, 40), lc = C(176, 196, 255), l1 = C(200, 10, 20), l2 = C(80, 200, 70),
+				bar = 0.1, bm = "thump", tb = 0.06, sig = "bolt", pk = "ember", pn = 20, psz = {8, 22}, pdx = 0.01, pdy = -0.07, wob = 1,
+				sway = 0.8, drift = 1, dutch = 2.6, punch = 0.08, fire = {{1, 0.8}, {4, 1}, {5, 1}, {6, 0.8}},
+				caps = function(d, K) return {{0.8, "I / THE DOOR"}, {d[1], "II / THE WALK"}, {d[2], "III / HEARTBEAT"}, {d[3], "IV / THE CREEP"},
+					{d[4], "V / THRILLER", "THRILLER"}, {d[5], "VI / NIGHT FEVER", "NIGHT FEVER"}, {d[6], "VII / THE ECLIPSE", "ECLIPSE"}, {d[7], "VIII / THE HOUR"}} end},
+			[7] = {name = "PERFECT FACE", a = C(255, 214, 120), b = C(255, 140, 200), l1 = C(255, 120, 170), l2 = C(255, 200, 90),
+				bar = 0.065, bm = "drift", tb = 0, sig = "burst", pk = "spark", pn = 24, psz = {8, 24}, pdx = 0.02, pdy = -0.03, wob = 1,
+				sway = 0.8, drift = 1, dutch = 1.8, punch = 0.07, fire = {{1, 0.7}, {3, 1}, {4, 0.7}, {6, 1}},
+				caps = function(d, K) return {{0.8, "I / OVERTURE"}, {d[1], "II / ASCENT"}, {d[2], "III / HOLD ON"}, {d[3], "IV / PERFECT FACE", "PERFECT FACE"},
+					{d[4], "V / FLEX"}, {d[5], "VI / BREATHE"}, {d[6], "VII / ENCORE", "ENCORE"}} end},
+		}
+	end)()
+
+	function FX.IntroUpgrade(stage, E, id, d, K, zb)
+		local P = FX.IUProfiles[id]
+		local INT = math.clamp(tonumber(K and K.INT) or 1, 0, 1.5)
+		if not P or INT <= 0.01 or not stage or type(d) ~= "table" then return nil end
+		local WHITE, BLACK, V2 = Color3.new(1, 1, 1), Color3.new(0, 0, 0), Vector2.new
+		local C0 = UDim2.fromScale(0.5, 0.5)
+		local INT1 = math.min(INT, 1)
+		local function clamp01(x) return math.max(0, math.min(1, x)) end
+		local function lerp(a, b, k) return a + (b - a) * k end
+		local function ease(x) x = clamp01(x) return 1 - (1 - x) ^ 3 end
+		local function envl(a, atk, rel)
+			if a < 0 then return 0 end
+			if a < atk then return a / atk end
+			return math.exp(-(a - atk) / rel)
+		end
+		local function mk(cl, parent, props)
+			local o = Util.Instance(cl, parent)
+			for k, v in pairs(props) do o[k] = v end
+			return o
+		end
+		local function F(parent, z, ap, pos, size, col, tr)
+			return mk("Frame", parent, {AnchorPoint = ap, Position = pos, Size = size, BackgroundColor3 = col, BackgroundTransparency = tr, BorderSizePixel = 0, ZIndex = z, Interactable = false})
+		end
+		local function grad(f, rot, pts)
+			local g = Util.Instance("UIGradient", f)
+			g.Rotation = rot
+			local ks = {}
+			for i, p in ipairs(pts) do ks[i] = NumberSequenceKeypoint.new(p[1], p[2]) end
+			g.Transparency = NumberSequence.new(ks)
+			return g
+		end
+		local function round(f)
+			Util.Instance("UICorner", f).CornerRadius = UDim.new(1, 0)
+			return f
+		end
+		local function vis(a, life) return 1 - clamp01(a * INT * (life or 1)) end
+
+		local root = F(stage, zb or 24, V2(0, 0), UDim2.new(), UDim2.fromScale(1, 1), BLACK, 1)
+
+		-- light leaks (soft corner colour bleeding in)
+		local lk1 = F(root, 1, V2(0, 0), UDim2.fromScale(-0.12, -0.12), UDim2.fromScale(1, 1), P.l1, 0.9)
+		grad(lk1, 45, {{0, 0}, {0.55, 0.55}, {1, 1}})
+		local lk2 = F(root, 1, V2(1, 1), UDim2.fromScale(1.12, 1.12), UDim2.fromScale(1, 1), P.l2, 0.9)
+		grad(lk2, 225, {{0, 0}, {0.55, 0.55}, {1, 1}})
+		-- depth vignette (four soft edges)
+		local vg = {}
+		vg[1] = F(root, 2, V2(0, 0), UDim2.new(), UDim2.fromScale(1, 0.28), BLACK, 0.8) grad(vg[1], 90, {{0, 0}, {1, 1}})
+		vg[2] = F(root, 2, V2(0, 1), UDim2.fromScale(0, 1), UDim2.fromScale(1, 0.28), BLACK, 0.8) grad(vg[2], 270, {{0, 0}, {1, 1}})
+		vg[3] = F(root, 2, V2(0, 0), UDim2.new(), UDim2.fromScale(0.2, 1), BLACK, 0.8) grad(vg[3], 0, {{0, 0}, {1, 1}})
+		vg[4] = F(root, 2, V2(1, 0), UDim2.fromScale(1, 0), UDim2.fromScale(0.2, 1), BLACK, 0.8) grad(vg[4], 180, {{0, 0}, {1, 1}})
+		-- chromatic edge fringes
+		local fr1 = F(root, 3, V2(0, 0), UDim2.new(), UDim2.fromScale(0.06, 1), P.b, 0.9) grad(fr1, 0, {{0, 0}, {1, 1}})
+		local fr2 = F(root, 3, V2(1, 0), UDim2.fromScale(1, 0), UDim2.fromScale(0.06, 1), P.a, 0.9) grad(fr2, 180, {{0, 0}, {1, 1}})
+		-- anamorphic lens streaks
+		local st1 = F(root, 3, V2(0.5, 0.5), C0, UDim2.new(1.4, 0, 0, 2), P.a, 0.9) grad(st1, 0, {{0, 1}, {0.5, 0}, {1, 1}})
+		local st2 = F(root, 3, V2(0.5, 0.5), C0, UDim2.new(1.1, 0, 0, 10), P.b, 0.9) grad(st2, 0, {{0, 1}, {0.5, 0.2}, {1, 1}})
+		-- parallax particles (each intro has its own kind: bokeh orbs / rain / eyes' tears / bubbles / embers / sparks)
+		local parts = {}
+		for i = 1, math.floor(P.pn * INT1 + 0.5) do
+			local z = 0.3 + 0.7 * math.random()
+			local s = lerp(P.psz[1], P.psz[2], math.random()) * (0.45 + 0.55 * z)
+			local w, h, rot = s, s, 0
+			if P.pk == "drop" then w, h = math.max(2, s * 0.1), s * 1.8
+			elseif P.pk == "spark" then w, h, rot = s * 0.55, s * 0.55, 45
+			elseif P.pk == "ember" then w, h = s * 0.28, s * 0.28 end
+			local f = F(root, 1 + i % 3, V2(0.5, 0.5), UDim2.new(), UDim2.fromOffset(w, h), (i % 2 == 0) and P.a or P.b, 1)
+			f.Rotation = rot
+			if P.pk == "drop" then Util.Instance("UICorner", f).CornerRadius = UDim.new(0.5, 0)
+			elseif P.pk ~= "spark" then round(f) end
+			parts[i] = {f = f, x = math.random(), y = math.random(), z = z, ph = math.random() * 6.283, w = 0.8 + math.random() * 2.2, rot = rot}
+		end
+		-- letterbox
+		local bt = F(root, 6, V2(0, 0), UDim2.new(), UDim2.fromScale(1, 0), BLACK, 0)
+		local bb = F(root, 6, V2(0, 1), UDim2.fromScale(0, 1), UDim2.fromScale(1, 0), BLACK, 0)
+		local ht = F(bt, 1, V2(0, 1), UDim2.fromScale(0, 1), UDim2.new(1, 0, 0, 1), P.a, 0.5) grad(ht, 0, {{0, 1}, {0.5, 0}, {1, 1}})
+		local hb = F(bb, 1, V2(0, 0), UDim2.new(), UDim2.new(1, 0, 0, 1), P.a, 0.5) grad(hb, 0, {{0, 1}, {0.5, 0}, {1, 1}})
+		-- typography: chapter caption (bottom bar), scene tag (top bar), ghost kicker word
+		local lbl = mk("TextLabel", root, {BackgroundTransparency = 1, AnchorPoint = V2(0, 0.5), Position = UDim2.new(0.035, 0, 1, -10), Size = UDim2.new(0.6, 0, 0, 18),
+			Font = Enum.Font.Code, TextSize = 13, TextColor3 = P.a, TextXAlignment = Enum.TextXAlignment.Left, Text = "", TextTransparency = 1, ZIndex = 9, Interactable = false})
+		local tag = mk("TextLabel", root, {BackgroundTransparency = 1, AnchorPoint = V2(1, 0.5), Position = UDim2.new(0.965, 0, 0, 10), Size = UDim2.new(0.5, 0, 0, 18),
+			Font = Enum.Font.Code, TextSize = 12, TextColor3 = P.b, TextXAlignment = Enum.TextXAlignment.Right, TextTransparency = 1, ZIndex = 9, Interactable = false,
+			Text = string.format("SCENE %02d  //  %s", id - 1, P.name)})
+		local kick = mk("TextLabel", root, {BackgroundTransparency = 1, AnchorPoint = V2(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.8), Size = UDim2.fromScale(0.92, 0.07),
+			Font = Enum.Font.GothamBlack, TextScaled = true, TextColor3 = P.a, TextStrokeColor3 = P.b, TextStrokeTransparency = 1, Text = "", TextTransparency = 1, ZIndex = 8, Interactable = false})
+		Util.Instance("UITextSizeConstraint", kick).MaxTextSize = 44
+		local ksc = Util.Instance("UIScale", kick)
+
+		local CAPS, FT = {}, {}
+		for _, c in ipairs(P.caps(d, K)) do if type(c[1]) == "number" then CAPS[#CAPS + 1] = c end end
+		table.sort(CAPS, function(a, b) return a[1] < b[1] end)
+		for _, f in ipairs(P.fire) do if type(d[f[1]]) == "number" then FT[#FT + 1] = {d[f[1]], f[2]} end end
+		table.sort(FT, function(a, b) return a[1] < b[1] end)
+		local GL = "#%&$@*+=<>/|01XZ"
+		local function scramble(s, k)
+			local n, o = #s, {}
+			for i = 1, n do
+				local c = s:sub(i, i)
+				if c == " " or i / n <= k then o[i] = c else local r = math.random(1, #GL) o[i] = GL:sub(r, r) end
+			end
+			return table.concat(o)
+		end
+
+		-- signature effects ---------------------------------------------------------------------------------------------------------
+		local act = {}
+		local function addRing(t0, col, aspect, dur, mx, th)
+			local f = round(F(root, 7, V2(0.5, 0.5), C0, UDim2.fromOffset(0, 0), col, 1))
+			local s = Util.Instance("UIStroke", f)
+			s.Color, s.Thickness, s.Transparency = col, th, 1
+			act[#act + 1] = {t0 = t0, dur = dur, o = {f}, upd = function(k, a, life)
+				local sz = mx * ease(k)
+				f.Size = UDim2.fromOffset(sz, sz * aspect)
+				s.Transparency = vis(0.9 * (1 - k) ^ 1.4, life)
+				s.Thickness = math.max(0.5, th * (1 - 0.7 * k))
+			end}
+		end
+		local function addRays(t0, n, dur, H, spin)
+			local o = {}
+			for i = 1, n do
+				local f = F(root, 7, V2(0.5, 0.5), C0, UDim2.fromOffset(4, H * 1.9), (i % 2 == 0) and P.a or P.b, 1)
+				grad(f, 90, {{0, 1}, {0.5, 0}, {1, 1}})
+				o[i] = f
+			end
+			act[#act + 1] = {t0 = t0, dur = dur, o = o, upd = function(k, a, life)
+				for i, f in ipairs(o) do
+					f.Rotation = (i - 1) * (180 / n) + a * spin
+					f.Size = UDim2.fromOffset(math.max(1, 5 * (1 - k) + 1), H * (1.2 + 0.9 * ease(k)))
+					f.BackgroundTransparency = vis(0.8 * (1 - k) ^ 1.2, life)
+				end
+			end}
+		end
+		local function addSlices(t0, dur, str)
+			local o = {}
+			for i = 1, 7 do o[i] = F(root, 7, V2(0.5, 0.5), C0, UDim2.fromScale(1.2, 0.03), WHITE, 1) end
+			local nextR = 0
+			act[#act + 1] = {t0 = t0, dur = dur, o = o, upd = function(k, a, life)
+				if a >= nextR then
+					nextR = a + 0.045
+					for i, f in ipairs(o) do
+						f.Position = UDim2.fromScale(0.5 + (math.random() - 0.5) * 0.18 * str, math.random())
+						f.Size = UDim2.fromScale(1.2, 0.012 + math.random() * 0.06)
+						f.BackgroundColor3 = (i % 3 == 0) and WHITE or ((i % 3 == 1) and P.a or P.b)
+					end
+				end
+				for _, f in ipairs(o) do f.BackgroundTransparency = vis(((math.random() < 0.7) and 0.55 or 0) * (1 - k), life) end
+			end}
+		end
+		local function addBolt(t0, W, H, str)
+			local o, segs = {}, {}
+			local x, y, N = 0.22 + 0.56 * math.random(), 0, 7
+			for i = 1, N do
+				local nx, ny = math.clamp(x + (math.random() - 0.5) * 0.24, 0.04, 0.96), i / N
+				local dx, dy = (nx - x) * W, (ny - y) * H
+				local len, ang = math.sqrt(dx * dx + dy * dy), math.deg(math.atan2(dy, dx))
+				local pos = UDim2.fromScale((x + nx) / 2, (y + ny) / 2)
+				local g = F(root, 7, V2(0.5, 0.5), pos, UDim2.fromOffset(len + 8, 12), P.lc or P.a, 1) g.Rotation = ang
+				local c = F(root, 8, V2(0.5, 0.5), pos, UDim2.fromOffset(len + 4, 3), WHITE, 1) c.Rotation = ang
+				o[#o + 1], o[#o + 2] = g, c
+				segs[#segs + 1] = {g, c}
+				x, y = nx, ny
+			end
+			local tint = F(root, 6, V2(0, 0), UDim2.new(), UDim2.fromScale(1, 1), P.lc or P.a, 1)
+			o[#o + 1] = tint
+			act[#act + 1] = {t0 = t0, dur = 0.55, o = o, upd = function(k, a, life)
+				local f = (a < 0.07 and 1) or (a < 0.12 and 0.12) or (a < 0.2 and 0.95) or (a < 0.27 and 0.2) or (a < 0.34 and 0.6) or math.max(0, 1 - (a - 0.34) / 0.2) * 0.4
+				for _, s in ipairs(segs) do
+					s[1].BackgroundTransparency, s[2].BackgroundTransparency = vis(f * 0.6, life), vis(f, life)
+				end
+				tint.BackgroundTransparency = vis(f * 0.2 * str, life)
+			end}
+		end
+
+		local lastT, lastStr, sgn, nf = -10, 0, 1, 1
+		local function fire(T, str, W, H)
+			lastT, lastStr, sgn = T, str, -sgn
+			local big, sk = math.max(W, H), 0.7 + 0.3 * str
+			if P.sig == "rings" then
+				for i = 0, 2 do addRing(T + i * 0.09, i == 1 and P.b or P.a, 1, 0.9 + 0.1 * i, big * (0.7 + 0.25 * i) * sk, 3 - i * 0.6) end
+			elseif P.sig == "ellipse" then
+				for i = 0, 2 do addRing(T + i * 0.12, i == 1 and P.b or P.a, 0.36, 1.1 + 0.12 * i, big * (0.8 + 0.3 * i) * sk, 3) end
+			elseif P.sig == "eye" then
+				addRing(T, P.a, 0.34, 0.8, big * 0.95 * sk, 4)
+				addRing(T + 0.08, P.b, 0.22, 0.9, big * 0.75 * sk, 2)
+				addRing(T + 0.02, P.a, 1, 0.7, big * 0.55 * sk, 2)
+			elseif P.sig == "glitch" then
+				addSlices(T, 0.42, str)
+				addRing(T, P.a, 1, 0.55, big * 0.8 * sk, 3)
+			elseif P.sig == "bolt" then
+				addBolt(T, W, H, str)
+				addRing(T + 0.02, P.a, 1, 0.8, big * 0.7 * sk, 3)
+			else
+				addRays(T, 9, 0.85, H, 38)
+				addRing(T, P.a, 1, 0.8, big * 0.8 * sk, 3)
+				addRing(T + 0.1, P.b, 1, 0.9, big * 0.55 * sk, 2)
+			end
+			pcall(FX.Sparks, stage, (math.random() < 0.5) and P.a or P.b, math.floor(14 * str), 300, 0.8)
+		end
+
+		local cam, capI, capT, kT = {}, 0, -10, -10
+		local function camBase(key, cur, tol)
+			if cam[key] == nil or math.abs(cur - cam[key]) > tol then cam[key .. "b"] = cur end
+			return cam[key .. "b"]
+		end
+
+		local function step(t, dt, S)
+			dt = math.min(dt or 0.016, 0.1)
+			local te = (S and S.tEnd) or K.DUR
+			local life = 1 - clamp01((t - (te - 0.9)) / 0.7)
+			local W, H = stage.AbsoluteSize.X, stage.AbsoluteSize.Y
+			if W < 10 then W, H = 1280, 720 end
+			while FT[nf] and t >= FT[nf][1] do
+				if t - FT[nf][1] < 0.7 then fire(FT[nf][1], FT[nf][2], W, H) end
+				nf = nf + 1
+			end
+			local age = t - lastT
+			local pe, ge = envl(age, 0.045, 0.32) * lastStr, envl(age, 0.02, 0.25) * lastStr
+			local tens = 0
+			if FT[nf] then
+				local dn = FT[nf][1] - t
+				if dn > 0 and dn < K.BAR then tens = (1 - dn / K.BAR) ^ 2 * FT[nf][2] end
+			end
+			local pulse = math.min((S and S.pulse) or 0, 1.2)
+
+			-- letterbox
+			local open = ease((t - 0.15) / (K.BEAT * 3)) * (1 - clamp01((t - (te - 1.5)) / 1.0))
+			local bh = P.bar + P.tb * tens
+			if P.bm == "glitch" then bh = bh + (math.random() - 0.5) * 0.012 * ge
+			elseif P.bm == "wave" then bh = bh + math.sin(t * 1.1) * 0.006
+			elseif P.bm == "thump" then bh = bh + 0.014 * pulse end
+			bh = math.max(0, bh * (1 - 0.55 * pe)) * open
+			bt.Size, bb.Size = UDim2.fromScale(1, bh), UDim2.fromScale(1, bh)
+			local hv = (open > 0.03) and vis(0.25 + 0.5 * pulse + 0.5 * pe + 0.3 * tens, life) or 1
+			ht.BackgroundTransparency, hb.BackgroundTransparency = hv, hv
+
+			-- lens + atmosphere
+			local sa = 0.1 + 0.35 * pulse + 0.85 * pe + 0.45 * tens
+			st1.BackgroundTransparency, st2.BackgroundTransparency = vis(sa, life), vis(sa * 0.5, life)
+			st1.Size = UDim2.new(1.2 + 0.5 * pe, 0, 0, 2 + 2 * pe)
+			st2.Size = UDim2.new(1.1 + 0.4 * pe, 0, 0, 8 + 14 * pe)
+			local la = 0.1 + 0.22 * pulse + 0.45 * pe + 0.18 * tens
+			lk1.BackgroundTransparency, lk2.BackgroundTransparency = vis(la, life), vis(la * 0.9, life)
+			lk1.Position = UDim2.fromScale(-0.12 + 0.05 * math.sin(t * 0.3), -0.12 + 0.04 * math.cos(t * 0.27))
+			lk2.Position = UDim2.fromScale(1.12 + 0.05 * math.cos(t * 0.26), 1.12 + 0.04 * math.sin(t * 0.31))
+			local vv = vis(0.3 + 0.38 * tens - 0.15 * pe, life)
+			for i = 1, 4 do vg[i].BackgroundTransparency = vv end
+			local fa = 0.1 + 0.55 * pe + 0.18 * pulse + ((P.bm == "glitch") and 0.4 * ge or 0)
+			fr1.BackgroundTransparency, fr2.BackgroundTransparency = vis(fa, life), vis(fa, life)
+
+			-- particles
+			local sp = 1 + 1.4 * pulse + 3 * pe
+			for _, p in ipairs(parts) do
+				p.x = p.x + (P.pdx + P.wob * math.sin(t * 0.6 + p.ph) * 0.012) * p.z * sp * dt
+				p.y = p.y + P.pdy * p.z * sp * dt
+				if p.y < -0.06 then p.y, p.x = 1.06, math.random() elseif p.y > 1.06 then p.y, p.x = -0.06, math.random() end
+				if p.x < -0.06 then p.x = 1.06 elseif p.x > 1.06 then p.x = -0.06 end
+				p.f.Position = UDim2.fromScale(p.x, p.y)
+				p.f.BackgroundTransparency = vis((0.12 + 0.38 * p.z) * (0.55 + 0.45 * math.sin(t * p.w + p.ph)) * (1 + 0.8 * pe + 0.3 * pulse), life)
+				if p.rot ~= 0 then p.f.Rotation = p.rot + t * 40 * p.z end
+			end
+
+			-- signature effects
+			for i = #act, 1, -1 do
+				local e = act[i]
+				local a = t - e.t0
+				if a >= e.dur then
+					for _, o in ipairs(e.o) do pcall(function() o:Destroy() end) end
+					table.remove(act, i)
+				elseif a >= 0 then
+					e.upd(a / e.dur, a, life)
+				end
+			end
+
+			-- typography
+			local ci = 0
+			for i, c in ipairs(CAPS) do if t >= c[1] then ci = i else break end end
+			if ci ~= capI then
+				capI, capT = ci, t
+				if ci > 0 and CAPS[ci][3] then
+					kT = t
+					kick.Text = (CAPS[ci][3]:gsub(".", function(c) return c == " " and "   " or c .. " " end))
+				end
+			end
+			local barPx = bh * H
+			local lv = clamp01((barPx - 6) / 22) * life
+			if capI > 0 then lbl.Text = "// " .. scramble(CAPS[capI][2], clamp01((t - capT) / 0.5)) end
+			lbl.Position, tag.Position = UDim2.new(0.035, 0, 1, -barPx * 0.5), UDim2.new(0.965, 0, 0, barPx * 0.5)
+			lbl.TextTransparency, tag.TextTransparency = 1 - clamp01(lv * 0.9 * INT1), 1 - clamp01(lv * 0.6 * INT1)
+			local ka = t - kT
+			if ka >= 0 and ka < 1.1 then
+				local k = ka / 1.1
+				ksc.Scale = lerp(1.35, 1, ease(k * 1.6))
+				local a = 0.85 * (1 - k) ^ 1.3
+				kick.TextTransparency, kick.TextStrokeTransparency = vis(a, life), vis(a * 0.7, life)
+			elseif kick.TextTransparency < 1 then
+				kick.TextTransparency, kick.TextStrokeTransparency = 1, 1
+			end
+
+			-- additive camera on the intro's own world (runs after the intro wrote its transform this frame)
+			local wd, zo = E and E.world, E and (E.zoom or E.zs)
+			if wd and zo then
+				local dz = (P.punch * pe + 0.011 * pulse + 0.035 * tens) * INT1 * life
+				local dr = (P.dutch * pe * sgn + math.sin(t * 0.37) * 0.32 * P.sway) * INT1 * life
+				local dx = (math.sin(t * 0.53) * 5 * P.drift + ((P.bm == "glitch") and (math.random() - 0.5) * 14 * ge or 0)) * INT1 * life
+				local dy = (math.cos(t * 0.41) * 4 * P.drift + 12 * pe) * INT1 * life
+				local bz = camBase("z", zo.Scale, 1e-4)
+				local nz = bz * (1 + dz)
+				zo.Scale = nz cam.z = zo.Scale
+				local br = camBase("r", wd.Rotation, 1e-3)
+				wd.Rotation = br + dr cam.r = wd.Rotation
+				local pos = wd.Position
+				local bx, by = camBase("x", pos.X.Offset, 0.6), camBase("y", pos.Y.Offset, 0.6)
+				local ox, oy = math.floor(bx + dx + 0.5), math.floor(by + dy + 0.5)
+				wd.Position = UDim2.new(pos.X.Scale, ox, pos.Y.Scale, oy)
+				cam.x, cam.y = ox, oy
+			end
+		end
+
+		local alive = true
+		return function(t, dt, S)
+			if not alive then return end
+			local ok, err = pcall(step, t, dt, S)
+			if not ok then
+				alive = false
+				warn("[UhhhhhhFX] intro upgrade layer error (continuing): " .. tostring(err))
+				pcall(function() root:Destroy() end)
+			end
+		end
+	end
+
 	-- ═════════════════════════ [v62] INTRO 2 : "MOONLIGHT" (128 BPM) ═════════════════════════
 	-- Chosen with the main page "Intro" dropdown (SaveData.IntroStyle == 2). The original intro above is untouched and stays the default.
 	-- Locked to the bundled "Moonlight (Instrumental)" MP3 (Util.Intro2Song, 128 BPM, first downbeat 0.049 s): the clock IS Sound.TimePosition and every
@@ -4368,6 +4744,7 @@ Util.FX = (function()
 			E.barT = box(stage, 20, 0.5, 0, UDim2.fromScale(0.5, 0), UDim2.new(1, 0, 0, 0), BLACK, 0)
 			E.barB = box(stage, 20, 0.5, 1, UDim2.fromScale(0.5, 1), UDim2.new(1, 0, 0, 0), BLACK, 0)
 			E.flash = box(stage, 40, 0.5, 0.5, C5, UDim2.fromScale(1, 1), WHITE, 1)
+			do local ok, up = pcall(FX.IntroUpgrade, stage, E, 2, {M2, M3, M4}, K, 24) if ok and type(up) == "function" then E.up = up end end
 			local function hud(ax, ay, pos, xa)
 				return mk("TextLabel", stage, {
 					AnchorPoint = Vector2.new(ax, ay), Position = pos, Size = UDim2.new(0.5, 0, 0, 18), BackgroundTransparency = 1, Font = Enum.Font.Code,
@@ -4688,6 +5065,7 @@ Util.FX = (function()
 				E.world.Position = UDim2.new(0.5, cx + math.noise(t * 38, seed + 1) * S.shake, 0.5, cy + math.noise(t * 38, seed + 3) * S.shake)
 				E.world.Rotation = cr
 				E.zoom.Scale = math.clamp(cz, 0.6, 2.3)
+				if E.up then E.up(t, dt, S) end
 
 				-- ── backdrop: sky, glow, stars, clouds ──
 				E.bgG.Color = ColorSequence.new(
@@ -5242,6 +5620,7 @@ Util.FX = (function()
 			E.barT = box(stage, 20, 0.5, 0, UDim2.fromScale(0.5, 0), UDim2.new(1, 0, 0, 0), BLACK, 0)
 			E.barB = box(stage, 20, 0.5, 1, UDim2.fromScale(0.5, 1), UDim2.new(1, 0, 0, 0), BLACK, 0)
 			E.flash = box(stage, 40, 0.5, 0.5, C5, UDim2.fromScale(1, 1), WHITE, 1)
+			do local ok, up = pcall(FX.IntroUpgrade, stage, E, 3, {M2, M3, M4, TN}, K, 24) if ok and type(up) == "function" then E.up = up end end
 			local function hud(ax, ay, pos, xa)
 				return mk("TextLabel", stage, {
 					AnchorPoint = Vector2.new(ax, ay), Position = pos, Size = UDim2.new(0.5, 0, 0, 18), BackgroundTransparency = 1, Font = Enum.Font.Code,
@@ -5670,6 +6049,7 @@ Util.FX = (function()
 				E.world.Position = UDim2.new(0.5, cx + math.noise(t * 38, seed + 1) * S.shake, 0.5, cy + math.noise(t * 38, seed + 3) * S.shake)
 				E.world.Rotation = cr
 				E.zoom.Scale = math.clamp(cz, 0.6, 2.3)
+				if E.up then E.up(t, dt, S) end
 
 				-- ── backdrop: sky, glow, rain ──
 				E.bgG.Color = ColorSequence.new(
@@ -6238,6 +6618,7 @@ Util.FX = (function()
 			E.barT = box(stage, 20, 0.5, 0, UDim2.fromScale(0.5, 0), UDim2.new(1, 0, 0, 0), BLACK, 0)
 			E.barB = box(stage, 20, 0.5, 1, UDim2.fromScale(0.5, 1), UDim2.new(1, 0, 0, 0), BLACK, 0)
 			E.flash = box(stage, 40, 0.5, 0.5, C5, UDim2.fromScale(1, 1), WHITE, 1)
+			do local ok, up = pcall(FX.IntroUpgrade, stage, E, 4, {M2, MB, MR, M3, MF}, K, 24) if ok and type(up) == "function" then E.up = up end end
 			local function hud(ax, ay, pos, xa)
 				return mk("TextLabel", stage, {
 					AnchorPoint = Vector2.new(ax, ay), Position = pos, Size = UDim2.new(0.5, 0, 0, 18), BackgroundTransparency = 1, Font = Enum.Font.Code,
@@ -6637,6 +7018,7 @@ Util.FX = (function()
 				E.world.Position = UDim2.new(0.5, cx + math.noise(t * 38, seed + 1) * S.shake, 0.5, cy + math.noise(t * 38, seed + 3) * S.shake)
 				E.world.Rotation = cr
 				E.zoom.Scale = math.clamp(cz, 0.6, 2.3)
+				if E.up then E.up(t, dt, S) end
 
 				-- ── backdrop: sky, glow, stars, skyline, rain ──
 				E.bgG.Color = ColorSequence.new(
@@ -7272,6 +7654,7 @@ Util.FX = (function()
 			E.nameSub = txt(stage, 25, Enum.Font.Code, 0.5, 0.5, UDim2.fromScale(0.5, 0.58), UDim2.new(0.9, 0, 0, 20), Enum.TextXAlignment.Center)
 			E.nameSub.TextColor3 = C(60, 30, 100)
 			E.flash = box(stage, 40, 0.5, 0.5, C5, UDim2.fromScale(1, 1), WHITE, 1)
+			do local ok, up = pcall(FX.IntroUpgrade, stage, E, 5, {M2, M3, M4, M5, M6, M7, M8, M9}, K, 24) if ok and type(up) == "function" then E.up = up end end
 			local function hud(ax, ay, pos, xa)
 				return mk("TextLabel", stage, {
 					AnchorPoint = Vector2.new(ax, ay), Position = pos, Size = UDim2.new(0.5, 0, 0, 18), BackgroundTransparency = 1, Font = Enum.Font.Code,
@@ -7742,6 +8125,7 @@ Util.FX = (function()
 				E.world.Position = UDim2.new(0.5, cx, 0.5, cy)
 				E.world.Rotation = cr
 				E.zoom.Scale = cz
+				if E.up then E.up(t, dt, S) end
 
 				-- ── backdrop: water / sky / surface ──
 				E.bgG.Color = ColorSequence.new(S.bgT, S.bgB)
@@ -8619,6 +9003,7 @@ Util.FX = (function()
 			E.nameSub = txt(stage, 25, Enum.Font.Code, 0.5, 0.5, UDim2.fromScale(0.5, 0.58), UDim2.new(0.9, 0, 0, 20), Enum.TextXAlignment.Center)
 			E.flashB = box(stage, 39, 0.5, 0.5, C5, UDim2.fromScale(1, 1), C(196, 222, 255), 1)
 			E.flash = box(stage, 40, 0.5, 0.5, C5, UDim2.fromScale(1, 1), WHITE, 1)
+			do local ok, up = pcall(FX.IntroUpgrade, stage, E, 6, {M2, M3, M4, M5, M6, M7, M8}, K, 24) if ok and type(up) == "function" then E.up = up end end
 			local function hud(ax, ay, pos, xa)
 				return mk("TextLabel", stage, {
 					AnchorPoint = Vector2.new(ax, ay), Position = pos, Size = UDim2.new(0.5, 0, 0, 18), BackgroundTransparency = 1, Font = Enum.Font.Code,
@@ -9055,6 +9440,7 @@ Util.FX = (function()
 				E.world.Position = UDim2.new(0.5, cx, 0.5, cy)
 				E.world.Rotation = cr
 				E.zoom.Scale = cz
+				if E.up then E.up(t, dt, S) end
 
 				-- ── sky, stars, moon, clouds ──
 				E.bgG.Color = ColorSequence.new(S.bgT:Lerp(C(120, 150, 200), S.boltK * 0.5), S.bgB:Lerp(C(150, 180, 220), S.boltK * 0.5))
@@ -9648,6 +10034,7 @@ Util.FX = (function()
 			E.big = txt(18, Enum.Font.GothamBlack, WHITE, 0.5, 0.5)
 			E.flash = box(stage, 20, nil, WHITE, 1)
 			E.flash.Size = UDim2.fromScale(1, 1)
+			do local ok, up = pcall(FX.IntroUpgrade, stage, E, 7, M, K, 3) if ok and type(up) == "function" then E.up = up end end
 			E.tc, E.np = hud(14, 21), hud(34, 21)
 			E.term = mk("TextLabel", stage, {Position = UDim2.new(0, 16, 0, 56), Size = UDim2.new(0.8, 0, 0.3, 0), BackgroundTransparency = 1, Font = Enum.Font.Code, TextSize = 14, TextColor3 = WHITE, TextTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, ZIndex = 21, Interactable = false, Text = ""})
 			E.prog = box(stage, 22, Vector2.new(0, 1), WHITE, 0.2)
@@ -9848,6 +10235,7 @@ Util.FX = (function()
 				local sh = (S.shake + rt * rt * 6) * I
 				E.world.Position = UDim2.new(0.5, (math.random() - 0.5) * 2 * sh, 0.5, (math.random() - 0.5) * 2 * sh)
 				E.world.Rotation = S.rk + math.sin(t * 0.8) * 0.8 * I * (mode >= 2 and 1 or 0.3)
+				if E.up then E.up(t, dt, S) end
 				local bgk = S.strobe * 0.5 + (mode == 3 and rt * 0.12 * (math.floor(t * 14) % 2) or 0)
 				E.world.BackgroundColor3 = S.bgc:Lerp(acc, bgk)
 				local cy = U * 0.02
@@ -10923,8 +11311,14 @@ Util.FX = (function()
 				return false
 			end
 			task.spawn(function() -- the module waits for Delta's UI itself, so it never blocks us
-				local ok, er = pcall(fn)
-				if not ok then warn("[UhhhhhhFX] Delta customization error (continuing): " .. tostring(er)) end
+				local ok, er = xpcall(fn, function(e)
+					local okT, tb = pcall(debug.traceback, tostring(e), 2)
+					return okT and tb or tostring(e)
+				end)
+				if not ok then
+					D.Status = "Delta customization error: " .. (tostring(er):match("^[^\n]*") or "")
+					warn("[UhhhhhhFX] Delta customization error (continuing): " .. tostring(er))
+				end
 			end)
 			return true
 		end
@@ -231603,8 +231997,13 @@ local function __NAProtectUI(gui, options)
 	return nil;
 end;
 
-if not tostring(identifyexecutor()):lower():find("^delta") then
-	return
+do
+	local okExec, execName = pcall(function()
+		return (identifyexecutor or getexecutorname)()
+	end)
+	if not (okExec and tostring(execName):lower():find("^delta")) then
+		return
+	end
 end
 
 local function dcmAlreadyLoaded()
@@ -231666,41 +232065,79 @@ local function Svc(n)
 	return SRV[n]
 end
 
+__dcm_boot.trace = function(e)
+	local msg = tostring(e)
+	local dbg = __dcm_boot.debug
+	if type(dbg) == "table" and type(dbg.traceback) == "function" then
+		local ok, tb = pcall(dbg.traceback, msg, 2)
+		if ok and type(tb) == "string" then
+			return tb
+		end
+	end
+	return msg
+end
+__dcm_boot.clip = function(s, n)
+	s = tostring(s or ""):match("^[^\n]*") or ""
+	n = n or 220
+	if #s > n then
+		s = s:sub(1, n - 3) .. "..."
+	end
+	return s
+end
+
 httpTxt = function(u, hdr)
 	if type(u) ~= "string" or u == "" then
 		return nil, "bad url"
 	end
-	local rq = (syn and syn.request) or request or http_request or (http and http.request)
-	if type(rq) == "function" then
-		local h = {
-			["User-Agent"] = "Roblox/Http/1.1",
-			["Accept"] = "*/*",
-		}
-		if type(hdr) == "table" then
-			for k, v in hdr do
-				h[k] = v
+	local rq = (type(syn) == "table" and syn.request) or request or http_request or (type(http) == "table" and http.request)
+	local lastErr = "no response"
+	for attempt = 1, 3 do
+		local code
+		if type(rq) == "function" then
+			local h = {
+				["User-Agent"] = "Roblox/Http/1.1",
+				["Accept"] = "*/*",
+			}
+			if type(hdr) == "table" then
+				for k, v in hdr do
+					h[k] = v
+				end
+			end
+			local ok, res = pcall(rq, {
+				Url = u,
+				Method = "GET",
+				Headers = h,
+			})
+			if ok and type(res) == "table" then
+				code = tonumber(res.StatusCode or res.Status or res.status_code) or 0
+				local body = res.Body or res.body
+				if (code == 0 or code >= 200 and code < 300) and type(body) == "string" and body ~= "" then
+					return body
+				end
+				lastErr = "HTTP " .. tostring(code)
+			elseif not ok then
+				lastErr = tostring(res)
 			end
 		end
-		local ok, res = pcall(rq, {
-			Url = u,
-			Method = "GET",
-			Headers = h,
-		})
-		if ok and type(res) == "table" then
-			local code = tonumber(res.StatusCode or res.Status or res.status_code) or 0
-			local body = res.Body or res.body
-			if (code == 0 or code >= 200 and code < 300) and type(body) == "string" and body ~= "" then
-				return body
-			end
+		local ok, body = pcall(function()
+			return game:HttpGet(u)
+		end)
+		if ok and type(body) == "string" and body ~= "" then
+			return body
+		end
+		if not ok then
+			lastErr = tostring(body)
+			code = tonumber(lastErr:match("HTTP (%d%d%d)")) or code
+		end
+		-- a definite client error (404, 403 ...) never changes on retry; everything else is treated as transient
+		if code and code >= 400 and code < 500 and code ~= 408 and code ~= 425 and code ~= 429 then
+			break
+		end
+		if attempt < 3 then
+			task.wait(0.4 * attempt)
 		end
 	end
-	local ok, body = pcall(function()
-		return game:HttpGet(u)
-	end)
-	if ok and type(body) == "string" and body ~= "" then
-		return body
-	end
-	return nil, "HttpGet returned " .. tostring(typeof and typeof(body) or type(body))
+	return nil, lastErr
 end
 
 local function runUrl(u, name, hdr)
@@ -231712,6 +232149,7 @@ local function runUrl(u, name, hdr)
 	if type(src) ~= "string" or src == "" then
 		return false, er or "empty source"
 	end
+	src = src:gsub("^\239\187\191", "")
 	local fn, er2 = ld(src, name or ("@" .. u))
 	if type(fn) ~= "function" then
 		return false, er2 or "compile failed"
@@ -231719,7 +232157,10 @@ local function runUrl(u, name, hdr)
 	if type(__dcm_boot.hostSetfenv) == "function" then
 		pcall(__dcm_boot.hostSetfenv, fn, __dcm_boot.runtimeEnv)
 	end
-	return pcall(fn)
+	return xpcall(fn, function(e)
+		warn("[DeltaCustomization] " .. tostring(name or u) .. " failed:\n" .. __dcm_boot.trace(e))
+		return e
+	end)
 end
 UIS = Svc("UserInputService")
 local CG = Svc("CoreGui")
@@ -231763,7 +232204,8 @@ do
 		end
 	end
 end
-do
+__dcm_boot.notifyQueue = {}
+task.spawn(function()
 	local n = nil
 	local tries = 0
 	repeat
@@ -231780,14 +232222,26 @@ do
 			task.wait(0.5)
 		end
 	until n ~= nil or tries >= 5
-end
+	__dcm_boot.notifyGaveUp = n == nil
+	local queued = __dcm_boot.notifyQueue
+	__dcm_boot.notifyQueue = {}
+	for _, info in queued do
+		notify(info)
+	end
+end)
 notify = function(info)
-	if not nt or type(info) ~= "table" then
+	if type(info) ~= "table" then
 		return
 	end
-	pcall(function()
-		nt(info)
-	end)
+	if nt then
+		pcall(function()
+			nt(info)
+		end)
+	elseif __dcm_boot.notifyGaveUp then
+		warn("[DeltaCustomization] " .. tostring(info.Title or "Notice") .. ": " .. tostring(info.Description or info.Content or ""))
+	elseif #__dcm_boot.notifyQueue < 24 then
+		table.insert(__dcm_boot.notifyQueue, info)
+	end
 end
 _naConns = {}
 NAlib = {}
@@ -241823,8 +242277,12 @@ do
 	end
 
 	local function executeSource(source, chunkName)
-		source = tostring(source or "")
-		if type(loadstring) ~= "function" then
+		source = tostring(source or ""):gsub("^\239\187\191", "")
+		if source:match("^%s*$") then
+			return false
+		end
+		local loader = __dcm_boot.getLoader()
+		if type(loader) ~= "function" then
 			notify({
 				Title = "Delta Customization",
 				Description = "Script execution is unavailable in this Delta build.",
@@ -241832,23 +242290,23 @@ do
 			})
 			return false
 		end
-		local compiled, compileError = loadstring(source, chunkName or "=Delta V2")
-		if not compiled then
+		local compiled, compileError = loader(source, chunkName or "=Delta V2")
+		if type(compiled) ~= "function" then
+			warn("[DeltaCustomization] compile error in " .. tostring(chunkName or "script") .. ": " .. tostring(compileError))
 			notify({
 				Title = "Delta V2 compile error",
-				Description = tostring(compileError or "Unknown compile error"),
+				Description = __dcm_boot.clip(compileError or "Unknown compile error"),
 				Duration = 7,
 			})
 			return false
 		end
 		task.spawn(function()
-			local ok, runtimeError = xpcall(compiled, function(message)
-				return tostring(message)
-			end)
+			local ok, runtimeError = xpcall(compiled, __dcm_boot.trace)
 			if not ok then
+				warn("[DeltaCustomization] runtime error in " .. tostring(chunkName or "script") .. ":\n" .. tostring(runtimeError))
 				notify({
 					Title = "Delta V2 runtime error",
-					Description = tostring(runtimeError or "Unknown runtime error"),
+					Description = __dcm_boot.clip(runtimeError or "Unknown runtime error"),
 					Duration = 7,
 				})
 			end
@@ -242437,11 +242895,11 @@ do
 		end
 
 		local function paint(value, color)
-			return '<font color="' .. color .. '">' .. escape(value) .. "</font>"
+			return '<font color="' .. color .. '">' .. (value:find("[&<>]") and escape(value) or value) .. "</font>"
 		end
 
 		local function longBracketAt(source, index)
-			local equals = source:sub(index):match("^%[(=*)%[")
+			local equals = source:match("^%[(=*)%[", index)
 			if equals == nil then
 				return nil
 			end
@@ -242455,7 +242913,12 @@ do
 			local output = table.create(math.max(32, math.floor(#source / 6)))
 			local index = 1
 			local expectFunctionName = false
+			local deadline, steps = os.clock() + 0.15, 0
 			while index <= #source do
+				steps += 1
+				if steps % 400 == 0 and os.clock() > deadline then
+					return nil
+				end
 				local char = source:sub(index, index)
 				local pair = source:sub(index, index + 1)
 				if pair == "--" then
@@ -242514,10 +242977,10 @@ do
 						end
 						expectFunctionName = false
 					end
-					output[#output + 1] = color and paint(word, color) or escape(word)
+					output[#output + 1] = color and paint(word, color) or word
 					index = finish + 1
 				elseif char:match("%d") or (char == "." and source:sub(index + 1, index + 1):match("%d")) then
-					local rest = source:sub(index)
+					local rest = source:sub(index, index + 63)
 					local number = rest:match("^0[xX][%da-fA-F_]+")
 						or rest:match("^0[bB][01_]+")
 						or rest:match("^%d[%d_]*%.?[%d_]*[eE][+-]?[%d_]+")
@@ -242528,7 +242991,7 @@ do
 					output[#output + 1] = paint(number, colors.number)
 					index += #number
 				else
-					output[#output + 1] = escape(char)
+					output[#output + 1] = (char == "<" or char == ">" or char == "&") and escape(char) or char
 					index += 1
 				end
 			end
@@ -242554,7 +243017,7 @@ do
 			label.FontFace = box.FontFace
 			label.TextSize = box.TextSize
 			label.LineHeight = box.LineHeight
-			local showOverlay = syntaxHighlightEnabled and box.Visible and box.Text ~= ""
+			local showOverlay = syntaxHighlightEnabled and box.Visible and box.Text ~= "" and not state.plain
 			label.Visible = showOverlay
 			if showOverlay then
 				box.TextTransparency = 1
@@ -242575,9 +243038,33 @@ do
 			if not syntaxHighlightEnabled then
 				return
 			end
-			local richText, textColor = tokenize(box.Text or "")
-			state.label.TextColor3 = textColor
-			state.label.Text = richText
+			local text = box.Text or ""
+
+			local richText, textColor
+
+			if #text <= 70000 then
+
+				richText, textColor = tokenize(text)
+
+			end
+
+			-- too large / too slow to colour: show the plain editor text instead of a truncated overlay
+
+			if richText and #richText <= 190000 then
+
+				state.plain = nil
+
+				state.label.TextColor3 = textColor
+
+				state.label.Text = richText
+
+			else
+
+				state.plain = true
+
+			end
+
+			sync(box)
 		end
 
 		local function queue(box)
@@ -242689,7 +243176,7 @@ do
 			queueStatusUpdate()
 			local token = (saveTokens[box] or 0) + 1
 			saveTokens[box] = token
-			task.delay(0.3, function()
+			task.delay(#(box.Text or "") > 60000 and 1.2 or 0.3, function()
 				if
 					runtime.alive
 					and box.Parent
@@ -245896,13 +246383,55 @@ do
         return target and target:FindFirstChild("LT_IUIStroke")
     end
 
+    __iui.descCache = setmetatable({}, { __mode = "k" })
+    __iui.isGradient = function(d)
+        return d:IsA("UIGradient") and d.Name == "LT_IUIGradient"
+    end
+    __iui.isImage = function(d)
+        return d:IsA("ImageLabel") or d:IsA("ImageButton")
+    end
+    -- descendant lists are cached (refreshed every 1.5 s) so the per-frame effects never allocate a GetDescendants() table
+    __iui.cachedDescendants = function(target, key, predicate)
+        local perTarget = __iui.descCache[target]
+        if not perTarget then
+            perTarget = {}
+            __iui.descCache[target] = perTarget
+        end
+        local entry = perTarget[key]
+        local now = os.clock()
+        if not entry or now - entry.at > 1.5 then
+            local list = {}
+            for _, d in target:GetDescendants() do
+                if predicate(d) then
+                    list[#list + 1] = d
+                end
+            end
+            entry = { at = now, list = list }
+            perTarget[key] = entry
+        end
+        return entry.list
+    end
+
     local function updateAnimation(dt)
-        if not __iui.alive or not uiEnabled then
+        if not __iui.alive or not uiEnabled or __iui.animDisabled then
             return
         end
+        -- ~45 updates per second is plenty for these subtle effects and halves the cost on 90/120 Hz devices
+        __iui.animAcc = (__iui.animAcc or 0) + dt
+        if __iui.animAcc < 0.022 then
+            return
+        end
+        dt = __iui.animAcc
+        __iui.animAcc = 0
         __iui.animationTime += dt
         local t = __iui.animationTime * animationIntensity
-        local targets = getAnimationTargets()
+        local now = os.clock()
+        local targets = __iui.animTargets
+        if not targets or now - (__iui.animTargetsAt or 0) > 0.25 then
+            targets = getAnimationTargets()
+            __iui.animTargets = targets
+            __iui.animTargetsAt = now
+        end
         local name = animationNames[animationIndex]
 
         for index, target in targets do
@@ -245926,12 +246455,7 @@ do
                         stroke.Transparency = 0.58 - wave * 0.27
                     end
                 elseif name == "Aurora Sweep" then
-                    local gradients = {}
-                    for _, d in target:GetDescendants() do
-                        if d:IsA("UIGradient") and d.Name == "LT_IUIGradient" then
-                            gradients[#gradients + 1] = d
-                        end
-                    end
+                    local gradients = __iui.cachedDescendants(target, "grad", __iui.isGradient)
                     for _, g in gradients do
                         g.Offset = Vector2.new(math.sin(phase * 0.55) * 0.3, 0)
                         g.Rotation = 125 + math.sin(phase * 0.3) * 12
@@ -245942,8 +246466,8 @@ do
                         stroke.Color = lerpColor(style.stroke, style.accent, q * 0.72)
                     end
                 elseif name == "Icon Drift" then
-                    for _, d in target:GetDescendants() do
-                        if d:IsA("ImageLabel") or d:IsA("ImageButton") then
+                    for _, d in __iui.cachedDescendants(target, "img", __iui.isImage) do
+                        if d.Parent then
                             d.Rotation = math.sin(phase + d.AbsolutePosition.X * 0.003) * 1.7
                         end
                     end
@@ -245953,8 +246477,8 @@ do
                         stroke.Thickness = 1.15 + ((math.sin(phase * 2) + 1) * 0.5) * 1.55
                     end
                 elseif name == "Scanline" then
-                    for _, d in target:GetDescendants() do
-                        if d:IsA("UIGradient") and d.Name == "LT_IUIGradient" then
+                    for _, d in __iui.cachedDescendants(target, "grad", __iui.isGradient) do
+                        if d.Parent then
                             d.Offset = Vector2.new(0, math.sin(phase * 1.3) * 0.18)
                         end
                     end
@@ -246545,7 +247069,18 @@ do
                 bindStyleHover(object)
             end
         end
-        connect(RS and RS.RenderStepped or nil, updateAnimation)
+        connect(RS and RS.RenderStepped or nil, function(dt)
+            local ok, err = pcall(updateAnimation, dt)
+            if ok then
+                __iui.animFails = 0
+            else
+                __iui.animFails = (__iui.animFails or 0) + 1
+                if __iui.animFails >= 5 then
+                    __iui.animDisabled = true
+                    warn("[DeltaCustomization] animation loop disabled after repeated errors: " .. tostring(err))
+                end
+            end
+        end)
     end
     addCleanupHook()
     saveState()
