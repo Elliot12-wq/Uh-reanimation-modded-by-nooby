@@ -383,6 +383,8 @@ Util.FX = (function()
 		LowEnd = false,
 		-- [v51] Delta bridge (only used when the executor is positively identified as Delta)
 		DeltaLogo = true, DeltaMotion = true, DeltaBlur = true, DeltaIntro = true, DeltaSpeed = 1, DeltaSource = "", DeltaEnabled = true,
+		-- [v109] music reactivity (shared FX.Audio controller): logos / triangles dance, UI accent follows the beat
+		MusicDance = true, MusicColor = true,
 	}
 	-- FX.Cfg is a proxy: reads return the low end override while LowEnd is on, writes always go to RawCfg.
 	FX.Cfg = setmetatable({}, {
@@ -422,6 +424,7 @@ Util.FX = (function()
 		if FX.Store then
 			FX.Store[key] = value
 		end
+		if (key == "MusicDance" or key == "MusicColor") and FX.Audio then pcall(FX.Audio.Refresh) end
 	end
 	function FX.ResetCfg()
 		for k, d in pairs(DEFAULT_CFG) do
@@ -641,6 +644,201 @@ Util.FX = (function()
 		w2.CFrame = CFrame.fromMatrix((a + c) / 2, -right, up, -back)
 	end
 
+
+	-- ═════════════ [v109] MUSIC REACTOR: one shared audio-reactivity controller ═════════════
+	-- Drives the 3D triangles (Delta icon triangle, uh admin triangles, hero / top bar), the Roblox top-bar logo, the Delta icon and the
+	-- live UI accent colour from the UI soundtrack (FX.UISound.Music), whichever track / intro / custom MP3 is playing. Data source:
+	-- Sound.PlaybackLoudness only (Roblox exposes no spectrum or beat API), so "bass" = strong loudness onsets and tempo is estimated from
+	-- onset spacing (Mode "onset": approximate, not perfect beat detection). The bundled tracks (theme song, intros 2-8) carry an exact beat
+	-- grid and use it (Mode "grid"). ONE RenderStepped connection, created on playback and dropped after the motion has decayed;
+	-- track change / seek / loop / restart re-syncs the analysis. Consumers register with Audio.Add(name, fn(A, dt, off)).
+	local Audio = {
+		Mode = "off", running = false, frame = 0,
+		energy = 0, amp = 0.25, beat = 0, kick = 0, beatN = 0, beatStr = 0,
+		phase = 0, cyc = 0, sway = 0, bounce = 0, hue = 0, bpm = 120,
+	}
+	FX.Audio = Audio
+	do
+		local floor, exp, max, min, sin, abs, pi = math.floor, math.exp, math.max, math.min, math.sin, math.abs, math.pi
+		local snd, sconns, drv = nil, {}, nil
+		local consumers, order = {}, {}
+		local peak, slow, fluxAvg, lastOnset, period, mis = 80, 0, 0.02, -1, 0.5, 0
+		local lastPos, lastPosAt, lastBeatI, song = 0, 0, nil, nil
+		local curName, curId, acc = nil, nil, 0
+		local SONGS = {"ThemeSong", "Intro2Song", "Intro3Song", "Intro4Song", "Intro5Song", "Intro6Song", "Intro7Song", "Intro8Song"}
+
+		local function enabled() return FX.Cfg.MusicDance ~= false end
+		local function findSong(name)
+			for i = 1, #SONGS do
+				local S = Util[SONGS[i]]
+				if type(S) == "table" and S.Title == name and S.Period and S.Offset then return S end
+			end
+		end
+		local function clear(hard) -- re-sync the analysis (hard = new track: also forget the loudness reference)
+			if hard then peak = 80 end
+			slow, fluxAvg, lastOnset, period, mis = 0, 0.02, -1, 0.5, 0
+			lastBeatI = nil
+			Audio.beat, Audio.kick, Audio.beatStr, Audio.cyc, Audio.phase = 0, 0, 0, 0, 0
+		end
+		local function callC(name, dt, off)
+			local fn = consumers[name]
+			if not fn then return end
+			local ok, err = pcall(fn, Audio, dt, off)
+			if not ok then
+				consumers[name] = nil
+				warn("[UhhhhhhFX] music consumer " .. name .. " disabled: " .. tostring(err))
+			end
+		end
+		local function stop()
+			if drv then drv:Disconnect() drv = nil end
+			local was = Audio.running
+			Audio.running, Audio.Mode = false, "off"
+			Audio.energy, Audio.beat, Audio.kick, Audio.bounce, Audio.sway, Audio.hue, Audio.amp = 0, 0, 0, 0, 0, 0, 0.25
+			Audio.frame = Audio.frame + 1
+			if was then
+				for i = 1, #order do callC(order[i], 0, true) end -- consumers put their element back to neutral
+			end
+		end
+		local function fire(str, strong, lvl)
+			str = min(1, str * (0.4 + 0.6 * lvl)) -- quiet passages give softer hits
+			Audio.beat = max(Audio.beat, str)
+			Audio.beatStr = str
+			Audio.beatN = Audio.beatN + 1
+			if strong then Audio.kick = max(Audio.kick, str) end
+		end
+		local function onFrame(dt)
+			if not enabled() then stop() return end
+			if RawCfg.LowEnd == true then -- weak devices: analysis + consumers at a capped rate (time stays exact, dt accumulates)
+				acc = acc + dt
+				if acc < 1 / FX.LowEndUIFPS then return end
+				dt, acc = acc, 0
+			else
+				acc = 0
+			end
+			dt = min(dt, 0.1)
+			local now = os.clock()
+			local s = snd
+			if s and not s.Parent then s = nil snd = nil end
+			local playing = s ~= nil and s.IsPlaying == true
+			local loud = 0
+			if playing then
+				local n, id = s.Name, s.SoundId
+				if n ~= curName or id ~= curId then -- track changed (any intro / music option / custom MP3)
+					clear(true)
+					curName, curId = n, id
+					song = findSong(n)
+				end
+				local pos = s.TimePosition
+				local d = pos - lastPos
+				if lastPosAt > 0 and (d < -0.25 or d > 1.2 + (now - lastPosAt) * 1.5) then clear(false) end -- seek / loop / restart
+				if pos ~= lastPos then lastPos, lastPosAt = pos, now end
+				loud = s.PlaybackLoudness
+			end
+			peak = max(60, loud, peak * exp(-dt / 8))
+			local lvl = min(1, loud / peak)
+			local e = Audio.energy
+			e = e + (lvl - e) * (1 - exp(-(lvl > e and 14 or 2.2) * dt))
+			Audio.energy, Audio.amp = e, 0.25 + 0.75 * e
+			Audio.beat = Audio.beat * exp(-9 * dt)
+			Audio.kick = Audio.kick * exp(-5 * dt)
+			if playing then
+				if song then -- exact beat grid of a bundled track
+					Audio.Mode = "grid"
+					local n = (lastPos + min(now - lastPosAt, 0.12) - song.Offset) / song.Period
+					local bi = floor(n)
+					Audio.cyc = (bi % 2) + (n - bi)
+					Audio.bpm = 60 / song.Period
+					if lastBeatI == nil or bi < lastBeatI or bi > lastBeatI + 2 then
+						lastBeatI = bi
+					elseif bi ~= lastBeatI then
+						lastBeatI = bi
+						local down = bi % 4 == 0
+						fire(down and 1 or 0.6, down, lvl)
+					end
+				else -- any other MP3: loudness onsets + tempo estimate
+					Audio.Mode = "onset"
+					local flux = lvl - slow
+					slow = slow + (lvl - slow) * (1 - exp(-8 * dt))
+					if flux < 0 then flux = 0 end
+					fluxAvg = fluxAvg + (flux - fluxAvg) * (1 - exp(-1.2 * dt))
+					local thr = max(0.05, fluxAvg * 2.2)
+					if flux > thr and lvl > 0.08 and now - lastOnset > 0.14 then
+						local strong = flux > max(0.13, fluxAvg * 3.5)
+						fire(min(1, 0.35 + flux * 3), strong, lvl)
+						if lastOnset > 0 then
+							local ioi = now - lastOnset
+							while ioi < 0.3 do ioi = ioi * 2 end
+							while ioi > 0.9 do ioi = ioi * 0.5 end
+							if abs(ioi - period) < period * 0.18 then
+								period, mis = period + (ioi - period) * 0.12, 0
+							else
+								mis = mis + 1
+								if mis >= 6 then period, mis = ioi, 0 end
+							end
+						end
+						lastOnset = now
+						if strong then -- pull the free-running phase toward the hit
+							local ph = Audio.cyc % 1
+							Audio.cyc = (Audio.cyc + ((ph < 0.5) and -ph or (1 - ph)) * 0.35) % 2
+						end
+					end
+					Audio.cyc = (Audio.cyc + dt / period) % 2
+					Audio.bpm = 60 / period
+				end
+				Audio.phase = Audio.cyc % 1
+				Audio.sway = sin(Audio.cyc * pi) -- one swing per two beats
+				Audio.bounce = (1 - Audio.phase) ^ 3 -- peaks on the beat
+			else
+				local k = exp(-6 * dt)
+				Audio.sway, Audio.bounce = Audio.sway * k, Audio.bounce * k
+				if e < 0.01 and Audio.beat < 0.01 and Audio.kick < 0.01 then stop() return end
+			end
+			Audio.hue = Audio.hue + (Audio.sway * e - Audio.hue) * (1 - exp(-6 * dt))
+			Audio.frame = Audio.frame + 1
+			for i = 1, #order do callC(order[i], dt, false) end
+		end
+		local function start()
+			if drv or not snd or not enabled() then return end
+			clear(true)
+			curName, curId = nil, nil
+			Audio.running = true
+			drv = RunService.RenderStepped:Connect(onFrame)
+		end
+		local function bind(s)
+			for _, c in ipairs(sconns) do c:Disconnect() end
+			table.clear(sconns)
+			snd = s
+			if not s then return end
+			sconns[#sconns + 1] = s.Played:Connect(start)
+			sconns[#sconns + 1] = s.Resumed:Connect(start)
+			sconns[#sconns + 1] = s.Loaded:Connect(function() if drv then clear(true) curName, curId = nil, nil end end)
+			sconns[#sconns + 1] = s.Destroying:Connect(function() if snd == s then bind(nil) stop() end end)
+			if s.IsPlaying then start() end
+		end
+		function Audio.Bind(s) if s ~= snd then bind(s) end end
+		function Audio.Refresh()
+			local s = FX.UISound and FX.UISound.Music
+			if s ~= snd then bind(s) end
+			if not enabled() then stop() elseif snd and snd.IsPlaying then start() end
+		end
+		function Audio.Add(name, fn)
+			if not consumers[name] then order[#order + 1] = name end
+			consumers[name] = fn
+		end
+		-- live UI accent: small hue drift + brightness lift on the beat, never saved (themes keep their configured colours)
+		local tIn, tOut, tFrame
+		function Audio.Tint(c)
+			if not Audio.running or FX.Cfg.MusicColor == false then return c end
+			local e = Audio.energy
+			if e < 0.02 and Audio.beat < 0.02 then return c end
+			if tFrame == Audio.frame and tIn == c then return tOut end
+			local h, sa, v = c:ToHSV()
+			tIn, tFrame = c, Audio.frame
+			tOut = Color3.fromHSV((h + Audio.hue * 0.035) % 1, min(1, sa * (1 + 0.1 * e)), min(1, v * (1 + 0.04 * e + 0.08 * Audio.beat + 0.1 * Audio.kick)))
+			return tOut
+		end
+	end
+
 	function FX.NewTriangle3D(parent, opts)
 		opts = opts or {}
 		local CFG = FX.Cfg
@@ -654,6 +852,7 @@ Util.FX = (function()
 			clickN = 0, active = true, pop = nil, popScale = 1,
 			pressAmt = 0, hoverAmt = 0, hover = false, trackX = 0, trackY = 0, lastLoud = 0,
 			color = WHITE,
+			dBounce = 0, dRoll = 0, dPitch = 0, dScale = 1, lastBeatN = 0, -- [v109] music dance offsets
 		}
 		local conns = {}
 
@@ -760,6 +959,8 @@ Util.FX = (function()
 		-- ── optional segmented charge ring (the hold gauge) ──
 		local RING_N = 40
 		local ringHost, ringSegs = nil, {}
+		local ringC, ringT, ringL = {}, {}, {} -- last written colour / transparency / lit state per segment
+		local RING_LIT_SZ, RING_OFF_SZ = UDim2.fromOffset(10, 2), UDim2.fromOffset(6, 2)
 		if opts.Ring then
 			ringHost = Util.Instance("Frame", layer)
 			ringHost.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -801,10 +1002,10 @@ Util.FX = (function()
 			end
 			local e = T.env + T.bloomEnv * 0.28
 			local ae = math.min(1, math.abs(e))
-			local S = math.max(0.001, T.scaleBase * T.popScale * (1 + T.pulseAmt) * (1 - 0.08 * T.pressAmt) * (1 + 0.07 * T.hoverAmt) * CFG.TriSize)
-			local bob = low and 0 or math.sin(t * 1.7) * 0.08 * (1 - ae) -- gentle float
-			local roll = low and 0 or (0.05 * math.sin(t * 0.9) - T.trackX * 0.07) -- subtle sway + lean toward the cursor
-			local M = CFrame.Angles(T.pitch + T.flipAngle, T.yaw, roll) + Vector3.new(0, bob, 0)
+			local S = math.max(0.001, T.scaleBase * T.popScale * (1 + T.pulseAmt) * (1 - 0.08 * T.pressAmt) * (1 + 0.07 * T.hoverAmt) * CFG.TriSize * T.dScale)
+			local bob = (low and 0 or math.sin(t * 1.7) * 0.08 * (1 - ae)) + T.dBounce -- gentle float (+ music lift)
+			local roll = (low and 0 or (0.05 * math.sin(t * 0.9) - T.trackX * 0.07)) + T.dRoll -- subtle sway + lean toward the cursor (+ music tilt)
+			local M = CFrame.Angles(T.pitch + T.flipAngle + T.dPitch, T.yaw, roll) + Vector3.new(0, bob, 0)
 			local sh = T.hot * T.hot * 0.07
 			if sh > 0 and not low then
 				M = M + Vector3.new((math.random() - 0.5) * sh * 2, (math.random() - 0.5) * sh * 2, 0)
@@ -1029,12 +1230,30 @@ Util.FX = (function()
 			local pTarget = (self.holding and self.phase == "idle") and 1 or 0
 			self.pressAmt = self.pressAmt + (pTarget - self.pressAmt) * (1 - math.exp(-14 * dt))
 			self.hoverAmt = self.hoverAmt + ((self.hover and 1 or 0) - self.hoverAmt) * (1 - math.exp(-9 * dt))
-			if opts.Music and CFG.TriMusic and self.phase == "idle" then
+			local RA = FX.Audio -- [v109] shared music reactor replaces the per-triangle onset check while it runs
+			local danceOn = RA.running and CFG.MusicDance ~= false and opts.Dance ~= false and self.phase == "idle"
+			if opts.Music and CFG.TriMusic and self.phase == "idle" and not danceOn then
 				local pbl = opts.Music.PlaybackLoudness
 				if pbl - self.lastLoud > 24 then
 					self.pulse = math.max(self.pulse, 0.5)
 				end
 				self.lastLoud = pbl
+			end
+			if danceOn then
+				if RA.beatN ~= self.lastBeatN then -- every beat: pulse + a push on the spin (stronger on bass hits / loud passages)
+					self.lastBeatN = RA.beatN
+					self.pulse = math.max(self.pulse, 0.2 + 0.4 * RA.beatStr)
+					self.yawVel = self.yawVel + 0.4 + 1.8 * RA.beatStr * RA.amp
+				end
+				local amp, k = RA.amp, 1 - math.exp(-16 * dt)
+				self.dBounce = self.dBounce + ((RA.bounce * 0.06 + RA.kick * 0.08) * amp - self.dBounce) * k
+				self.dRoll = self.dRoll + (RA.sway * (0.08 + 0.3 * RA.energy) - self.dRoll) * k
+				self.dPitch = self.dPitch + ((RA.sway * 0.06 - RA.bounce * 0.1) * amp - self.dPitch) * k
+				self.dScale = self.dScale + (1 + 0.1 * RA.kick + 0.05 * RA.beat + 0.03 * RA.energy - self.dScale) * k
+			else
+				local k = 1 - math.exp(-10 * dt)
+				self.dBounce, self.dRoll, self.dPitch = self.dBounce * (1 - k), self.dRoll * (1 - k), self.dPitch * (1 - k)
+				self.dScale = self.dScale + (1 - self.dScale) * k
 			end
 			self.hot = math.max(self.charge, self.chargeVis, self.pulse * 0.5, explodeHot, self.hoverAmt * 0.22)
 			if opts.Track and self.phase == "idle" then
@@ -1061,16 +1280,17 @@ Util.FX = (function()
 				local lit = math.floor(self.charge * RING_N + 0.5)
 				if self.phase ~= "idle" then lit = RING_N end
 				local litCol = self.color:Lerp(WHITE, 0.3 + self.hot * 0.4)
+				local offCol, offTr = self.color, 0.88 - self.hoverAmt * 0.3
 				for i = 1, RING_N do
 					local seg = ringSegs[i]
 					if i <= lit then
-						seg.BackgroundColor3 = litCol
-						seg.BackgroundTransparency = 0
-						seg.Size = UDim2.fromOffset(10, 2)
+						if ringC[i] ~= litCol then ringC[i] = litCol seg.BackgroundColor3 = litCol end
+						if ringT[i] ~= 0 then ringT[i] = 0 seg.BackgroundTransparency = 0 end
+						if ringL[i] ~= true then ringL[i] = true seg.Size = RING_LIT_SZ end
 					else
-						seg.BackgroundColor3 = self.color
-						seg.BackgroundTransparency = 0.88 - self.hoverAmt * 0.3
-						seg.Size = UDim2.fromOffset(6, 2)
+						if ringC[i] ~= offCol then ringC[i] = offCol seg.BackgroundColor3 = offCol end
+						if ringT[i] ~= offTr then ringT[i] = offTr seg.BackgroundTransparency = offTr end
+						if ringL[i] ~= false then ringL[i] = false seg.Size = RING_OFF_SZ end
 					end
 				end
 			end
@@ -2825,7 +3045,7 @@ Util.FX = (function()
 		end
 
 		-- ── 3D triangle ──
-		local tri = FX.NewTriangle3D(world, {Interactive = false, ZIndex = 3})
+		local tri = FX.NewTriangle3D(world, {Interactive = false, ZIndex = 3, Dance = false})
 		tri.yawVel = 16
 		tri.scaleBase = 0.6
 		tri.env, tri.extra = 1, 1
@@ -12899,6 +13119,7 @@ end
 		})
 
 		local stuck = 0
+		local lastBracketAcc
 		RunService.RenderStepped:Connect(function(dt)
 			if not frame.Parent then return end
 			-- watchdog: a page transition whose Completed never fired used to leave this scene
@@ -12920,8 +13141,11 @@ end
 				stat.Text = string.format("%d FPS", math.floor(fps + 0.5))
 			end
 			local accent = FX.GetColor and FX.GetColor() or WHITE
-			for _, f in ipairs(brackets) do
-				f.BackgroundColor3 = accent
+			if accent ~= lastBracketAcc then
+				lastBracketAcc = accent
+				for _, f in ipairs(brackets) do
+					f.BackgroundColor3 = accent
+				end
 			end
 			if hero.charge > 0.03 and hero.phase == "idle" then
 				cap.Text = string.format("HOLD  %d%%", math.floor(hero.charge * 100))
@@ -13215,6 +13439,47 @@ end
 		local last, pulse = 0, 0
 		local lastThemeBeat = -1
 		local chromeAcc = 0
+		local chromeDt, lastVigBG, lastVigAmb = 0, nil, nil
+		local function chromeStep()
+			local dt = chromeDt
+			local t = env.Time and env.Time() or os.clock()
+			local bg, col = FX.GetBG(), FX.GetColor()
+			if bg ~= lastVigBG or S.Ambient ~= lastVigAmb then
+				lastVigBG, lastVigAmb = bg, S.Ambient
+				for _, f in ipairs(vig) do
+					f.BackgroundColor3 = bg
+					f.Visible = S.Ambient
+				end
+			end
+			local RA = FX.Audio -- [v109] shared music reactor drives the border / underglow pulse while it runs
+			if S.Ambient and RA.running then
+				pulse = math.max(pulse, RA.beat * 0.85, RA.kick)
+			elseif S.Ambient and music then
+				local pbl = music.PlaybackLoudness
+				if pbl - last > 20 then pulse = 1 end
+				last = pbl
+				local TS = Util.ThemeSong -- [v48] theme song: pulse on its exact 126 BPM grid (downbeat hardest)
+				if TS and TS.IsPlaying(music) then
+					local bi = TS.Beat(music.TimePosition)
+					if bi ~= lastThemeBeat then
+						lastThemeBeat = bi
+						pulse = math.max(pulse, (bi % 4 == 0) and 1 or 0.55)
+					end
+				end
+			end
+			pulse = math.max(0, pulse - dt * 3.2)
+			if stroke then
+				stroke.Thickness = S.Ambient and (1 + pulse * 1.8) or 1
+			end
+			if glow then
+				glow.Visible = S.Ambient
+				glow.BackgroundColor3 = col
+				glow.BackgroundTransparency = 0.3 - pulse * 0.3
+				local RAon = RA.running and S.Ambient
+				glow.Size = UDim2.new(1, -16, 0, RAon and (2 + math.floor(pulse * 2.5 + 0.5)) or 2)
+				glowGrad.Offset = Vector2.new(math.sin(t * 0.7) * 0.45 + (RAon and RA.sway * 0.3 * RA.energy or 0), 0)
+			end
+		end
 		RunService.RenderStepped:Connect(function(dt)
 			if not win.Parent then return end
 			-- [v34] low end: the beat / underglow layer is hidden by S.Ambient anyway, so it only refreshes ~5x per second
@@ -13225,37 +13490,8 @@ end
 			else
 				chromeAcc = 0
 			end
-			pcall(function()
-				local t = env.Time and env.Time() or os.clock()
-				local bg, col = FX.GetBG(), FX.GetColor()
-				for _, f in ipairs(vig) do
-					f.BackgroundColor3 = bg
-					f.Visible = S.Ambient
-				end
-				if S.Ambient and music then
-					local pbl = music.PlaybackLoudness
-					if pbl - last > 20 then pulse = 1 end
-					last = pbl
-					local TS = Util.ThemeSong -- [v48] theme song: pulse on its exact 126 BPM grid (downbeat hardest)
-					if TS and TS.IsPlaying(music) then
-						local bi = TS.Beat(music.TimePosition)
-						if bi ~= lastThemeBeat then
-							lastThemeBeat = bi
-							pulse = math.max(pulse, (bi % 4 == 0) and 1 or 0.55)
-						end
-					end
-				end
-				pulse = math.max(0, pulse - dt * 3.2)
-				if stroke then
-					stroke.Thickness = S.Ambient and (1 + pulse * 1.8) or 1
-				end
-				if glow then
-					glow.Visible = S.Ambient
-					glow.BackgroundColor3 = col
-					glow.BackgroundTransparency = 0.3 - pulse * 0.3
-					glowGrad.Offset = Vector2.new(math.sin(t * 0.7) * 0.45, 0)
-				end
-			end)
+			chromeDt = dt
+			pcall(chromeStep)
 		end)
 
 		-- ANIM · click shockwave: a ring leaves the cursor on every press inside the window
@@ -13304,6 +13540,7 @@ end
 	function FX.Bind(env)
 		local SaveData = env.SaveData
 		FX.UISound = env.UISound
+		pcall(FX.Audio.Bind, env.UISound and env.UISound.Music)
 		FX.Window = env.UIMainWindow
 		FX.Content = env.WindowContent
 		FX.GetColor = function()
@@ -13525,6 +13762,22 @@ end
 			end
 		end
 
+		-- [v109] music: the Delta icon tilts with the beat; its spring scale gets a beat bump (held off while a press animation runs)
+		local iconRot0 = setmetatable({}, {__mode = "k"})
+		FX.Audio.Add("DeltaIcon", function(A, dt, off)
+			local btn = D.Button
+			if not (D.Active and btn and btn.Parent) then return end
+			local r0 = iconRot0[btn]
+			if r0 == nil then r0 = btn.Rotation iconRot0[btn] = r0 end
+			local r = off and r0 or (r0 + A.sway * (1.5 + 7 * A.energy))
+			if btn.Rotation ~= r then btn.Rotation = r end
+			local ps = D.PressScale
+			if ps and ps.Parent and os.clock() > (D.PressHold or 0) and motionOn() then
+				local sc = off and 1 or (1 + 0.07 * A.kick + 0.035 * A.beat + 0.02 * A.energy)
+				if ps.Scale ~= sc then ps.Scale = sc end
+			end
+		end)
+
 		-- ── logo: Nooby's 3D triangle replaces the Delta icon image ──
 		function D.SyncLogo()
 			local host, btn = D.LogoHost, D.Button
@@ -13547,6 +13800,7 @@ end
 			local pressScale = btn:FindFirstChild("LT_NoobyPress")
 			if not (D.Active and cfg("DeltaLogo") == true) then
 				if pressScale then pressScale:Destroy() end
+				D.PressScale = nil
 				pcall(function() btn.ImageTransparency = btn.BackgroundTransparency end) -- give Delta's own image back
 				return
 			end
@@ -13599,12 +13853,15 @@ end
 				pressScale.Name = "LT_NoobyPress"
 				pressScale.Parent = btn
 			end
+			D.PressScale = pressScale
 			logoConns[#logoConns + 1] = btn.MouseButton1Down:Connect(function()
 				if not motionOn() then return end
+				D.PressHold = math.huge
 				tween(pressScale, 0.09, Quad, EOut, {Scale = 0.86})
 				pcall(function() T.yawVel = T.yawVel + 8 end)
 			end)
 			logoConns[#logoConns + 1] = btn.MouseButton1Up:Connect(function()
+				D.PressHold = os.clock() + 0.8
 				if not motionOn() then pressScale.Scale = 1 return end
 				tween(pressScale, 0.7, Enum.EasingStyle.Elastic, EOut, {Scale = 1})
 				pcall(T.Bloom, T)
@@ -13793,7 +14050,7 @@ end
 				})
 				local ms = mk("UIScale", mark, {Scale = 0.01})
 				local okT, tri = pcall(FX.NewTriangle3D, mark, {
-					ZIndex = 4, Interactive = false, IsVisible = function() return sg.Parent ~= nil end,
+					ZIndex = 4, Interactive = false, Dance = false, IsVisible = function() return sg.Parent ~= nil end,
 				})
 				if okT and tri then
 					T = tri
@@ -16538,6 +16795,8 @@ Util.Color = (function()
 			local k = (hr - a[1]) / math.max(0.001, b[1] - a[1])
 			out = Color3.fromHSV(hueLerp(a[2], b[2], k), 0.75, a[3] + (b[3] - a[3]) * k)
 		end
+		local FA = Util.FX and Util.FX.Audio -- [v109] music tint (live only, mode 6 already reacts on its own)
+		if FA and mode ~= 6 then out = FA.Tint(out) end
 		if (c.ColorSat or 1) == 1 and (c.ColorBright or 1) == 1 then C.Cur = out return out end
 		local h, s, v = out:ToHSV()
 		out = Color3.fromHSV(h, clamp(s * (c.ColorSat or 1), 0, 1), clamp(v * (c.ColorBright or 1), 0, 1))
@@ -17062,7 +17321,7 @@ do
 				end
 
 				if S.shown then
-					local speed = 1.4 + (S.open and 1.6 or 0) + S.boost * 3 + S.flash * 5
+					local speed = 1.4 + (S.open and 1.6 or 0) + S.boost * 3 + S.flash * 5 + (Util.FX.Audio.running and Util.FX.Audio.kick * 4 or 0)
 					U.orbitA = (U.orbitA or 0) + dt * speed
 					local R = (SIZE + 8) / 2
 					for i, d in ipairs(dots) do
@@ -17071,7 +17330,7 @@ do
 					end
 					U.btnGrad = ((U.btnGrad or 0) + dt * (90 + S.boost * 220 + (S.open and 120 or 0))) % 360
 					grad.Rotation = U.btnGrad
-					local pulse = SIZE + 14 + math.sin(t * 2) * 4 + S.flash * 18
+					local pulse = SIZE + 14 + math.sin(t * 2) * 4 + S.flash * 18 + (Util.FX.Audio.running and Util.FX.Audio.kick * 10 or 0)
 					aura.Size = UDim2.fromOffset(pulse, pulse)
 					aura.BackgroundTransparency = 0.9 - S.flash * 0.35 - (S.open and 0.07 or 0)
 					btn.Rotation = S.shake > 0 and math.sin(t * 55) * 7 * S.shake or 0
@@ -17212,6 +17471,35 @@ end
  end
  do
 	 local uhThemeLast = 0
+	 local uhTagLists, uhIsStroke = {}, setmetatable({}, {__mode = "k"})
+	 local function uhQualAccent(o)
+		 if o:IsA("UIStroke") then uhIsStroke[o] = true return true end
+		 return o:IsA("GuiObject")
+	 end
+	 local function uhQualGui(o) return o:IsA("GuiObject") end
+	 local function uhQualText(o) return o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") end
+	 local function uhTagList(tag, qualifies)
+		 local c = uhTagLists[tag]
+		 if c then return c end
+		 c = {n = 0, arr = {}, idx = {}}
+		 uhTagLists[tag] = c
+		 local function add(o)
+			 if c.idx[o] or not qualifies(o) then return end
+			 local n = c.n + 1
+			 c.n, c.arr[n], c.idx[o] = n, o, n
+		 end
+		 UhCollectionService:GetInstanceAddedSignal(tag):Connect(add)
+		 UhCollectionService:GetInstanceRemovedSignal(tag):Connect(function(o)
+			 local at = c.idx[o]
+			 if not at then return end
+			 local n = c.n
+			 local last = c.arr[n]
+			 c.arr[at], c.idx[last] = last, at
+			 c.arr[n], c.idx[o], c.n = nil, nil, n - 1
+		 end)
+		 for _, o in ipairs(UhCollectionService:GetTagged(tag)) do add(o) end
+		 return c
+	 end
 	 game:GetService("RunService").Heartbeat:Connect(function()
 		 local now = os.clock()
 		 if now - uhThemeLast < 0.1 then return end
@@ -17221,22 +17509,23 @@ end
 		 if cfg and cfg.UIAccent and cfg.UIAccent ~= "" then
 			 accent = Util.ParseHex(cfg.UIAccent) or accent
 		 end
-		 for _, o in ipairs(UhCollectionService:GetTagged(UH_TAG_ACCENT)) do
-			 if o:IsA("UIStroke") then
-				 o.Color = accent
-			 elseif o:IsA("GuiObject") then
-				 o.BackgroundColor3 = accent
+		 do
+			 local c = uhTagList(UH_TAG_ACCENT, uhQualAccent)
+			 local arr = c.arr
+			 for n = 1, c.n do
+				 local o = arr[n]
+				 if uhIsStroke[o] then o.Color = accent else o.BackgroundColor3 = accent end
 			 end
 		 end
-		 for _, o in ipairs(UhCollectionService:GetTagged(UH_TAG_BG)) do
-			 if o:IsA("GuiObject") then
-				 o.BackgroundColor3 = bg
-			 end
+		 do
+			 local c = uhTagList(UH_TAG_BG, uhQualGui)
+			 local arr = c.arr
+			 for n = 1, c.n do arr[n].BackgroundColor3 = bg end
 		 end
-		 for _, o in ipairs(UhCollectionService:GetTagged(UH_TAG_TEXT)) do
-			 if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
-				 o.TextColor3 = textCol
-			 end
+		 do
+			 local c = uhTagList(UH_TAG_TEXT, uhQualText)
+			 local arr = c.arr
+			 for n = 1, c.n do arr[n].TextColor3 = textCol end
 		 end
 	 end)
  end
@@ -19664,8 +19953,12 @@ print(Time)
  
  local script = Instance.new('LocalScript', Pingtext)
  local RunService = game:GetService("RunService")
- RunService.RenderStepped:Connect(function(ping) 
- script.Parent.Text = ("Ping: " ..game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValueString(math.round(2/ping))) -- your ping
+ local pingConn
+ pingConn = RunService.RenderStepped:Connect(function(ping) 
+ local lbl = script.Parent
+ if not lbl or not lbl:IsDescendantOf(game) then pingConn:Disconnect() return end
+ local txt = ("Ping: " ..game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValueString(math.round(2/ping))) -- your ping
+ if lbl.Text ~= txt then lbl.Text = txt end
  end)
 		 end)
  
@@ -19709,8 +20002,12 @@ print(Time)
  
  local script = Instance.new('LocalScript', Fpstext)
  local RunService = game:GetService("RunService")
- RunService.RenderStepped:Connect(function(frame) 
- script.Parent.Text = ("FPS: "..math.round(1/frame)) 
+ local fpsConn
+ fpsConn = RunService.RenderStepped:Connect(function(frame) 
+ local lbl = script.Parent
+ if not lbl or not lbl:IsDescendantOf(game) then fpsConn:Disconnect() return end
+ local txt = ("FPS: "..math.round(1/frame))
+ if lbl.Text ~= txt then lbl.Text = txt end
  end)
 		 end)
  
@@ -21852,7 +22149,8 @@ print(Time)
 		 wait(0.1)
 		 end
 		  end
-	  game:GetService("RunService").RenderStepped:Connect(function()
+	  do local oldConn = getgenv().UhSeizureConn if oldConn then pcall(function() oldConn:Disconnect() end) end end
+	  getgenv().UhSeizureConn = game:GetService("RunService").RenderStepped:Connect(function()
 	  if Lzzz == true then
 				  game.Players.LocalPlayer.Character.HumanoidRootPart.CFrame = game.Players.LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(.075*math.sin(45*tick()), .075*math.sin(45*tick()),.075*math.sin(45*tick())) --angle*math.sin(velocity*tick())
 	  end
@@ -21912,7 +22210,8 @@ print(Time)
 		 wait(0.1)
 		 end
 		  end
-	  game:GetService("RunService").RenderStepped:Connect(function()
+	  do local oldConn = getgenv().UhSeizureConn if oldConn then pcall(function() oldConn:Disconnect() end) end end
+	  getgenv().UhSeizureConn = game:GetService("RunService").RenderStepped:Connect(function()
 	  if Lzzz == true then
 				  game.Players.LocalPlayer.Character.HumanoidRootPart.CFrame = game.Players.LocalPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(.075*math.sin(45*tick()), .075*math.sin(45*tick()),.075*math.sin(45*tick())) --angle*math.sin(velocity*tick())
 	  end
@@ -243687,6 +243986,55 @@ musicState.setupSidebar = function()
 				end
 				musicState.imageLabel.ImageColor3 = offImg
 			end)
+			if not musicState.icon.sheetAsset then
+				pcall(function()
+					local il = musicState.imageLabel
+					il.Image = ""
+					il.ImageRectOffset = Vector2.new(0, 0)
+					il.ImageRectSize = Vector2.new(0, 0)
+					for _, d in il:GetChildren() do
+						if d.Name == "LT_MusicGlyph" then
+							d:Destroy()
+						end
+					end
+					local g = Instance.new("Frame")
+					g.Name = "LT_MusicGlyph"
+					g.BackgroundTransparency = 1
+					g.AnchorPoint = Vector2.new(0.5, 0.5)
+					g.Position = UDim2.fromScale(0.5, 0.5)
+					g.Size = UDim2.fromScale(0.8, 0.8)
+					g.ZIndex = il.ZIndex + 1
+					g.Parent = il
+					local ar = Instance.new("UIAspectRatioConstraint")
+					ar.AspectRatio = 1
+					ar.Parent = g
+					local parts = {}
+					local function part(anchor, pos, size, rot, round)
+						local f = Instance.new("Frame")
+						f.AnchorPoint = anchor
+						f.Position = pos
+						f.Size = size
+						f.Rotation = rot
+						f.BorderSizePixel = 0
+						f.ZIndex = g.ZIndex
+						f.Parent = g
+						local c = Instance.new("UICorner")
+						c.CornerRadius = round and UDim.new(1, 0) or UDim.new(0, 2)
+						c.Parent = f
+						table.insert(parts, f)
+					end
+					part(Vector2.new(0.5, 0), UDim2.fromScale(0.62, 0.13), UDim2.fromScale(0.11, 0.58), 0, false)
+					part(Vector2.new(1, 0), UDim2.fromScale(0.68, 0.13), UDim2.fromScale(0.43, 0.1), -8, false)
+					part(Vector2.new(0.5, 0.5), UDim2.fromScale(0.45, 0.75), UDim2.fromScale(0.36, 0.28), -12, true)
+					local function recolor()
+						for _, f in parts do
+							f.BackgroundColor3 = il.ImageColor3
+						end
+					end
+					recolor()
+					il:GetPropertyChangedSignal("ImageColor3"):Connect(recolor)
+				end)
+			end
 		end
 		pcall(function()
 			musicState.button.BackgroundColor3 = bgOff()
@@ -245581,6 +245929,8 @@ do
 	local managedCloseBound = setmetatable({}, { __mode = "k" })
 	local managedCloseBusy = setmetatable({}, { __mode = "k" })
 	local normalizeTabSequence
+	local selectTabByName
+	local tabSelectToken = 0
 
 	local function getOrderedTabButtons()
 		local entries = {}
@@ -245651,7 +246001,37 @@ do
 		end)
 	end
 
+	local managedSelectBound = setmetatable({}, { __mode = "k" })
+	local function bindManagedSelect(tab)
+		if not (tab and tab:IsA("GuiButton")) or managedSelectBound[tab] then
+			return
+		end
+		managedSelectBound[tab] = true
+		local lastTap = 0
+		local function activateSelect()
+			if not (runtime.alive and tab.Parent) then
+				return
+			end
+			local now = os.clock()
+			if now - lastTap < 0.12 then
+				return
+			end
+			lastTap = now
+			tabSelectToken += 1
+			local token = tabSelectToken
+			selectTabByName(tab.Name)
+			task.delay(0.08, function()
+				if runtime.alive and tab.Parent and token == tabSelectToken then
+					selectTabByName(tab.Name)
+				end
+			end)
+		end
+		connect(tab.Activated, activateSelect)
+		connect(tab.MouseButton1Click, activateSelect)
+	end
+
 	local function bindManagedClose(tab)
+		bindManagedSelect(tab)
 		if not (tab and tab:IsA("GuiButton")) or managedCloseBound[tab] then
 			return
 		end
@@ -245836,13 +246216,32 @@ do
 		return #getCodeBoxes() > before
 	end
 
-	local function selectTabByName(name)
-		for _, box in getCodeBoxes() do
-			box.Visible = box.Name == name
+	selectTabByName = function(name)
+		local boxes = getCodeBoxes()
+		local target
+		for _, box in boxes do
+			if box.Name == name then
+				target = box
+				break
+			end
+		end
+		if not target then
+			for index, tab in getOrderedTabButtons() do
+				if tab.Name == name then
+					target = boxes[index]
+					break
+				end
+			end
+		end
+		if not target then
+			return
+		end
+		for _, box in boxes do
+			box.Visible = box == target
 		end
 		for _, tab in tabsFrame:GetChildren() do
 			if tab:IsA("GuiButton") and tab.Name:match("^script%d+%.lua$") then
-				tab.BackgroundTransparency = tab.Name == name and 0 or 1
+				tab.BackgroundTransparency = tab.Name == target.Name and 0 or 1
 			end
 		end
 		queueStatusUpdate()
@@ -245894,7 +246293,7 @@ do
 		box.Parent = sourceBox.Parent
 		track(box)
 		connect(tab.MouseButton1Click, function()
-			selectTabByName(name)
+			selectTabByName(tab.Name)
 		end)
 		local closeButton = tab:FindFirstChild("ImageButton")
 		if closeButton and closeButton:IsA("GuiButton") then
@@ -246331,6 +246730,7 @@ do
 	end)
 	connect(tabsFrame.ChildAdded, function(tab)
 		task.defer(applyTabStyle, tab)
+		task.defer(bindManagedSelect, tab)
 	end)
 	local function createCycleSetting(name, titleText, descText, values, getValue, setValue, formatValue)
 		local row
@@ -247034,6 +247434,9 @@ do
 		button.ZIndex = 12002
 		newUi.makeCorner(button, 32, false)
 		local source = newUi.findSourceIcon(pageName)
+		if pageName == "Music" and not musicState.icon.sheetAsset then
+			source = nil
+		end
 		local icon
 		if source then
 			icon = newUi.copyIcon(source, button, 25, 12003, false)
@@ -247436,6 +247839,258 @@ do
 		end
 	end
 
+	local kbInset = 0
+	local kbBaseSize, kbBasePos
+	local kbCursorConn
+	local kbRevealToken = 0
+	local function kbScale()
+		local scale = 1
+		local current = executorRoot
+		while current do
+			for _, child in current:GetChildren() do
+				if child:IsA("UIScale") then
+					scale *= child.Scale
+				end
+			end
+			if current:IsA("LayerCollector") then
+				break
+			end
+			current = current.Parent
+		end
+		return math.max(scale, 0.05)
+	end
+	local function revealCaret(box)
+		if not (runtime.alive and box and box.Parent and box:IsA("TextBox") and box:IsDescendantOf(codeFrame)) then
+			return
+		end
+		kbRevealToken += 1
+		local token = kbRevealToken
+		task.delay(0.12, function()
+			if not (runtime.alive and token == kbRevealToken and box.Parent and box:IsFocused()) then
+				return
+			end
+			local cursor = tonumber(box.CursorPosition) or -1
+			if cursor < 1 then
+				return
+			end
+			local scale = kbScale()
+			local prefix = (box.Text or ""):sub(1, cursor - 1)
+			local lineHeight = math.max(1, box.LineHeight) * box.TextSize
+			local bounds
+			if #prefix <= 40000 then
+				local params = Instance.new("GetTextBoundsParams")
+				params.Text = prefix .. "|"
+				params.Width = box.TextWrapped and math.max(120, math.floor(codeFrame.AbsoluteWindowSize.X / scale) - 20)
+					or 1000000
+				params.Font = box.FontFace
+				params.Size = box.TextSize
+				local ok, result = pcall(function()
+					return game:GetService("TextService"):GetTextBoundsAsync(params)
+				end)
+				params:Destroy()
+				if ok then
+					bounds = result
+				end
+			end
+			if not bounds then
+				local _, breaks = prefix:gsub("\n", "\n")
+				bounds = Vector2.new(0, (breaks + 1) * lineHeight)
+			end
+			if not (runtime.alive and token == kbRevealToken and box.Parent and box:IsFocused()) then
+				return
+			end
+			local caretBottom = box.Position.Y.Offset + bounds.Y
+			local caretTop = caretBottom - lineHeight
+			local windowHeight = codeFrame.AbsoluteWindowSize.Y / scale
+			local current = codeFrame.CanvasPosition
+			local nextY = current.Y
+			if caretTop - lineHeight < current.Y then
+				nextY = caretTop - lineHeight
+			elseif caretBottom + lineHeight > current.Y + windowHeight then
+				nextY = caretBottom + lineHeight - windowHeight
+			end
+			nextY = math.max(0, nextY)
+			if math.abs(nextY - current.Y) > 0.5 then
+				codeFrame.CanvasPosition = Vector2.new(current.X, nextY)
+			end
+		end)
+	end
+	local kbBaseBottom, kbBaseHeight, kbLastTop, kbKnownRatio
+	local kbExpectUntil = 0
+	local function kbVisible()
+		local ok, v = pcall(function()
+			return UIS.OnScreenKeyboardVisible
+		end)
+		return ok and v == true
+	end
+	local function kbViewportHeight()
+		local cam = workspace.CurrentCamera
+		return cam and cam.ViewportSize.Y or 0
+	end
+	local function kbOffsetY()
+		local gui = executorRoot:FindFirstAncestorWhichIsA("LayerCollector")
+		if gui and gui:IsA("ScreenGui") and not gui.IgnoreGuiInset then
+			return game:GetService("GuiService"):GetGuiInset().Y
+		end
+		return 0
+	end
+	local function captureKbBaseline()
+		if kbInset > 0 or kbVisible() or not (executorImage and executorImage.Parent) then
+			return
+		end
+		if executorImage.AbsoluteSize.Y < 50 then
+			return
+		end
+		kbBaseBottom = executorImage.AbsolutePosition.Y + executorImage.AbsoluteSize.Y + kbOffsetY()
+		kbBaseHeight = executorImage.AbsoluteSize.Y
+	end
+	local function computeKeyboardInset()
+		if not (executorImage and executorImage.Parent) then
+			return 0
+		end
+		local box = UIS:GetFocusedTextBox()
+		local focusedCode = box and box:IsDescendantOf(codeFrame)
+		if not (focusedCode or kbInset > 0) then
+			return 0
+		end
+		local visible = kbVisible()
+		if not visible and not (focusedCode and os.clock() < kbExpectUntil) then
+			return 0
+		end
+		captureKbBaseline()
+		if not kbBaseBottom then
+			return kbInset
+		end
+		local viewport = kbViewportHeight()
+		local keyboardTop
+		if visible then
+			local pos, size = UIS.OnScreenKeyboardPosition, UIS.OnScreenKeyboardSize
+			if pos.Y > 0 and size.Y > 0 then
+				keyboardTop = pos.Y
+				if viewport > 0 then
+					kbKnownRatio = keyboardTop / viewport
+				end
+				if kbLastTop and kbInset > 0 and math.abs(keyboardTop - kbLastTop) < 24 then
+					return kbInset
+				end
+				kbLastTop = keyboardTop
+			end
+		end
+		if not keyboardTop then
+			if viewport <= 0 then
+				return kbInset
+			end
+			keyboardTop = viewport * (kbKnownRatio or 0.42)
+		end
+		local overlap = kbBaseBottom - keyboardTop
+		if overlap <= 0 then
+			return 0
+		end
+		return math.floor(math.min(overlap, kbBaseHeight * 0.62) / kbScale())
+	end
+	local function applyKeyboardInset(inset)
+		if inset == kbInset then
+			return
+		end
+		if inset > 0 and kbInset > 0 then
+			local diff = inset - kbInset
+			if (diff > 0 and diff < 4) or (diff < 0 and -diff < 24) then
+				return
+			end
+		end
+		local previous = kbInset
+		kbInset = inset
+		if inset == 0 then
+			kbLastTop = nil
+		end
+		if newUi.enabled and newUi.applied then
+			kbBaseSize, kbBasePos = nil, nil
+			newUi.applyLocks()
+			return
+		end
+		if not (executorImage and executorImage.Parent) then
+			return
+		end
+		if previous == 0 or not kbBaseSize then
+			kbBaseSize, kbBasePos = executorImage.Size, executorImage.Position
+		end
+		if inset == 0 then
+			executorImage.Size = kbBaseSize
+			executorImage.Position = kbBasePos
+			kbBaseSize, kbBasePos = nil, nil
+		else
+			local b, p = kbBaseSize, kbBasePos
+			executorImage.Size = UDim2.new(b.X.Scale, b.X.Offset, b.Y.Scale, b.Y.Offset - inset)
+			executorImage.Position =
+				UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset - executorImage.AnchorPoint.Y * inset)
+		end
+	end
+	local function updateKeyboardLayout()
+		if not runtime.alive then
+			return
+		end
+		applyKeyboardInset(computeKeyboardInset())
+		local box = UIS:GetFocusedTextBox()
+		if box and box:IsDescendantOf(codeFrame) then
+			revealCaret(box)
+		end
+	end
+	local function releaseKbCursor()
+		if kbCursorConn then
+			kbCursorConn:Disconnect()
+			kbCursorConn = nil
+		end
+	end
+	local kbPending = false
+	local function scheduleKeyboardLayout()
+		if kbPending then
+			return
+		end
+		kbPending = true
+		task.delay(0.08, function()
+			kbPending = false
+			updateKeyboardLayout()
+		end)
+	end
+	connect(executorImage:GetPropertyChangedSignal("AbsoluteSize"), captureKbBaseline)
+	connect(executorImage:GetPropertyChangedSignal("AbsolutePosition"), captureKbBaseline)
+	task.delay(1, captureKbBaseline)
+	connect(UIS:GetPropertyChangedSignal("OnScreenKeyboardVisible"), function()
+		scheduleKeyboardLayout()
+		task.delay(0.4, scheduleKeyboardLayout)
+	end)
+	connect(UIS:GetPropertyChangedSignal("OnScreenKeyboardSize"), scheduleKeyboardLayout)
+	connect(UIS:GetPropertyChangedSignal("OnScreenKeyboardPosition"), scheduleKeyboardLayout)
+	connect(UIS.TextBoxFocused, function(box)
+		if not (box and box:IsDescendantOf(codeFrame)) then
+			return
+		end
+		releaseKbCursor()
+		kbCursorConn = box:GetPropertyChangedSignal("CursorPosition"):Connect(function()
+			revealCaret(box)
+		end)
+		if UIS.TouchEnabled and not UIS.KeyboardEnabled then
+			kbExpectUntil = os.clock() + 1.2
+		end
+		captureKbBaseline()
+		updateKeyboardLayout()
+		task.delay(0.5, scheduleKeyboardLayout)
+		task.delay(1.3, scheduleKeyboardLayout)
+	end)
+	connect(UIS.TextBoxFocusReleased, function()
+		releaseKbCursor()
+		task.delay(0.3, scheduleKeyboardLayout)
+	end)
+	addRestorer(function()
+		releaseKbCursor()
+		if kbBaseSize and executorImage and executorImage.Parent then
+			executorImage.Size = kbBaseSize
+			executorImage.Position = kbBasePos
+		end
+		kbBaseSize, kbBasePos = nil, nil
+		kbInset = 0
+	end)
+
 	newUi.buildExecutor = function()
 		newUi.capture(editorSideMenu, { "Visible" })
 		if editorSideMenu then
@@ -247453,7 +248108,7 @@ do
 		newUi.lock(executorImage, "AnchorPoint", Vector2.zero)
 		newUi.lock(executorImage, "Position", UDim2.fromScale(0, 0))
 		newUi.lock(executorImage, "Size", function()
-			return newUi.railCollapsed and UDim2.new(0.974, 0, 1, 0) or UDim2.new(0.948, 0, 1, 0)
+			return newUi.railCollapsed and UDim2.new(0.974, 0, 1, -kbInset) or UDim2.new(0.948, 0, 1, -kbInset)
 		end)
 		newUi.lock(executorImage, "BackgroundColor3", newUi.colors.panelTop)
 		newUi.lock(executorImage, "BackgroundTransparency", 0)
@@ -257552,6 +258207,37 @@ do -- [rbxvis] Roblox icon + chat visuals: on by default, follow the active UI t
 		setChat(bub, "MaxDistance", C.BubbleDist)
 		setChat(bub, "TailVisible", C.BubbleTail)
 	end
+	-- [v109] music: the Roblox top-bar logo tilts with the beat and its glyph pops on bass hits (shared FX.Audio controller)
+	local rot0 = setmetatable({}, {__mode = "k"})
+	local glyphScale
+	FX.Audio.Add("RobloxLogo", function(A, dt, off)
+		local d = barLogo
+		if not (d and d.Parent) then
+			if off or os.clock() - lastScan < 3 then return end
+			lastScan = os.clock()
+			scanBar()
+			d = barLogo
+			if not (d and d.Parent) then return end
+		end
+		if rot0[d] == nil then rot0[d] = d.Rotation end
+		local r = off and rot0[d] or (rot0[d] + A.sway * (2 + 8 * A.energy))
+		if d.Rotation ~= r then d.Rotation = r end
+		if not (glyphScale and glyphScale.Parent and glyphScale.Parent:IsDescendantOf(d)) then
+			glyphScale = nil
+			for _, g in ipairs(barGlyph) do
+				if g.Parent and g ~= d and g:IsDescendantOf(d) then
+					glyphScale = g:FindFirstChild("LT_Beat") or Instance.new("UIScale")
+					glyphScale.Name = "LT_Beat"
+					glyphScale.Parent = g
+					break
+				end
+			end
+		end
+		if glyphScale then
+			local sc = off and 1 or (1 + 0.12 * A.kick + 0.06 * A.beat + 0.03 * A.energy)
+			if glyphScale.Scale ~= sc then glyphScale.Scale = sc end
+		end
+	end)
 	function RV.Apply()
 		pcall(stepIcon, FX.Cfg.RbxIconTheme == true, FX.Cfg.RbxBarTheme == true)
 		pcall(stepChat, FX.Cfg.ChatStyle == true)
@@ -257687,6 +258373,8 @@ do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 
 		sw("Show Vertex Orbs", "TriNodes")
 		sw("Show Faces (off = wireframe)", "TriFaces")
 		sw("React To Music", "TriMusic")
+		sw("Music Dance (triangles + logos follow the beat)", "MusicDance")
+		sw("Music Colors (UI accent follows the beat)", "MusicColor")
 		sw("Hold 5s To Explode", "TriExplode")
 
 		-- ═════ INTRO (10) ═════
