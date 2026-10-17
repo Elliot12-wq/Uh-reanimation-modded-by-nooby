@@ -264108,6 +264108,887 @@ function HatReanimator.Start()
 	Reanimate.DestroyCharacter()
 end
 
+-- Tool Reanimation: the Handles of your Tools are the R6 body parts (Torso, Head, Right Arm, Left Arm, Right Leg, Left Leg).
+-- Uses the Hat Reanimator's respawn handling: kill -> game respawns you -> Respawn TP -> equip tools -> break joints -> dolteddown's pd.
+do
+	local ToolReanimator = {}
+	Reanimate.ToolReanimator = ToolReanimator
+	ToolReanimator.Name = "Tools"
+	ToolReanimator.FlingEnabled = false
+	ToolReanimator.FlingTargets = {}
+	SaveData.Reanimator.ToolsCollide = not not SaveData.Reanimator.ToolsCollide
+	SaveData.Reanimator.ToolsPermadeath = SaveData.Reanimator.ToolsPermadeath ~= false
+	SaveData.Reanimator.ToolsRespawnPosition = SaveData.Reanimator.ToolsRespawnPosition or SaveData.Reanimator.RespawnPosition or 0
+	SaveData.Reanimator.ToolsAutoForceRespawn = not not SaveData.Reanimator.ToolsAutoForceRespawn
+	SaveData.Reanimator.ToolsStuckTimeout = math.clamp(tonumber(SaveData.Reanimator.ToolsStuckTimeout) or tonumber(SaveData.Reanimator.HatsStuckTimeout) or 12, 5, 60)
+	ToolReanimator.Collide = SaveData.Reanimator.ToolsCollide
+	ToolReanimator.Permadeath = SaveData.Reanimator.ToolsPermadeath
+	ToolReanimator.RespawnPosition = SaveData.Reanimator.ToolsRespawnPosition
+	-- 0 - hide body
+	-- 1 - behind character
+	-- 2 - randomtp close
+	-- 3 - stay at spawn
+	-- 4 - under character (keep rootpart streamed)
+	ToolReanimator.AutoForceRespawn = SaveData.Reanimator.ToolsAutoForceRespawn
+	ToolReanimator.StuckTimeout = SaveData.Reanimator.ToolsStuckTimeout
+	-- 1 = Original, 2 = Drop Claim, 3 = Corpse Claim (read when Reanimate starts; switching only takes effect on the next start)
+	SaveData.Reanimator.ToolsMethod = math.clamp(math.floor(tonumber(SaveData.Reanimator.ToolsMethod) or 1), 1, 3)
+	ToolReanimator.Method = SaveData.Reanimator.ToolsMethod
+	local ToolMethods = {"Original", "Drop Claim", "Corpse Claim"}
+	local ToolMethodInfo = {
+		"Original: equips the tools, breaks the real character's joints server-side and uses the freed handles. Optional dolteddown's permadeath.",
+		"Drop Claim: the real character stays ALIVE (parked, state machine off). Tools are equipped, then dropped into Workspace; the loose handles are claimed by network ownership. Needs no replicatesignal, but needs isnetworkowner: a limb is only moved once you provably own the handle (otherwise other players never see it). Tools picked up by touch are dropped again automatically.",
+		"Corpse Claim: every tool is armed at once, then the real character is killed so the server breaks all grips together. A dead humanoid cannot pick anything up, so each tool is moved into Workspace right away (before the corpse is removed). A tool is only driven once the server has really freed it and you own it; unconfirmed drops are resent. The respawned character is parked alive and touch-disabled. replicatesignal is only an optional helper.",
+	}
+	ToolReanimator.HasPermadeath = false
+	ToolReanimator.Summary = "(no tools claimed yet...)"
+	ToolReanimator.Status = {
+		Permadeath = "(no status)",
+		ReanimState = "(no status)",
+	}
+	local LimbOrder = {"Torso", "Head", "Right Arm", "Left Arm", "Right Leg", "Left Leg"}
+	function ToolReanimator.Config(parent)
+		UI.CreateText(parent, "Every Tool you own (up to 6) becomes one R6 body part: Torso, Head, Right Arm, Left Arm, Right Leg, Left Leg - in that order.\nNeeds replicatesignal support from your executor (Original only).", 10, Enum.TextXAlignment.Center)
+		UI.CreateDropdown(parent, "Tool Method", ToolMethods, ToolReanimator.Method).Changed:Connect(function(val)
+			ToolReanimator.Method = val
+			SaveData.Reanimator.ToolsMethod = val
+			task.defer(function() pcall(Util.RefreshReanimatorConfig) end)
+		end)
+		UI.CreateText(parent, ToolMethodInfo[ToolReanimator.Method] .. (Reanimate.Current == ToolReanimator and "\n(applies on the next Reanimate)" or ""), 10, Enum.TextXAlignment.Center)
+		if ToolReanimator.Method == 1 then
+		UI.CreateSwitch(parent, "Permadeath (dolteddown's pd)", ToolReanimator.Permadeath).Changed:Connect(function(val)
+			ToolReanimator.Permadeath = val
+			SaveData.Reanimator.ToolsPermadeath = val
+		end)
+		UI.CreateText(parent, "^^^ keeps your real character alive so the tools stay yours. Off = tools are lost when the game respawns you", 10, Enum.TextXAlignment.Center)
+		end
+		UI.CreateSwitch(parent, "Auto Force Respawn when stuck", ToolReanimator.AutoForceRespawn).Changed:Connect(function(val)
+			ToolReanimator.AutoForceRespawn = val
+			SaveData.Reanimator.ToolsAutoForceRespawn = val
+		end)
+		UI.CreateSlider(parent, "Stuck timeout (seconds)", ToolReanimator.StuckTimeout, 5, 60, 1).Changed:Connect(function(val)
+			val = math.clamp(val, 5, 60)
+			ToolReanimator.StuckTimeout = val
+			SaveData.Reanimator.ToolsStuckTimeout = val
+		end)
+		UI.CreateText(parent, "^^^ if the reanimate never finishes with dolteddown's pd, your character is force respawned after this long", 10, Enum.TextXAlignment.Center)
+		UI.CreateDropdown(parent, "respawntp", {
+			"The Void",
+			"Behind ReanimCharacter",
+			"Randomtp near",
+			"At spawn",
+			"Under ReanimCharacter (Keep Streamed)",
+		}, ToolReanimator.RespawnPosition + 1).Changed:Connect(function(val)
+			ToolReanimator.RespawnPosition = val - 1
+			SaveData.Reanimator.ToolsRespawnPosition = val - 1
+		end)
+		UI.CreateSwitch(parent, "Tool Collide", ToolReanimator.Collide).Changed:Connect(function(val)
+			ToolReanimator.Collide = val
+			SaveData.Reanimator.ToolsCollide = val
+		end)
+		UI.CreateSeparator(parent)
+		local SummaryText = UI.CreateText(parent, ToolReanimator.Summary, 12, Enum.TextXAlignment.Left)
+		local StatusText = UI.CreateText(parent, "", 12, Enum.TextXAlignment.Left)
+		Util.LinkDestroyI2C(SummaryText, RunService.RenderStepped:Connect(function()
+			SummaryText.Text = ToolReanimator.Summary
+			local str = ""
+			for name, stat in ToolReanimator.Status do
+				str ..= name .. ": " .. stat .. "\n"
+			end
+			StatusText.Text = str:sub(1, -2)
+		end))
+		UI.CreateButton(parent, "Force Respawn Now", 20).Activated:Connect(function()
+			ToolReanimator.ForceRespawn("Manual force respawn.")
+		end)
+	end
+	-- reuses the Hat Reanimator's force respawn (re-enables the Dead state first, so it also works while stuck with dolteddown's pd)
+	function ToolReanimator.ForceRespawn(reason)
+		ToolReanimator.Status.Permadeath = reason or "Force respawn!"
+		return HatReanimator.ForceRespawn(reason)
+	end
+	-- Methods 2 + 3 (Drop Claim / Corpse Claim). "Original" (Start) is untouched. These two never run the Original's
+	-- break-joints-and-hold flow: the handles are freed by dropping the tools (2) or by letting the real character die (3),
+	-- and the tools then live in Workspace as plain unanchored parts that we own and drive onto the R6 limbs.
+	-- A handle is only ever used once the SERVER has freed it (its grip is gone in the replicated state). Nothing here destroys
+	-- joints locally, because a locally-freed handle is only moved on our screen and stays attached for everybody else.
+	function ToolReanimator.StartAlt(method)
+		local Status = ToolReanimator.Status
+		local DropMode = method == 2
+		local claimed = {} -- {Tool, Handle, Limb}; every handle is a Workspace part driven onto its limb
+		local Stopped, Busy = false, false
+		local HandledChar, ParkConn = nil, nil
+		local nextretry, nextredrop = 0, {}
+		ToolReanimator.HasPermadeath = false
+		Status.Permadeath = "Not used by " .. ToolMethods[method]
+		local function GetTools()
+			local tools = {}
+			local char = Player.Character
+			local backpack = Player:FindFirstChildOfClass("Backpack")
+			for _, container in {char or false, backpack or false} do
+				if container then
+					for _, v in container:GetChildren() do
+						local handle = v:IsA("Tool") and v:FindFirstChild("Handle")
+						if handle and handle:IsA("BasePart") then
+							table.insert(tools, v)
+						end
+					end
+				end
+			end
+			return tools
+		end
+		-- true once the handle is joined to nothing outside its own tool (= the server removed the grip and it replicated back)
+		local function IsFree(c)
+			for _, p in c.Handle:GetConnectedParts(true) do
+				if p ~= c.Handle and not p:IsDescendantOf(c.Tool) then
+					return false
+				end
+			end
+			return true
+		end
+		-- REAL ownership only. ReceiveAge reads 0 for a sleeping server-owned part too, and a handle we do not own is moved on OUR screen only
+		-- (other players never see the limb). isnetworkowner is the executor's own check; without it ownership cannot be proven.
+		local HasOwnerCheck = type(isnetworkowner) == "function"
+		local function Owns(handle)
+			if not handle.Parent then return false end
+			if HasOwnerCheck then
+				local ok, res = pcall(isnetworkowner, handle)
+				if ok then return res == true end
+			end
+			return handle.ReceiveAge == 0
+		end
+		local Holding, ParkRoot = false, nil -- Holding: a freed handle is not really ours yet, so the real character stays beside it
+		local function UpdateSummary()
+			local head = "[" .. ToolMethods[method] .. "] " .. (HasOwnerCheck and "" or "(ownership unverified: no isnetworkowner) ")
+			if #claimed == 0 then
+				ToolReanimator.Summary = head .. "No usable Tools found (a Tool needs a Handle part). Waiting..."
+				return
+			end
+			local lines = {head .. "Tools claimed: " .. #claimed .. "/" .. #LimbOrder}
+			for _, c in claimed do
+				local note = ""
+				if not IsFree(c) then
+					note = " (still attached)"
+				elseif not Owns(c.Handle) then
+					note = " (not owned)"
+				end
+				table.insert(lines, c.Limb .. " <- " .. c.Tool.Name .. note)
+			end
+			ToolReanimator.Summary = table.concat(lines, "\n")
+		end
+		-- tools that were destroyed (not merely picked up / unequipped) are forgotten so a respawn can claim fresh ones
+		local function Prune()
+			for i = #claimed, 1, -1 do
+				local c = claimed[i]
+				if not c.Tool.Parent or not c.Handle.Parent then
+					table.remove(claimed, i)
+				end
+			end
+		end
+		local function ClaimTools(char)
+			local list = {}
+			for _, tool in GetTools() do
+				if #list >= #LimbOrder then break end
+				pcall(function()
+					tool.Enabled = true
+					tool.RequiresHandle = false
+					tool.Parent = char
+				end)
+				local handle = tool:FindFirstChild("Handle")
+				if tool.Parent == char and handle and handle:IsA("BasePart") then
+					table.insert(list, {Tool = tool, Handle = handle, Limb = LimbOrder[#list + 1]})
+				end
+			end
+			return list
+		end
+		-- where the real (alive) character is parked, driven by the same respawntp option as the Original
+		local function ParkPosition(RootPart)
+			local rp = ToolReanimator.RespawnPosition
+			local root = Reanimate.Character and Reanimate.Character:FindFirstChild("HumanoidRootPart")
+			local pos = RootPart.Position
+			if rp == 0 then
+				local base = root and root.Position or pos
+				pos = Vector3.new(base.X, FallenPartsDestroyHeight + 12, base.Z) -- +12: a parked-alive body must stay above the destroy height
+			elseif root and rp == 1 then
+				pos = root.CFrame * Vector3.new(0, 0, 6)
+			elseif root and rp == 4 then
+				pos = root.Position + Vector3.new(0, -16, 0)
+			end
+			return pos
+		end
+		-- claim spot: well above the reanimate character and never in the void, so a handle that is not owned yet only falls
+		-- back onto the map instead of being destroyed below it
+		local function ClaimPosition(RootPart)
+			local root = Reanimate.Character and Reanimate.Character:FindFirstChild("HumanoidRootPart")
+			return (root and root.Position or RootPart.Position) + Vector3.new(0, 25, 0)
+		end
+		-- keeps the real character frozen at one spot every Heartbeat (claiming = the claim spot, else the respawntp spot)
+		local function Park(RootPart, claiming)
+			if ParkConn then ParkConn:Disconnect() end
+			local rp = ToolReanimator.RespawnPosition
+			local fixed = ParkPosition(RootPart)
+			if rp == 2 and Reanimate.Character and Reanimate.Character:FindFirstChild("HumanoidRootPart") then
+				local dir = Vector3.new(math.random() * 2 - 1, math.random() * 2 - 1, math.random() * 2 - 1).Unit
+				if dir ~= dir or dir.Magnitude == 0 then dir = Vector3.yAxis end
+				fixed = Reanimate.Character.HumanoidRootPart.Position + dir * math.random(8, 12)
+			end
+			local follow = rp == 0 or rp == 1 or rp == 4
+			ParkConn = RunService.Heartbeat:Connect(function()
+				if not RootPart:IsDescendantOf(workspace) then return end
+				local p = claiming and ClaimPosition(RootPart) or (follow and ParkPosition(RootPart) or fixed)
+				RootPart.CFrame = CFrame.new(p) * CFrame.Angles(math.pi / 2, 0, 0)
+				RootPart.AssemblyLinearVelocity, RootPart.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+			end)
+		end
+		local function OnCharacter(character)
+			if Stopped or HandledChar == character then return end
+			HandledChar = character
+			Status.ReanimState = "Respawned."
+			local hum = character:WaitForChild("Humanoid", 10)
+			if not hum then return end
+			if not Reanimate.UseLoadAnimationHook then
+				local stupid = character:FindFirstChild("Animate")
+				if stupid then stupid:Destroy() end
+				character.ChildAdded:Connect(function(v)
+					if v:IsA("LocalScript") then
+						v.Disabled = true
+						task.defer(function() v:Destroy() end)
+					end
+				end)
+			end
+			local animator = hum:FindFirstChildOfClass("Animator")
+			if animator then animator:Destroy() end
+			local RootPart = character:WaitForChild("HumanoidRootPart", 10)
+			if not RootPart then return end
+			ParkRoot = RootPart
+			local function alive()
+				return character:IsDescendantOf(workspace) and not Stopped and not Reanimate.Stopping
+			end
+			for _, v in character:GetDescendants() do -- the body must not touch (= pick up) the loose tool handles
+				if v:IsA("BasePart") then v.CanTouch = false end
+			end
+			pcall(function() hum.EvaluateStateMachine = false end)
+			pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+			Prune()
+			if #claimed > 0 then
+				Park(RootPart, Holding)
+				Status.ReanimState = "Done (tools kept across the respawn)."
+				return
+			end
+			Busy, Holding = true, false
+			Park(RootPart, true)
+			local ok, err = pcall(function()
+				local list = {}
+				repeat
+					if not alive() then return end
+					list = ClaimTools(character)
+					if #list == 0 then task.wait(0.25) end
+				until #list > 0
+				task.wait(0.25) -- let the server build the tool grips before they are freed
+				if not alive() then return end
+				if DropMode then
+					-- DROP CLAIM: the character stays alive. Each equipped tool is reparented to Workspace (the same replicated
+					-- "drop" the backpack does) and the server destroys its grip. Nothing counts as dropped until that is confirmed.
+					Status.ReanimState = "Drop Claim: dropping " .. #list .. " tool(s)"
+					local deadline = os.clock() + 3
+					local left
+					repeat
+						left = 0
+						for _, c in list do
+							c.Handle.CanTouch = false
+							if c.Tool.Parent ~= workspace then
+								pcall(function() c.Tool.Parent = workspace end)
+							end
+							if not IsFree(c) then left += 1 end
+						end
+						if left > 0 then RunService.Heartbeat:Wait() end
+					until left == 0 or os.clock() > deadline or not alive()
+				else
+					-- CORPSE CLAIM: all tools are armed at once, the real character is killed (every grip breaks in the same server
+					-- step) and, because a dead humanoid cannot pick anything up, each tool is moved into Workspace while it is dead.
+					Status.ReanimState = "Corpse Claim: arming " .. #list .. " tool(s)"
+					local armDeadline = os.clock() + 3
+					repeat
+						local ready = 0
+						for _, c in list do
+							if c.Tool.Parent ~= character then
+								pcall(function() c.Tool.Parent = character end)
+							end
+							c.Handle.CanTouch = false
+							if c.Tool.Parent == character and not IsFree(c) then ready += 1 end
+						end
+						if ready < #list then task.wait(0.1) end
+					until ready >= #list or os.clock() > armDeadline or not alive()
+					if not alive() then return end
+					Status.ReanimState = "Corpse Claim: killing the real character"
+					pcall(function()
+						hum.EvaluateStateMachine = true
+						hum.BreakJointsOnDeath = true
+						hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+					end)
+					if replicatesignal then pcall(replicatesignal, hum.ServerBreakJoints) end
+					hum.Health = 0
+					pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+					-- (no local BreakJoints: it would hide whether the server really released the grips)
+					Status.ReanimState = "Corpse Claim: rescuing tools"
+					local deadline = os.clock() + 4
+					local left
+					repeat
+						left = 0
+						for _, c in list do
+							c.Handle.CanTouch = false
+							if c.Tool.Parent ~= workspace then
+								pcall(function() c.Tool.Parent = workspace end)
+							end
+							if not IsFree(c) then left += 1 end
+						end
+						if left > 0 then RunService.Heartbeat:Wait() end
+					until left == 0 or os.clock() > deadline or not alive()
+				end
+				for _, c in list do
+					c.Handle.CanCollide = false
+					table.insert(claimed, c)
+				end
+				-- the limbs are already being driven (the main loop only moves handles that are free AND owned); wait for ownership
+				Status.ReanimState = "Waiting for tool ownership"
+				local ownDeadline = os.clock() + 3
+				local own
+				repeat
+					task.wait(0.1)
+					own = 0
+					for _, c in list do
+						if Owns(c.Handle) and IsFree(c) then own += 1 end
+					end
+				until own >= #list or os.clock() > ownDeadline or not alive()
+				-- not really ours yet: the real character stays beside the handles (the server hands loose parts to the closest player) until it is
+				Holding = own < #list
+				Status.ReanimState = Holding and "Waiting for real tool ownership (character stays at the claim spot)" or "Done."
+			end)
+			Busy = false
+			if alive() then
+				if Holding then
+					Park(RootPart, true)
+				else
+					Park(RootPart) -- only now does the real character move to the respawntp spot
+				end
+			end
+			if not ok then
+				Status.ReanimState = "Error: " .. tostring(err)
+			end
+		end
+		local CharConn = Player.CharacterAdded:Connect(function(c) task.spawn(OnCharacter, c) end)
+		local InitCFrame = nil
+		local startChar = Player.Character
+		do
+			local h = startChar and startChar:FindFirstChildOfClass("Humanoid")
+			if h and h.RootPart then InitCFrame = h.RootPart.CFrame end
+		end
+		Reanimate.CreateCharacter(InitCFrame)
+		Reanimate.Starting = false
+		if startChar and startChar:IsDescendantOf(workspace) then
+			task.spawn(OnCharacter, startChar) -- the live character is processed directly (no initial kill like the Original)
+		end
+		local nextsummary, stuckSince = 0, nil
+		while not Reanimate.Stopping do
+			RunService.PreSimulation:Wait()
+			workspace.FallenPartsDestroyHeight = 0/0
+			pcall(function() Player.SimulationRadius = #Players:GetPlayers() * 1000 end)
+			pcall(sethiddenproperty, Player, "SimulationRadius", #Players:GetPlayers() * 1000)
+			local Character = Player.Character
+			local ReanimCharacter = Reanimate.Character
+			local ltm = Reanimate.LocalTransparencyModifier
+			if Character and Character:IsDescendantOf(workspace) then
+				if Character ~= HandledChar and os.clock() > nextretry then
+					nextretry = os.clock() + 2
+					task.spawn(OnCharacter, Character)
+				end
+				local hum = Character:FindFirstChildOfClass("Humanoid")
+				local rchum = ReanimCharacter and ReanimCharacter:FindFirstChildOfClass("Humanoid")
+				if Camera and (rchum or hum) then
+					Camera.CameraSubject = rchum or hum
+				end
+				for _, v in Character:GetChildren() do
+					if v:IsA("BasePart") then
+						v.CanCollide = false
+						v.CanTouch = false
+						v.LocalTransparencyModifier = ltm
+					end
+				end
+			end
+			-- stuck watchdog: tools were claimed but none is free + owned -> forget them and force respawn to claim fresh ones
+			local usable, unowned = 0, 0
+			for _, c in claimed do
+				if Owns(c.Handle) and IsFree(c) then usable += 1 elseif IsFree(c) then unowned += 1 end
+			end
+			if Holding and not Busy and unowned == 0 and ParkRoot then
+				Holding = false
+				Park(ParkRoot) -- every freed handle is really ours now: the real character may go to the respawntp spot
+			end
+			if ToolReanimator.AutoForceRespawn and not Busy and #claimed > 0 and usable == 0 then
+				local now = os.clock()
+				stuckSince = stuckSince or now
+				if now - stuckSince > ToolReanimator.StuckTimeout and now - HatReanimator.LastForceRespawn > 5 then
+					stuckSince = nil
+					table.clear(claimed)
+					ToolReanimator.ForceRespawn("No usable tool for " .. ToolReanimator.StuckTimeout .. "s. Force respawning!")
+				end
+			else
+				stuckSince = nil
+			end
+			local dt = RunService.Heartbeat:Wait()
+			local t = os.clock()
+			if ReanimCharacter and dt > 0 then
+				local ylimit = FallenPartsDestroyHeight + 5
+				local netless = Reanimate.NetlessVelocity + (math.sin(t * 0.5) + 1) / 2
+				local idle = Vector3.new(math.sin(t * 14), math.sin(t * 15 + 1.0472), math.sin(t * 16 + 2.0944)) * 0.001
+				Prune()
+				for _, c in claimed do
+					local handle = c.Handle
+					local limb = ReanimCharacter:FindFirstChild(c.Limb)
+					if c.Tool.Parent ~= workspace then
+						-- picked back up by touch / re-equipped by the game: drop it again so the handle stays a free Workspace part
+						if t > (nextredrop[c] or 0) then
+							nextredrop[c] = t + 0.25
+							pcall(function() c.Tool.Parent = workspace end)
+						end
+					elseif handle:IsDescendantOf(workspace) and not IsFree(c) then
+						-- the server never confirmed the drop (the grip is still replicated, so everybody else still sees it on the body):
+						-- resend the reparent by toggling it, and do NOT move the handle until the grip is really gone
+						if t > (nextredrop[c] or 0) then
+							nextredrop[c] = t + 1
+							task.spawn(function()
+								local bp = Player:FindFirstChildOfClass("Backpack")
+								if bp then
+									pcall(function() c.Tool.Parent = bp end)
+									RunService.Heartbeat:Wait()
+								end
+								pcall(function() c.Tool.Parent = workspace end)
+							end)
+						end
+					elseif limb and handle:IsDescendantOf(workspace) then
+						handle.CanCollide = ToolReanimator.Collide
+						handle.CanTouch = false -- never reports a touch to the server, so nothing can pick the tool back up
+						handle.LocalTransparencyModifier = ltm
+						if not handle:IsGrounded() and Owns(handle) then
+							local cf = limb.CFrame
+							if cf.Y < ylimit then
+								cf += Vector3.new(0, ylimit - cf.Y, 0)
+							end
+							handle.Massless = true
+							handle.CFrame = cf + idle
+							handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
+							handle.AssemblyAngularVelocity = Vector3.zero
+						elseif not handle:IsGrounded() then
+							pcall(sethiddenproperty, handle, "NetworkIsSleeping", false) -- not ours yet: only wake it, never move it (the move would not replicate)
+						end
+					end
+				end
+				if t > nextsummary then
+					nextsummary = t + 0.5
+					UpdateSummary()
+				end
+			end
+			RunService.PreRender:Wait()
+			if Reanimate.Character and Reanimate:ShouldRotationType() then
+				Reanimate:CameraLockCharacter()
+			end
+		end
+		-- CLEANUP (both methods): stop parking, give the tools back and return the still-living real character to the reanimate character
+		Stopped = true
+		CharConn:Disconnect()
+		if ParkConn then ParkConn:Disconnect() ParkConn = nil end
+		local Character = Player.Character
+		local hum = Character and Character:FindFirstChildOfClass("Humanoid")
+		local rroot = Reanimate.Character and Reanimate.Character:FindFirstChild("HumanoidRootPart")
+		local ReturnCFrame = rroot and rroot.CFrame
+		for _, v in (Character and Character:GetDescendants() or {}) do
+			if v:IsA("BasePart") then v.CanTouch = true end -- undo the anti-pickup touch lock on the living body
+		end
+		local backpack = Player:FindFirstChildOfClass("Backpack")
+		for _, c in claimed do
+			if c.Tool.Parent and c.Handle.Parent then
+				c.Handle.CanTouch = true
+				if ReturnCFrame then pcall(function() c.Handle.CFrame = ReturnCFrame end) end -- next to the body: touch pickup is the fallback
+				pcall(function() c.Tool.Parent = backpack or Character end)
+			end
+		end
+		if hum and hum.Parent then
+			pcall(function() hum.EvaluateStateMachine = true end)
+			if not DropMode then
+				pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end) -- Corpse Claim: the parked body was a fresh respawn
+			end
+			if hum.Health > 0 then
+				local hrp = hum.RootPart
+				if hrp and ReturnCFrame then
+					hrp.CFrame = ReturnCFrame + Vector3.new(0, 3, 0)
+					hrp.AssemblyLinearVelocity, hrp.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+				end
+				pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+			end
+			pcall(function() if Camera then Camera.CameraSubject = hum end end)
+		end
+		table.clear(claimed)
+		table.clear(nextredrop)
+		ToolReanimator.HasPermadeath = false
+		ToolReanimator.Summary = "(no tools claimed yet...)"
+		Status.Permadeath = "(no status)"
+		Status.ReanimState = "(no status)"
+		Reanimate.Stopping = false
+		Reanimate.DestroyCharacter()
+	end
+	function ToolReanimator.Start()
+		if ToolReanimator.Method ~= 1 then return ToolReanimator.StartAlt(ToolReanimator.Method) end
+		local Status = ToolReanimator.Status
+		local claimed = {}
+		local CurrentCharacter, HandledChar, Humanoid = nil, nil, nil
+		local Stopped = false
+		local nextretry = 0
+		local function GetTools()
+			local tools = {}
+			local char = Player.Character
+			local backpack = Player:FindFirstChildOfClass("Backpack")
+			for _, container in {char or false, backpack or false} do
+				if container then
+					for _, v in container:GetChildren() do
+						local handle = v:IsA("Tool") and v:FindFirstChild("Handle")
+						if handle and handle:IsA("BasePart") then
+							table.insert(tools, v)
+						end
+					end
+				end
+			end
+			return tools
+		end
+		local function UpdateSummary()
+			if #claimed == 0 then
+				ToolReanimator.Summary = "No usable Tools found (a Tool needs a Handle part). Waiting..."
+				return
+			end
+			local lines = {"Tools claimed: " .. #claimed .. "/" .. #LimbOrder}
+			for _, c in claimed do
+				local owned = c.Handle.Parent and c.Handle.ReceiveAge == 0
+				table.insert(lines, c.Limb .. " <- " .. c.Tool.Name .. (owned and "" or " (not owned)"))
+			end
+			ToolReanimator.Summary = table.concat(lines, "\n")
+		end
+		-- equips the tools into the real character; once its joints are broken the handles are free parts that we own
+		local function ClaimTools(char)
+			local list = {}
+			for _, tool in GetTools() do
+				if #list >= #LimbOrder then break end
+				pcall(function()
+					tool.Enabled = true
+					tool.RequiresHandle = false
+					tool.Parent = char
+				end)
+				local handle = tool:FindFirstChild("Handle")
+				if tool.Parent == char and handle and handle:IsA("BasePart") then
+					table.insert(list, {Tool = tool, Handle = handle, Limb = LimbOrder[#list + 1]})
+				end
+			end
+			return list
+		end
+		-- frees a tool handle from the body (RightGrip / any weld or constraint), like the Hat Reanimator does for hat handles.
+		-- returns true once nothing holds the handle anymore
+		local function Detach(handle)
+			for _, j in handle:GetJoints() do
+				pcall(j.Destroy, j)
+			end
+			for _, v in handle:GetChildren() do
+				if v:IsA("JointInstance") then v:Destroy() end
+				if v:IsA("Constraint") then v.Enabled = false end
+			end
+			return #handle:GetJoints() == 0
+		end
+		-- same flow as the Hat Reanimator's OnCharacter (Respawn TP -> hold -> break joints -> dolteddown's pd)
+		local function OnCharacter(character)
+			if Stopped or HandledChar == character then return end
+			HandledChar = character
+			table.clear(claimed)
+			CurrentCharacter = nil
+			Status.ReanimState = "Respawned."
+			Status.Permadeath = "Respawn detected."
+			local perma = ToolReanimator.Permadeath
+			if not replicatesignal then perma = false end
+			ToolReanimator.HasPermadeath = perma
+			local hum = character:WaitForChild("Humanoid", 10)
+			if not hum then return end
+			Humanoid = hum
+			if not Reanimate.UseLoadAnimationHook then
+				local stupid = character:FindFirstChild("Animate")
+				if stupid then
+					stupid:Destroy()
+				end
+				character.ChildAdded:Connect(function(v)
+					if v:IsA("LocalScript") then
+						v.Disabled = true
+						task.defer(function()
+							v:Destroy()
+						end)
+					end
+				end)
+			end
+			local animator = hum:FindFirstChildOfClass("Animator")
+			if animator then
+				animator:Destroy()
+			end
+			local RootPart = character:WaitForChild("HumanoidRootPart", 10)
+			if not RootPart then return end
+			-- Respawn TP, identical to the Hat Reanimator's respawntp
+			local RootPosition = Vector3.new(RootPart.Position.X, FallenPartsDestroyHeight, RootPart.Position.Z)
+			local ReanimCharacter = Reanimate.Character
+			local root = ReanimCharacter and ReanimCharacter:FindFirstChild("HumanoidRootPart")
+			if root then
+				RootPosition = Vector3.new(root.Position.X, FallenPartsDestroyHeight, root.Position.Z)
+			end
+			if not perma then
+				RootPosition += Vector3.new(0, 12, 0)
+				if root then
+					if ToolReanimator.RespawnPosition == 1 then
+						RootPosition = root.CFrame * Vector3.new(0, 0, 6)
+					end
+					if ToolReanimator.RespawnPosition == 2 then
+						local dir = Vector3.new(math.random() * 2 - 1, math.random() * 2 - 1, math.random() * 2 - 1).Unit
+						if dir ~= dir or dir.Magnitude == 0 then
+							dir = Vector3.yAxis
+						end
+						RootPosition = root.Position + dir * math.random(8, 12)
+					end
+					if ToolReanimator.RespawnPosition == 4 then
+						-- keep rootpart streamed: reset right below the reanim character (-16 studs)
+						RootPosition = root.Position + Vector3.new(0, -16, 0)
+					end
+				end
+				if ToolReanimator.RespawnPosition == 3 then
+					RootPosition = RootPart.Position
+				end
+				if ToolReanimator.RespawnPosition == 4 and not root then
+					RootPosition = RootPart.Position
+				end
+			end
+			local function alive()
+				return character:IsDescendantOf(workspace) and not Stopped and not Reanimate.Stopping
+			end
+			Status.Permadeath = perma and "Waiting for tools." or "Disabled, nothing to do."
+			local bringconns = {}
+			-- hold the real character at the Respawn TP position until its joints are broken (Hat Reanimator's HRPTP)
+			local lgloop = RunService.Heartbeat:Connect(function()
+				RootPart.CFrame = CFrame.new(RootPosition) * CFrame.Angles(math.pi / 2, 0, 0)
+				RootPart.AssemblyLinearVelocity, RootPart.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+			end)
+			local ok, err = pcall(function()
+				if perma then task.wait(1) end
+				local list = {}
+				repeat
+					if not alive() then return end
+					list = ClaimTools(character)
+					if #list == 0 then task.wait(0.25) end
+				until #list > 0
+				Status.ReanimState = "Reanimate State: 1"
+				hum:ChangeState(Enum.HumanoidStateType.Physics)
+				task.wait(0.25)
+				if not alive() then return end
+				Status.ReanimState = "Reanimate State: 2"
+				-- same as the Hat Reanimator: free the handles locally and keep them moving beside the real character while we still own them,
+				-- so the server hands the handle assemblies to us when it breaks the joints (otherwise they stay server-owned = only visible to us)
+				local claimarea = RootPart.CFrame.Position + RootPart.CFrame.LookVector * 8
+				claimarea = Vector3.new(claimarea.X, math.max(FallenPartsDestroyHeight + 16, claimarea.Y + 4), claimarea.Z)
+				for _, c in list do
+					Detach(c.Handle)
+					table.insert(bringconns, RunService.Heartbeat:Connect(function()
+						local h = c.Handle
+						if h:IsDescendantOf(workspace) and h.ReceiveAge == 0 then
+							h.CanCollide = false
+							h.CFrame = CFrame.new(claimarea)
+							h.AssemblyLinearVelocity = Vector3.new(0, 67, 0)
+							h.AssemblyAngularVelocity = Vector3.zero
+						end
+					end))
+				end
+				hum:ChangeState(Enum.HumanoidStateType.FallingDown)
+				task.wait()
+				if not alive() then return end
+				pcall(replicatesignal, hum.ServerBreakJoints)
+				hum.EvaluateStateMachine = true
+				hum.BreakJointsOnDeath = true
+				if perma then
+					-- dolteddown's permadeath: break joints, then keep the humanoid out of the Dead state
+					pcall(function() character:BreakJoints() end)
+					hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+					hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+					hum:ChangeState(Enum.HumanoidStateType.Climbing)
+					Status.Permadeath = "Executed dolteddown's pd."
+				else
+					hum.Health = 0
+					hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+					hum:ChangeState(Enum.HumanoidStateType.Dead)
+				end
+				Status.ReanimState = "Reanimate State: 3"
+				-- the handles are only used as limbs once they are completely free of the body, otherwise they drag it around
+				local deadline = os.clock() + 3
+				local detached = false
+				repeat
+					detached = true
+					for _, c in list do
+						if not Detach(c.Handle) then detached = false end
+					end
+					if not detached then
+						pcall(replicatesignal, hum.ServerBreakJoints)
+						pcall(function() character:BreakJoints() end)
+						task.wait(0.1)
+					end
+				until detached or os.clock() > deadline or not alive()
+				if not alive() then return end
+				if not detached then
+					ToolReanimator.ForceRespawn("Tools stayed attached to the body. Force respawning!")
+					return
+				end
+				for _, b in bringconns do b:Disconnect() end
+				table.clear(bringconns)
+				for _, c in list do table.insert(claimed, c) end
+				CurrentCharacter = character
+				Status.ReanimState = "Done."
+				if perma then task.wait(1) end
+			end)
+			lgloop:Disconnect()
+			for _, b in bringconns do b:Disconnect() end
+			if not ok then
+				Status.ReanimState = "Error: " .. tostring(err)
+			end
+		end
+		local CharConn = Player.CharacterAdded:Connect(OnCharacter)
+		local InitCFrame = nil
+		do
+			local char = Player.Character
+			local h = char and char:FindFirstChildOfClass("Humanoid")
+			if h and h.RootPart then
+				InitCFrame = h.RootPart.CFrame
+				HandledChar = char -- the old character is only killed; the respawned one is what gets claimed
+				pcall(function() h:ChangeState(Enum.HumanoidStateType.Dead) end)
+				pcall(function() h.Health = 0 end)
+				pcall(replicatesignal, h.ServerBreakJoints)
+			end
+		end
+		Reanimate.CreateCharacter(InitCFrame)
+		Reanimate.Starting = false
+		local nextsummary = 0
+		local stuckSince = nil
+		while not Reanimate.Stopping do
+			RunService.PreSimulation:Wait()
+			workspace.FallenPartsDestroyHeight = 0/0
+			pcall(function()
+				local r = #Players:GetPlayers() * 1000
+				Player.SimulationRadius = r
+			end)
+			pcall(sethiddenproperty, Player, "SimulationRadius", #Players:GetPlayers() * 1000)
+			local ReanimOkay = false
+			local Character = Player.Character
+			local ReanimCharacter = Reanimate.Character
+			local ltm = Reanimate.LocalTransparencyModifier
+			if Character and Character:IsDescendantOf(workspace) then
+				-- the game gave us a new character (or tools were missing last time): run the respawn handling on it
+				if Character ~= HandledChar and os.clock() > nextretry then
+					nextretry = os.clock() + 2
+					task.spawn(OnCharacter, Character)
+				end
+				if CurrentCharacter == Character and #claimed > 0 then
+					ReanimOkay = true
+				end
+				local hum = Character:FindFirstChildOfClass("Humanoid")
+				if hum and Camera then
+					local rchum = ReanimCharacter and ReanimCharacter:FindFirstChildOfClass("Humanoid")
+					if rchum and (ReanimOkay or not ToolReanimator.Permadeath) then
+						Camera.CameraSubject = rchum
+					else
+						Camera.CameraSubject = hum
+					end
+				end
+				for _, v in Character:GetChildren() do
+					if v:IsA("BasePart") then
+						v.CanCollide = false
+						v.LocalTransparencyModifier = ltm
+					end
+				end
+			else
+				CurrentCharacter = nil
+			end
+			-- stuck watchdog (dolteddown's pd): reanimate never became OK -> force respawn
+			if ToolReanimator.AutoForceRespawn and ToolReanimator.HasPermadeath then
+				local now = os.clock()
+				if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
+					stuckSince = stuckSince or now
+					if now - stuckSince > ToolReanimator.StuckTimeout and now - HatReanimator.LastForceRespawn > 5 then
+						stuckSince = nil
+						ToolReanimator.ForceRespawn("Stuck for " .. ToolReanimator.StuckTimeout .. "s. Force respawning!")
+					end
+				else
+					stuckSince = nil
+				end
+			else
+				stuckSince = nil
+			end
+			local dt = RunService.Heartbeat:Wait()
+			local t = os.clock()
+			if ReanimCharacter and dt > 0 then
+				local ylimit = FallenPartsDestroyHeight + 5
+				local netless = Reanimate.NetlessVelocity + (math.sin(t * 0.5) + 1) / 2
+				local idle = Vector3.new(math.sin(t * 14), math.sin(t * 15 + 1.0472), math.sin(t * 16 + 2.0944)) * 0.001
+				-- tools are only used once the character has respawned, been broken apart and the handles are free (ReanimOkay)
+				for _, c in (ReanimOkay and claimed or {}) do
+					local handle = c.Handle
+					local limb = ReanimCharacter:FindFirstChild(c.Limb)
+					if c.Tool.Parent ~= Character then
+						pcall(function() c.Tool.Parent = Character end) -- unequipped by the game/backpack: keep it in the character so the handle stays in Workspace
+					end
+					if limb and handle.Parent and handle:IsDescendantOf(workspace) then
+						handle.CanCollide = ToolReanimator.Collide
+						handle.LocalTransparencyModifier = ltm
+						if #handle:GetJoints() > 0 then
+							Detach(handle) -- something re-attached it to the body: free it and keep driving it this same frame
+						end
+						if not handle:IsGrounded() and handle.ReceiveAge == 0 then
+							local cf = limb.CFrame
+							if cf.Y < ylimit then
+								cf += Vector3.new(0, ylimit - cf.Y, 0)
+							end
+							handle.Massless = true
+							handle.CFrame = cf + idle
+							handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
+							handle.AssemblyAngularVelocity = Vector3.zero
+						end
+					end
+				end
+				if t > nextsummary then
+					nextsummary = t + 0.5
+					UpdateSummary()
+				end
+			end
+			RunService.PreRender:Wait()
+			if Reanimate.Character and Reanimate:ShouldRotationType() then
+				Reanimate:CameraLockCharacter()
+			end
+		end
+		Stopped = true
+		CharConn:Disconnect()
+		-- give the tools back and let the game respawn the real character
+		local backpack = Player:FindFirstChildOfClass("Backpack")
+		for _, c in claimed do
+			if c.Tool.Parent and backpack then
+				pcall(function() c.Tool.Parent = backpack end)
+			end
+		end
+		if Humanoid and Humanoid.Parent then
+			pcall(ToolReanimator.ForceRespawn, "Stopped.")
+		end
+		table.clear(claimed)
+		ToolReanimator.HasPermadeath = false
+		ToolReanimator.Summary = "(no tools claimed yet...)"
+		Status.Permadeath = "(no status)"
+		Status.ReanimState = "(no status)"
+		Reanimate.Stopping = false
+		Reanimate.DestroyCharacter()
+	end
+end
+
 task.wait()
 local function ReanimateShowHitboxes()
 	local Reanimator = Reanimate.Current
@@ -264141,14 +265022,18 @@ end
 
 do
 	SaveData.SelectedReanimator = SaveData.SelectedReanimator or 1
-	if SaveData.SelectedReanimator > 2 then SaveData.SelectedReanimator = 1 end -- saved "Unanchored" selection no longer exists
+	if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end -- saved "Unanchored" selection no longer exists
 	Util.FCMark("reanim")
-	local ReanimateMethodSelect = UI.CreateDropdown(MainPage, "Reanimator", {"Limb Reanimator", "Hats Reanimator"}, SaveData.SelectedReanimator)
+	local ReanimateMethodSelect = UI.CreateDropdown(MainPage, "Reanimator", {"Limb Reanimator", "Hats Reanimator", "Tool Reanimation"}, SaveData.SelectedReanimator)
 	local ReanimatorConfigTitle = UI.CreateText(MainPage, "-=+ Limb Reanimator Config +=-", 15, Enum.TextXAlignment.Center)
 	local SelectedReanimator = LimbReanimator
 	if SaveData.SelectedReanimator == 2 then
 		SelectedReanimator = HatReanimator
 		ReanimatorConfigTitle.Text = "-=+ Hats Reanimator Config +=-"
+	end
+	if SaveData.SelectedReanimator == 3 then
+		SelectedReanimator = Reanimate.ToolReanimator
+		ReanimatorConfigTitle.Text = "-=+ Tool Reanimation Config +=-"
 	end
 	local ReanimatorConfigCanvas = UI.CreateCanvas(MainPage)
 	ReanimateMethodSelect.Changed:Connect(function(value)
@@ -264160,6 +265045,10 @@ do
 		if value == 2 then
 			SelectedReanimator = HatReanimator
 			ReanimatorConfigTitle.Text = "-=+ Hats Reanimator Config +=-"
+		end
+		if value == 3 then
+			SelectedReanimator = Reanimate.ToolReanimator
+			ReanimatorConfigTitle.Text = "-=+ Tool Reanimation Config +=-"
 		end
 		Util.ClearAllChildrenGui(ReanimatorConfigCanvas)
 		SelectedReanimator.Config(ReanimatorConfigCanvas)
@@ -264689,6 +265578,9 @@ do
 	-- Limb Reanimator: "Target Fling Enabled" switch. Hats Reanimator: Target Fling Method ~= Disabled.
 	function NoobyKill.TargetFlingEnabled()
 		local cur = Reanimate.Current
+		if cur == Reanimate.ToolReanimator or (cur == nil and SaveData.SelectedReanimator == 3) then
+			return false
+		end
 		local hats
 		if cur == HatReanimator then
 			hats = true
