@@ -264905,6 +264905,7 @@ do
 		local claimed = {} -- {Tool, Handle, Limb}; every handle is a Workspace part driven onto its limb
 		local Stopped, Busy = false, false
 		local HandledChar, ParkConn = nil, nil
+		local ParkChar, ParkHum = nil, nil
 		local nextretry, nextredrop = 0, {}
 		ToolReanimator.HasPermadeath = false
 		Status.Permadeath = "Not used by " .. ToolMethods[method]
@@ -264926,7 +264927,9 @@ do
 		end
 		-- true once the handle is joined to nothing outside its own tool (= the server removed the grip and it replicated back)
 		local function IsFree(c)
-			for _, p in c.Handle:GetConnectedParts(true) do
+			local okp, parts = pcall(c.Handle.GetConnectedParts, c.Handle, true) -- a bad handle must never throw out of the main loop
+			if not okp then return false end
+			for _, p in parts do
 				if p ~= c.Handle and not p:IsDescendantOf(c.Tool) then
 					return false
 				end
@@ -264940,9 +264943,9 @@ do
 			if not handle.Parent then return false end
 			if HasOwnerCheck then
 				local ok, res = pcall(isnetworkowner, handle)
-				if ok then return res == true end
+				if ok and res ~= true then return false end
 			end
-			return handle.ReceiveAge == 0
+			return handle.ReceiveAge == 0 -- both must agree: a part we do not actually simulate is never "owned"
 		end
 		local Holding, ParkRoot = false, nil -- Holding: a freed handle is not really ours yet, so the real character stays beside it
 		local function UpdateSummary()
@@ -264963,30 +264966,76 @@ do
 			end
 			ToolReanimator.Summary = table.concat(lines, "\n")
 		end
-		-- tools that were destroyed (not merely picked up / unequipped) are forgotten so a respawn can claim fresh ones
+		local function Valid(c)
+			return c.Tool:IsDescendantOf(game) and c.Handle:IsDescendantOf(game)
+		end
+		local function IsClaimed(tool, list)
+			for _, c in claimed do
+				if c.Tool == tool then return true end
+			end
+			if list then
+				for _, c in list do
+					if c.Tool == tool then return true end
+				end
+			end
+			return false
+		end
+		-- first limb no claimed / in-progress tool uses: a late tool never reuses or skips a limb
+		local function NextLimb(list)
+			for _, limb in LimbOrder do
+				local used = false
+				for _, c in claimed do
+					if c.Limb == limb then used = true break end
+				end
+				if not used and list then
+					for _, c in list do
+						if c.Limb == limb then used = true break end
+					end
+				end
+				if not used then return limb end
+			end
+		end
+		-- tools that were destroyed (not merely picked up / unequipped) are forgotten so a respawn can claim fresh ones.
+		-- IsDescendantOf(game): a tool still parented to a destroyed character is gone too. A swapped Handle is re-resolved.
 		local function Prune()
 			for i = #claimed, 1, -1 do
 				local c = claimed[i]
-				if not c.Tool.Parent or not c.Handle.Parent then
+				local tool = c.Tool
+				local gone = not tool:IsDescendantOf(game)
+				if not gone and c.Handle.Parent ~= tool then
+					local h = tool:FindFirstChild("Handle")
+					if h and h:IsA("BasePart") then c.Handle = h else gone = true end
+				end
+				if gone then
+					nextredrop[c] = nil
 					table.remove(claimed, i)
 				end
 			end
 		end
-		local function ClaimTools(char)
-			local list = {}
+		-- appends every eligible, not yet claimed tool to list (each one independently: one bad tool never stops the others)
+		local function ClaimTools(char, list)
 			for _, tool in GetTools() do
-				if #list >= #LimbOrder then break end
-				pcall(function()
-					tool.Enabled = true
-					tool.RequiresHandle = false
-					tool.Parent = char
-				end)
-				local handle = tool:FindFirstChild("Handle")
-				if tool.Parent == char and handle and handle:IsA("BasePart") then
-					table.insert(list, {Tool = tool, Handle = handle, Limb = LimbOrder[#list + 1]})
+				local limb = NextLimb(list)
+				if not limb then break end
+				if not IsClaimed(tool, list) then
+					pcall(function()
+						tool.Enabled = true
+						tool.RequiresHandle = false
+						tool.Parent = char
+					end)
+					local handle = tool:FindFirstChild("Handle")
+					if tool.Parent == char and handle and handle:IsA("BasePart") then
+						table.insert(list, {Tool = tool, Handle = handle, Limb = limb})
+					end
 				end
 			end
 			return list
+		end
+		local function HasNewTools()
+			for _, tool in GetTools() do
+				if not IsClaimed(tool) then return true end
+			end
+			return false
 		end
 		-- where the real (alive) character is parked, driven by the same respawntp option as the Original
 		local function ParkPosition(RootPart)
@@ -265027,52 +265076,51 @@ do
 				RootPart.AssemblyLinearVelocity, RootPart.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
 			end)
 		end
-		local function OnCharacter(character)
-			if Stopped or HandledChar == character then return end
-			HandledChar = character
-			Status.ReanimState = "Respawned."
-			local hum = character:WaitForChild("Humanoid", 10)
-			if not hum then return end
-			if not Reanimate.UseLoadAnimationHook then
-				local stupid = character:FindFirstChild("Animate")
-				if stupid then stupid:Destroy() end
-				character.ChildAdded:Connect(function(v)
-					if v:IsA("LocalScript") then
-						v.Disabled = true
-						task.defer(function() v:Destroy() end)
-					end
-				end)
-			end
-			local animator = hum:FindFirstChildOfClass("Animator")
-			if animator then animator:Destroy() end
-			local RootPart = character:WaitForChild("HumanoidRootPart", 10)
-			if not RootPart then return end
-			ParkRoot = RootPart
+		-- one claim pass over every eligible tool that is not claimed yet. Busy serialises passes, so a respawn or the rescan can
+		-- never run a second pass over the same tools
+		local function ClaimPass(character, hum, RootPart, initial)
+			if Busy then return end
+			Busy, Holding = true, false
 			local function alive()
 				return character:IsDescendantOf(workspace) and not Stopped and not Reanimate.Stopping
 			end
-			for _, v in character:GetDescendants() do -- the body must not touch (= pick up) the loose tool handles
-				if v:IsA("BasePart") then v.CanTouch = false end
-			end
-			pcall(function() hum.EvaluateStateMachine = false end)
-			pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
-			Prune()
-			if #claimed > 0 then
-				Park(RootPart, Holding)
-				Status.ReanimState = "Done (tools kept across the respawn)."
-				return
-			end
-			Busy, Holding = true, false
 			Park(RootPart, true)
+			local list = {}
+			local function Commit() -- hands every still-valid tool of this pass to the main loop exactly once
+				for _, c in list do
+					if not IsClaimed(c.Tool) and Valid(c) then
+						c.Handle.CanCollide = false
+						table.insert(claimed, c)
+					end
+				end
+			end
+			-- a handle the server just released must never sit still: an idle loose part goes to sleep and the server keeps/takes its ownership
+			-- (= only visible to us). Every freed handle is kept moving beside the real character (like the Original's bring loop) until the
+			-- main loop drives it onto its limb.
+			local bring = RunService.Heartbeat:Connect(function()
+				local p, now = ClaimPosition(RootPart), os.clock()
+				for _, c in list do
+					local h = c.Handle
+					if (not c.Driven or now - c.Driven > 0.1) and h:IsDescendantOf(workspace) and h.ReceiveAge == 0 and IsFree(c) then
+						h.CanCollide = false
+						h.CFrame = CFrame.new(p)
+						h.AssemblyLinearVelocity = Vector3.new(0, 67, 0)
+						h.AssemblyAngularVelocity = Vector3.zero
+					end
+				end
+			end)
 			local ok, err = pcall(function()
-				local list = {}
 				repeat
 					if not alive() then return end
-					list = ClaimTools(character)
-					if #list == 0 then task.wait(0.25) end
+					ClaimTools(character, list)
+					if #list == 0 then
+						if not initial then return end
+						task.wait(0.25)
+					end
 				until #list > 0
 				task.wait(0.25) -- let the server build the tool grips before they are freed
 				if not alive() then return end
+				ClaimTools(character, list) -- tools that showed up meanwhile join this pass
 				if DropMode then
 					-- DROP CLAIM: the character stays alive. Each equipped tool is reparented to Workspace (the same replicated
 					-- "drop" the backpack does) and the server destroys its grip. Nothing counts as dropped until that is confirmed.
@@ -265096,13 +265144,18 @@ do
 					Status.ReanimState = "Corpse Claim: arming " .. #list .. " tool(s)"
 					local armDeadline = os.clock() + 3
 					repeat
+						ClaimTools(character, list) -- tools that arrive while arming are armed too
 						local ready = 0
 						for _, c in list do
-							if c.Tool.Parent ~= character then
-								pcall(function() c.Tool.Parent = character end)
+							if not Valid(c) then
+								ready += 1 -- vanished tool: nothing to wait for
+							else
+								if c.Tool.Parent ~= character then
+									pcall(function() c.Tool.Parent = character end)
+								end
+								c.Handle.CanTouch = false
+								if c.Tool.Parent == character and not IsFree(c) then ready += 1 end
 							end
-							c.Handle.CanTouch = false
-							if c.Tool.Parent == character and not IsFree(c) then ready += 1 end
 						end
 						if ready < #list then task.wait(0.1) end
 					until ready >= #list or os.clock() > armDeadline or not alive()
@@ -265132,10 +265185,7 @@ do
 						if left > 0 then RunService.Heartbeat:Wait() end
 					until left == 0 or os.clock() > deadline or not alive()
 				end
-				for _, c in list do
-					c.Handle.CanCollide = false
-					table.insert(claimed, c)
-				end
+				Commit()
 				-- the limbs are already being driven (the main loop only moves handles that are free AND owned); wait for ownership
 				Status.ReanimState = "Waiting for tool ownership"
 				local ownDeadline = os.clock() + 3
@@ -265148,9 +265198,15 @@ do
 					end
 				until own >= #list or os.clock() > ownDeadline or not alive()
 				-- not really ours yet: the real character stays beside the handles (the server hands loose parts to the closest player) until it is
-				Holding = own < #list
+				local unowned = 0
+				for _, c in claimed do
+					if IsFree(c) and not Owns(c.Handle) then unowned += 1 end
+				end
+				Holding = unowned > 0
 				Status.ReanimState = Holding and "Waiting for real tool ownership (character stays at the claim spot)" or "Done."
 			end)
+			bring:Disconnect()
+			Commit() -- an interrupted pass (corpse removed, stop, error) still gives every valid tool to the main loop
 			Busy = false
 			if alive() then
 				if Holding then
@@ -265162,6 +265218,43 @@ do
 			if not ok then
 				Status.ReanimState = "Error: " .. tostring(err)
 			end
+		end
+		local function OnCharacter(character)
+			if Stopped or HandledChar == character then return end
+			HandledChar = character
+			Status.ReanimState = "Respawned."
+			local hum = character:WaitForChild("Humanoid", 10)
+			if not hum then return end
+			if not Reanimate.UseLoadAnimationHook then
+				local stupid = character:FindFirstChild("Animate")
+				if stupid then stupid:Destroy() end
+				character.ChildAdded:Connect(function(v)
+					if v:IsA("LocalScript") then
+						v.Disabled = true
+						task.defer(function() v:Destroy() end)
+					end
+				end)
+			end
+			local animator = hum:FindFirstChildOfClass("Animator")
+			if animator then animator:Destroy() end
+			local RootPart = character:WaitForChild("HumanoidRootPart", 10)
+			if not RootPart then return end
+			ParkRoot, ParkChar, ParkHum = RootPart, character, hum
+			for _, v in character:GetDescendants() do -- the body must not touch (= pick up) the loose tool handles
+				if v:IsA("BasePart") then v.CanTouch = false end
+			end
+			pcall(function() hum.EvaluateStateMachine = false end)
+			pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+			-- a pass still running (e.g. the one that just killed the previous body) must finish before this character is judged
+			while Busy and not Stopped and character:IsDescendantOf(workspace) do task.wait(0.1) end
+			if Stopped or not character:IsDescendantOf(workspace) then return end
+			Prune()
+			if #claimed > 0 then
+				Park(RootPart, Holding)
+				Status.ReanimState = "Done (tools kept across the respawn)."
+				return
+			end
+			ClaimPass(character, hum, RootPart, true)
 		end
 		local CharConn = Player.CharacterAdded:Connect(function(c) task.spawn(OnCharacter, c) end)
 		local InitCFrame = nil
@@ -265175,7 +265268,7 @@ do
 		if startChar and startChar:IsDescendantOf(workspace) then
 			task.spawn(OnCharacter, startChar) -- the live character is processed directly (no initial kill like the Original)
 		end
-		local nextsummary, stuckSince = 0, nil
+		local nextsummary, stuckSince, nextscan = 0, nil, 0
 		while not Reanimate.Stopping do
 			RunService.PreSimulation:Wait()
 			workspace.FallenPartsDestroyHeight = 0/0
@@ -265203,9 +265296,42 @@ do
 				end
 			end
 			-- stuck watchdog: tools were claimed but none is free + owned -> forget them and force respawn to claim fresh ones
-			local usable, unowned = 0, 0
+			Prune()
+			local usable, unowned, now = 0, 0, os.clock()
 			for _, c in claimed do
-				if Owns(c.Handle) and IsFree(c) then usable += 1 elseif IsFree(c) then unowned += 1 end
+				if IsFree(c) then
+					if Owns(c.Handle) then
+						usable += 1
+						c.UnownedSince = nil
+					else
+						unowned += 1
+						c.UnownedSince = c.UnownedSince or now
+					end
+				else
+					c.UnownedSince = nil
+				end
+			end
+			if DropMode and not Busy then
+				-- Drop Claim: a freed handle that never became really ours is handed back, and the rescan below claims it again as a fresh drop
+				for i = #claimed, 1, -1 do
+					local c = claimed[i]
+					if c.UnownedSince and now - c.UnownedSince > 5 then
+						nextredrop[c] = nil
+						table.remove(claimed, i)
+						pcall(function()
+							local dest = Player:FindFirstChildOfClass("Backpack") or Player.Character
+							if dest then c.Tool.Parent = dest end
+						end)
+						unowned -= 1
+					end
+				end
+			end
+			-- Drop Claim rescan: tools that show up after the first pass (late Backpack fill, pickups, respawn gear) get their own pass
+			if DropMode and not Busy and ParkChar and now > nextscan then
+				nextscan = now + 1
+				if ParkChar == Character and ParkChar == HandledChar and ParkChar:IsDescendantOf(workspace) and #claimed < #LimbOrder and HasNewTools() then
+					task.spawn(ClaimPass, ParkChar, ParkHum, ParkRoot, false)
+				end
 			end
 			if Holding and not Busy and unowned == 0 and ParkRoot then
 				Holding = false
@@ -265265,6 +265391,7 @@ do
 							handle.CFrame = cf + idle
 							handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
 							handle.AssemblyAngularVelocity = Vector3.zero
+							c.Driven = t
 						elseif not handle:IsGrounded() then
 							pcall(sethiddenproperty, handle, "NetworkIsSleeping", false) -- not ours yet: only wake it, never move it (the move would not replicate)
 						end
