@@ -338,6 +338,15 @@ Util.FX = (function()
 	-- its speed. Releases slowly (dwell + backoff) so quality never flickers. Low End UI Mode keeps its own caps; nothing is disabled.
 	local Gov = {Stride = 1}
 	FX.Gov = Gov
+	-- [perf] one shared "weak or strained device" test that thins out purely decorative effects:
+	-- Low End UI Mode, frame governor engaged, a tier 1 device, or a tier 2 phone
+	function FX.Lite()
+		if RawCfg.LowEnd == true or Gov.Stride > 1 then return true end
+		local d = FX.Device
+		if not d then return false end
+		local t = d.Tier or 4
+		return t <= 1 or (t == 2 and d.Mobile == true)
+	end
 	do
 		local avg, evalT, badT, goodT = 1 / 60, 0, 0, 0
 		local dwell, engagedAt, releasedAt = 12, 0, -1e9
@@ -508,11 +517,26 @@ Util.FX = (function()
 	end
 
 	-- ───────────────────────── helpers ─────────────────────────
-	local function tween(obj, time, style, dir, props)
-		local t = RealTweenService:Create(obj, TweenInfo.new(time / math.max(0.2, FX.Cfg.UIAnimSpeed or 1), style or Quint, dir or EOut), props)
-		t:Play()
-		return t
-	end
+	local tween = (function() -- [perf] TweenInfo objects are cached per (time, style, direction) and rebuilt only when the animation speed changes
+		local cache, speed = {}, nil
+		return function(obj, time, style, dir, props)
+			local sp = FX.Cfg.UIAnimSpeed or 1
+			if sp ~= speed then cache, speed = {}, sp end
+			style, dir = style or Quint, dir or EOut
+			local byStyle = cache[style]
+			if not byStyle then byStyle = {} cache[style] = byStyle end
+			local byDir = byStyle[dir]
+			if not byDir then byDir = {} byStyle[dir] = byDir end
+			local info = byDir[time]
+			if not info then
+				info = TweenInfo.new(time / math.max(0.2, sp), style, dir)
+				byDir[time] = info
+			end
+			local t = RealTweenService:Create(obj, info, props)
+			t:Play()
+			return t
+		end
+	end)()
 	local function easeOutCubic(x)
 		return 1 - (1 - x) ^ 3
 	end
@@ -571,17 +595,28 @@ Util.FX = (function()
 		local base = U and U.Click
 		if not base or base.Volume <= 0 then return end
 		local p = presets[kind] or presets.click
-		local s = base:Clone()
+		-- [perf] six pooled voices are reused round-robin instead of cloning + destroying a Sound on every hover / press
+		local pool = FX.SndPool
+		if not pool then pool = {n = 0} FX.SndPool = pool end
+		pool.n = pool.n % 6 + 1
+		local s = pool[pool.n]
+		if not s or s.Parent ~= base.Parent then
+			if s then s:Destroy() end
+			s = base:Clone()
+			s.Parent = base.Parent
+			pool[pool.n] = s
+		elseif s.SoundId ~= base.SoundId then
+			s.SoundId = base.SoundId
+		end
 		s.PlaybackSpeed = p[1] * (pitchMul or 1) * (0.96 + math.random() * 0.08)
 		s.Volume = base.Volume * p[2] * (volMul or 1)
-		s.Parent = base.Parent
+		s.TimePosition = 0
 		s:Play()
-		Debris:AddItem(s, 2.5)
 	end
 
 	-- ───────────────────────── tiny fx: rings + sparks ─────────────────────────
 	function FX.Ring(parent, color, size, time, thick, pos)
-		if RawCfg.LowEnd == true then return end -- [v34] low end: no decorative rings
+		if FX.Lite() then return end -- [v34] low end / [perf] weak or strained device: no decorative rings
 		local r = Util.Instance("Frame", parent)
 		r.AnchorPoint = Vector2.new(0.5, 0.5)
 		r.Position = pos or UDim2.fromScale(0.5, 0.5)
@@ -601,7 +636,7 @@ Util.FX = (function()
 		return r
 	end
 	function FX.Sparks(parent, color, n, dist, time)
-		if RawCfg.LowEnd == true then return end -- [v34] low end: no spark particles
+		if FX.Lite() then return end -- [v34] low end / [perf] weak or strained device: no spark particles
 		for _ = 1, n do
 			local f = Util.Instance("Frame", parent)
 			f.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -1509,7 +1544,7 @@ Util.FX = (function()
 	local Skin = {corners = setmetatable({}, {__mode = "k"}), lips = {}, conn = nil, round = nil, acc = 0}
 	local function skinTick(dt)
 		Skin.acc = Skin.acc + dt
-		if Skin.acc < (RawCfg.LowEnd == true and 0.4 or 0.1) then return end
+		if Skin.acc < ((RawCfg.LowEnd == true or Gov.Stride > 1) and 0.4 or 0.15) then return end
 		Skin.acc = 0
 		local round = FX.Cfg.UIRound
 		if round ~= Skin.round then
@@ -1524,7 +1559,7 @@ Util.FX = (function()
 		end
 		for lip, paint in pairs(Skin.lips) do
 			if lip.Parent then
-				paint()
+				if lip.Visible then paint() end
 			else
 				Skin.lips[lip] = nil
 			end
@@ -1564,6 +1599,7 @@ Util.FX = (function()
 		local gg = Util.Instance("UIGradient", gloss)
 		gg.Rotation = 90
 		gg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1)})
+		if FX.Lite() then return gloss, nil end -- [perf] weak device: top gloss only (no rim line / bottom shade layers)
 		local rim = Util.Instance("Frame", host)
 		rim.AnchorPoint = Vector2.new(0.5, 0)
 		rim.Position = UDim2.new(0.5, 0, 0, 1)
@@ -1608,18 +1644,24 @@ Util.FX = (function()
 			mp = UserInputService:GetMouseLocation()
 		end
 		local rel = mp - host.AbsolutePosition
-		local c = Util.Instance("Frame", host)
-		c.AnchorPoint = Vector2.new(0.5, 0.5)
+		-- [perf] one ripple dot per button is reused (a new tween cancels the previous run) instead of creating + destroying one per press
+		local pool = FX.RippleDots
+		if not pool then pool = setmetatable({}, {__mode = "k"}) FX.RippleDots = pool end
+		local c = pool[host]
+		if not c or not c.Parent then
+			c = Util.Instance("Frame", host)
+			c.AnchorPoint = Vector2.new(0.5, 0.5)
+			c.BorderSizePixel = 0
+			c.Interactable = false
+			Util.Instance("UICorner", c).CornerRadius = UDim.new(1, 0)
+			pool[host] = c
+		end
 		c.Position = UDim2.fromOffset(math.clamp(rel.X, 0, host.AbsoluteSize.X), math.clamp(rel.Y, 0, host.AbsoluteSize.Y))
 		c.Size = UDim2.fromOffset(0, 0)
 		c.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
 		c.BackgroundTransparency = 0.7
-		c.BorderSizePixel = 0
-		c.Interactable = false
-		Util.Instance("UICorner", c).CornerRadius = UDim.new(1, 0)
 		local big = math.max(host.AbsoluteSize.X, 60) * 2.2
 		tween(c, 0.55, Quint, EOut, {Size = UDim2.fromOffset(big, big), BackgroundTransparency = 1})
-		Debris:AddItem(c, 0.6)
 	end
 	local sheenFns = setmetatable({}, {__mode = "k"})
 	function FX.Sheen(b)
@@ -1642,9 +1684,11 @@ Util.FX = (function()
 				local tilt = (n % 2 == 0) and 2.5 or -2.5
 				task.delay(0.08 + 0.36 * (1 - 0.86 ^ n), function()
 					if sc and sc.Parent then
-						d.Rotation = tilt
 						tween(sc, 0.42, FX.Expo, EOut, {Scale = 1})
-						tween(d, 0.5, FX.Expo, EOut, {Rotation = 0})
+						if not FX.Lite() then
+							d.Rotation = tilt
+							tween(d, 0.5, FX.Expo, EOut, {Rotation = 0})
+						end
 					end
 					FX.Sheen(d)
 				end)
@@ -1663,7 +1707,7 @@ Util.FX = (function()
 		-- [v41] REGISTER LOCK on press: an accent outline is knocked out of register, release snaps it home (Expo)
 		local echo
 		local function echoKnock()
-			if echo or RawCfg.LowEnd == true then return end
+			if echo or FX.Lite() then return end
 			echo = Util.Instance("Frame", b)
 			echo.Size = UDim2.fromScale(1, 1)
 			echo.Position = UDim2.fromOffset(4, -3)
@@ -1711,8 +1755,12 @@ Util.FX = (function()
 			FX.RoundCorner(lip)
 			lipSc = Util.Instance("UIScale", lip)
 			Util.LinkDestroyI2I(b, lip)
-			local function paintLip()
-				lip.BackgroundColor3 = (stroke and stroke.Color or WHITE):Lerp(Color3.new(0, 0, 0), lipK)
+			local lastC, lastK
+			local function paintLip() -- [perf] repaints only when the accent moved by a visible amount (or the press state changed)
+				local c = stroke and stroke.Color or WHITE
+				if lastC and lipK == lastK and math.abs(c.R - lastC.R) + math.abs(c.G - lastC.G) + math.abs(c.B - lastC.B) < 0.004 then return end
+				lastC, lastK = c, lipK
+				lip.BackgroundColor3 = c:Lerp(Color3.new(0, 0, 0), lipK)
 			end
 			paintLip()
 			Skin.lips[lip] = paintLip
@@ -1787,25 +1835,35 @@ Util.FX = (function()
 			elseif hover then
 				s, rot, lift = 1.045, -0.7, -1.5
 			end
+			local fast = FX.Lite() -- [perf] weak / strained device: decorative layers snap instead of spawning a tween each
 			tween(sc, time, style, EOut, {Scale = s})
 			tween(b, time, style, EOut, {Rotation = rot, Position = basePos + UDim2.fromOffset(0, lift)})
 			if lip then
-				tween(lip, time, style, EOut, {Position = basePos + UDim2.fromOffset(0, 3 + ((hover and not down) and 1 or 0))})
+				local lp = basePos + UDim2.fromOffset(0, 3 + ((hover and not down) and 1 or 0))
+				if fast then lip.Position = lp else tween(lip, time, style, EOut, {Position = lp}) end
 				lipK = down and 0.5 or (hover and 0.3 or 0.6)
 				lip.BackgroundColor3 = (stroke and stroke.Color or WHITE):Lerp(Color3.new(0, 0, 0), lipK)
 			end
-			tween(gloss, time, Quad, EOut, {BackgroundTransparency = down and 0.93 or (hover and 0.72 or 0.84)})
-			tween(shade, time, Quad, EOut, {BackgroundTransparency = down and 0.6 or 0.78})
+			local gv, sv = down and 0.93 or (hover and 0.72 or 0.84), down and 0.6 or 0.78
+			if fast then
+				gloss.BackgroundTransparency = gv
+				if shade then shade.BackgroundTransparency = sv end
+			else
+				tween(gloss, time, Quad, EOut, {BackgroundTransparency = gv})
+				if shade then tween(shade, time, Quad, EOut, {BackgroundTransparency = sv}) end
+			end
 		end
 		b.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
 			hover = true
 			refresh(Back, 0.24)
 			if stroke then tween(stroke, 0.15, Quad, EOut, {Thickness = 2}) end
-			local r = getRec()
-			r.bar.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
-			tween(r.bar, 0.28, Back, EOut, {Size = UDim2.new(0, 3, 1, -8)})
-			sheen()
+			if not FX.Lite() then
+				local r = getRec()
+				r.bar.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
+				tween(r.bar, 0.28, Back, EOut, {Size = UDim2.new(0, 3, 1, -8)})
+				sheen()
+			end
 			FX.Play("tick")
 		end)
 		b.MouseLeave:Connect(function()
@@ -1823,13 +1881,13 @@ Util.FX = (function()
 			echoKnock()
 			ripple(b, input)
 			FX.Ring(b, FX.GetColor and FX.GetColor() or WHITE, 52, 0.35, 2)
-			if input.UserInputType == Enum.UserInputType.Touch then sheen() end
+			if input.UserInputType == Enum.UserInputType.Touch and not FX.Lite() then sheen() end
 		end)
 		b.InputEnded:Connect(function(input)
 			if not isPress(input) or not down then return end
 			down = false
 			echoSnap()
-			refresh(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.55) -- [v34] low end: plain quick release
+			refresh(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.55) -- [v34] low end: plain quick release
 			FX.Play("release")
 		end)
 	end
@@ -1860,7 +1918,7 @@ Util.FX = (function()
 		obj.InputEnded:Connect(function(input)
 			if not isPress(input) or not dn then return end
 			dn = false
-			settle(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.5)
+			settle(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.5)
 		end)
 		if obj:IsA("TextBox") then
 			obj.Focused:Connect(function()
@@ -1970,7 +2028,7 @@ Util.FX = (function()
 		hit.InputEnded:Connect(function(input)
 			if not isPress(input) or not dn then return end
 			dn = false
-			squish(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.5)
+			squish(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.5)
 		end)
 	end
 
@@ -2016,7 +2074,7 @@ Util.FX = (function()
 		local conn = UserInputService.InputEnded:Connect(function(input)
 			if not dn or not isPress(input) then return end
 			dn = false
-			grow(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.5)
+			grow(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.5)
 		end)
 		knob.Destroying:Once(function()
 			conn:Disconnect()
@@ -2102,7 +2160,7 @@ Util.FX = (function()
 			end
 			tween(b, time, style, EOut, {Rotation = rot, Position = basePos + UDim2.fromOffset(0, lift)})
 			tween(gloss, time, Quad, EOut, {BackgroundTransparency = down and 0.93 or (hover and 0.72 or 0.84)})
-			tween(shade, time, Quad, EOut, {BackgroundTransparency = down and 0.6 or 0.78})
+			if shade then tween(shade, time, Quad, EOut, {BackgroundTransparency = down and 0.6 or 0.78}) end
 		end
 		b.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
@@ -2123,7 +2181,7 @@ Util.FX = (function()
 		b.InputEnded:Connect(function(input)
 			if not isPress(input) or not down then return end
 			down = false
-			refresh(RawCfg.LowEnd == true and Quad or Enum.EasingStyle.Elastic, RawCfg.LowEnd == true and 0.1 or 0.5)
+			refresh(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.5)
 		end)
 	end
 
@@ -15867,6 +15925,31 @@ Util.IsGuiVisible = function(guiObject)
 		guiObject = guiObject:FindFirstAncestorWhichIsA("GuiObject")
 	end
 	return true
+end
+-- [perf] cached TouchGui / JumpButton lookup shared by the on-screen mobile buttons (a missing TouchGui is only searched again every 0.5 s)
+Util.GetTouchJump = function()
+	local c = Util.TouchCache
+	if not c then c = {next = 0} Util.TouchCache = c end
+	local tg = c.tg
+	if not tg or not tg.Parent then
+		tg, c.tg, c.jb = nil, nil, nil
+		local now = os.clock()
+		if now >= c.next then
+			c.next = now + 0.5
+			local pl = game:GetService("Players").LocalPlayer
+			local pg = pl and pl:FindFirstChildOfClass("PlayerGui")
+			tg = pg and pg:FindFirstChild("TouchGui")
+			c.tg = tg
+		end
+	end
+	if not tg then return nil, nil end
+	local jb = c.jb
+	if not jb or not jb:IsDescendantOf(tg) then
+		local tf = tg:FindFirstChild("TouchControlFrame")
+		jb = tf and tf:FindFirstChild("JumpButton")
+		c.jb = jb
+	end
+	return tg, jb
 end
 Util.IsGuiInteractable = function(guiObject)
 	if not guiObject or not guiObject:IsA("GuiObject") then return false end
@@ -235659,6 +235742,124 @@ SaveData.MuteUISound = not not SaveData.MuteUISound
 -- available it falls back to Dubmood - Change (Radio Edit). It runs on its own thread, so the UI keeps building / module
 -- loading keeps going underneath it and the intro has a SKIP button that opens the UI.
 Util.IntroTrackFile = "dm_change.ft2.mp3" -- fallback track
+-- [v129] SHARED CREDITS (exactly 4 s): ONE sequence that runs before ANY intro (Original + every selectable intro, present or future).
+-- It is called once from Util.RunIntro (the single entry point of every intro) before the song / intro start, so nothing starts early.
+Util.CreditsRunning = false
+Util.PlayCredits = function()
+	if Util.CreditsRunning then return end -- never two credit sequences at once
+	Util.CreditsRunning = true
+	local gui
+	local okC, errC = pcall(function()
+		local CFG = Util.FX.Cfg or {}
+		local W = Color3.new(1, 1, 1)
+		local LEN, FD = 4, 0.4
+		local function clamp01(x) return math.max(0, math.min(1, x)) end
+		local function accent()
+			if CFG.IntroColorMode == 2 then
+				return Util.ParseHex(CFG.IntroColor) or W
+			elseif CFG.IntroColorMode == 3 then
+				return W
+			elseif CFG.IntroColorMode == 4 and Util.Color then
+				return Util.Color.Cur
+			end
+			return Util.DiscoColor(os.clock() * 0.48)
+		end
+		local function mk(class, parent, props)
+			local o = Util.Instance(class, parent)
+			for k, v in pairs(props) do o[k] = v end
+			return o
+		end
+		gui = mk("Frame", UIMainFrame, {
+			Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0,
+			BorderSizePixel = 0, ZIndex = 1000000, ClipsDescendants = true, Active = true,
+		})
+		local lines = {}
+		local function addLine(text, font, y, w, h, maxSize, t0, color, acc)
+			local L = {t0 = t0, y = y, acc = acc}
+			for i = 1, 3 do -- 1 = red ghost, 2 = cyan ghost, 3 = main text
+				local lb = mk("TextLabel", gui, {
+					AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, y), Size = UDim2.fromScale(w, h),
+					BackgroundTransparency = 1, BorderSizePixel = 0, Font = font, Text = text, TextScaled = true, TextWrapped = true,
+					TextColor3 = (i == 1 and Color3.fromRGB(255, 40, 90)) or (i == 2 and Color3.fromRGB(40, 230, 255)) or color,
+					TextTransparency = 1, ZIndex = (i == 3) and 3 or 2, Interactable = false,
+				})
+				mk("UITextSizeConstraint", lb, {MaxTextSize = maxSize})
+				L[i] = lb
+			end
+			lines[#lines + 1] = L
+		end
+		local DIM = Color3.fromRGB(190, 190, 205)
+		addLine("C R E D I T S", Enum.Font.Code, 0.09, 0.9, 0.05, 22, 0, W, true)
+		local list = {
+			{"Stevetherealone", "The original Uhh reanimation creator."},
+			{"Itseverydayyou", "Nameless Admin commands."},
+			{"Nooby", "Modder."},
+		}
+		for i, c in ipairs(list) do
+			local y = 0.24 + (i - 1) * 0.16
+			local t0 = 0.3 + (i - 1) * 0.4
+			addLine(c[1], Enum.Font.GothamBlack, y, 0.9, 0.075, 40, t0, W, true)
+			addLine(c[2], Enum.Font.Code, y + 0.065, 0.9, 0.045, 20, t0 + 0.12, DIM, false)
+		end
+		local DT0 = 1.75
+		local box = mk("Frame", gui, {
+			AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.82), Size = UDim2.fromScale(0.92, 0.17),
+			BackgroundColor3 = Color3.fromRGB(10, 10, 14), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1,
+		})
+		mk("UICorner", box, {CornerRadius = UDim.new(0, 6)})
+		local stroke = mk("UIStroke", box, {Thickness = 2, Transparency = 1, Color = W})
+		addLine("DO NOT COPY THIS SCRIPT AND CLAIM THAT ITS YOURS, THIS SCRIPT IS ONLY AND ONLY SINCERELY ON BY NOOBY.", Enum.Font.GothamBlack, 0.82, 0.86, 0.13, 28, DT0, W, false)
+		local sweep = mk("Frame", gui, {
+			Size = UDim2.new(1, 0, 0, 2), BackgroundColor3 = W, BackgroundTransparency = 0.7, BorderSizePixel = 0, ZIndex = 4, Interactable = false,
+		})
+		local bar = mk("Frame", gui, {
+			AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(0, 0, 0, 3),
+			BackgroundColor3 = W, BorderSizePixel = 0, ZIndex = 4, Interactable = false,
+		})
+		local T0 = os.clock()
+		local last, gl, nextG = T0, 0, 0.2
+		while true do
+			RunService.RenderStepped:Wait()
+			local now = os.clock()
+			local t, dt = now - T0, now - last
+			last = now
+			if t >= LEN then break end
+			if t >= nextG then gl = 1 nextG = t + 0.3 + math.random() * 0.5 end -- subtle glitch burst every ~0.3-0.8 s
+			gl = math.max(0, gl - dt * 7)
+			local outA = clamp01((LEN - t) / FD)
+			local acc = accent()
+			for _, L in ipairs(lines) do
+				local fi = clamp01((t - L.t0) / FD)
+				local a = fi * fi * (3 - 2 * fi) * outA
+				local g = math.max(gl, (fi > 0 and fi < 1) and (1 - fi) * 0.8 or 0) * outA
+				local jx = (math.random(0, 1) == 0) and -1 or 1
+				L[1].Position = UDim2.new(0.5, -jx * g * 6, L.y, math.random(-1, 1) * g * 2)
+				L[2].Position = UDim2.new(0.5, jx * g * 6, L.y, math.random(-1, 1) * g * 2)
+				L[1].TextTransparency = math.min(1, 1 - a * 0.55 * g)
+				L[2].TextTransparency = math.min(1, 1 - a * 0.55 * g)
+				L[3].TextTransparency = math.min(1, 1 - a + ((g > 0.6 and math.random() < 0.3) and 0.35 or 0))
+				if L.acc then L[3].TextColor3 = acc end
+			end
+			local fb = clamp01((t - DT0) / FD)
+			local ba = fb * fb * (3 - 2 * fb) * outA
+			box.BackgroundTransparency = 1 - ba * 0.85
+			stroke.Transparency = math.min(1, 1 - ba * (0.75 + 0.25 * math.sin(t * 12)))
+			stroke.Color = acc
+			sweep.Position = UDim2.fromScale(0, t / LEN)
+			sweep.BackgroundColor3 = acc
+			sweep.BackgroundTransparency = 0.7 + (1 - outA) * 0.3
+			bar.Size = UDim2.new(t / LEN, 0, 0, 3)
+			bar.BackgroundColor3 = acc
+		end
+	end)
+	Util.CreditsRunning = false
+	if not okC then warn("[Uhhhhhh] credits error (continuing): " .. tostring(errC)) end
+	local g = gui
+	if g then -- the black cover lingers briefly so the intro's own black stage takes over with no gap
+		task.delay(okC and 0.6 or 0, function() pcall(g.Destroy, g) end)
+	end
+end
+
 Util.RunIntro = function(preview)
 	if Util.IntroRunning then return end
 	if Util.FX.IsLowEnd() then -- [v34] low end mode: no cinematic intro (it is the heaviest effect in the script)
@@ -235679,6 +235880,8 @@ Util.RunIntro = function(preview)
 	local intro4 = SaveData.IntroStyle == 4 and Util.FX.Intro4 ~= nil and Util.Intro4Song ~= nil -- [v73] Intro 4 "lil peep" (main page selector)
 	local intro3 = SaveData.IntroStyle == 3 and Util.FX.Intro3 ~= nil and Util.Intro3Song ~= nil -- [v72] Intro 3 "Jealousy" (main page selector)
 	local intro2 = intro9 or intro8 or intro7 or intro6 or intro5 or intro4 or intro3 or (SaveData.IntroStyle == 2 and Util.FX.Intro2 ~= nil and Util.Intro2Song ~= nil) -- [v61] bundled-song intros (Moonlight / Jealousy); Original is the default
+	Util.FX.IntroActive = true -- [v129] the UI boot waits during the credits too
+	pcall(Util.PlayCredits) -- [v129] shared 4 s credits before every intro; the song / intro start only after it
 	local introSong = (intro9 and Util.Intro9Song) or (intro8 and Util.Intro8Song) or (intro7 and Util.Intro7Song) or (intro6 and Util.Intro6Song) or (intro5 and Util.Intro5Song) or (intro4 and Util.Intro4Song) or (intro3 and Util.Intro3Song) or Util.Intro2Song
 	Util.FX.IntroActive = true -- the window boot animation waits for this, so it unfolds right when the intro ends
 	task.spawn(function() -- the song loads in parallel; the cinematic clock starts on its first note
@@ -249874,6 +250077,9 @@ end
 local ForceUIColor = nil
 local ForceUIBGColor = nil
 local function GetUIColor(t)
+	local m = Util.UIColMemo -- [perf] ~20 hooks ask for the same colour with the same t every frame: computed once per (t, theme)
+	if m and m.t == t and m.f == ForceUIColor then return m.c end
+	local r
 	if ForceUIColor then
 		local si = math.sin(math.pi * 2 * t / 10)
 		local h, s, v = ForceUIColor:ToHSV()
@@ -249882,11 +250088,18 @@ local function GetUIColor(t)
 		else
 			h += si * 0.01
 		end
-		return Util.LoopedHSV(h, s, v)
+		r = Util.LoopedHSV(h, s, v)
+	else
+		r = Util.DiscoColor(t / 2) -- [v48] default theme cycles the disco palette (was the full rainbow)
 	end
-	return Util.DiscoColor(t / 2) -- [v48] default theme cycles the disco palette (was the full rainbow)
+	if not m then m = {} Util.UIColMemo = m end
+	m.t, m.f, m.c = t, ForceUIColor, r
+	return r
 end
 local function GetUIBGColor(t)
+	local m = Util.UIBgMemo
+	if m and m.t == t and m.f == ForceUIBGColor then return m.c end
+	local r
 	if ForceUIBGColor then
 		local si = math.sin(math.pi * 2 * t / 10)
 		local h, s, v = ForceUIBGColor:ToHSV()
@@ -249899,9 +250112,13 @@ local function GetUIBGColor(t)
 		else
 			h += si * 0.01
 		end
-		return Util.LoopedHSV(h, s, v)
+		r = Util.LoopedHSV(h, s, v)
+	else
+		r = Color3.new(0, 0, 0)
 	end
-	return Color3.new(0, 0, 0)
+	if not m then m = {} Util.UIBgMemo = m end
+	m.t, m.f, m.c = t, ForceUIBGColor, r
+	return r
 end
 local UITextColor = Util.Instance("Color3Value")
 UITextColor.Value = Color3.new(1, 1, 1)
@@ -249985,9 +250202,13 @@ local function UpdateGrads(t, all)
 		else
 			obj.BackgroundColor3 = bgc
 		end
-		for _,v in Glos do
-			v.ImageColor3 = glc
-			v.Visible = CFG.UIGlow
+		local gl = grad.glc -- [perf] glow images are only touched when the colour moved by a visible amount or the glow setting flipped
+		if Glos[1] and (all or not gl or grad.glv ~= CFG.UIGlow or math.abs(gl.R - glc.R) + math.abs(gl.G - glc.G) + math.abs(gl.B - glc.B) > 0.004) then
+			grad.glc, grad.glv = glc, CFG.UIGlow
+			for _,v in Glos do
+				v.ImageColor3 = glc
+				v.Visible = CFG.UIGlow
+			end
 		end
 		end
 	end
@@ -250118,9 +250339,27 @@ local UIMainWindow, WindowContent do
 	end
 	_registerclicksnd(UIMainWindow)
 	UIMainWindow.DescendantAdded:Connect(function(v)
-		if v:IsA("GuiObject") then
-			_registerclicksnd(v)
-		end
+		-- [perf] only objects that can receive / sink a press get their own listener (decorative frames, glows, ripples, lips... never do).
+		-- The check runs once per frame in a batch, after the builder code has finished setting Active / Interactable.
+		if not v:IsA("GuiObject") then return end
+		local q = Util.ClickSndQueue
+		if not q then q = {n = 0, on = false} Util.ClickSndQueue = q end
+		q.n = q.n + 1
+		q[q.n] = v
+		if q.on then return end
+		q.on = true
+		task.defer(function()
+			q.on = false
+			local n = q.n
+			q.n = 0
+			for i = 1, n do
+				local o = q[i]
+				q[i] = nil
+				if o.Parent and (o:IsA("GuiButton") or o:IsA("TextBox") or o:IsA("ScrollingFrame") or o.Active) then
+					_registerclicksnd(o)
+				end
+			end
+		end)
 	end)
 	
 	local TopBarFrame = Util.Instance("Frame", UIMainWindow)
@@ -250323,16 +250562,22 @@ local UIMainWindow, WindowContent do
 		end
 		layout()
 		UIMainWindow:GetPropertyChangedSignal("Size"):Connect(layout)
-		local lastDay, n = -1, 0
+		local lastDay, n, lastTc, lastAc = -1, 0, nil, nil
 		local function update()
 			local t = DateTime.now():ToLocalTime()
 			local tc, ac = UITextColor.Value, stroke and stroke.Color or UITextColor.Value
 			sP.Rotation = t.Second * 6
 			mP.Rotation = t.Minute * 6 + t.Second * 0.1
 			hP.Rotation = (t.Hour % 12) * 30 + t.Minute * 0.5
-			rim.Color = ac
-			for _, f in ipairs(txtParts) do f.BackgroundColor3 = tc end
-			for _, f in ipairs(accParts) do f.BackgroundColor3 = ac end
+			if ac ~= lastAc then -- [perf] colours are only written when they changed
+				lastAc = ac
+				rim.Color = ac
+				for _, f in ipairs(accParts) do f.BackgroundColor3 = ac end
+			end
+			if tc ~= lastTc then
+				lastTc = tc
+				for _, f in ipairs(txtParts) do f.BackgroundColor3 = tc end
+			end
 			if t.Day ~= lastDay then
 				lastDay = t.Day
 				local ok, s = pcall(function() return DateTime.now():FormatLocalTime("ddd MMM D", "en-us") end)
@@ -251027,13 +251272,18 @@ function UI.CreatePage()
 	Frame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	Frame.CanvasSize = UDim2.new(0, 0, 0, 0)
 	Frame.ClipsDescendants = true
+	local hiddenTick = 0
 	Util.AddDecoStep(function(t)
+		if not Frame.Visible then -- [perf] hidden pages only re-sync about twice a second
+			hiddenTick = hiddenTick + 1
+			if hiddenTick % 20 ~= 0 then return end
+		end
 		Frame.BorderColor3 = GetUIColor(t)
 		Frame.BackgroundColor3 = GetUIBGColor(t)
 		Frame.BackgroundTransparency = Util.FX.Cfg.UIBgTr
 	end, Frame)
 	Frame.ScrollingDirection = Enum.ScrollingDirection.Y
-	Frame.ScrollBarThickness = 3
+	Frame.ScrollBarThickness = UserInputService.TouchEnabled and 5 or 3 -- thicker, easier to grab bar on touch screens
 	Frame.ElasticBehavior = Enum.ElasticBehavior.Always
 	Frame.TopImage = "rbxasset://textures/ui/Scroll/scroll-middle.png"
 	Frame.MidImage = "rbxasset://textures/ui/Scroll/scroll-middle.png"
@@ -251594,6 +251844,15 @@ function UI.CreateDropdown(parent, text, array, value)
 	end
 	local opentween = 0
 	AddToRenderStep(function(t, dt)
+		if not opened and opentween < 0.002 then -- [perf] a fully closed dropdown does no per-frame work
+			if opentween ~= 0 or Droplist.Visible then
+				opentween = 0
+				Droplist.Visible = false
+				Droplist.ZIndex = 3
+				Droplist.Interactable = false
+			end
+			return
+		end
 		if opened then
 			opentween = 1 + (opentween - 1) * math.exp(-32 * dt)
 			Droplist.ZIndex = 4
@@ -251957,9 +252216,11 @@ do -- [v23] OPEN UI NOW pill + live module status (visible only while modules ar
 	RegisterTextLabel(pill) -- [v54] text follows the UI theme
 	local pillAnim = 0
 	AddToRenderStep(function(t, dt) -- [v54] background / outline follow the theme every frame; fades + slides in when shown
+		if pillAnim == 0 and not pill.Visible then return end -- [perf] fully hidden: nothing to animate
 		pill.BackgroundColor3 = GetUIBGColor(t)
 		pst.Color = Util.Color.Resolve(t, GetUIColor(t))
 		pillAnim = pillAnim + ((pill.Visible and 1 or 0) - pillAnim) * (1 - math.exp(-14 * dt))
+		if not pill.Visible and pillAnim < 0.004 then pillAnim = 0 end
 		pill.Position = UDim2.new(0.5, 0, 1, -14 + (1 - pillAnim) * 18)
 		pill.BackgroundTransparency = 0.2 + (1 - pillAnim) * 0.8
 		pill.TextTransparency = 1 - pillAnim
@@ -260210,14 +260471,11 @@ do
 		MobileShiftlock.Image = states[false]
 		local state = false
 		AddToRenderStep(function()
-			local playerGui = Player:FindFirstChildOfClass("PlayerGui")
-			local touchGui = playerGui and playerGui:FindFirstChild("TouchGui")
+			local touchGui, jumpButton = Util.GetTouchJump()
 			if not touchGui or not touchGui.Enabled then
 				MobileShiftlock.Visible = false
 				return
 			end
-			local touchFrame = touchGui and touchGui:FindFirstChild("TouchControlFrame")
-			local jumpButton = touchFrame and touchFrame:FindFirstChild("JumpButton")
 			if not jumpButton then
 				MobileShiftlock.Visible = false
 				return
@@ -264893,14 +265151,14 @@ do
 	-- 4 - under character (keep rootpart streamed)
 	ToolReanimator.AutoForceRespawn = SaveData.Reanimator.ToolsAutoForceRespawn
 	ToolReanimator.StuckTimeout = SaveData.Reanimator.ToolsStuckTimeout
-	-- 1 = Original, 2 = Drop Claim, 3 = Corpse Claim (read when Reanimate starts; switching only takes effect on the next start)
+	-- 1 = Original, 3 = Corpse Claim (2 was Drop Claim: removed from the menu, a saved 2 falls back to Original). Read when Reanimate starts; switching only takes effect on the next start
 	SaveData.Reanimator.ToolsMethod = math.clamp(math.floor(tonumber(SaveData.Reanimator.ToolsMethod) or 1), 1, 3)
+	if SaveData.Reanimator.ToolsMethod == 2 then SaveData.Reanimator.ToolsMethod = 1 end
 	ToolReanimator.Method = SaveData.Reanimator.ToolsMethod
-	local ToolMethods = {"Original", "Drop Claim", "Corpse Claim"}
+	local ToolMethods = {[1] = "Original", [3] = "Corpse Claim"}
 	local ToolMethodInfo = {
-		"Original: equips the tools, breaks the real character's joints server-side and uses the freed handles. Optional dolteddown's permadeath.",
-		"Drop Claim: the real character stays ALIVE (parked, state machine off). Tools are equipped, then dropped into Workspace; the loose handles are claimed by network ownership. Needs no replicatesignal, but needs isnetworkowner: a limb is only moved once you provably own the handle (otherwise other players never see it). Tools picked up by touch are dropped again automatically.",
-		"Corpse Claim: every tool is armed at once, then the real character is killed so the server breaks all grips together. A dead humanoid cannot pick anything up, so each tool is moved into Workspace right away (before the corpse is removed). A tool is only driven once the server has really freed it and you own it; unconfirmed drops are resent. The respawned character is parked alive and touch-disabled. replicatesignal is only an optional helper.",
+		[1] = "Original: equips the tools, breaks the real character's joints server-side and uses the freed handles. Optional dolteddown's permadeath.",
+		[3] = "Corpse Claim: every tool is armed at once, then the real character is killed so the server breaks all grips together. A dead humanoid cannot pick anything up, so each tool is moved into Workspace right away (before the corpse is removed). A tool is only driven once the server has really freed it and you own it; unconfirmed drops are resent. The respawned character is parked alive and touch-disabled. replicatesignal is only an optional helper.",
 	}
 	ToolReanimator.HasPermadeath = false
 	ToolReanimator.Summary = "(no tools claimed yet...)"
@@ -264911,7 +265169,8 @@ do
 	local LimbOrder = {"Torso", "Head", "Right Arm", "Left Arm", "Right Leg", "Left Leg"}
 	function ToolReanimator.Config(parent)
 		UI.CreateText(parent, "Every Tool you own (up to 6) becomes one R6 body part: Torso, Head, Right Arm, Left Arm, Right Leg, Left Leg - in that order.\nNeeds replicatesignal support from your executor (Original only).", 10, Enum.TextXAlignment.Center)
-		UI.CreateDropdown(parent, "Tool Method", ToolMethods, ToolReanimator.Method).Changed:Connect(function(val)
+		UI.CreateDropdown(parent, "Tool Method", {"Original", "Corpse Claim"}, ToolReanimator.Method == 3 and 2 or 1).Changed:Connect(function(val)
+			val = val == 2 and 3 or 1 -- list index -> method id
 			ToolReanimator.Method = val
 			SaveData.Reanimator.ToolsMethod = val
 			task.defer(function() pcall(Util.RefreshReanimatorConfig) end)
@@ -268303,14 +268562,11 @@ do
 		end
 	end
 	AddToRenderStep(function()
-		local playerGui = Player:FindFirstChildOfClass("PlayerGui")
-		local touchGui = playerGui and playerGui:FindFirstChild("TouchGui")
+		local touchGui, jumpButton = Util.GetTouchJump()
 		if not touchGui or not touchGui.Enabled then
 			buttonsui.Visible = false
 			return
 		end
-		local touchFrame = touchGui and touchGui:FindFirstChild("TouchControlFrame")
-		local jumpButton = touchFrame and touchFrame:FindFirstChild("JumpButton")
 		if not jumpButton then
 			buttonsui.Visible = false
 			return
