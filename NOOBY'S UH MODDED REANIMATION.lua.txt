@@ -24425,21 +24425,36 @@ until npcfollowloop == false
  end)
  
  cmd.add({"killnpcs"}, {"killnpcs", "Kills NPCs"}, function()
-	 local npcs = {}
- 
-	 local function disappear(hum)
-	   if hum:IsA("Humanoid") and not game.Players:GetPlayerFromCharacter(hum.Parent) then
-		 table.insert(npcs,{hum,hum.HipHeight})
-   local rootPart = hum.Parent:FindFirstChild("HumanoidRootPart")
-		 if rootPart then
-			 hum.Health = 0
-		 end      
-		 end
-	 end
-	 for _,hum in pairs(workspace:GetDescendants()) do
-	   disappear(hum)
-	 end
- end)
+local function uhKillHumanoids(list)
+	-- Health = 0 alone only replicates for parts this client simulates, and the old loop skipped NPCs without a HumanoidRootPart.
+	-- Claim simulation, then keep re-applying every replicating death route (Health, Dead state, NetworkHumanoidState) for 5 s.
+	local lp = game:GetService("Players").LocalPlayer
+	local rs = game:GetService("RunService")
+	pcall(function() sethiddenproperty(lp, "SimulationRadius", 1e9) end)
+	pcall(function() lp.MaximumSimulationRadius = 1e9 end)
+	task.spawn(function()
+		local t0 = os.clock()
+		repeat
+			for _, hum in ipairs(list) do
+				if hum.Parent then
+					pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end)
+					pcall(function() hum.Health = 0 end)
+					pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+					pcall(sethiddenproperty, hum, "NetworkHumanoidState", Enum.HumanoidStateType.Dead.Value)
+				end
+			end
+			rs.Heartbeat:Wait()
+		until os.clock() - t0 > 5
+	end)
+end
+	local list = {}
+	for _, hum in pairs(workspace:GetDescendants()) do
+		if hum:IsA("Humanoid") and hum.Parent and not game.Players:GetPlayerFromCharacter(hum.Parent) and hum.Parent ~= game.Players.LocalPlayer.Character then
+			list[#list + 1] = hum
+		end
+	end
+	uhKillHumanoids(list)
+end)
  
  cmd.add({"bringnpcs"}, {"bringnpcs", "Brings NPCs"}, function()
  local npcs = {}
@@ -146606,21 +146621,38 @@ cmd.add({"unsitnpcs"}, {"unsitnpcs", "Makes NPCS unsit"}, function()
 	end
 end)
 
-cmd.add({"killnpcs"}, {"killnpcs", "Kills NPCs"}, function()
-	const npcs = {}
+NAmanage.KillHumanoids = NAmanage.KillHumanoids or function(list)
+		-- Health = 0 alone only replicates for parts this client simulates, and the old loop skipped NPCs without a HumanoidRootPart.
+		-- Claim simulation, then keep re-applying every replicating death route (Health, Dead state, NetworkHumanoidState) for 5 s.
+		local lp = game:GetService("Players").LocalPlayer
+		local rs = game:GetService("RunService")
+		pcall(function() sethiddenproperty(lp, "SimulationRadius", 1e9) end)
+		pcall(function() lp.MaximumSimulationRadius = 1e9 end)
+		task.spawn(function()
+			local t0 = os.clock()
+			repeat
+				for _, hum in ipairs(list) do
+					if hum.Parent then
+						pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end)
+						pcall(function() hum.Health = 0 end)
+						pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+						pcall(sethiddenproperty, hum, "NetworkHumanoidState", Enum.HumanoidStateType.Dead.Value)
+					end
+				end
+				rs.Heartbeat:Wait()
+			until os.clock() - t0 > 5
+		end)
 
-	const function disappear(hum)
-		if CheckIfNPC(hum.Parent) then
-			Insert(npcs,{hum,hum.HipHeight})
-			const rootPart = getRoot(hum.Parent)
-			if rootPart then
-				hum.Health = 0
-			end
+end
+
+cmd.add({"killnpcs"}, {"killnpcs", "Kills NPCs"}, function()
+	local list = {}
+	for _, hum in NAmanage.QueryDescendants(Services.Workspace, "Humanoid") do
+		if hum.Parent and CheckIfNPC(hum.Parent) and hum.Parent ~= (player and player.Character) then
+			list[#list + 1] = hum
 		end
 	end
-	for _, hum in NAmanage.QueryDescendants(Services.Workspace, "Humanoid") do
-		disappear(hum)
-	end
+	NAmanage.KillHumanoids(list)
 end)
 
 cmd.add({"npcwalkspeed","npcws"},{"npcwalkspeed <speed>","Sets all NPC WalkSpeed to <speed> (default 16)"},function(speedStr)
@@ -147051,7 +147083,7 @@ cmd.add({"clickkillnpc", "cknpc"}, {"clickkillnpc (cknpc)", "Click on an NPC to 
 		if Character and CheckIfNPC(Character) then
 			const Humanoid = getPlrHum(Character)
 			if Humanoid then
-				Humanoid.Health = 0
+				NAmanage.KillHumanoids({Humanoid})
 			end
 		end
 	end))
@@ -262526,22 +262558,7 @@ function LimbReanimator.Start()
 				if flingtarget then
 					Util.SetMotor6DTransform(v, CFrame.identity)
 				else
-					local cf = CFrame.identity
-					local p0, p1 = ReanimCharacter:FindFirstChild(map.RPart0), ReanimCharacter:FindFirstChild(map.RPart1)
-					if map.RPart0 == "ROOT" then
-						p0 = RootPart
-					end
-					if p0 and p1 then
-						if map.Type == 1 then
-							cf = p0.CFrame:ToObjectSpace(p1.CFrame)
-						end
-						if map.Type == 2 then
-							local offset = map.Offset or CFrame.identity
-							local c0, c1 = CFrame.new(map.C0), CFrame.new(map.C1)
-							local transform = offset * (p0.CFrame * c0):ToObjectSpace(p1.CFrame * c1) * offset:Inverse()
-							cf = v.C0 * transform * v.C1:Inverse()
-						end
-					end
+					local cf = Reanimate.LimbPoseCFrame(map, v, ReanimCharacter, RootPart)
 					if dorep or not map.CFrame then
 						map.CFrame = cf
 					end
@@ -266175,36 +266192,662 @@ _G_Uhhhhhh.Fling = function(part)
 	end
 end
 
+-- [v51] shared limb pose (same maths the Limb reanimator uses per joint) + NPC reanimator (limb method on nearby NPC rigs)
+do
+	local RS = SaveData.Reanimator
+	function Reanimate.LimbPoseCFrame(map, v, RC, RootPart)
+		local cf = CFrame.identity
+		local p0, p1 = RC:FindFirstChild(map.RPart0), RC:FindFirstChild(map.RPart1)
+		if map.RPart0 == "ROOT" then
+			p0 = RootPart
+		end
+		if p0 and p1 then
+			if map.Type == 1 then
+				cf = p0.CFrame:ToObjectSpace(p1.CFrame)
+			elseif map.Type == 2 then
+				local offset = map.Offset or CFrame.identity
+				local c0, c1 = CFrame.new(map.C0), CFrame.new(map.C1)
+				local transform = offset * (p0.CFrame * c0):ToObjectSpace(p1.CFrame * c1) * offset:Inverse()
+				cf = v.C0 * transform * v.C1:Inverse()
+			end
+		end
+		return cf
+	end
+
+	-- ===== NPC Reanimation (Limb method) =====
+	local NPC = {Name = "NPC", FlingEnabled = false, FlingTargets = {}, List = {}, ListSet = {}, ListCount = 0, Rebuilds = 0}
+	Reanimate.NPCReanimator = NPC
+	RS.NPCRadius = math.clamp(tonumber(RS.NPCRadius) or 200, 20, 1000)
+	NPC.Radius = RS.NPCRadius
+	if RS.NPCAutoPick == nil then RS.NPCAutoPick = true end
+	NPC.AutoPick = RS.NPCAutoPick ~= false
+	if RS.NPCAutoRescan == nil then RS.NPCAutoRescan = true end
+	NPC.AutoRescan = RS.NPCAutoRescan ~= false
+	NPC.Rejected = setmetatable({}, {__mode = "k"})
+	local NPC_PARTS = {"HumanoidRootPart", "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
+	local NPC_JOINTS = {{"HumanoidRootPart", "RootJoint"}, {"Torso", "Neck"}, {"Torso", "Left Shoulder"}, {"Torso", "Right Shoulder"}, {"Torso", "Left Hip"}, {"Torso", "Right Hip"}}
+	function NPC.Fling() return false end
+
+	-- returns {Model, Hum, Root, Motors, Parts} for a usable R6 NPC, or nil + reason + short category (for the scan summary)
+	-- R6 is decided from the real structure (Model + Humanoid + the seven BaseParts + the six Motor6D joints), never from the model name,
+	-- PrimaryPart or Humanoid.RigType alone
+	local function npcFindPart(m, n)
+		local p = m:FindFirstChild(n)
+		if p and p:IsA("BasePart") then return p end
+		for _, c in m:GetChildren() do
+			if c.Name == n and c:IsA("BasePart") then return c end
+		end
+	end
+	local function npcFindMotor(m, owner, n)
+		local mt = owner:FindFirstChild(n)
+		if mt and mt:IsA("Motor6D") and mt.Part0 and mt.Part1 then return mt end
+		for _, d in m:GetDescendants() do
+			if d.Name == n and d:IsA("Motor6D") and d.Part0 and d.Part1 and (d.Part0 == owner or d.Part1 == owner) then return d end
+		end
+	end
+	function NPC.Check(m)
+		if not (m and m:IsDescendantOf(workspace)) then return nil, "target is gone.", "gone" end
+		if not m:IsA("Model") then return nil, "not a Model.", "not a model" end
+		if Players:GetPlayerFromCharacter(m) then return nil, "player characters are excluded." end
+		if m == Player.Character or m == Reanimate.Character then return nil, "that is your own character." end
+		local hum = m:FindFirstChildOfClass("Humanoid")
+		if not hum then return nil, "no Humanoid.", "no humanoid" end
+		if hum:GetState() == Enum.HumanoidStateType.Dead or (hum.Health <= 0 and hum.MaxHealth > 0) then return nil, "NPC is dead.", "dead" end
+		if m:FindFirstChild("UpperTorso") or m:FindFirstChild("LowerTorso") then return nil, "only R6 rigs are supported.", "not R6" end
+		local parts = {}
+		for _, n in NPC_PARTS do
+			local p = npcFindPart(m, n)
+			if not p then
+				if hum.RigType == Enum.HumanoidRigType.R15 then return nil, "only R6 rigs are supported.", "not R6" end
+				return nil, "missing part " .. n .. ".", "missing parts"
+			end
+			parts[n] = p
+		end
+		local root = parts.HumanoidRootPart
+		if root.Anchored or root:IsGrounded() then return nil, "anchored / attached to the map.", "anchored" end
+		local motors = {}
+		for _, j in NPC_JOINTS do
+			local mt = npcFindMotor(m, parts[j[1]], j[2])
+			if not mt then return nil, "missing joint " .. j[2] .. ".", "missing joints" end
+			motors[#motors + 1] = mt
+		end
+		return {Model = m, Hum = hum, Root = root, Motors = motors, Parts = parts}
+	end
+
+	-- Humanoid registry: one workspace pass when the scan page opens, then kept current by two signals (no per-scan GetDescendants,
+	-- no part-count cap, independent of CanQuery); dropped again when the page closes
+	function NPC.Hook()
+		if NPC.Hums then return end
+		local set = {}
+		NPC.Hums = set
+		for _, d in workspace:GetDescendants() do
+			if d:IsA("Humanoid") then set[d] = true end
+		end
+		NPC.ConnA = workspace.DescendantAdded:Connect(function(d)
+			if d:IsA("Humanoid") then set[d] = true end
+		end)
+		NPC.ConnR = workspace.DescendantRemoving:Connect(function(d)
+			set[d] = nil
+		end)
+	end
+	function NPC.Unhook()
+		if NPC.ConnA then NPC.ConnA:Disconnect() end
+		if NPC.ConnR then NPC.ConnR:Disconnect() end
+		NPC.ConnA, NPC.ConnR, NPC.Hums = nil, nil, nil
+	end
+
+	-- one pass per call (never per frame); true when the eligible set changed. fresh = true drops the cached Humanoid registry and
+	-- rebuilds it from a full workspace traversal first (used by the Rescan button)
+	local function npcAnchorPos(c)
+		local p = c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Torso") or c:FindFirstChild("Head") or c.PrimaryPart)
+		return p and p:IsA("BasePart") and p.Position or nil
+	end
+	local function npcModelPos(m, hum)
+		local p = m:FindFirstChild("HumanoidRootPart")
+		if not (p and p:IsA("BasePart")) then p = hum.RootPart end
+		if not (p and p:IsA("BasePart")) then p = m:FindFirstChild("Torso") end
+		if p and p:IsA("BasePart") then return p.Position end
+		local ok, cf = pcall(m.GetPivot, m)
+		return ok and cf.Position or nil
+	end
+	function NPC.Scan(fresh)
+		if fresh then NPC.Unhook() end
+		NPC.Hook()
+		local pos = npcAnchorPos(Reanimate.Character) or npcAnchorPos(Player.Character)
+		local list, rej, seen = {}, {}, {}
+		NPC.NoAnchor = not pos
+		if pos then
+			local radius = NPC.Radius
+			for hum in NPC.Hums do
+				local m = hum.Parent
+				if m and m:IsA("Model") and not seen[m] and hum:IsDescendantOf(workspace) then
+					seen[m] = true
+					local mp = npcModelPos(m, hum)
+					if mp and (mp - pos).Magnitude <= radius then
+						local info, _, cat = NPC.Check(m)
+						if info then
+							list[#list + 1] = {Model = m, Name = m.Name, Dist = (mp - pos).Magnitude}
+						elseif cat then
+							rej[cat] = (rej[cat] or 0) + 1
+						end
+					end
+				end
+			end
+			table.sort(list, function(a, b) return a.Dist < b.Dist end)
+			for i = #list, 51, -1 do list[i] = nil end
+		end
+		local parts = {}
+		for k, n in rej do parts[#parts + 1] = k .. " " .. n end
+		table.sort(parts)
+		NPC.RejText = table.concat(parts, ", ")
+		local changed, set = #list ~= NPC.ListCount, {}
+		for _, e in list do
+			set[e.Model] = true
+			if not NPC.ListSet[e.Model] then changed = true end
+		end
+		NPC.List, NPC.ListSet, NPC.ListCount = list, set, #list
+		return changed
+	end
+
+	function NPC.UpdateStatus()
+		local lbl, t, s = NPC.StatusLabel, NPC.Cur, nil
+		if not lbl then return end
+		if t then
+			s = "Controlling: " .. t.Model.Name .. "\nNetwork ownership: " .. (t.OwnKnown and (t.Owned and "YES (replicates to others)" or "NO (client-only, releases soon)") or "unverified (isnetworkowner unavailable or inconclusive - not confirmed as owned)")
+		elseif Reanimate.Current == NPC then
+			s = "Running - no NPC attached. Pick one in the list."
+		elseif NPC.NoAnchor then
+			s = "No character to scan from yet."
+		elseif NPC.ListCount > 0 then
+			s = NPC.ListCount .. " eligible NPC(s) within " .. NPC.Radius .. " studs."
+		else
+			s = "No eligible NPC within " .. NPC.Radius .. " studs (needs: R6 rig, alive, unanchored, not a player)."
+		end
+		if not t and NPC.RejText and NPC.RejText ~= "" then
+			s = s .. "\nSkipped: " .. NPC.RejText
+		end
+		if lbl.Text ~= s then lbl.Text = s end
+	end
+
+	-- ===== NPC takeover = the Limb reanimator's per-frame routine, run on the NPC rig instead of your own character =====
+	-- same ingredients as LimbReanimator.Start: Humanoid forced to Physics + NetworkHumanoidState Flying, Animator/Animate stripped,
+	-- RootPart parked by the Limb "RootPart Mode"/"RootPart Velocity" settings, joint offsets from the shared limb pose maths (two passes
+	-- per frame: Heartbeat + PreRender), "Show me how I look!" 10 FPS throttle honoured, placeholder limbs hidden while it works
+	local NPC_LIMBS = {Head = true, Torso = true, ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true}
+
+	-- [replication fix] Motor6D transform replication alone is overridden by the server/remote Animator in modern games, so the mapped limb
+	-- joints are disabled client-side while attached and every limb is placed directly each frame. CFrames of network-owned parts replicate
+	-- to all players; the joint hidden-property pose is still sent as well. Joints are restored on release.
+	local function npcCfOf(r) return r.Cf end
+	local function npcRestCf(r, mt) return r.C0 * r.C1:Inverse() end
+	local function npcPlace(t, cfOf)
+		local root = t.Root
+		for pass = 1, 2 do
+			for _, r in t.Refs do
+				local mt = r.Motor
+				local p0, p1 = r.P0, r.P1
+				if p0 and p1 and p0.Parent and p1.Parent and ((p0 == root) == (pass == 1)) then
+					local cf = cfOf(r, mt)
+					if cf then p1.CFrame = p0.CFrame * cf end
+				end
+			end
+		end
+	end
+
+	function NPC.Detach(reason)
+		local t = NPC.Cur
+		NPC.Cur = nil
+		if t then
+			for _, c in t.Conns do pcall(c.Disconnect, c) end
+			for _, r in t.Refs do
+				if r.Motor.Parent then pcall(Util.SetMotor6DTransform, r.Motor, CFrame.identity) end
+			end
+			for _, mt in t.Unknown do
+				if mt.Parent then pcall(Util.SetMotor6DTransform, mt, CFrame.identity) end
+			end
+			pcall(function()
+				if t.Root.Parent == t.Model and not t.Root:IsGrounded() then
+					t.Root.CFrame = t.LastCF -- leave the NPC where you left it, not parked under the fake character
+					t.Root.Velocity, t.Root.RotVelocity = Vector3.zero, Vector3.zero
+				end
+			end)
+			pcall(function()
+				if t.Root.Parent == t.Model then npcPlace(t, npcRestCf) end
+				for _, mt in t.Disabled or {} do
+					pcall(function() mt.Enabled = true end)
+				end
+			end)
+			pcall(function()
+				if t.Hum.Parent then
+					t.Hum.AutoRotate = t.AutoRotate
+					if t.Killed then
+						-- permanent death: never revive it, keep re-asserting the dead state after release
+						local dh = t.Hum
+						task.spawn(function()
+							local t0 = os.clock()
+							while dh.Parent and os.clock() - t0 < 5 do
+								pcall(function() dh.Health = 0 end)
+								pcall(function() dh:ChangeState(Enum.HumanoidStateType.Dead) end)
+								pcall(sethiddenproperty, dh, "NetworkHumanoidState", Enum.HumanoidStateType.Dead.Value)
+								RunService.Heartbeat:Wait()
+							end
+						end)
+					else
+						t.Hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+					end
+				end
+			end)
+		end
+		if reason then pcall(Util.Notify, reason) end
+		NPC.UpdateStatus()
+	end
+
+	function NPC.Attach(model)
+		NPC.Detach()
+		local info, why = NPC.Check(model)
+		if not info then
+			NPC.Target = nil
+			pcall(Util.Notify, "NPC Reanimation: " .. tostring(why))
+			return false
+		end
+		if not NPC.Map then
+			local ok, map = pcall(function() return loadstring(readfile("UhhhhhhReanim/BuiltinModules/d_limbmap.lua"))() end)
+			if not (ok and type(map) == "table") then
+				pcall(Util.Notify, "NPC Reanimation: the limb map is not available yet.")
+				return false
+			end
+			NPC.Map = map
+		end
+		local refs, used = {}, {}
+		for _, map in NPC.Map do
+			for _, mt in info.Motors do
+				if mt.Part0.Name == map.Part0 and mt.Part1.Name == map.Part1 then
+					refs[#refs + 1] = {Map = map, Motor = mt, P0 = mt.Part0, P1 = mt.Part1, C0 = mt.C0, C1 = mt.C1}
+					used[mt] = true
+					break
+				end
+			end
+		end
+		if #refs == 0 then
+			NPC.Target = nil
+			pcall(Util.Notify, "NPC Reanimation: no NPC joint matches the limb map.")
+			return false
+		end
+		local parts = {}
+		for _, n in NPC_PARTS do
+			local pp = info.Parts[n]
+			parts[#parts + 1] = pp
+			pp.CanCollide = false
+		end
+		-- every BasePart (accessories included) is kept non-colliding / velocity-free each frame; Animators and the Animate script are
+		-- stripped client-side (and again whenever the game adds one), exactly like the Limb reanimator does to your own character
+		local all, unknown, conns = {}, {}, {}
+		local function strip(d)
+			if d:IsA("Animator") then
+				task.defer(function() pcall(d.Destroy, d) end)
+			elseif d:IsA("LocalScript") and d.Name == "Animate" then
+				pcall(function() d.Enabled = false end)
+			end
+		end
+		for _, d in model:GetDescendants() do
+			if d:IsA("BasePart") then
+				all[#all + 1] = d
+			elseif d:IsA("Motor6D") then
+				if not used[d] then unknown[#unknown + 1] = d end
+			else
+				strip(d)
+			end
+		end
+		conns[1] = model.DescendantAdded:Connect(function(d)
+			if d:IsA("BasePart") then
+				all[#all + 1] = d
+			elseif d:IsA("Motor6D") then
+				if not used[d] then unknown[#unknown + 1] = d end
+			else
+				strip(d)
+			end
+		end)
+		local disabledMotors = {}
+		for _, r in refs do
+			pcall(function() r.Motor.Enabled = false end)
+			disabledMotors[#disabledMotors + 1] = r.Motor
+		end
+		local hum = info.Hum
+		NPC.Cur = {Model = model, Hum = hum, Root = info.Root, Refs = refs, Disabled = disabledMotors, Parts = parts, All = all, Unknown = unknown, Conns = conns,
+			AutoRotate = hum.AutoRotate, OwnCheck = 0, OwnKnown = false, Owned = false, Since = os.clock(), LastRep = 0, LastCF = info.Root.CFrame}
+		-- [replication fix 2] the server still has these limbs welded together, so per-limb CFrames from the owner cannot apply there. The
+		-- owner's Dead humanoid state replicates (like a reset does), the server then breaks the joints (BreakJointsOnDeath) and every limb
+		-- becomes its own network-owned part that replicates to all players. The NPC stays dead for everyone.
+		NPC.Cur.Killed = true
+		pcall(function()
+			hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+			hum.Health = 0
+			hum:ChangeState(Enum.HumanoidStateType.Dead)
+		end)
+		NPC.Target = model
+		NPC.UpdateStatus()
+		return true
+	end
+
+	-- auto pick: the moment the controlled NPC is gone (removed by the server) attach the closest eligible NPC, no delay or timer
+	function NPC.AutoPickNext(gone)
+		pcall(NPC.Scan, NPC.AutoRescan == true)
+		local list = NPC.List
+		for _, e in list do
+			if e.Model ~= gone and not NPC.Rejected[e.Model] and e.Model:IsDescendantOf(workspace) and NPC.Attach(e.Model) then
+				pcall(Util.Notify, "NPC Reanimation: auto-picked " .. e.Name .. " (closest NPC).")
+				return true
+			end
+		end
+		return false
+	end
+
+	-- ownership probe: isnetworkowner is the only client-side ownership API. Only a real boolean answer counts; a missing function, an error
+	-- or a non-boolean result is "unknown" (nil), never "not owned". Root AND limbs are probed: the root is parked in the void and, once the
+	-- server breaks the joints, every limb is its own assembly, so the root alone is not a valid proxy for the driven limbs.
+	local function npcOwnProbe(t)
+		local f = isnetworkowner
+		if type(f) ~= "function" then return nil end
+		local answered = false
+		for _, p in t.Parts do
+			if p.Parent then
+				local ok, res = pcall(f, p)
+				if ok and type(res) == "boolean" then
+					answered = true
+					if res then return true end
+				end
+			end
+		end
+		if answered then return false end
+		return nil
+	end
+
+	-- per frame: is the NPC still usable (+ network ownership every 0.5 s); false when it had to be released
+	function NPC.Validate(t, now)
+		local m, root, why = t.Model, t.Root, nil
+		if not m:IsDescendantOf(workspace) then
+			why = "was removed"
+		elseif not t.Killed and t.Hum.Health <= 0 and t.Hum.MaxHealth > 0 then
+			why = "died"
+		elseif root.Parent ~= m then
+			why = "lost its root part"
+		else
+			for _, r in t.Refs do
+				local mt = r.Motor
+				if not ((t.Killed or mt.Parent) and r.P0 and r.P1 and r.P1:IsDescendantOf(m)) then
+					why = "lost a part (" .. mt.Name .. ")"
+					break
+				end
+			end
+		end
+		if why then
+			NPC.Target = nil
+			NPC.Detach("NPC " .. m.Name .. " " .. why .. " - released.")
+			if why == "was removed" and NPC.AutoPick then NPC.AutoPickNext(m) end
+			return false
+		end
+		if now - t.OwnCheck >= 0.5 then
+			t.OwnCheck = now
+			local res = npcOwnProbe(t)
+			t.OwnKnown, t.Owned = res ~= nil, res == true
+			if res then t.LastOwned = now end
+			-- release only on a readable "not owned" that has lasted 5 s (since attach, or since ownership was last seen); an unreadable
+			-- check never releases the NPC and is never reported as owned
+			if t.OwnKnown and not t.Owned and now - math.max(t.Since, t.LastOwned or 0) > 5 then
+				NPC.Target = nil
+				NPC.Detach("NPC " .. m.Name .. ": the server did not grant this client network ownership of it (readable via isnetworkowner for 5 s), so it cannot be reanimated for other players. Released.")
+				if NPC.AutoPick then
+					NPC.Rejected[m] = true
+					NPC.AutoPickNext(m)
+				end
+				return false
+			end
+			NPC.UpdateStatus()
+		end
+		return true
+	end
+
+	-- RootPart parking: the Limb "RootPart Mode" / "RootPart Velocity" settings. Modes that park the root far away (and plugin modes)
+	-- would make the server drop the NPC's network ownership, so they fall back to "RootPart in void" (just below the fake character)
+	local function npcRootCF(RCRoot, RCTorso)
+		local mode = LimbReanimator.Mode
+		local rootcf = CFrame.new(RCRoot.Position + Vector3.new(0, -16, 0))
+		if mode == 3 then
+			rootcf = RCRoot.CFrame
+		elseif mode == 4 then
+			rootcf = RCTorso.CFrame
+		end
+		local rootvel = Vector3.zero
+		if LimbReanimator.Velocity == 1 then rootvel = RCRoot.Velocity end
+		return rootcf, rootvel
+	end
+
+	-- same as the Limb reanimator's UpdateTransforms (no fling)
+	local function npcPose(t, RC, rootcf, rootvel)
+		local root = t.Root
+		if not root:IsGrounded() then
+			root.CFrame = rootcf + Vector3.new(0, 0, math.random(0, 1) * 0.005)
+			root.Velocity, root.RotVelocity = rootvel, Vector3.zero
+			pcall(sethiddenproperty, root, "PhysicsRepRootRef", nil)
+		end
+		local dorep = true
+		if LimbReanimator.ReplicateFPS10 then
+			dorep = false
+			local b = os.clock()
+			local a = b - t.LastRep
+			if a >= 1 / 10 then
+				dorep = true
+				a %= 1 / 10
+				t.LastRep = b - a
+			end
+		end
+		for _, mt in t.Unknown do
+			if mt.Parent then Util.SetMotor6DTransform(mt, CFrame.identity) end
+		end
+		for _, r in t.Refs do
+			local cf = Reanimate.LimbPoseCFrame(r.Map, r.Motor, RC, root)
+			if dorep or not r.Cf then r.Cf = cf end
+			pcall(Util.SetMotor6DOffset, r.Motor, r.Cf)
+		end
+		npcPlace(t, npcCfOf)
+	end
+
+	function NPC.Step()
+		RunService.PreSimulation:Wait()
+		workspace.FallenPartsDestroyHeight = 0/0
+		local RC = Reanimate.Character
+		if RC and not RC:IsDescendantOf(workspace) and NPC.Rebuilds < 3 then
+			NPC.Rebuilds += 1
+			pcall(Util.Notify, "NPC Reanimation: the fake character was removed, rebuilding (" .. NPC.Rebuilds .. "/3).")
+			Reanimate.CreateCharacter()
+			RC = Reanimate.Character
+		end
+		local RCRoot = RC and RC:FindFirstChild("HumanoidRootPart")
+		local RCTorso = RC and RC:FindFirstChild("Torso")
+		local RCHum = RC and RC:FindFirstChildOfClass("Humanoid")
+		local cam = workspace.CurrentCamera
+		if cam and RCHum then cam.CameraSubject = RCHum end
+		local t = NPC.Cur
+		if t and not (RCRoot and RCTorso) then t = nil end
+		if t and not NPC.Validate(t, os.clock()) then t = nil end
+		if RC then
+			local okay = t ~= nil and (not t.OwnKnown or t.Owned)
+			for _, v in RC:GetChildren() do
+				if v:IsA("BasePart") and NPC_LIMBS[v.Name] then
+					v.Transparency = okay and 1 or Reanimate.PlaceholderTransparency
+				end
+			end
+		end
+		local rootcf, rootvel
+		if t then
+			local hum, ltm = t.Hum, Reanimate.LocalTransparencyModifier
+			pcall(function()
+				hum.AutoRotate = false
+				if not t.Killed then hum:ChangeState(Enum.HumanoidStateType.Physics) else hum.Health = 0 end
+			end)
+			for _, v in t.All do
+				if v.Parent then
+					v.CanCollide = false
+					v.Velocity, v.RotVelocity = Vector3.zero, Vector3.zero
+					if not v:FindFirstAncestorWhichIsA("Tool") then
+						local lltm = ltm
+						if Reanimate.FirstPersonBody then
+							lltm = 0
+							if v.Name == "Head" then
+								lltm = ltm
+							else
+								local aw = v:FindFirstChild("AccessoryWeld")
+								if aw and aw:IsA("Weld") and aw.Part1 and aw.Part1.Name == "Head" then lltm = ltm end
+							end
+						end
+						v.LocalTransparencyModifier = lltm
+					end
+				end
+			end
+			RunService.Heartbeat:Wait()
+			if NPC.Cur == t and t.Root.Parent == t.Model and RCRoot.Parent and RCTorso.Parent then
+				rootcf, rootvel = npcRootCF(RCRoot, RCTorso)
+				npcPose(t, RC, rootcf, rootvel)
+				pcall(sethiddenproperty, hum, "NetworkHumanoidState", (t.Killed and Enum.HumanoidStateType.Dead or Enum.HumanoidStateType.Flying).Value)
+				t.LastCF = RCRoot.CFrame
+			end
+		end
+		RunService.PreRender:Wait()
+		if RC and Reanimate:ShouldRotationType() then Reanimate:CameraLockCharacter() end
+		if t and rootcf and NPC.Cur == t and t.Root.Parent == t.Model then
+			npcPose(t, RC, rootcf, rootvel)
+		end
+	end
+
+	function NPC.Start()
+		local ch = Player.Character
+		local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+		local rh = ch and ch:FindFirstChildOfClass("Humanoid")
+		local oldPS = rh and rh.PlatformStand
+		if rh then rh.PlatformStand = true end -- your real character stays put while the fake one is controlled
+		local oldRadius
+		pcall(function() oldRadius = gethiddenproperty(Player, "SimulationRadius") end)
+		local oldFPDH = workspace.FallenPartsDestroyHeight
+		pcall(sethiddenproperty, Player, "SimulationRadius", 1e9) -- ask the engine to let this client simulate nearby NPC parts (the server still decides)
+		NPC.Rebuilds = 0
+		table.clear(NPC.Rejected)
+		Reanimate.CreateCharacter(hrp and hrp.CFrame or nil)
+		Reanimate.Starting = false
+		if NPC.Target then
+			NPC.Attach(NPC.Target)
+		else
+			pcall(Util.Notify, "NPC Reanimation: pick an NPC in the list to take it over.")
+		end
+		local lastErr
+		while not Reanimate.Stopping do
+			local ok, err = pcall(NPC.Step)
+			if not ok and tostring(err) ~= lastErr then
+				lastErr = tostring(err)
+				warn("[NPC Reanimation] frame step failed: " .. lastErr)
+			end
+		end
+		NPC.Detach()
+		pcall(function() if rh and rh.Parent then rh.PlatformStand = oldPS end end)
+		if not (NPC.StatusLabel and NPC.StatusLabel.Parent) then NPC.Unhook() end
+		if oldRadius then pcall(sethiddenproperty, Player, "SimulationRadius", oldRadius) end
+		pcall(function() workspace.FallenPartsDestroyHeight = oldFPDH end)
+		Reanimate.Stopping = false
+		Reanimate.DestroyCharacter()
+	end
+
+	-- periodic scan: runs only while this config page exists (checked against its own canvas, not game - the UI may live in a hidden container),
+	-- every 2.5 s, first pass immediately; the UI is rebuilt only when the eligible set changes
+	function NPC.StartScanLoop(canvas)
+		NPC.Gen = (NPC.Gen or 0) + 1
+		local gen = NPC.Gen
+		task.spawn(function()
+			local first = true
+			while NPC.Gen == gen do
+				local lbl = NPC.StatusLabel
+				if not (lbl and lbl.Parent and lbl:IsDescendantOf(canvas)) then break end
+				if first or Util.IsGuiVisible(lbl) then
+					first = false
+					local doFresh = NPC.AutoRescan and os.clock() - (NPC.LastFresh or 0) >= 5
+					if doFresh then NPC.LastFresh = os.clock() end
+					if NPC.Scan(doFresh) then
+						pcall(Util.RefreshReanimatorConfig) -- rebuilds the page and starts the next loop generation
+					end
+					if NPC.Gen ~= gen then return end
+					NPC.UpdateStatus()
+				end
+				task.wait(2.5)
+			end
+			if NPC.Gen == gen and Reanimate.Current ~= NPC then NPC.Unhook() end
+		end)
+	end
+
+	function NPC.Config(parent)
+		UI.CreateText(parent, "NOTE: NPC reanimation is only supported by little games. It needs the game to give your client network ownership of its NPCs, which most games do not allow.", 12, Enum.TextXAlignment.Left)
+		local items = table.clone(NPC.List)
+		if NPC.Target and not NPC.ListSet[NPC.Target] and NPC.Target:IsDescendantOf(workspace) then
+			table.insert(items, 1, {Model = NPC.Target, Name = NPC.Target.Name .. " (attached)", Dist = -1})
+		end
+		local names, cur = {"(none)"}, 1
+		for i, e in items do
+			names[i + 1] = e.Dist >= 0 and string.format("%s (%d studs)", e.Name, math.floor(e.Dist)) or e.Name
+			if e.Model == NPC.Target then cur = i + 1 end
+		end
+		UI.CreateDropdown(parent, "Eligible NPCs (" .. #items .. ")", names, cur).Changed:Connect(function(val)
+			local e = items[val - 1]
+			NPC.Target = e and e.Model or nil
+			table.clear(NPC.Rejected)
+			if Reanimate.Current == NPC then
+				if NPC.Target then NPC.Attach(NPC.Target) else NPC.Detach() end
+			end
+		end)
+		UI.CreateSwitch(parent, "Auto pick closest NPC when it is gone", NPC.AutoPick).Changed:Connect(function(val)
+			NPC.AutoPick = val
+			RS.NPCAutoPick = val
+		end)
+		UI.CreateSlider(parent, "Scan radius (studs)", NPC.Radius, 20, 1000, 10).Changed:Connect(function(val)
+			NPC.Radius = val
+			RS.NPCRadius = val
+		end)
+		UI.CreateButton(parent, "Rescan NPCs now", 15).Activated:Connect(function()
+			NPC.Scan(true)
+			pcall(Util.RefreshReanimatorConfig)
+			NPC.UpdateStatus()
+		end)
+		UI.CreateSwitch(parent, "Auto rescan all NPCs", NPC.AutoRescan).Changed:Connect(function(val)
+			NPC.AutoRescan = val
+			RS.NPCAutoRescan = val
+		end)
+		UI.CreateButton(parent, "Release NPC", 15).Activated:Connect(function()
+			NPC.Target = nil
+			NPC.Detach()
+			pcall(Util.RefreshReanimatorConfig)
+		end)
+		UI.CreateText(parent, "Press * Reanimate * to control your fake character; the selected NPC copies its pose and position. Needs network ownership of the NPC (the server decides); if it stays server-owned the NPC is released instead of faking success.", 10, Enum.TextXAlignment.Left)
+		NPC.StatusLabel = UI.CreateText(parent, "", 12, Enum.TextXAlignment.Left)
+		NPC.UpdateStatus()
+		NPC.StartScanLoop(parent)
+	end
+end
 do
 	SaveData.SelectedReanimator = SaveData.SelectedReanimator or 1
-	if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end -- saved "Unanchored" selection no longer exists
+	if SaveData.SelectedReanimator == 5 then SaveData.SelectedReanimator = 4 elseif SaveData.SelectedReanimator > 4 then SaveData.SelectedReanimator = 1 end
 	Util.FCMark("reanim")
-	local ReanimateMethodSelect = UI.CreateDropdown(MainPage, "Reanimator", {"Limb Reanimator", "Hats Reanimator", "Tool Reanimation"}, SaveData.SelectedReanimator)
-	local ReanimatorConfigTitle = UI.CreateText(MainPage, "-=+ Limb Reanimator Config +=-", 15, Enum.TextXAlignment.Center)
-	local SelectedReanimator = LimbReanimator
-	if SaveData.SelectedReanimator == 2 then
-		SelectedReanimator = HatReanimator
-		ReanimatorConfigTitle.Text = "-=+ Hats Reanimator Config +=-"
-	end
-	if SaveData.SelectedReanimator == 3 then
-		SelectedReanimator = Reanimate.ToolReanimator
-		ReanimatorConfigTitle.Text = "-=+ Tool Reanimation Config +=-"
-	end
+	local ReanimMethods = {
+		{LimbReanimator, "Limb Reanimator"},
+		{HatReanimator, "Hats Reanimator"},
+		{Reanimate.ToolReanimator, "Tool Reanimation"},
+		{Reanimate.NPCReanimator, "NPC Reanimation"},
+	}
+	local ReanimMethodNames = {}
+	for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
+	local ReanimateMethodSelect = UI.CreateDropdown(MainPage, "Reanimator", ReanimMethodNames, SaveData.SelectedReanimator)
+	local ReanimatorConfigTitle = UI.CreateText(MainPage, "-=+ " .. ReanimMethodNames[SaveData.SelectedReanimator] .. " Config +=-", 15, Enum.TextXAlignment.Center)
+	local SelectedReanimator = ReanimMethods[SaveData.SelectedReanimator][1]
 	local ReanimatorConfigCanvas = UI.CreateCanvas(MainPage)
 	ReanimateMethodSelect.Changed:Connect(function(value)
 		SaveData.SelectedReanimator = value
-		if value == 1 then
-			SelectedReanimator = LimbReanimator
-			ReanimatorConfigTitle.Text = "-=+ Limb Reanimator Config +=-"
-		end
-		if value == 2 then
-			SelectedReanimator = HatReanimator
-			ReanimatorConfigTitle.Text = "-=+ Hats Reanimator Config +=-"
-		end
-		if value == 3 then
-			SelectedReanimator = Reanimate.ToolReanimator
-			ReanimatorConfigTitle.Text = "-=+ Tool Reanimation Config +=-"
-		end
+		SelectedReanimator = ReanimMethods[value][1]
+		ReanimatorConfigTitle.Text = "-=+ " .. ReanimMethodNames[value] .. " Config +=-"
 		Util.ClearAllChildrenGui(ReanimatorConfigCanvas)
 		SelectedReanimator.Config(ReanimatorConfigCanvas)
 	end)
@@ -266733,7 +267376,7 @@ do
 	-- Limb Reanimator: "Target Fling Enabled" switch. Hats Reanimator: Target Fling Method ~= Disabled.
 	function NoobyKill.TargetFlingEnabled()
 		local cur = Reanimate.Current
-		if cur == Reanimate.ToolReanimator or (cur == nil and SaveData.SelectedReanimator == 3) then
+		if cur == Reanimate.ToolReanimator or cur == Reanimate.NPCReanimator or (cur == nil and (SaveData.SelectedReanimator == 3 or SaveData.SelectedReanimator == 4)) then
 			return false
 		end
 		local hats
