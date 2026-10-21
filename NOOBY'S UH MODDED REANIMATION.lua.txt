@@ -431,7 +431,7 @@ Util.FX = (function()
 		-- [v34] low end UI mode (simple 3D triangle, basic UI, minigames disabled)
 		LowEnd = false,
 		-- [v51] Delta bridge (only used when the executor is positively identified as Delta)
-		DeltaLogo = true, DeltaMotion = true, DeltaBlur = true, DeltaIntro = true, DeltaSpeed = 1, DeltaSource = "", DeltaEnabled = true,
+		DeltaLogo = true, DeltaMotion = true, DeltaBlur = true, DeltaIntro = true, DeltaSpeed = 1, DeltaSource = "", DeltaEnabled = true, DeltaExecHelpers = true,
 		-- [v109] music reactivity (shared FX.Audio controller): logos / triangles dance, UI accent follows the beat
 		MusicDance = true, MusicColor = true,
 	}
@@ -15081,7 +15081,7 @@ end
 				D.Status = "loadstring unavailable"
 				return false
 			end
-			local fn, err = loadstring(src, "@DeltaCustomization")
+			local fn, err = D.Exec.Compile(src, "@DeltaCustomization")
 			if type(fn) ~= "function" then
 				D.Status = "Delta customization compile failed: " .. tostring(err)
 				return false
@@ -15918,6 +15918,7 @@ end
 		end
 
 		function D.Apply() -- called by the Customization page whenever a Delta option changes
+			pcall(D.Exec.Sync)
 			if D.Detected and D.Active then pcall(D.ApplyLogo) return end
 			-- [v60] bridge never came up (or was switched off): retry now that an option changed
 			if D.Detected and not D.Starting and cfg("DeltaEnabled") ~= false then
@@ -15929,6 +15930,7 @@ end
 		function D.Start()
 			if D.Started or D.Starting then return end
 			D.Started, D.Starting = true, true
+			pcall(D.Exec.Sync) -- saved config is loaded by now
 			if not D.Detected then
 				D.Status = "skipped (executor: " .. (D.Executor ~= "" and D.Executor or "unknown") .. ")"
 				D.Starting = false
@@ -15958,6 +15960,282 @@ end
 			end
 			D.Starting = false
 		end
+
+		-- ── [v110] EXEC HELPERS API ──
+		-- Honest scope: this cannot change how fast Delta's own engine runs code. It removes avoidable overhead around scripts that
+		-- go through it: identical sources are compiled once (bounded, device-aware cache) and bulk work is paced per frame.
+		-- Published as getgenv().UhDeltaAPI only on Delta while "Delta script helpers API" is on. Use stable chunk names or the cache never hits.
+		-- Cached functions are shared: do not setfenv a function returned by Compile (pass opts.nocache = true for that).
+		D.Exec = (function()
+			local X = {Version = "1.0"}
+			local RS = cloneref(game:GetService("RunService"))
+			local stats = {hits = 0, misses = 0, compiled = 0, failed = 0, runs = 0, errors = 0, jobs = 0, compileMs = 0, savedMs = 0}
+			local cache, entries, bytes, stamp = {}, {}, 0, 0
+			local jobs, head, tail, conn = {}, 1, 0, nil
+			local once = {}
+
+			local function tier()
+				local prof = type(_G) == "table" and _G.UHDevProfile
+				return type(prof) == "table" and tonumber(prof.Tier) or 3
+			end
+			local function limits() -- max entries, max bytes: smaller on weak devices
+				local t = tier()
+				if t <= 1 then return 8, 1048576 end
+				if t == 2 then return 16, 2097152 end
+				return 32, 4194304
+			end
+			local function frameBudget()
+				local t = tier()
+				if t <= 1 or FX.IsLowEnd() then return 0.002 end
+				return t == 2 and 0.003 or 0.005
+			end
+			local function evict()
+				local maxN, maxB = limits()
+				while #entries > maxN or bytes > maxB do
+					local oi, ot = 1, math.huge
+					for i, e in ipairs(entries) do
+						if e.t < ot then oi, ot = i, e.t end
+					end
+					local e = table.remove(entries, oi)
+					if not e then break end
+					local bc = cache[e.chunk]
+					if bc then
+						bc[e.src] = nil
+						if next(bc) == nil then cache[e.chunk] = nil end
+					end
+					bytes -= e.size
+				end
+			end
+			local function tb(e)
+				local ok, t = pcall(debug.traceback, tostring(e), 2)
+				return ok and t or tostring(e)
+			end
+
+			-- compile (cached). Returns fn or nil, err
+			function X.Compile(src, chunk, opts)
+				if type(src) ~= "string" or src == "" then return nil, "empty source" end
+				chunk = chunk or "=UhDelta"
+				local ls = loadstring or load
+				if type(ls) ~= "function" then return nil, "loadstring unavailable" end
+				local bc = cache[chunk]
+				local e = bc and bc[src]
+				if e then
+					stats.hits += 1
+					stats.savedMs += e.ms
+					stamp += 1
+					e.t = stamp
+					return e.fn
+				end
+				local t0 = os.clock()
+				local fn, err = ls(src, chunk)
+				local ms = (os.clock() - t0) * 1000
+				stats.misses += 1
+				if type(fn) ~= "function" then
+					stats.failed += 1
+					return nil, err
+				end
+				stats.compiled += 1
+				stats.compileMs += ms
+				local _, maxB = limits()
+				if not (type(opts) == "table" and opts.nocache) and #src <= maxB // 2 then
+					stamp += 1
+					local ent = {chunk = chunk, src = src, fn = fn, size = #src, ms = ms, t = stamp}
+					if not bc then bc = {} cache[chunk] = bc end
+					bc[src] = ent
+					entries[#entries + 1] = ent
+					bytes += ent.size
+					evict()
+				end
+				return fn
+			end
+
+			-- compile (cached) and run protected. Returns ok, ... (traceback on failure)
+			function X.Run(src, chunk, ...)
+				local fn, err = X.Compile(src, chunk)
+				if not fn then
+					stats.errors += 1
+					return false, err
+				end
+				stats.runs += 1
+				local res = table.pack(xpcall(fn, tb, ...))
+				if not res[1] then stats.errors += 1 end
+				return table.unpack(res, 1, res.n)
+			end
+			function X.RunAsync(src, chunk, ...)
+				return task.spawn(function(...)
+					local ok, err = X.Run(src, chunk, ...)
+					if not ok then warn("[UhDelta] " .. tostring(err)) end
+				end, ...)
+			end
+			function X.ReadFile(path)
+				if type(readfile) ~= "function" then return nil, "readfile unavailable" end
+				local okE, ex = pcall(isfile, path)
+				if not (okE and ex) then return nil, "file not found: " .. tostring(path) end
+				local ok, body = pcall(readfile, path)
+				if ok and type(body) == "string" and body ~= "" then return body end
+				return nil, "unreadable or empty file: " .. tostring(path)
+			end
+			function X.RunFile(path, ...)
+				local body, err = X.ReadFile(path)
+				if not body then return false, err end
+				return X.Run(body, "@" .. tostring(path), ...)
+			end
+
+			-- paced job queue: one Heartbeat connection that exists only while jobs are pending, time-sliced per device tier
+			local function stop()
+				if conn then conn:Disconnect() conn = nil end
+			end
+			local function runJob(j)
+				local ok, err = pcall(j.fn, table.unpack(j.args, 1, j.n))
+				if not ok then
+					stats.errors += 1
+					warn("[UhDelta] queued job failed: " .. tostring(err))
+				end
+			end
+			local function pump()
+				local t0, budget = os.clock(), frameBudget()
+				while head <= tail do
+					local j = jobs[head]
+					jobs[head] = nil
+					head += 1
+					if j and not j.cancelled then
+						stats.jobs += 1
+						task.spawn(runJob, j) -- a job that yields can never stall the queue
+					end
+					if os.clock() - t0 >= budget then break end
+				end
+				if head > tail then
+					head, tail = 1, 0
+					stop()
+				end
+			end
+			local function cancelJob(j) j.cancelled = true end
+			function X.Queue(fn, ...)
+				if type(fn) ~= "function" then return nil end
+				local j = {fn = fn, args = {...}, n = select("#", ...), Cancel = cancelJob}
+				tail += 1
+				jobs[tail] = j
+				if not conn then conn = RS.Heartbeat:Connect(pump) end
+				return j
+			end
+			-- items: function | {Source = "...", Name = "..."} | {File = "path"}; runs them one slice at a time, then onDone()
+			function X.Batch(list, onDone)
+				if type(list) ~= "table" then return 0 end
+				local total = #list
+				local left = total
+				for i = 1, total do
+					local item = list[i]
+					X.Queue(function()
+						local ok, err = pcall(function()
+							if type(item) == "function" then
+								item()
+							elseif type(item) == "table" then
+								local okR, errR
+								if item.File then okR, errR = X.RunFile(item.File) else okR, errR = X.Run(item.Source, item.Name) end
+								if not okR then error(errR, 0) end
+							end
+						end)
+						if not ok then warn("[UhDelta] batch item " .. i .. " failed: " .. tostring(err)) end
+						left -= 1
+						if left == 0 and type(onDone) == "function" then onDone() end
+					end)
+				end
+				return total
+			end
+			-- compile sources ahead of time, one per slice ({Source = "...", Name = "..."} items)
+			function X.Preload(list)
+				if type(list) ~= "table" then return 0 end
+				for _, item in ipairs(list) do
+					if type(item) == "table" then X.Queue(X.Compile, item.Source, item.Name) end
+				end
+				return #list
+			end
+
+			-- small utilities
+			function X.Once(key, fn, ...)
+				if once[key] then return false end
+				once[key] = true
+				return true, fn(...)
+			end
+			function X.Debounce(fn, wait)
+				local token = 0
+				return function(...)
+					token += 1
+					local my, n, args = token, select("#", ...), {...}
+					task.delay(wait or 0.25, function()
+						if my == token then fn(table.unpack(args, 1, n)) end
+					end)
+				end
+			end
+			function X.Throttle(fn, interval)
+				local last = -math.huge
+				return function(...)
+					local now = os.clock()
+					if now - last >= (interval or 0.25) then
+						last = now
+						return fn(...)
+					end
+				end
+			end
+			function X.Memo(fn, max)
+				local store, count = {}, 0
+				max = max or 256
+				return function(k)
+					if k == nil then return fn(k) end
+					local v = store[k]
+					if v == nil then
+						v = fn(k)
+						if v ~= nil then
+							if count >= max then table.clear(store) count = 0 end
+							store[k] = v
+							count += 1
+						end
+					end
+					return v
+				end
+			end
+
+			function X.Stats()
+				return {
+					Hits = stats.hits, Misses = stats.misses, Compiled = stats.compiled, Failed = stats.failed,
+					Runs = stats.runs, Errors = stats.errors, JobsRun = stats.jobs,
+					Cached = #entries, CachedBytes = bytes, Queued = math.max(0, tail - head + 1),
+					CompileMs = math.floor(stats.compileMs + 0.5),
+					EstimatedSavedMs = math.floor(stats.savedMs + 0.5), -- what the cache hits would have cost to recompile (an estimate, not a benchmark)
+				}
+			end
+			function X.Clear() -- drop the cache and cancel pending jobs
+				table.clear(cache)
+				table.clear(entries)
+				bytes = 0
+				for i = head, tail do
+					local j = jobs[i]
+					if j then j.cancelled = true end
+					jobs[i] = nil
+				end
+				head, tail = 1, 0
+				stop()
+			end
+
+			-- publish as getgenv().UhDeltaAPI on Delta (switch on); otherwise unpublish and free everything
+			function X.Sync()
+				local on = D.Detected and FX.Cfg.DeltaExecHelpers ~= false
+				local genv = (getgenv and getgenv()) or _G
+				pcall(function()
+					local cur = rawget(genv, "UhDeltaAPI")
+					if on then
+						if cur ~= X then
+							if type(cur) == "table" and type(cur.Clear) == "function" then pcall(cur.Clear) end
+							rawset(genv, "UhDeltaAPI", X)
+						end
+					elseif cur == X then
+						rawset(genv, "UhDeltaAPI", nil)
+					end
+				end)
+				if not on then X.Clear() end
+			end
+			return X
+		end)()
 
 		pcall(D.Detect)
 		FX.OnLowEnd(function() pcall(D.Apply) end)
@@ -16201,6 +16479,130 @@ do
 	-- [nooby mod] user extension folders (created automatically)
 	pcall(makefolder, "UhhhhhhReanim/Plugins")        -- custom RootPart reanimation methods
 	pcall(makefolder, "UhhhhhhReanim/FlingMethods")   -- custom player fling methods
+	do -- [custom reanimation methods] folder + files are created at startup (read later by the module loader)
+		local ROOT = "UhhhhhhReanim/Custom Reanimation Methods"
+		local VERSION = "1"
+		local SRC = {}
+		SRC["Custom Limb Reanimation"] = [==[
+-- Custom Limb Reanimation: mobile-tuned RootPart placement + 10 FPS replication on weak devices (uses the Limb Reanimator).
+local CRM = ...
+local lastCF, lastPos, lastT
+local floor0 = -500
+return {
+	Kind = "Limb",
+	Name = "Custom Limb Reanimation",
+	Description = "Pick RootPart Mode 'Custom Limb Reanimation' (cached low-rate RootPart placement). This switch adds 10 FPS replication on weak devices + cleanup.",
+	TickRate = 1,
+	GetRootCFrame = function(ctx)
+		local part = ctx.Torso or ctx.RootPart
+		local p = part.Position
+		local now = ctx.Time
+		if lastCF and lastT and now - lastT < (CRM.LowEnd() and 0.05 or 0.033) and (p - lastPos).Magnitude < 4 then
+			return lastCF
+		end
+		local fp = ctx.FallenPartsDestroyHeight
+		if type(fp) ~= "number" or fp ~= fp or fp < -1e6 or fp > 1e6 then fp = floor0 end
+		local y = p.Y - (ctx.Streaming and 16 or 64)
+		if y < fp + 32 then y = fp + 32 end
+		lastPos, lastT = p, now
+		lastCF = CFrame.new(p.X, y, p.Z)
+		return lastCF
+	end,
+	Begin = function(R)
+		lastCF = nil
+		local st = {fps10 = R.ReplicateFPS10}
+		if CRM.LowEnd() then R.ReplicateFPS10 = true end
+		return st
+	end,
+	End = function(R, S, st)
+		if st then R.ReplicateFPS10 = st.fps10 end
+		lastCF = nil
+	end,
+	Tick = function(R)
+		for k in R._TempNotFling do
+			if typeof(k) == "Instance" and not k.Parent then R._TempNotFling[k] = nil end
+		end
+	end,
+}
+]==]
+		SRC["Custom Hat Reanimation"] = [==[
+-- Custom Hat Reanimation: mobile-tuned Hat Reanimator (drops per-frame hat spin on weak devices, slow stuck timeout, light GC).
+local CRM = ...
+return {
+	Kind = "Hat",
+	Name = "Custom Hat Reanimation",
+	Description = "Runs the Hats Reanimator with weak-device tuning: no per-frame hat spin, longer stuck timeout, periodic light GC.",
+	TickRate = 0.2,
+	Begin = function(R)
+		local st = {spin = R.HatSpin, stuck = R.StuckTimeout}
+		if CRM.LowEnd() then
+			if R.HatSpin then R.HatSpin = false end
+			if type(R.StuckTimeout) == "number" then R.StuckTimeout = math.max(R.StuckTimeout, 20) end
+		end
+		return st
+	end,
+	End = function(R, S, st)
+		if not st then return end
+		R.HatSpin = st.spin
+		if st.stuck ~= nil then R.StuckTimeout = st.stuck end
+	end,
+	Tick = function() CRM.Trim() end,
+}
+]==]
+		SRC["Custom Tool Reanimation"] = [==[
+-- Custom Tool Reanimation: mobile-tuned Tool Reanimator (keeps the selected Tool Method; longer stuck timeout, queue cleanup).
+local CRM = ...
+return {
+	Kind = "Tool",
+	Name = "Custom Tool Reanimation",
+	Description = "Runs Tool Reanimation with weak-device tuning: longer stuck timeout (slow loads no longer trigger resets) + queue cleanup.",
+	TickRate = 1,
+	Begin = function(R)
+		local st = {stuck = R.StuckTimeout}
+		if CRM.LowEnd() and type(R.StuckTimeout) == "number" then R.StuckTimeout = math.max(R.StuckTimeout, 20) end
+		return st
+	end,
+	End = function(R, S, st)
+		if st and st.stuck ~= nil then R.StuckTimeout = st.stuck end
+	end,
+	Tick = function(R)
+		for k in R._TempNotFling do
+			if typeof(k) == "Instance" and not k.Parent then R._TempNotFling[k] = nil end
+		end
+	end,
+}
+]==]
+		SRC["Custom NPC Reanimation"] = [==[
+-- Custom NPC Reanimation: mobile-tuned NPC Reanimator (stops the taken-over NPC's own animation tracks - they are overridden by the pose anyway).
+local CRM = ...
+return {
+	Kind = "NPC",
+	Name = "Custom NPC Reanimation",
+	Description = "Runs NPC Reanimation with weak-device tuning: the controlled NPC's own animations are stopped (1 Hz) so the engine skips that work.",
+	TickRate = 1,
+	Tick = function(R)
+		local t = R.Cur
+		local hum = t and t.Hum
+		if not (hum and hum.Parent) then return end
+		local an = hum:FindFirstChildOfClass("Animator")
+		if not an then return end
+		for _, tr in an:GetPlayingAnimationTracks() do tr:Stop(0) end
+	end,
+}
+]==]
+		if type(makefolder) == "function" and type(writefile) == "function" then
+			pcall(makefolder, ROOT)
+			local stamp = ROOT .. "/.version"
+			local okS, cur = pcall(function() return isfile(stamp) and readfile(stamp) end)
+			local fresh = okS and cur == VERSION
+			for name, code in SRC do
+				pcall(makefolder, ROOT .. "/" .. name)
+				local fp = ROOT .. "/" .. name .. "/init.lua"
+				if not fresh or not isfile(fp) then pcall(writefile, fp, code) end
+			end
+			if not fresh then pcall(writefile, stamp, VERSION) end
+		end
+	end
 	if not isfile("UhhhhhhReanim/Plugins/README.txt") then
 		pcall(writefile, "UhhhhhhReanim/Plugins/README.txt", [==[
 PLUGINS - custom RootPart reanimation methods
@@ -259736,6 +260138,13 @@ do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 
 			dsw("5-second Delta mini-intro (after Nooby's intro)", "DeltaIntro")
 			sl("Delta page animation speed", "DeltaSpeed", 0.5, 2, 0.1)
 			tb("Delta customizer source override (file path or https URL, optional - empty = built-in)", "DeltaSource", "UhhhhhhReanim/Plugins/DeltaCustomization.lua", 200)
+			dsw("Delta script helpers API (cached compile + paced queue)", "DeltaExecHelpers")
+			UI.CreateButton(Canvas, "Delta Script Cache: Show Stats + Clear", 20).Activated:Connect(function()
+				local X = FX.Delta.Exec
+				local st = X.Stats()
+				Util.UINotify(string.format("Script cache: %d hits / %d misses, %d cached (%d KB), ~%d ms recompile time avoided (estimate). Cache cleared.", st.Hits, st.Misses, st.Cached, math.floor(st.CachedBytes / 1024), st.EstimatedSavedMs))
+				X.Clear()
+			end)
 			UI.CreateButton(Canvas, "Preview Delta Intro", 20).Activated:Connect(function()
 				if FX.Delta.Active then
 					FX.Delta.PlayIntro(true)
@@ -270938,17 +271347,34 @@ local function AddModule(func)
 		return nil, "Module return value is not a table. Got " .. typeof(m) .. " instead."
 	end
 end
+do -- [perf] shared, device-aware frame budget for module registration (no top-level locals added)
+	local lastT = os.clock()
+	Util.ModuleYield = function(reset)
+		if reset then lastT = os.clock() return end
+		local prof = type(_G) == "table" and _G.UHDevProfile
+		local tier = type(prof) == "table" and tonumber(prof.Tier) or 3
+		if os.clock() - lastT >= (tier <= 1 and 0.003 or (tier == 2 and 0.0045 or 0.006)) then
+			task.wait()
+			lastT = os.clock()
+		end
+	end
+end
 local function AddModules(list)
 	local names = {}
 	local logging = ""
+	Util.ModuleYield(true)
 	if type(list) == "table" then
 		for i=1, #list do
-			local name, logging2 = AddModule(list[i])
-			if name then table.insert(names, name) end
-			if logging2 then
-				logging ..= "\n[ERROR] M" .. i .. ": " .. logging2
+			local okM, name, logging2 = pcall(AddModule, list[i])
+			if not okM then
+				logging ..= "\n[ERROR] M" .. i .. ": " .. tostring(name)
+			else
+				if name then table.insert(names, name) end
+				if logging2 then
+					logging ..= "\n[ERROR] M" .. i .. ": " .. logging2
+				end
 			end
-			task.wait()
+			Util.ModuleYield()
 		end
 	else
 		logging ..= "\n[LOG] Module return value is not a table array of module functions. Skipping."
@@ -272667,7 +273093,16 @@ local function DoModuleReload(force)
 	end
 	-- [perf] frame-budgeted applying: loadstring + module registration run back to back only while the current frame still has
 	-- time left (~6 ms), otherwise the loader rests one frame. Instant stays instant on fast devices, without one giant spike.
-	local FRAME_BUDGET, sliceT = 0.006, os.clock()
+	local lowTier = ((type(_G) == "table" and type(_G.UHDevProfile) == "table" and tonumber(_G.UHDevProfile.Tier)) or 3) <= 2
+	local FRAME_BUDGET, sliceT = lowTier and 0.003 or 0.006, os.clock()
+	local function FetchContent(x, tries) -- [fix] retry flaky downloads; an empty body counts as a failed download
+		for a = 1, tries do
+			local content = _contentgetgithubraw(x)
+			if type(content) == "string" and content ~= "" then return content end
+			if a < tries then task.wait(0.6 * a) end
+		end
+		return nil
+	end
 	local function Breathe()
 		if os.clock() - sliceT >= FRAME_BUDGET then
 			task.wait()
@@ -272681,10 +273116,16 @@ local function DoModuleReload(force)
 	-- `work` reads / downloads a file, `apply` loadstrings + registers it. Registration always happens in list order.
 	local function RunPhase(items, work, apply)
 		local rawApply = apply
-		apply = function(i, x, data) -- [v23] progress counter for the live loading status
-			if rawApply then rawApply(i, x, data) end
+		local function bump()
 			local P = Util.ModuleProgress
 			if P then P.Done = P.Done + 1 end
+		end
+		apply = function(i, x, data) -- [v23] progress counter for the live loading status
+			if rawApply then
+				local okA, errA = pcall(rawApply, i, x, data)
+				if not okA then InitLogsText.Add("\n[ERROR] Load step failed: " .. tostring(errA)) end
+			end
+			bump()
 		end
 		if loadMode == 4 then
 			-- Slow: strictly one file at a time. Every step is pcall'd so a single bad file can never stop the rest,
@@ -272694,6 +273135,7 @@ local function DoModuleReload(force)
 				if not ok then
 					InitLogsText.Add("\n[ERROR] Slow load: reading step failed: " .. tostring(data))
 					data = nil
+					bump()
 				else
 					SlowPause()
 				end
@@ -272712,6 +273154,7 @@ local function DoModuleReload(force)
 				local okW, data = pcall(work, i, x)
 				if not okW then
 					InitLogsText.Add("\n[ERROR] Load step failed, skipping this file: " .. tostring(data))
+					bump()
 				elseif apply then
 					task.wait()
 					apply(i, x, data)
@@ -272719,7 +273162,7 @@ local function DoModuleReload(force)
 			end
 			return
 		end
-		local size = loadMode == 2 and 2 or math.max(1, #items)
+		local size = (loadMode == 2 or lowTier) and 2 or math.max(1, #items)
 		local i = 1
 		while i <= #items do
 			local last = math.min(i + size - 1, #items)
@@ -272761,7 +273204,7 @@ local function DoModuleReload(force)
 			InitLogsText.Add("\n[LOG] " .. x .. " already downloaded :D")
 		else
 			InitLogsText.Add("\n[LOG] Downloading MAP " .. x .. "...")
-			local content = _contentgetgithubraw(x)
+			local content = FetchContent(x, 3)
 			if content then
 				pcall(writefile, path, content)
 			else
@@ -272770,7 +273213,7 @@ local function DoModuleReload(force)
 			end
 		end
 	end)
-	Util.MapsReady = true
+	Util.MapsReady = Util.MapsPresent()
 	InitLogsText.Add("\n[LOG] Loading builtin (also called vanilla) modules...")
 	RunPhase(filesofbuiltins_m, function(i, x)
 		Util.UINotify("Loading modules...", 0.325 + (i / #filesofbuiltins_m) * 0.475)
@@ -272784,33 +273227,51 @@ local function DoModuleReload(force)
 		local data = ""
 		if exist then
 			InitLogsText.Add("\n[LOG] Reading local VANILLA " .. x .. "...")
-			data = readfile(path)
-		else
+			local okR, localData = pcall(readfile, path)
+			if okR and type(localData) == "string" and localData ~= "" then
+				data = localData
+			else
+				exist = false -- [fix] unreadable / empty cached copy: download it again instead of loading nothing
+			end
+		end
+		if not exist then
 			InitLogsText.Add("\n[LOG] Downloading VANILLA " .. x .. "...")
-			local content = _contentgetgithubraw(x)
+			local content = FetchContent(x, 3)
 			if content then
 				pcall(writefile, path, content)
 				data = content
 			else
 				InitLogsText.Add("\n[ERROR] Failed to load VANILLA " .. x .. ": Download failed.")
-				SaveData.ContentHash[x] = nil
+				if SaveData.ContentHash then SaveData.ContentHash[x] = nil end
 			end
 		end
 		return data
 	end, function(i, x, data)
 		InitLogsText.Add("\n[LOG] Loadstringing VANILLA " .. x .. "...")
-		xpcall(function()
-			local func, comperr = loadstring(data, "Uhhhhhh :: VANILLA " .. x)
-			if func then
-				local names, logging = AddModules(func())
-				InitLogsText.Add(logging)
-			elseif comperr then
-				error("COMPILE FAILED: " .. comperr)
+		local function attempt(src)
+			if type(src) ~= "string" or src == "" then return false, "file is empty" end
+			local func, comperr = loadstring(src, "Uhhhhhh :: VANILLA " .. x)
+			if not func then return false, "COMPILE FAILED: " .. tostring(comperr) end
+			local okF, list = pcall(func)
+			if not okF then return false, tostring(list) end
+			if type(list) ~= "table" then return false, "file returned " .. typeof(list) .. " instead of a module list" end
+			local names, logging = AddModules(list)
+			InitLogsText.Add(logging)
+			return true
+		end
+		local ok, why = attempt(data)
+		if not ok then -- [fix] a stale / truncated cached copy used to leave the module silently inactive: re-download once and retry
+			InitLogsText.Add("\n[WARN] VANILLA " .. x .. " did not load (" .. tostring(why) .. "), downloading a fresh copy...")
+			local fresh = FetchContent(x, 2)
+			if fresh and fresh ~= data then
+				pcall(writefile, "UhhhhhhReanim/BuiltinModules/" .. x, fresh)
+				ok, why = attempt(fresh)
 			end
-		end, function(msg)
-			InitLogsText.Add("\n[ERROR] Failed to load VANILLA " .. x .. ": See traceback below.")
-			InitLogsText.Add("\n[ERROR] " .. table.concat(string.split(debug.traceback("VANILLA " .. x .. ": " .. msg), "\n"), "\n[ERROR] "))
-		end)
+		end
+		if not ok then
+			InitLogsText.Add("\n[ERROR] Failed to load VANILLA " .. x .. ": " .. tostring(why))
+			if SaveData.ContentHash then SaveData.ContentHash[x] = nil end
+		end
 	end)
 	Util.UINotify("Loading modules...", 0.8)
 	InitLogsText.Add("\n[LOG] Loading user modules...")
@@ -272866,7 +273327,8 @@ local function DoModuleReload(force)
 			if not okl or type(files) ~= "table" then return 0 end
 			local loaded = 0
 			for _,path in files do
-				if isfile(path) and path:lower():match("%.lua$") then
+				local okF, isF = pcall(isfile, path)
+				if okF and isF and path:lower():match("%.lua$") then
 					local x = path:match("[^/\\]+$") or path
 					xpcall(function()
 						InitLogsText.Add("\n[LOG] Reading " .. label .. " " .. x .. "...")
@@ -272891,6 +273353,95 @@ local function DoModuleReload(force)
 		end
 		local np = LoadExtensionFolder("UhhhhhhReanim/Plugins", "PLUGIN", LimbReanimator.RegisterMode)
 		local nf = LoadExtensionFolder("UhhhhhhReanim/FlingMethods", "FLING", HatReanimator.RegisterFlingMethod)
+		do -- [custom reanimation methods] UhhhhhhReanim/Custom Reanimation Methods/<method>/init.lua (Limb / Hat / Tool / NPC, each independent)
+			local ROOT = "UhhhhhhReanim/Custom Reanimation Methods"
+			local UIS = game:GetService("UserInputService")
+			local RS_ = game:GetService("RunService")
+			local CRM = {}
+			function CRM.LowEnd()
+				local ok, v = pcall(function() return FX.IsLowEnd() end)
+				return (ok and v == true) or (UIS.TouchEnabled and not UIS.KeyboardEnabled)
+			end
+			function CRM.Tick(hz, fn) -- one Heartbeat connection with an accumulator (no per-frame work)
+				local acc, step = 0, 1 / hz
+				return RS_.Heartbeat:Connect(function(dt)
+					acc += dt
+					if acc >= step then
+						local d = acc
+						acc = 0
+						pcall(fn, d)
+					end
+				end)
+			end
+			function CRM.Trim() pcall(collectgarbage, "step", 64) end
+			local function Hook(kind, R, def)
+				local S = SaveData.Reanimator
+				local key = "Custom" .. kind .. "Enabled"
+				S[key] = not not S[key]
+				local origStart, origConfig = R.Start, R.Config
+				R.Start = function(...)
+					local on, st, conn = S[key], nil, nil
+					if on then
+						if def.Begin then
+							local okb, r = pcall(def.Begin, R, S, CRM)
+							st = okb and r or nil
+						end
+						if def.Tick then conn = CRM.Tick(def.TickRate or 1, function(dt) def.Tick(R, S, st, dt) end) end
+					end
+					local ok, err = pcall(origStart, ...)
+					if conn then conn:Disconnect() end
+					if on and def.End then pcall(def.End, R, S, st, CRM) end
+					if not ok then error(err, 0) end
+				end
+				R.Config = function(parent, ...)
+					origConfig(parent, ...)
+					pcall(function()
+						UI.CreateText(parent, def.Description or def.Name, 10, Enum.TextXAlignment.Center)
+						UI.CreateSwitch(parent, "Use " .. def.Name, S[key]).Changed:Connect(function(v) S[key] = v end)
+					end)
+				end
+			end
+			local loadedCRM = 0
+			for _, m in {
+				{"Custom Limb Reanimation", "Limb", LimbReanimator},
+				{"Custom Hat Reanimation", "Hat", HatReanimator},
+				{"Custom Tool Reanimation", "Tool", Reanimate.ToolReanimator},
+				{"Custom NPC Reanimation", "NPC", Reanimate.NPCReanimator},
+			} do
+				local name, kind, R = m[1], m[2], m[3]
+				local path = ROOT .. "/" .. name .. "/init.lua"
+				local okF, isF = pcall(isfile, path)
+				if R and okF and isF then
+					xpcall(function()
+						InitLogsText.Add("\n[LOG] Reading CUSTOM " .. name .. "...")
+						local data = readfile(path)
+						local blocked = Util.Security and Util.Security.GateModule(path, data)
+						if blocked then
+							InitLogsText.Add("\n[SECURITY] Blocked CUSTOM " .. name .. " from loading: " .. blocked)
+							return
+						end
+						local func, comperr = loadstring(data, "Uhhhhhh :: CUSTOM :: " .. name)
+						if not func then error("COMPILE FAILED: " .. tostring(comperr)) end
+						local def = func(CRM)
+						if type(def) ~= "table" or def.Kind ~= kind then error("module must return a " .. kind .. " method table") end
+						def.Name = def.Name or name
+						if kind == "Limb" and type(def.GetRootCFrame) == "function" then
+							R.RegisterMode({Name = def.Name, GetRootCFrame = def.GetRootCFrame}, "init.lua")
+						end
+						Hook(kind, R, def)
+						loadedCRM += 1
+					end, function(msg)
+						InitLogsText.Add("\n[ERROR] Failed to load CUSTOM " .. name .. ": " .. tostring(msg))
+					end)
+					SlowPause()
+					Breathe()
+				end
+			end
+			if loadedCRM > 0 then
+				pcall(LimbReanimator.ResolveSavedMode)
+				pcall(Util.RefreshReanimatorConfig)
+			end
+		end
 		do -- [v37] built-in "Nooby's style" RootPart method (same code as Plugins/NoobysStyle.lua; skipped if that file is installed)
 			local haveNooby = false
 			for _,pm in LimbReanimator.PluginModes do
@@ -273049,13 +273600,13 @@ local function DoModuleReload(force)
 				if not okn then InitLogsText.Add("\n[ERROR] Failed to register built-in Nooby's style: " .. tostring(errn)) end
 			end
 		end
-		LimbReanimator.ResolveSavedMode()
-		HatReanimator.ResolveSavedFling()
+		pcall(LimbReanimator.ResolveSavedMode)
+		pcall(HatReanimator.ResolveSavedFling)
 		InitLogsText.Add("\n[LOG] Loaded " .. #LimbReanimator.PluginModes .. " RootPart plugin(s), " .. #HatReanimator.PluginFlingMethods .. " fling method(s).")
 		if Util.RefreshReanimatorConfig then pcall(Util.RefreshReanimatorConfig) end
 	end
 	InitLogsText.Add("\n[LOG] Refreshing Dance keybinds...")
-	RefreshKeybinds()
+	pcall(RefreshKeybinds)
 	InitLogsText.Add("\n[LOG] Loaded " .. (#MovementStyles + #DanceableDances) .. " modules - " .. #MovementStyles .. " Movesets, " .. #DanceableDances .. " Dances.")
 	InitLogsText.Add("\n[LOG] Init complete!")
 	Util.UINotify("Init complete" .. (InitLogsText.HasError and " with errors" or ""))
@@ -273083,7 +273634,13 @@ local function ForceModuleReload(force)
 	ReloadBusy, ReloadRank = true, rank
 	local okR, errR = pcall(DoModuleReload, force)
 	ReloadBusy = false
-	if not okR then error(errR, 0) end
+	if not okR then
+		local P = Util.ModuleProgress
+		if P then P.Done = P.Total end
+		IsUhhhhhhFullyLoaded = true -- whatever registered stays usable; the loading screen / status must not hang forever
+		pcall(function() InitLogsText.Add("\n[ERROR] Module load aborted: " .. tostring(errR)) end)
+		error(errR, 0)
+	end
 end
 Util.FCMark("hub")
 UI.CreateSeparator(MainPage)
