@@ -586,11 +586,10 @@ Util.FX = (function()
 	FX.UISound = nil
 	-- {pitch, volume}. Built from the script's own click sound so it follows themes + mute.
 	local presets = {
-		click = {1, 1}, tick = {1.9, 0.2}, release = {1.5, 0.28}, open = {0.75, 0.85}, back = {0.62, 0.85},
+		click = {1.12, 1}, thump = {0.5, 0.55}, tick = {1.9, 0.2}, release = {1.6, 0.42}, open = {0.75, 0.85}, back = {0.62, 0.85},
 		close = {1.3, 0.8}, boom = {0.42, 1.4}, reform = {1.6, 0.9}, hit = {1.2, 0.9},
 	}
-	function FX.Play(kind, pitchMul, volMul)
-		if not FX.Settings.ExtraSounds then return end
+	local function playSnd(kind, pitchMul, volMul, noLayer)
 		local U = FX.UISound
 		local base = U and U.Click
 		if not base or base.Volume <= 0 then return end
@@ -612,7 +611,13 @@ Util.FX = (function()
 		s.Volume = base.Volume * p[2] * (volMul or 1)
 		s.TimePosition = 0
 		s:Play()
+		if kind == "click" and not noLayer then playSnd("thump", 1, 1, true) end
 	end
+	function FX.Play(kind, pitchMul, volMul)
+		if not FX.Settings.ExtraSounds then return end
+		playSnd(kind, pitchMul, volMul)
+	end
+	FX.Click = playSnd -- [v148] click / open / close feedback: only the UI mute option silences it
 
 	-- ───────────────────────── tiny fx: rings + sparks ─────────────────────────
 	function FX.Ring(parent, color, size, time, thick, pos)
@@ -1877,6 +1882,7 @@ Util.FX = (function()
 		b.InputBegan:Connect(function(input)
 			if not isPress(input) or not FX.Settings.Transitions then return end
 			down = true
+			FX.Click("click", 1.1, 0.75)
 			refresh(Quad, 0.07)
 			echoKnock()
 			ripple(b, input)
@@ -1888,7 +1894,7 @@ Util.FX = (function()
 			down = false
 			echoSnap()
 			refresh(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.55) -- [v34] low end: plain quick release
-			FX.Play("release")
+			FX.Click("release")
 		end)
 	end
 
@@ -2176,6 +2182,7 @@ Util.FX = (function()
 		b.InputBegan:Connect(function(input)
 			if not isPress(input) or not FX.Settings.Transitions then return end
 			down = true
+			FX.Click("click", 1.1, 0.75)
 			refresh(Quad, 0.07)
 		end)
 		b.InputEnded:Connect(function(input)
@@ -15198,6 +15205,7 @@ end
 			end
 			D.PressScale = pressScale
 			logoConns[#logoConns + 1] = btn.MouseButton1Down:Connect(function()
+				pcall(FX.Click, "click", 1.3, 0.9)
 				if not motionOn() then return end
 				D.PressHold = math.huge
 				tween(pressScale, 0.09, Quad, EOut, {Scale = 0.86})
@@ -15281,11 +15289,101 @@ end
 				if hooked[fr] or not (fr:IsA("GuiObject") and PAGES[fr.Name]) then return end
 				hooked[fr] = true
 				motionConns[#motionConns + 1] = fr:GetPropertyChangedSignal("Visible"):Connect(function()
-					if fr.Visible then pcall(D.PageIn, fr) end
+					if fr.Visible then
+						D.LastPage = fr
+						if D.Closing and D.Closing ~= fr then D.Closing = nil D.CloseTok = (D.CloseTok or 0) + 1 D.Busy = false end
+						if not (D.Holding and os.clock() < D.Holding) then
+							if D.Closing == fr then D.Closing = nil D.CloseTok = (D.CloseTok or 0) + 1 D.Busy = false end
+							pcall(D.PageIn, fr)
+						end
+					elseif D.Closing == fr then
+						fr.Visible = true -- Delta hid it instantly; the close animation hides it itself
+					end
 				end)
 			end
-			for _, c in ipairs(main:GetChildren()) do hook(c) end
+			for _, c in ipairs(main:GetChildren()) do hook(c) if c.Name and PAGES[c.Name] and c:IsA("GuiObject") and c.Visible then D.LastPage = c end end
 			motionConns[#motionConns + 1] = main.ChildAdded:Connect(function(c) task.defer(hook, c) end)
+
+			-- [v148] click sounds on every Delta button (the icon has its own)
+			local snd = setmetatable({}, {__mode = "k"})
+			local function hookBtn(o)
+				if snd[o] or o == D.Button or not o:IsA("GuiButton") then return end
+				snd[o] = true
+				motionConns[#motionConns + 1] = o.MouseButton1Down:Connect(function() pcall(FX.Click, "click", 1, 0.9) end)
+				motionConns[#motionConns + 1] = o.MouseButton1Up:Connect(function() pcall(FX.Click, "release", 1, 1) end)
+			end
+			for _, o in ipairs(main:GetDescendants()) do pcall(hookBtn, o) end
+			motionConns[#motionConns + 1] = main.DescendantAdded:Connect(function(o) task.defer(pcall, hookBtn, o) end)
+
+			-- [v148] sidebar + page transitions. Delta's own toggle button (and any other instant close) is caught as a one-step jump of the
+			-- sidebar from open to closed: it is put back and replayed as a slide-out + page shrink; icon / button opens get a springy slide-in.
+			local sidebar = main:FindFirstChild("Sidebar", true)
+			if sidebar and sidebar:IsA("GuiObject") then
+				local CLOSED, OPEN = UDim2.new(1.08, 0, 0.5, 0), UDim2.new(1, 0, 0.5, 0)
+				local prevX = sidebar.Position.X.Scale
+				local function settleOf(fr)
+					local sc = fr:FindFirstChild("LT_NoobySettle")
+					if not sc then
+						sc = Instance.new("UIScale")
+						sc.Name = "LT_NoobySettle"
+						sc.Parent = fr
+					end
+					return sc
+				end
+				local function animateClose()
+					D.Busy = true
+					D.CloseTok = (D.CloseTok or 0) + 1
+					local tok, pg = D.CloseTok, D.LastPage
+					D.Holding = os.clock() + 0.6
+					sidebar.Position = OPEN
+					prevX = OPEN.X.Scale
+					local sc
+					if pg then
+						D.Closing = pg
+						pg.Visible = true
+						sc = settleOf(pg)
+						sc.Scale = 1
+						tw(sc, 0.3, Quad, EIn, {Scale = 0.92})
+					end
+					tw(sidebar, 0.34, Quint, EIn, {Position = CLOSED})
+					pcall(FX.Click, "close", 1, 1)
+					if cfg("DeltaBlur") == true then pcall(FX.BlurPulse, 5, 0.1, 0.4 / speed()) end
+					task.delay(0.36 / speed(), function()
+						if tok ~= D.CloseTok then return end
+						D.Closing = nil
+						if pg then pg.Visible = false end
+						if sc then sc.Scale = 1 end
+						sidebar.Position = CLOSED
+						prevX = CLOSED.X.Scale
+						D.Busy = false
+					end)
+				end
+				local function animateOpen()
+					D.Busy = true
+					D.CloseTok = (D.CloseTok or 0) + 1
+					local tok = D.CloseTok
+					sidebar.Position = CLOSED
+					prevX = CLOSED.X.Scale
+					tw(sidebar, 0.5, Enum.EasingStyle.Back, EOut, {Position = OPEN})
+					pcall(FX.Click, "open", 1.05, 1)
+					task.delay(0.52 / speed(), function()
+						if tok ~= D.CloseTok then return end
+						prevX = sidebar.Position.X.Scale
+						D.Busy = false
+					end)
+				end
+				motionConns[#motionConns + 1] = sidebar:GetPropertyChangedSignal("Position"):Connect(function()
+					local x = sidebar.Position.X.Scale
+					local px = prevX
+					prevX = x
+					if D.Busy or not motionOn() then return end
+					if px <= 1.001 and x >= 1.079 then
+						animateClose()
+					elseif px >= 1.079 and x < 1.079 and D.LastPage and D.LastPage.Visible then
+						animateOpen()
+					end
+				end)
+			end
 		end
 
 		-- ── 5-second mini-intro (D.IntroLength) ──
@@ -53056,6 +53154,7 @@ NAgui.NAProtection=function(inst,var)
 end
 
 NAgui.NaProtectUI=function(gui)
+	pcall(function() if typeof(gui) == "Instance" then Util.AdminThemeRoots = Util.AdminThemeRoots or setmetatable({}, {__mode = "k"}); Util.AdminThemeRoots[gui] = true end end) -- [theme bridge]
 	if __NAUIProtector and type(__NAUIProtector.protectUI) == "function" then
 		local ok, protected = pcall(__NAUIProtector.protectUI, gui, {
 			parentResolver = NAmanage.guiCHECKINGAHHHHH,
@@ -236286,6 +236385,14 @@ local __dcm_flag = {
 	loadedAt = tick(),
 }
 __dcm_env.__DeltaCustomizationModuleLoaded = __dcm_flag
+__dcm_env.__DeltaThemePalette = function()
+	local rt = rawget(__dcm_env, "__DeltaThemeRuntime")
+	return type(rt) == "table" and type(rt.palettes) == "table" and rt.palettes[rt.current] or nil
+end
+__dcm_env.__DeltaOffColor = function()
+	local palette = __dcm_env.__DeltaThemePalette()
+	return palette and palette.card2 or Color3.fromRGB(30, 30, 30)
+end
 __dcm_shared.__DeltaCustomizationModuleLoaded = __dcm_flag
 local httpTxt
 local UIS
@@ -238584,7 +238691,7 @@ task.defer(function()
 		local t = Instance.new("TextButton")
 		t.Name = "Toggle"
 		t.Size = UDim2.new(0, 18, 0, 18)
-		t.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+		t.BackgroundColor3 = __dcm_env.__DeltaOffColor()
 		t.BorderSizePixel = 0
 		t.Font = Enum.Font.GothamBold
 		t.TextSize = 11
@@ -239344,7 +239451,7 @@ task.defer(function()
 		tg.Name = "Toggle"
 		tg.Size = UDim2.new(0, tgW, 0, 18)
 		tg.AnchorPoint = Vector2.new(1, 0.5)
-		tg.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+		tg.BackgroundColor3 = __dcm_env.__DeltaOffColor()
 		tg.BorderSizePixel = 0
 		tg.Font = Enum.Font.GothamBold
 		tg.TextSize = 11
@@ -240117,7 +240224,7 @@ task.defer(function()
 			writeJsonFile(settingsPath, settingsConfig)
 		end
 		local function setVisualToggle()
-			btnFrame.BackgroundColor3 = enabled and Color3.fromRGB(79, 164, 242) or Color3.fromRGB(30, 30, 30)
+			btnFrame.BackgroundColor3 = enabled and Color3.fromRGB(79, 164, 242) or __dcm_env.__DeltaOffColor()
 		end
 		local function startLoop()
 			NAlib.disconnect("IconRGB_Loop")
@@ -240206,7 +240313,7 @@ task.defer(function()
 			writeJsonFile(settingsPath, settingsConfig)
 		end
 		local function setVisual()
-			btnFrame.BackgroundColor3 = iconVisible and Color3.fromRGB(79, 164, 242) or Color3.fromRGB(30, 30, 30)
+			btnFrame.BackgroundColor3 = iconVisible and Color3.fromRGB(79, 164, 242) or __dcm_env.__DeltaOffColor()
 		end
 		setVisual()
 		local function toggleClick()
@@ -240262,7 +240369,7 @@ task.defer(function()
 		end
 		local function setVisual()
 			btnFrame.BackgroundColor3 = iconStrokeUserEnabled and Color3.fromRGB(79, 164, 242)
-				or Color3.fromRGB(30, 30, 30)
+				or __dcm_env.__DeltaOffColor()
 		end
 		setVisual()
 		local function toggleClick()
@@ -240321,7 +240428,7 @@ task.defer(function()
 		end
 		local function setVisual()
 			btnFrame.BackgroundColor3 = iconPositionSaveEnabled and Color3.fromRGB(79, 164, 242)
-				or Color3.fromRGB(30, 30, 30)
+				or __dcm_env.__DeltaOffColor()
 		end
 		setVisual()
 		local function toggleClick()
@@ -240382,7 +240489,7 @@ task.defer(function()
 			writeJsonFile(settingsPath, settingsConfig)
 		end
 		local function setVisual()
-			btnFrame.BackgroundColor3 = tabNotifEnabled and Color3.fromRGB(79, 164, 242) or Color3.fromRGB(30, 30, 30)
+			btnFrame.BackgroundColor3 = tabNotifEnabled and Color3.fromRGB(79, 164, 242) or __dcm_env.__DeltaOffColor()
 		end
 		setVisual()
 		local function toggleClick()
@@ -240493,7 +240600,7 @@ task.defer(function()
 		local clickable = btnFrame:FindFirstChildWhichIsA("GuiButton") or btnFrame
 		local enabled = dIcons.enabled and true or false
 		local function setVisual()
-			btnFrame.BackgroundColor3 = enabled and Color3.fromRGB(79, 164, 242) or Color3.fromRGB(30, 30, 30)
+			btnFrame.BackgroundColor3 = enabled and Color3.fromRGB(79, 164, 242) or __dcm_env.__DeltaOffColor()
 		end
 		setVisual()
 		local function toggleClick()
@@ -240586,7 +240693,7 @@ task.defer(function()
 		defBtn.Size = UDim2.new(0, 50, 0, 18)
 		defBtn.AnchorPoint = Vector2.new(1, 0.5)
 		defBtn.Position = UDim2.new(bx, bo - 230, by, byo)
-		defBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+		defBtn.BackgroundColor3 = __dcm_env.__DeltaOffColor()
 		defBtn.BorderSizePixel = 0
 		defBtn.Font = Enum.Font.GothamBold
 		defBtn.TextSize = 11
@@ -240702,7 +240809,7 @@ task.defer(function()
 			c.Parent = b
 			return b
 		end
-		local gray = Color3.fromRGB(30, 30, 30)
+		local gray = __dcm_env.__DeltaOffColor()
 		local prevBtn = mkMgrBtn("Prev", 24, -210, gray, "<")
 		local nextBtn = mkMgrBtn("Next", 24, -180, gray, ">")
 		local delBtn = mkMgrBtn("Del", 32, -140, Color3.fromRGB(80, 40, 40), "DEL")
@@ -241020,7 +241127,7 @@ task.defer(function()
 		local clickable = btnFrame:FindFirstChildWhichIsA("GuiButton") or btnFrame
 		local function setVisual()
 			btnFrame.BackgroundColor3 = sidebarGestureEnabled and Color3.fromRGB(79, 164, 242)
-				or Color3.fromRGB(30, 30, 30)
+				or __dcm_env.__DeltaOffColor()
 		end
 		setVisual()
 		local function toggleClick()
@@ -241077,7 +241184,7 @@ task.defer(function()
 		local clickable = btnFrame:FindFirstChildWhichIsA("GuiButton") or btnFrame
 		local function setVisual()
 			btnFrame.BackgroundColor3 = sidebarGestureVisible and Color3.fromRGB(79, 164, 242)
-				or Color3.fromRGB(30, 30, 30)
+				or __dcm_env.__DeltaOffColor()
 		end
 		setVisual()
 		applyGestureVisual()
@@ -241137,7 +241244,7 @@ task.defer(function()
 			writeJsonFile(settingsPath, settingsConfig)
 		end
 		local function setVisual()
-			btnFrame.BackgroundColor3 = autoCloseOnLoad and Color3.fromRGB(79, 164, 242) or Color3.fromRGB(30, 30, 30)
+			btnFrame.BackgroundColor3 = autoCloseOnLoad and Color3.fromRGB(79, 164, 242) or __dcm_env.__DeltaOffColor()
 		end
 		setVisual()
 		local function toggleClick()
@@ -242727,6 +242834,10 @@ local function bgOn()
 end
 
 local function bgOff()
+	local palette = __dcm_env.__DeltaThemePalette()
+	if palette then
+		return palette.card
+	end
 	return sidebarRefs.inactiveColor and sidebarRefs.inactiveColor.Value or offBg
 end
 
@@ -242735,7 +242846,8 @@ local function applyBtnState(btn, on)
 		return
 	end
 	local targetBg = on and bgOn() or bgOff()
-	local targetImg = on and onImg or offImg
+	local themePalette = __dcm_env.__DeltaThemePalette()
+	local targetImg = on and onImg or (themePalette and themePalette.icon or offImg)
 	local img = imgOf(btn)
 	if TS then
 		pcall(function()
@@ -242783,6 +242895,12 @@ function syncTabColors(forceTab)
 	}
 	for n, b in map do
 		applyBtnState(b, curTab == n)
+	end
+end
+
+__dcm_env.__DeltaSyncTabColors = function()
+	if syncTabColors then
+		syncTabColors()
 	end
 end
 
@@ -245766,6 +245884,7 @@ do
 				baseImage = setmetatable({}, { __mode = "k" }),
 			}
 			__dcm_env.__DeltaThemeRuntime = themeRuntime
+			themeRuntime.current = "Default"
 			local function connectTheme(signal, callback)
 				if not signal then
 					return
@@ -245879,6 +245998,7 @@ do
 					accent = Color3.fromRGB(79, 164, 242),
 				},
 			}
+			themeRuntime.palettes = palettes
 			local function isAccent(color)
 				local hue, saturation, value = Color3.toHSV(color)
 				return saturation >= 0.34 and value >= 0.28 and hue >= 0.48 and hue <= 0.72
@@ -245960,8 +246080,19 @@ do
 					end)
 				end
 			end
+			local function immersiveOwned(object)
+				local current = object
+				while current and current ~= mainGui do
+					local name = current.Name
+					if name == "LT_ImmersiveCustomizer" or name == "LT_ImmersiveTransition" or string.sub(name, 1, 6) == "LT_IUI" or string.sub(name, 1, 5) == "LT_FX" then
+						return true
+					end
+					current = current.Parent
+				end
+				return false
+			end
 			local function applyObject(object, themeName)
-				if object:GetAttribute("LT_SyntaxOverlay") then
+				if object:GetAttribute("LT_SyntaxOverlay") or immersiveOwned(object) then
 					return
 				end
 				capture(object)
@@ -245976,7 +246107,10 @@ do
 				local background = themeRuntime.baseBackground[object]
 				if background ~= nil then
 					pcall(function()
-						object.BackgroundColor3 = isAccent(background) and background or backgroundRole(object, palette)
+						if isAccent(object.BackgroundColor3) then
+							return
+						end
+						object.BackgroundColor3 = backgroundRole(object, palette)
 					end)
 				end
 				local textColor = themeRuntime.baseText[object]
@@ -246031,6 +246165,7 @@ do
 				themeName = themeName == "Light" and "Light" or themeName == "Amoled" and "Amoled" or "Default"
 				applying = true
 				currentTheme = themeName
+				themeRuntime.current = themeName
 				applyObject(mainGui, themeName)
 				for _, object in mainGui:GetDescendants() do
 					applyObject(object, themeName)
@@ -246040,6 +246175,17 @@ do
 					saveTheme(themeName)
 				end
 				applying = false
+				if type(themeRuntime.fxRefresh) == "function" then
+					pcall(themeRuntime.fxRefresh)
+				end
+				local iui = rawget(__dcm_env, "__DeltaImmersiveUIRuntime")
+				if type(iui) == "table" and type(iui.onThemeChanged) == "function" then
+					pcall(iui.onThemeChanged, themeName)
+				end
+				local sync = rawget(__dcm_env, "__DeltaSyncTabColors")
+				if type(sync) == "function" then
+					pcall(sync)
+				end
 			end
 			themeRuntime.applyTheme = applyTheme
 			themeRuntime.stop = function()
@@ -246105,6 +246251,387 @@ do
 					end
 				end)
 			end)
+			local fx = {
+				acc = 0,
+				state = setmetatable({}, { __mode = "k" }),
+				selected = setmetatable({}, { __mode = "k" }),
+				watch = {},
+				accentColor = Color3.fromRGB(79, 164, 242),
+				strokeColor = Color3.fromRGB(58, 64, 80),
+				pressInfo = TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+				releaseInfo = TweenInfo.new(0.26, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+				fadeInfo = TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			}
+			themeRuntime.fx = fx
+			local fxTweenService = game:GetService("TweenService")
+			local fxRunService = game:GetService("RunService")
+			local fxInput = game:GetService("UserInputService")
+			local fxTouchOnly = fxInput.TouchEnabled and not fxInput.MouseEnabled
+
+			function fx.tween(object, info, props)
+				if not (object and object.Parent) then
+					return nil
+				end
+				local ok, tween = pcall(function()
+					local t = fxTweenService:Create(object, info, props)
+					t:Play()
+					return t
+				end)
+				return ok and tween or nil
+			end
+
+			function fx.apply(object, info, props, instant)
+				if instant then
+					for property, value in props do
+						pcall(function()
+							object[property] = value
+						end)
+					end
+					return nil
+				end
+				return fx.tween(object, info, props)
+			end
+
+			function fx.updateAccent()
+				if not (fx.sidebar and fx.sidebar.Parent) then
+					fx.sidebar = mainGui:FindFirstChild("Sidebar", true)
+				end
+				fx.active = fx.sidebar and fx.sidebar:FindFirstChild("ActiveColor") or nil
+				local palette = palettes[currentTheme]
+				local accent = palette and palette.accent or Color3.fromRGB(79, 164, 242)
+				if fx.active and fx.active:IsA("Color3Value") then
+					accent = fx.active.Value
+				end
+				local stroke = palette and palette.stroke or Color3.fromRGB(58, 64, 80)
+				local iui = rawget(__dcm_env, "__DeltaImmersiveUIRuntime")
+				if type(iui) == "table" and type(iui.getColors) == "function" then
+					local ok, a, s = pcall(iui.getColors)
+					if ok and typeof(a) == "Color3" and typeof(s) == "Color3" then
+						accent, stroke = a, s
+					end
+				end
+				fx.accentColor = accent
+				fx.strokeColor = stroke
+			end
+
+			function fx.isSelected(button)
+				local flag = button:GetAttribute("LT_FXSelected")
+				if type(flag) == "boolean" then
+					return flag
+				end
+				if fx.active and fx.active:IsA("Color3Value") then
+					local c, a = button.BackgroundColor3, fx.active.Value
+					if button.BackgroundTransparency < 0.5 and math.abs(c.R - a.R) + math.abs(c.G - a.G) + math.abs(c.B - a.B) < 0.12 then
+						return true
+					end
+				end
+				local checked = button:FindFirstChild("Checked", true)
+				if checked and checked:IsA("GuiObject") then
+					return checked.Visible
+				end
+				if button:IsA("TextButton") then
+					local t = string.upper(button.Text)
+					if t == "ON" or string.sub(t, -4) == ": ON" then
+						return true
+					end
+				end
+				return false
+			end
+
+			function fx.makeOverlay(button)
+				local overlay = button:FindFirstChild("LT_FXOverlay")
+				if overlay then
+					return overlay
+				end
+				for _, child in button:GetChildren() do
+					if child:IsA("UIGridStyleLayout") then
+						return nil
+					end
+				end
+				overlay = Instance.new("Frame")
+				overlay.Name = "LT_FXOverlay"
+				overlay:SetAttribute("LT_NoImmersiveStyle", true)
+				overlay.BackgroundColor3 = fx.accentColor
+				overlay.BackgroundTransparency = 1
+				overlay.BorderSizePixel = 0
+				overlay.Size = UDim2.fromScale(1, 1)
+				overlay.Active = false
+				overlay.ZIndex = button.ZIndex + 1
+				local corner = button:FindFirstChildOfClass("UICorner")
+				if corner then
+					local c = Instance.new("UICorner")
+					c.CornerRadius = corner.CornerRadius
+					c.Parent = overlay
+				end
+				overlay.Parent = button
+				return overlay
+			end
+
+			function fx.getScale(button, st)
+				local scale = st.scale
+				if not (scale and scale.Parent) then
+					scale = button:FindFirstChild("LT_FXPress")
+					if not scale then
+						scale = Instance.new("UIScale")
+						scale.Name = "LT_FXPress"
+						scale.Parent = button
+					end
+					st.scale = scale
+				end
+				return scale
+			end
+
+			function fx.pop(button)
+				local st = fx.state[button]
+				if st then
+					local scale = fx.getScale(button, st)
+					scale.Scale = 1.1
+					fx.tween(scale, fx.releaseInfo, { Scale = 1 })
+				end
+			end
+
+			function fx.paint(button, instant)
+				local st = fx.state[button]
+				if not st or not button.Parent then
+					return
+				end
+				local live = button.Visible
+				local pressed = live and st.pressed
+				local hover = live and st.hover and not fxTouchOnly
+				local selected = live and fx.isSelected(button) or false
+				st.selected = selected
+				local lit = pressed or hover or selected
+				local accent = fx.accentColor
+				local big = button.AbsoluteSize.X > 140 or button.AbsoluteSize.Y > 60
+
+				local stroke = st.stroke
+				if not (stroke and stroke.Parent) then
+					stroke = button:FindFirstChild("LT_IUIStroke") or button:FindFirstChild("LT_FXStroke")
+					if not stroke and lit then
+						stroke = Instance.new("UIStroke")
+						stroke.Name = "LT_FXStroke"
+						stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+						stroke.Thickness = 1
+						stroke.Transparency = 0.35
+						stroke.Parent = button
+					end
+					st.stroke = stroke
+				end
+				if stroke and stroke.Parent then
+					stroke.Color = lit and accent or fx.strokeColor
+					if selected and not pressed and not hover then
+						fx.selected[button] = true
+					else
+						fx.selected[button] = nil
+						fx.apply(stroke, fx.fadeInfo, {
+							Thickness = pressed and 2.4 or (hover and 1.6 or 1),
+							Transparency = pressed and 0.02 or (hover and 0.15 or 0.35),
+						}, instant)
+					end
+				end
+
+				if pressed then
+					fx.apply(fx.getScale(button, st), fx.pressInfo, { Scale = big and 0.985 or 0.92 }, instant)
+				elseif st.scale and st.scale.Parent then
+					fx.apply(st.scale, fx.releaseInfo, { Scale = 1 }, instant)
+				end
+
+				local overlay = st.overlay
+				if lit and not (overlay and overlay.Parent) then
+					overlay = fx.makeOverlay(button)
+					st.overlay = overlay
+				end
+				if overlay and overlay.Parent then
+					overlay.BackgroundColor3 = accent
+					overlay.ZIndex = button.ZIndex + 1
+					fx.apply(overlay, fx.fadeInfo, {
+						BackgroundTransparency = pressed and 0.55 or (hover and 0.82 or (selected and 0.88 or 1)),
+					}, instant)
+				end
+
+				if pressed and not st.tint then
+					local tint = {}
+					st.tint = tint
+					local count = 0
+					local function add(img)
+						if count < 6 and (img:IsA("ImageLabel") or img:IsA("ImageButton")) and string.sub(img.Name, 1, 3) ~= "LT_" then
+							count += 1
+							local prev = img.ImageColor3
+							local target = prev:Lerp(accent, 0.55)
+							tint[img] = { prev = prev, target = target, tween = fx.tween(img, fx.pressInfo, { ImageColor3 = target }) }
+						end
+					end
+					add(button)
+					for _, d in button:GetDescendants() do
+						add(d)
+					end
+				elseif not pressed and st.tint then
+					for img, c in st.tint do
+						if img.Parent then
+							local playing = c.tween and c.tween.PlaybackState == Enum.PlaybackState.Playing
+							if c.tween then
+								pcall(function()
+									c.tween:Cancel()
+								end)
+							end
+							local cur = img.ImageColor3
+							local close = math.abs(cur.R - c.target.R) + math.abs(cur.G - c.target.G) + math.abs(cur.B - c.target.B) < 0.03
+							if playing or close then
+								img.ImageColor3 = c.prev
+							end
+						end
+					end
+					st.tint = nil
+				end
+			end
+
+			function fx.bind(button)
+				if fx.state[button] or not button:IsA("GuiButton") or string.sub(button.Name, 1, 5) == "LT_FX" then
+					return
+				end
+				local st = { hover = false, pressed = false, pressId = 0 }
+				st.sidebar = fx.sidebar ~= nil and button:IsDescendantOf(fx.sidebar)
+				fx.state[button] = st
+				if st.sidebar then
+					fx.watch[button] = true
+				end
+				if button.BackgroundTransparency < 0.9 and not (button:FindFirstChild("LT_IUIStroke") or button:FindFirstChild("LT_FXStroke")) then
+					local stroke = Instance.new("UIStroke")
+					stroke.Name = "LT_FXStroke"
+					stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+					stroke.Thickness = 1
+					stroke.Transparency = 0.35
+					stroke.Color = fx.strokeColor
+					stroke.Parent = button
+				end
+				button.MouseEnter:Connect(function()
+					if themeRuntime.alive then
+						st.hover = true
+						fx.paint(button)
+					end
+				end)
+				button.MouseLeave:Connect(function()
+					if themeRuntime.alive then
+						st.hover = false
+						st.pressed = false
+						fx.paint(button)
+					end
+				end)
+				button.MouseButton1Down:Connect(function()
+					if not themeRuntime.alive then
+						return
+					end
+					st.pressed = true
+					st.pressId += 1
+					local id = st.pressId
+					fx.paint(button)
+					task.delay(2, function()
+						if st.pressed and st.pressId == id and themeRuntime.alive then
+							st.pressed = false
+							fx.paint(button)
+						end
+					end)
+				end)
+				button.MouseButton1Up:Connect(function()
+					if themeRuntime.alive then
+						st.pressed = false
+						fx.paint(button)
+					end
+				end)
+				button.Activated:Connect(function()
+					task.defer(function()
+						if themeRuntime.alive then
+							fx.paint(button)
+						end
+					end)
+				end)
+				fx.paint(button, true)
+			end
+
+			function fx.refresh()
+				if not themeRuntime.alive then
+					return
+				end
+				fx.updateAccent()
+				for button in fx.state do
+					if button.Parent then
+						pcall(fx.paint, button, true)
+					end
+				end
+			end
+			themeRuntime.fxRefresh = fx.refresh
+
+			fx.updateAccent()
+			if fx.active then
+				connectTheme(fx.active:GetPropertyChangedSignal("Value"), fx.refresh)
+			end
+			connectTheme(fxRunService.Heartbeat, function(dt)
+				if not themeRuntime.alive then
+					return
+				end
+				fx.acc += dt
+				if fx.acc < 0.033 then
+					return
+				end
+				fx.acc = 0
+				local t = os.clock()
+				for button in fx.selected do
+					local st = fx.state[button]
+					local stroke = st and st.stroke
+					if button.Parent and stroke and stroke.Parent and not st.pressed and not st.hover then
+						local w = (math.sin(t * 2.6) + 1) * 0.5
+						stroke.Transparency = 0.08 + w * 0.32
+						stroke.Thickness = 1.7 + w * 1.1
+					end
+				end
+				for button in fx.watch do
+					local st = fx.state[button]
+					if not (button.Parent and st) then
+						fx.watch[button] = nil
+					else
+						local now = button.Visible and fx.isSelected(button) or false
+						if now ~= st.selected then
+							fx.paint(button)
+							if now then
+								fx.pop(button)
+							end
+						end
+					end
+				end
+			end)
+			connectTheme(mainGui.DescendantAdded, function(object)
+				if object:IsA("GuiButton") and string.sub(object.Name, 1, 5) ~= "LT_FX" then
+					task.defer(function()
+						if themeRuntime.alive and object.Parent then
+							pcall(fx.bind, object)
+						end
+					end)
+				end
+			end)
+			task.spawn(function()
+				local n = 0
+				for _, object in mainGui:GetDescendants() do
+					if not themeRuntime.alive then
+						return
+					end
+					if object:IsA("GuiButton") then
+						pcall(fx.bind, object)
+						n += 1
+						if n % 40 == 0 then
+							task.wait()
+						end
+					end
+				end
+			end)
+			local fxStop = themeRuntime.stop
+			themeRuntime.stop = function()
+				fxStop()
+				for _, object in mainGui:GetDescendants() do
+					if string.sub(object.Name, 1, 5) == "LT_FX" then
+						pcall(object.Destroy, object)
+					end
+				end
+			end
 			local config = readThemeConfig()
 			local savedTheme = type(config.DeltaTheme) == "table" and config.DeltaTheme.name or nil
 			applyTheme(savedTheme, false)
@@ -246347,6 +246874,30 @@ do
 	local compactTabsEnabled = readBool("CompactTabs", false)
 	local editorWordWrapEnabled = readBool("EditorWordWrap", false)
 	local syntaxHighlightEnabled = readBool("EditorSyntaxHighlight", true)
+	__dcm_env.__DeltaFastExec = { enabled = readBool("FastExecution", true), untilT = 0, hooked = setmetatable({}, { __mode = "k" }) }
+	do
+		local F = __dcm_env.__DeltaFastExec
+		function F.remaining()
+			if not F.enabled then
+				return 0
+			end
+			local r = F.untilT - os.clock()
+			return r > 0 and r or 0
+		end
+		function F.mark()
+			if F.enabled then
+				F.untilT = os.clock() + 1.5
+			end
+		end
+		function F.hook(button)
+			if not button or F.hooked[button] or not button:IsA("GuiButton") then
+				return
+			end
+			F.hooked[button] = true
+			connect(button.MouseButton1Down, F.mark)
+			connect(button.Activated, F.mark)
+		end
+	end
 	local exploitSyntaxEnabled = readBool("ExploitSyntaxHighlight", true)
 	local editorFontSize = math.floor(readNumber("EditorFontSize", 14, 10, 24) + 0.5)
 	local toolbarButtons = {}
@@ -246905,7 +247456,12 @@ do
 			return
 		end
 		statusUpdateQueued = true
-		task.defer(updateStatus)
+		local hold = __dcm_env.__DeltaFastExec.remaining()
+		if hold > 0 then
+			task.delay(hold, updateStatus)
+		else
+			task.defer(updateStatus)
+		end
 	end
 
 	local saveTokens = setmetatable({}, { __mode = "k" })
@@ -247362,7 +247918,7 @@ do
 		local function queue(box)
 			local token = (updateTokens[box] or 0) + 1
 			updateTokens[box] = token
-			task.delay(#(box.Text or "") > 60000 and 0.08 or 0.025, function()
+			task.delay(math.max(#(box.Text or "") > 60000 and 0.08 or 0.025, __dcm_env.__DeltaFastExec.remaining()), function()
 				if runtime.alive and box.Parent and updateTokens[box] == token then
 					update(box)
 				end
@@ -248213,7 +248769,7 @@ do
 				if activeValue and activeValue:IsA("Color3Value") then
 					activeColor = activeValue.Value
 				end
-				button.BackgroundColor3 = enabled and activeColor or Color3.fromRGB(30, 30, 30)
+				button.BackgroundColor3 = enabled and activeColor or __dcm_env.__DeltaOffColor()
 				setButtonTitle(button, enabled and "ON" or "OFF")
 			end
 		end
@@ -248724,6 +249280,17 @@ do
 		end
 	)
 
+	createToggleSetting(
+		"LT_FastExecution",
+		"Fast execution",
+		"Holds editor highlighting and statistics for a moment while a script runs so it can start with less overhead",
+		__dcm_env.__DeltaFastExec.enabled,
+		function(enabled)
+			__dcm_env.__DeltaFastExec.enabled = enabled
+			saveBool("FastExecution", enabled)
+		end
+	)
+
 	createSettingRow(
 		"LT_UnloadCustomization",
 		"Unload customization",
@@ -248815,6 +249382,7 @@ do
 			return
 		end
 		if object.Name == "Execute" or object.Name == "Clear" or object.Name == "ExecuteClipboard" then
+			__dcm_env.__DeltaFastExec.hook(object.Name ~= "Clear" and object or nil)
 			object:SetAttribute("LT_NativeVisible", true)
 			runtime.originalButtons[object] = true
 			object.Visible = true
@@ -248832,6 +249400,9 @@ do
 	end
 	normalizeTabSequence()
 	buildToolbar()
+	for _, execName in { "Execute", "ExecuteClipboard" } do
+		__dcm_env.__DeltaFastExec.hook(buttonsFrame:FindFirstChild(execName))
+	end
 	applyToolbarLayout()
 	buildStatus()
 	applyWideEditor()
@@ -249074,7 +249645,27 @@ do
     local animationIntensity = math.clamp(tonumber(__iuiConfig.intensity) or 0.75, 0.25, 1.25)
     local uiEnabled = __iuiConfig.enabled ~= false
 
-    local style = styles[styleNames[styleIndex]]
+    __iui.themedStyle = function(base)
+        local palette = __dcm_env.__DeltaThemePalette()
+        local rt = rawget(__dcm_env, "__DeltaThemeRuntime")
+        __iui.themeName = type(rt) == "table" and rt.current or "Default"
+        if not palette then
+            return base
+        end
+        local merged = table.clone(base)
+        merged.__base = base
+        merged.bg = palette.root
+        merged.panel = palette.panel
+        merged.panel2 = palette.card
+        merged.button = palette.card
+        merged.text = palette.text
+        merged.muted = palette.muted
+        merged.stroke = palette.stroke
+        merged.icon = palette.icon
+        return merged
+    end
+
+    local style = __iui.themedStyle(styles[styleNames[styleIndex]])
 
     local function saveState()
         saveImmersiveConfig({
@@ -249204,6 +249795,11 @@ do
             or object:IsA("ImageLabel")
     end
 
+    __iui.isColoredState = function(color)
+        local _, s, v = Color3.toHSV(color)
+        return s >= 0.45 and v >= 0.35
+    end
+
     local function styleObject(object)
         if not shouldStyle(object) then
             return
@@ -249214,13 +249810,17 @@ do
             setTracked(object, "TextColor3", style.text)
             if object:IsA("TextButton") then
                 setTracked(object, "AutoButtonColor", false)
-                setTracked(object, "BackgroundColor3", style.button)
+                if not __iui.isColoredState(object.BackgroundColor3) then
+                    setTracked(object, "BackgroundColor3", style.button)
+                end
                 setTracked(object, "BackgroundTransparency", style.transparency + 0.01)
                 ensureCorner(object, math.max(7, style.corner - 3))
                 ensureStroke(object, style.stroke, 1)
             end
         elseif object:IsA("ImageButton") then
-            setTracked(object, "BackgroundColor3", style.button)
+            if not __iui.isColoredState(object.BackgroundColor3) then
+                setTracked(object, "BackgroundColor3", style.button)
+            end
             setTracked(object, "BackgroundTransparency", style.transparency + 0.01)
             ensureCorner(object, math.max(7, style.corner - 3))
             ensureStroke(object, style.stroke, 1)
@@ -249243,7 +249843,7 @@ do
                 ensureCorner(object, style.corner)
                 local stroke = ensureStroke(object, style.stroke, 1)
                 if stroke then
-                    stroke.Transparency = style == styles.Neon and 0.22 or 0.42
+                    stroke.Transparency = (style.__base or style) == styles.Neon and 0.22 or 0.42
                 end
                 ensureGradient(object, style.panel, style.panel2)
             end
@@ -249251,7 +249851,7 @@ do
 
         if object:IsA("ImageLabel") and object.Name ~= "Code" then
             pcall(function()
-                object.ImageColor3 = lerpColor(Color3.new(1, 1, 1), style.accent, 0.18)
+                object.ImageColor3 = lerpColor(style.icon or Color3.new(1, 1, 1), style.accent, 0.18)
             end)
         end
     end
@@ -249288,7 +249888,7 @@ do
     end
 
     local function applyStyle()
-        style = styles[styleNames[styleIndex]]
+        style = __iui.themedStyle(styles[styleNames[styleIndex]])
         for _, object in collectStyleTargets() do
             pcall(styleObject, object)
         end
@@ -249735,6 +250335,7 @@ do
                         local visible = currentVisiblePage()
                         if visible and visible ~= __iui.currentPage then
                             __iui.currentPage = visible
+                            __iui.refreshButtons()
                             playTransition()
                         end
                     end)
@@ -249747,27 +250348,18 @@ do
         __iui.currentPage = currentVisiblePage()
     end
 
+    __iui.getColors = function()
+        return style.accent, style.stroke
+    end
+
+    __iui.refreshButtons = function()
+        local rt = rawget(__dcm_env, "__DeltaThemeRuntime")
+        if type(rt) == "table" and type(rt.fxRefresh) == "function" then
+            pcall(rt.fxRefresh)
+        end
+    end
+
     local function bindStyleHover(button)
-        if not (button and button:IsA("GuiButton")) then
-            return
-        end
-        if button:GetAttribute("LT_IUIHoverBound") then
-            return
-        end
-        button:SetAttribute("LT_IUIHoverBound", true)
-        local stroke = ensureStroke(button, style.stroke, 1)
-        local baseColor = button.BackgroundColor3
-        connect(button.MouseEnter, function()
-            if not hasParent(button) or not uiEnabled then return end
-            local hover = lerpColor(baseColor, style.accent, 0.28)
-            pcall(function() button.BackgroundColor3 = hover end)
-            if stroke then stroke.Transparency = 0.12 end
-        end)
-        connect(button.MouseLeave, function()
-            if not hasParent(button) then return end
-            pcall(function() button.BackgroundColor3 = baseColor end)
-            if stroke then stroke.Transparency = 0.42 end
-        end)
     end
 
     local function buildControlPanel()
@@ -249855,12 +250447,10 @@ do
         local styleButton = makeButton("Style", "STYLE: " .. styleNames[styleIndex], 3, function()
             styleIndex = (styleIndex % #styleNames) + 1
             applyStyle()
-            title.TextColor3 = style.text
-            subtitle.TextColor3 = style.muted
-            styleButton.Text = "STYLE: " .. styleNames[styleIndex]
-            animationButton.BackgroundColor3 = style.button
-            transitionButton.BackgroundColor3 = style.button
-            blurButton.BackgroundColor3 = transitionBlurEnabled and style.accent or style.button
+            if __iui.refreshPanel then
+                __iui.refreshPanel()
+            end
+            __iui.refreshButtons()
             saveState()
         end)
 
@@ -249911,6 +250501,10 @@ do
             if not uiEnabled then
                 cancelTransition()
             end
+            if __iui.refreshPanel then
+                __iui.refreshPanel()
+            end
+            __iui.refreshButtons()
             saveState()
         end)
         toggle.BackgroundColor3 = uiEnabled and style.accent or style.button
@@ -249928,6 +250522,25 @@ do
         hint.TextXAlignment = Enum.TextXAlignment.Left
         hint.ZIndex = 25001
         hint.Parent = panel
+
+        __iui.refreshPanel = function()
+            if not (panel and panel.Parent) then
+                return
+            end
+            panel.BackgroundColor3 = style.panel
+            ensureStroke(panel, style.stroke, 1)
+            ensureGradient(panel, style.panel, style.panel2)
+            title.TextColor3 = style.text
+            subtitle.TextColor3 = style.muted
+            hint.TextColor3 = style.muted
+            styleButton.Text = "STYLE: " .. styleNames[styleIndex]
+            for _, b in { styleButton, animationButton, transitionButton, blurButton, intensityButton, preview, toggle } do
+                b.BackgroundColor3 = style.button
+                b.TextColor3 = style.text
+            end
+            blurButton.BackgroundColor3 = transitionBlurEnabled and style.accent or style.button
+            toggle.BackgroundColor3 = uiEnabled and style.accent or style.button
+        end
 
         __iui.controlPanel = panel
         return panel
@@ -250007,6 +250620,22 @@ do
         end
         __dcm_env.__DeltaImmersiveUIRuntime = nil
         __dcm_shared.__DeltaImmersiveUIRuntime = nil
+    end
+
+    __iui.onThemeChanged = function()
+        if not __iui.alive then
+            return
+        end
+        applyStyle()
+        if transitionOverlay and transitionOverlay.Parent then
+            transitionOverlay.BackgroundColor3 = style.bg
+            ensureGradient(transitionOverlay, style.panel, style.accent2)
+            transitionGlow.BackgroundColor3 = style.accent
+        end
+        if __iui.refreshPanel then
+            __iui.refreshPanel()
+        end
+        __iui.refreshButtons()
     end
 
     __iui.applyStyle = applyStyle
@@ -250840,8 +251469,246 @@ Util.ThemeApplied = function()
 	for _, func in Util.DecoHooks do
 		pcall(func, t, 1 / 60)
 	end
+	if Util.AdminTheme then pcall(Util.AdminTheme.Tick, true) end -- [theme bridge] admin UI repaints in the same frame
 	if Util.FX and Util.FX.ThemePulse then pcall(Util.FX.ThemePulse) end
 end
+
+-- [theme bridge] Nameless Admin (windows, topbar, side swipe, notifications, every command gui) inherits the reanimation's selected UI theme:
+-- accent = the exact colour the main UI paints (Util.Color.Cur), background + text = the active theme's. It drives the admin's own "Main Color"
+-- mechanism (NAUISTROKER, registered strokes, accent surfaces, tab strokes, swipe handles) and re-maps every remaining hardcoded blue / purple /
+-- blue-grey colour (fills, strokes, gradients, scrollbars, text) on the fly, so theme switches and animated accents apply immediately.
+Util.AdminTheme = (function()
+	local AT = {}
+	local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+	local roots = Util.AdminThemeRoots or setmetatable({}, {__mode = "k"})
+	Util.AdminThemeRoots = roots
+	local hooked = setmetatable({}, {__mode = "k"})
+	local tracked = setmetatable({}, {__mode = "k"})
+	local queue, qh, qt = {}, 1, 0
+	local SKIP = {ColorPreview = true, CPBackground = true, MainCP = true, ColorSlider = true} -- colour-picker widgets show real user colours
+	local th = {accent = WHITE, bg = BLACK, text = WHITE, h = 0, light = false}
+	local last, F = {}, {}
+	local PS_STROKE, PS_GRAD, PS_TEXT, PS_SCROLL, PS_GUI = {"Color"}, {"Color"}, {"BackgroundColor3", "TextColor3"}, {"BackgroundColor3", "ScrollBarImageColor3"}, {"BackgroundColor3"}
+	local function near(a, b, tol)
+		return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B) < (tol or 0.02)
+	end
+	-- legacy accent = saturated blue / cyan / violet; anything equal to the current accent / NAUISTROKER already follows the theme
+	local function isAcc(c, fresh)
+		if near(c, th.accent, 0.06) then return true end
+		local nu = NAUISTROKER
+		if typeof(nu) == "Color3" and near(c, nu, 0.06) then return true end
+		local h, s, v = c:ToHSV()
+		return s >= 0.4 and v >= 0.45 and h >= 0.46 and h <= 0.86 and (fresh or math.abs(h - th.h) > 0.03)
+	end
+	local function classify(p, c, fresh)
+		if isAcc(c, fresh) then return "accent" end
+		local h, s, v = c:ToHSV()
+		if s >= 0.4 and v >= 0.45 then return nil end -- other saturated hues are semantic (red / green / yellow): untouched
+		if p == "TextColor3" then
+			if s < 0.35 then
+				if v > 0.6 then return "text" end
+				if v > 0.3 then return "mute" end
+			end
+			return nil
+		end
+		if v >= 0.04 and v <= 0.5 and (s <= 0.4 or (h >= 0.46 and h <= 0.86)) then return "surf" end -- dark (blue-)grey surfaces
+		return nil
+	end
+	local function gradHasAcc(seq, fresh)
+		for _, kp in seq.Keypoints do
+			if isAcc(kp.Value, fresh) then return true end
+		end
+		return false
+	end
+	local function colorFor(kind, orig)
+		if kind == "accent" then return th.accent end
+		if kind == "text" then return th.text end
+		if kind == "mute" then return th.text:Lerp(th.bg, 0.45) end
+		local _, _, v = orig:ToHSV()
+		local d = math.max(v - 0.078, 0) -- keeps the original layering (window < card < button) on top of the theme background
+		if th.light then return th.bg:Lerp(BLACK, d * 0.8) end
+		return th.bg:Lerp(WHITE, d * 1.2)
+	end
+	local function skipped(o)
+		local p = o
+		while p do
+			if SKIP[p.Name] then return true end
+			p = p.Parent
+		end
+		return false
+	end
+	local function track(o)
+		local ps
+		if o:IsA("UIStroke") then ps = PS_STROKE
+		elseif o:IsA("UIGradient") then ps = PS_GRAD
+		elseif o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then ps = PS_TEXT
+		elseif o:IsA("ScrollingFrame") then ps = PS_SCROLL
+		elseif o:IsA("GuiObject") then ps = PS_GUI
+		else return end
+		if skipped(o) then return end
+		local isG = ps == PS_GRAD
+		local recs = {}
+		for _, p in ps do
+			local c = o[p]
+			local r = {orig = c}
+			if isG then
+				r.grad = true
+				r.kind = gradHasAcc(c, true)
+			else
+				r.kind = classify(p, c, true) or false
+			end
+			if r.kind then r.dirty = true end
+			recs[p] = r
+		end
+		tracked[o] = recs
+	end
+	local function doObj(o, recs, slow)
+		for p, r in recs do
+			if r.kind or slow or F.force then
+				if r.grad then
+					local cur = o.Color
+					local ck, rk = cur.Keypoints, (r.wrote or r.orig).Keypoints
+					if #ck ~= #rk or not near(ck[1].Value, rk[1].Value) or not near(ck[#ck].Value, rk[#rk].Value) then
+						r.orig, r.wrote = cur, nil
+						r.kind = gradHasAcc(cur, false)
+						if r.kind then r.dirty = true end
+					end
+					if r.kind and (r.dirty or F.a) then
+						local out = {}
+						for i, kp in r.orig.Keypoints do
+							out[i] = ColorSequenceKeypoint.new(kp.Time, isAcc(kp.Value, true) and th.accent or kp.Value)
+						end
+						local seq = ColorSequence.new(out)
+						r.wrote, r.dirty = seq, nil
+						o.Color = seq
+					end
+				else
+					local cur = o[p]
+					if not near(cur, r.wrote or r.orig) then -- something else wrote this property: re-evaluate it
+						r.orig, r.wrote = cur, nil
+						r.kind = classify(p, cur, false) or false
+						if r.kind then r.dirty = true end
+					end
+					local k = r.kind
+					if k and (r.dirty or F.force or (k == "accent" and F.a) or ((k == "surf" or k == "mute") and F.b) or ((k == "text" or k == "mute") and F.x)) then
+						local nv = colorFor(k, r.orig)
+						r.wrote, r.dirty = nv, nil
+						if not near(cur, nv, 0.004) then o[p] = nv end
+					end
+				end
+			end
+		end
+	end
+	local function hook(g)
+		if hooked[g] or typeof(g) ~= "Instance" then return end
+		hooked[g] = true
+		g.DescendantAdded:Connect(function(d)
+			qt += 1
+			queue[qt] = d
+		end)
+		for _, d in g:GetDescendants() do
+			qt += 1
+			queue[qt] = d
+		end
+	end
+	-- the executor's own interface (search for scripts / UPLOAD / DELETE / EXECUTE / side tabs) is not one of the script's guis, so it is found by its widgets
+	local SKIPGUI = {RobloxGui = true, TopBarApp = true, ThemeProvider = true, PurchasePromptApp = true, InGameMenu = true, RobloxNetworkPauseNotification = true, UhAdmin = true}
+	local checked = setmetatable({}, {__mode = "k"})
+	local function isExecUI(g)
+		local hasBox, hasEx, hasUp, n = false, false, false, 0
+		for _, d in g:GetDescendants() do
+			n += 1
+			if n > 4000 then break end
+			if d:IsA("TextBox") then
+				if string.find(string.lower(d.PlaceholderText), "^search for scripts") then hasBox = true end
+			elseif d:IsA("TextButton") then
+				local t = string.upper(d.Text)
+				if t == "EXECUTE" then hasEx = true elseif t == "UPLOAD" then hasUp = true end
+			end
+			if hasBox or (hasEx and hasUp) then return true end
+		end
+		return false
+	end
+	local function findExecUIs(now)
+		local hosts = {}
+		local okH, hui = pcall(function() return gethui and gethui() end)
+		if okH and typeof(hui) == "Instance" then hosts[#hosts + 1] = hui end
+		local okC, cg = pcall(function() return game:GetService("CoreGui") end)
+		if okC and cg then hosts[#hosts + 1] = cg end
+		local lp = game:GetService("Players").LocalPlayer
+		local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+		if pg then hosts[#hosts + 1] = pg end
+		for _, h in hosts do
+			for _, g in h:GetChildren() do
+				if g:IsA("ScreenGui") and not roots[g] and not SKIPGUI[g.Name] and now - (checked[g] or -100) >= 10 then
+					checked[g] = now
+					local ok, hit = pcall(isExecUI, g)
+					if ok and hit then roots[g] = true end
+				end
+			end
+		end
+	end
+	local scanAt = 0
+	local lastAt, lastSlow, lastTab = 0, 0, nil
+	function AT.Tick(force)
+		local now = os.clock()
+		if not force and now - lastAt < 0.1 then return end
+		lastAt = now
+		local acc = (Util.Color and Util.Color.Cur) or GetUIColor(_totalrendertime)
+		local bg = GetUIBGColor(_totalrendertime)
+		local tx = UITextColor.Value
+		F.force = force or false
+		F.a = F.force or not last.a or not near(acc, last.a, 0.004)
+		F.b = F.force or not last.b or not near(bg, last.b, 0.006)
+		F.x = F.force or not last.x or not near(tx, last.x, 0.006)
+		if F.a then
+			last.a, th.accent = acc, acc
+			th.h = acc:ToHSV()
+		end
+		if F.b then
+			last.b, th.bg = bg, bg
+			local _, _, bv = bg:ToHSV()
+			th.light = bv > 0.5
+		end
+		if F.x then last.x, th.text = tx, tx end
+		NAUISTROKER = acc -- the admin's own main colour now is the reanimation's accent
+		if F.a then
+			if NAgui then
+				if NAgui.applyMainColorToRegisteredStrokes then pcall(NAgui.applyMainColorToRegisteredStrokes, acc) end
+				if NAgui.applyMainColorToAccentSurfaces then pcall(NAgui.applyMainColorToAccentSurfaces, acc) end
+				if NAgui.scheduleMainColorTabRefresh and (F.force or not lastTab or not near(acc, lastTab, 0.02)) then
+					lastTab = acc
+					pcall(NAgui.scheduleMainColorTabRefresh, acc)
+				end
+			end
+			if NAmanage and NAmanage.SideSwipe_UpdateHandleColors then pcall(NAmanage.SideSwipe_UpdateHandleColors, acc) end
+		end
+		if NAStuff and typeof(NAStuff.NASCREENGUI) == "Instance" then roots[NAStuff.NASCREENGUI] = true end
+		if now - scanAt >= 5 then
+			scanAt = now
+			pcall(findExecUIs, now)
+		end
+		for g in roots do hook(g) end
+		local slow = now - lastSlow >= 1
+		if slow then lastSlow = now end
+		for o, recs in tracked do
+			if o.Parent then pcall(doObj, o, recs, slow) end
+		end
+	end
+	game:GetService("RunService").Heartbeat:Connect(function()
+		local n = 0
+		while qh <= qt and n < 120 do
+			local d = queue[qh]
+			queue[qh] = nil
+			qh += 1
+			n += 1
+			if d and not tracked[d] and d.Parent then pcall(track, d) end
+		end
+		if qh > qt then qh, qt = 1, 0 end
+		pcall(AT.Tick, false)
+	end)
+	return AT
+end)()
 
 do
 	local uinotif = {
@@ -261421,6 +262288,35 @@ end
 
 SaveData.Reanimator = SaveData.Reanimator or {}
 
+-- [fling toggle] shared target queue for the Tool / NPC reanimators (same checks and red highlight as LimbReanimator.Fling); R = reanimator table
+Util.Fling.Queue = function(R, target, duration)
+	if typeof(target) == "Instance" and target:IsA("Player") then target = target.Character end
+	if not target or target == Reanimate.Character or target == Player.Character then return false end
+	if typeof(target) == "Instance" then
+		local fpart = Util.Fling.GetPart(target)
+		if not fpart or not fpart:IsDescendantOf(workspace) or R._TempNotFling[target] then return false end
+		local fp = fpart.Position
+		if fp.X ~= fp.X or fp.Y ~= fp.Y or fp.Z ~= fp.Z or fp.Magnitude > 1e6 then return false end
+		local fh = target:IsA("Model") and target:FindFirstChildOfClass("Humanoid")
+		if fh and fh.Health <= 0 then return false end
+		R._TempNotFling[target] = true
+		task.delay(1, function() R._TempNotFling[target] = nil end)
+	end
+	for _, v in R.FlingTargets do
+		if v.Target == target then return false end
+	end
+	table.insert(R.FlingTargets, {Target = target, Duration = duration})
+	if typeof(target) == "Instance" and target:IsA("Model") then
+		local h = Util.Instance("Highlight")
+		h.Adornee, h.FillColor, h.OutlineColor = target, Color3.new(1, 0, 0), Color3.new(1, 0, 0)
+		h.FillTransparency, h.OutlineTransparency = 0.5, 0
+		h.Parent = target
+		TweenService:Create(h, TweenInfo.new(5), {FillTransparency = 1, OutlineTransparency = 1}):Play()
+		Debris:AddItem(h, 5)
+	end
+	return true
+end
+
 local LimbReanimator = {}
 LimbReanimator.Name = "Limbs"
 SaveData.Reanimator.LimbMode = SaveData.Reanimator.LimbMode or 0
@@ -262815,6 +263711,7 @@ HatReanimator.HatCollideMethod = SaveData.Reanimator.HatsCollideMethod
 -- 7 - idk honestly but this is just modified heavily for now
 -- 8 - VERY EXPERIMENTAL, do NOT use
 -- 9 - NOOBY'S METHOD *EXPERIMENTAL!!!* (v32: state lock + far from void + quick re-equip)
+-- 10 - r15 hat reanim (R15 ONLY: state lock + far from void + full R15 joint chain; falls back to 6 on R6)
 HatReanimator.IWantAllHats = SaveData.Reanimator.IWantAllHats
 HatReanimator.IWantHatCollide = SaveData.Reanimator.IWantHatCollide
 HatReanimator.Permadeath = false--not SaveData.Reanimator.HatsPatchmahub
@@ -262970,7 +263867,7 @@ function HatReanimator.Config(parent)
 		SaveData.Reanimator.HatsCollide = val
 	end)
 	UI.CreateText(parent, "if ur hats get voided when u try to hat collide\nvvv try changing this vvv", 10, Enum.TextXAlignment.Center)
-	UI.CreateDropdown(parent, "Torso Offset", {
+	local torsoOffsetNames = {
 		"1 - ShownApe's method (???)",
 		"2 - STEVE's method V1 (specific)",
 		"3 - 2 but for back accessories",
@@ -262981,10 +263878,23 @@ function HatReanimator.Config(parent)
 		"8 - STEVE's method V3 (most stable)",
 		"9 - experimental do not use",
 		"10 - NOOBY'S METHOD *EXPERIMENTAL!!!*",
-	}, HatReanimator.HatCollideMethod + 1).Changed:Connect(function(val)
+	}
+	local cfgChar = Player.Character
+	local cfgHum = cfgChar and cfgChar:FindFirstChildOfClass("Humanoid")
+	local cfgIsR15 = cfgHum ~= nil and cfgHum.RigType == Enum.HumanoidRigType.R15
+	if cfgIsR15 then
+		table.insert(torsoOffsetNames, "11 - r15 hat reanim (R15 only)")
+	elseif HatReanimator.HatCollideMethod >= 10 then
+		HatReanimator.HatCollideMethod = 6 -- r15 hat reanim is R15 only: never enabled / advertised on R6
+		SaveData.Reanimator.HatsCollideMethod = 6
+	end
+	UI.CreateDropdown(parent, "Torso Offset", torsoOffsetNames, HatReanimator.HatCollideMethod + 1).Changed:Connect(function(val)
 		HatReanimator.HatCollideMethod = val - 1
 		SaveData.Reanimator.HatsCollideMethod = val - 1
 	end)
+	if cfgIsR15 then
+		UI.CreateText(parent, "11 - r15 hat reanim: R15 only.\nThis hat reanimation method is exclusively compatible with R15 characters.", 10, Enum.TextXAlignment.Center)
+	end
 	UI.CreateSwitch(parent, "Ensure All Hats", HatReanimator.IWantAllHats).Changed:Connect(function(val)
 		HatReanimator.IWantAllHats = val
 		SaveData.Reanimator.IWantAllHats = val
@@ -264352,6 +265262,53 @@ function HatReanimator.Start()
 			return _counthats(hats)
 		end,
 	}
+	-- r15 hat reanim (R15 ONLY)
+	-- State lock + 60-stud far-from-void torso offset (like NOOBY'S METHOD) driven through the full R15 joint chain
+	-- (Root / Waist / Neck / Shoulders / Hips), and it waits for the R15 UpperTorso instead of the R6 "Torso".
+	-- Never offered or run on R6: the config hides it and OnCharacter falls back to method 6.
+	local r15hat_lock = {}
+	local r15hat_hrptp = hatcol_hrptpstab(CFrame.new(0, 0, -60))
+	HatCollideMethods[10] = {
+		NoAnim = true,
+		Wait1 = 0.1,
+		Wait2 = 0.1,
+		HRPTP = function(dt, character, Humanoid, RootPosition, RootPart, readystate)
+			if Humanoid.RigType ~= Enum.HumanoidRigType.R15 then return end
+			r15hat_hrptp(dt, character, Humanoid, RootPosition, RootPart, readystate)
+		end,
+		State1 = function(character, Humanoid, hats)
+			for _,c in r15hat_lock do c:Disconnect() end
+			table.clear(r15hat_lock)
+			for _,v in hats do
+				table.insert(r15hat_lock, v.Changed:Connect(function(p)
+					if p == "BackendAccoutrementState" then
+						SetAccoutrementState(v, BackendAccoutrementState.None)
+					end
+				end))
+				SetAccoutrementState(v, BackendAccoutrementState.InWorkspace)
+				SetAccoutrementState(v, BackendAccoutrementState.None)
+			end
+			HatReanimator.Status.HatCollide = #hats .. " hats LOCKED (r15 hat reanim)!"
+		end,
+		State2 = function(character, hats)
+			local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("LowerTorso")
+			if torso and torso.Parent then
+				torso.AncestryChanged:Wait()
+			end
+			HatReanimator.Status.HatCollide = "R15 torso gone, re-equipping ASAP."
+			for _,c in r15hat_lock do c:Disconnect() end
+			table.clear(r15hat_lock)
+			for _,v in hats do
+				SetAccoutrementState(v, BackendAccoutrementState.Equipped)
+			end
+			local head = character:FindFirstChild("Head")
+			if head and head.Parent then
+				head.AncestryChanged:Wait()
+			end
+			task.wait(0.5)
+			return _counthats(hats)
+		end,
+	}
 	local NumHats = 0
 	local function OnCharacter(character)
 		if HatReanimator.DontFireCharAddOnThisChar == character then return end
@@ -264383,6 +265340,11 @@ function HatReanimator.Start()
 		CurrentCharacter = nil
 		local Humanoid = character:WaitForChild("Humanoid", 10)
 		if not Humanoid then return end
+		if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
+			hatcolmeth = 6 -- r15 hat reanim is R15 only
+			selhatcol = HatCollideMethods[hatcolmeth]
+			pcall(Util.UINotify, "r15 hat reanim is R15 only - using method 7 instead.")
+		end
 		if not Reanimate.UseLoadAnimationHook then
 			local stupid = character:FindFirstChild("Animate")
 			if stupid then
@@ -265151,8 +266113,9 @@ do
 	local ToolReanimator = {}
 	Reanimate.ToolReanimator = ToolReanimator
 	ToolReanimator.Name = "Tools"
-	ToolReanimator.FlingEnabled = false
+	ToolReanimator.FlingEnabled = not not SaveData.Reanimator.ToolsFling
 	ToolReanimator.FlingTargets = {}
+	ToolReanimator._TempNotFling = {}
 	SaveData.Reanimator.ToolsCollide = not not SaveData.Reanimator.ToolsCollide
 	SaveData.Reanimator.ToolsPermadeath = SaveData.Reanimator.ToolsPermadeath ~= false
 	SaveData.Reanimator.ToolsRespawnPosition = SaveData.Reanimator.ToolsRespawnPosition or SaveData.Reanimator.RespawnPosition or 0
@@ -265168,11 +266131,9 @@ do
 	-- 4 - under character (keep rootpart streamed)
 	ToolReanimator.AutoForceRespawn = SaveData.Reanimator.ToolsAutoForceRespawn
 	ToolReanimator.StuckTimeout = SaveData.Reanimator.ToolsStuckTimeout
-	-- 1 = Original, 3 = Corpse Claim (2 was Drop Claim: removed from the menu, a saved 2 falls back to Original). Read when Reanimate starts; switching only takes effect on the next start
-	SaveData.Reanimator.ToolsMethod = math.clamp(math.floor(tonumber(SaveData.Reanimator.ToolsMethod) or 1), 1, 3)
-	if SaveData.Reanimator.ToolsMethod == 2 then SaveData.Reanimator.ToolsMethod = 1 end
+	-- 1 = Original, 3 = Corpse Claim. Read when Reanimate starts; switching only takes effect on the next start
+	SaveData.Reanimator.ToolsMethod = SaveData.Reanimator.ToolsMethod == 3 and 3 or 1
 	ToolReanimator.Method = SaveData.Reanimator.ToolsMethod
-	local ToolMethods = {[1] = "Original", [3] = "Corpse Claim"}
 	local ToolMethodInfo = {
 		[1] = "Original: equips the tools, breaks the real character's joints server-side and uses the freed handles. Optional dolteddown's permadeath.",
 		[3] = "Corpse Claim: every tool is armed at once, then the real character is killed so the server breaks all grips together. A dead humanoid cannot pick anything up, so each tool is moved into Workspace right away (before the corpse is removed). A tool is only driven once the server has really freed it and you own it; unconfirmed drops are resent. The respawned character is parked alive and touch-disabled. replicatesignal is only an optional helper.",
@@ -265220,6 +266181,11 @@ do
 			ToolReanimator.RespawnPosition = val - 1
 			SaveData.Reanimator.ToolsRespawnPosition = val - 1
 		end)
+		UI.CreateSwitch(parent, "Target Fling Enabled", ToolReanimator.FlingEnabled).Changed:Connect(function(val)
+			ToolReanimator.FlingEnabled = val
+			SaveData.Reanimator.ToolsFling = val
+		end)
+		UI.CreateText(parent, "^^^ the biggest tool handle you really own is thrown at fling targets (a handle the server still owns is never used). Fling Method: main page", 10, Enum.TextXAlignment.Center)
 		UI.CreateSwitch(parent, "Tool Collide", ToolReanimator.Collide).Changed:Connect(function(val)
 			ToolReanimator.Collide = val
 			SaveData.Reanimator.ToolsCollide = val
@@ -265246,26 +266212,71 @@ do
 			ToolReanimator.ForceRespawn("Manual force respawn.")
 		end)
 	end
+	function ToolReanimator.Fling(target, duration)
+		if not ToolReanimator.FlingEnabled then return end
+		return Util.Fling.Queue(ToolReanimator, target, duration)
+	end
+	-- Target Fling (toggle): the biggest OWNED tool handle leaves its limb and is thrown at the queue's first target through the shared Util.Fling
+	-- engine (same glue / duration rules as the Hat Reanimator). Returns that claim so the limb loop skips it this frame; afterwards it returns to its limb.
+	local function ReceiveOwns(h) return h.ReceiveAge == 0 end
+	function ToolReanimator.FlingStep(claimed, owns, t)
+		owns = owns or ReceiveOwns
+		local q, ft, flingcf, pick = ToolReanimator.FlingTargets
+		if q[1] then
+			if ToolReanimator.FlingEnabled then
+				local area = 0
+				for _, c in claimed do
+					local h = c.Handle
+					local a = h.Size.X * h.Size.Y * h.Size.Z
+					if a > area and h:IsDescendantOf(workspace) and owns(h) then pick, area = c, a end
+				end
+			end
+			if pick then
+				ft, flingcf = Util.Fling.Step(q, t, Util.Fling.UseGlue() and Reanimate.PhysicsRepRootPartFling or 2)
+			else
+				table.clear(q)
+			end
+		end
+		local last = ToolReanimator.FlingPick
+		if last and not (ft and last == pick) then
+			pcall(sethiddenproperty, last.Handle, "PhysicsRepRootRef", nil)
+			last.Handle.CanCollide = ToolReanimator.Collide
+		end
+		if not ft then
+			ToolReanimator.FlingPick = nil
+			return nil
+		end
+		local h = pick.Handle
+		h.CanCollide, h.Massless = true, true
+		Util.Fling.ApplyRoot(h, ft, flingcf)
+		pcall(sethiddenproperty, h, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(ft.Target) or nil)
+		ToolReanimator.FlingPick = pick
+		return pick
+	end
+	function ToolReanimator.FlingReset()
+		table.clear(ToolReanimator.FlingTargets)
+		local p = ToolReanimator.FlingPick
+		ToolReanimator.FlingPick = nil
+		if p then pcall(sethiddenproperty, p.Handle, "PhysicsRepRootRef", nil) end
+	end
 	-- reuses the Hat Reanimator's force respawn (re-enables the Dead state first, so it also works while stuck with dolteddown's pd)
 	function ToolReanimator.ForceRespawn(reason)
 		ToolReanimator.Status.Permadeath = reason or "Force respawn!"
 		return HatReanimator.ForceRespawn(reason)
 	end
-	-- Methods 2 + 3 (Drop Claim / Corpse Claim). "Original" (Start) is untouched. These two never run the Original's
-	-- break-joints-and-hold flow: the handles are freed by dropping the tools (2) or by letting the real character die (3),
+	-- Method 3 (Corpse Claim). "Original" (Start) is untouched. The handles are freed by letting the real character die,
 	-- and the tools then live in Workspace as plain unanchored parts that we own and drive onto the R6 limbs.
-	-- A handle is only ever used once the SERVER has freed it (its grip is gone in the replicated state). Nothing here destroys
-	-- joints locally, because a locally-freed handle is only moved on our screen and stays attached for everybody else.
-	function ToolReanimator.StartAlt(method)
+	-- A handle is only driven while the client really owns it (isnetworkowner); a handle the server still owns is never moved,
+	-- because that move would only exist on our screen. Like the Original, the handles are freed locally and kept moving beside
+	-- the real character before the server breaks the joints, so the server hands the freed assemblies to this client.
+	function ToolReanimator.StartAlt()
 		local Status = ToolReanimator.Status
-		local DropMode = method == 2
 		local claimed = {} -- {Tool, Handle, Limb}; every handle is a Workspace part driven onto its limb
 		local Stopped, Busy = false, false
 		local HandledChar, ParkConn = nil, nil
-		local ParkChar, ParkHum = nil, nil
 		local nextretry, nextredrop = 0, {}
 		ToolReanimator.HasPermadeath = false
-		Status.Permadeath = "Not used by " .. ToolMethods[method]
+		Status.Permadeath = "Not used by Corpse Claim"
 		local function GetTools()
 			local tools = {}
 			local char = Player.Character
@@ -265306,7 +266317,7 @@ do
 		end
 		local Holding, ParkRoot = false, nil -- Holding: a freed handle is not really ours yet, so the real character stays beside it
 		local function UpdateSummary()
-			local head = "[" .. ToolMethods[method] .. "] " .. (HasOwnerCheck and "" or "(ownership unverified: no isnetworkowner) ")
+			local head = "[Corpse Claim] " .. (HasOwnerCheck and "" or "(ownership unverified: no isnetworkowner, movement may be client-only) ")
 			if #claimed == 0 then
 				ToolReanimator.Summary = head .. "No usable Tools found (a Tool needs a Handle part). Waiting..."
 				return
@@ -265388,11 +266399,15 @@ do
 			end
 			return list
 		end
-		local function HasNewTools()
-			for _, tool in GetTools() do
-				if not IsClaimed(tool) then return true end
+		-- frees a handle locally (grip / welds / constraints) so it can be moved as its own assembly while we still own it
+		local function Detach(handle)
+			for _, j in handle:GetJoints() do
+				pcall(j.Destroy, j)
 			end
-			return false
+			for _, v in handle:GetChildren() do
+				if v:IsA("JointInstance") then v:Destroy() end
+				if v:IsA("Constraint") then v.Enabled = false end
+			end
 		end
 		-- where the real (alive) character is parked, driven by the same respawntp option as the Original
 		local function ParkPosition(RootPart)
@@ -265478,24 +266493,7 @@ do
 				task.wait(0.25) -- let the server build the tool grips before they are freed
 				if not alive() then return end
 				ClaimTools(character, list) -- tools that showed up meanwhile join this pass
-				if DropMode then
-					-- DROP CLAIM: the character stays alive. Each equipped tool is reparented to Workspace (the same replicated
-					-- "drop" the backpack does) and the server destroys its grip. Nothing counts as dropped until that is confirmed.
-					Status.ReanimState = "Drop Claim: dropping " .. #list .. " tool(s)"
-					local deadline = os.clock() + 3
-					local left
-					repeat
-						left = 0
-						for _, c in list do
-							c.Handle.CanTouch = false
-							if c.Tool.Parent ~= workspace then
-								pcall(function() c.Tool.Parent = workspace end)
-							end
-							if not IsFree(c) then left += 1 end
-						end
-						if left > 0 then RunService.Heartbeat:Wait() end
-					until left == 0 or os.clock() > deadline or not alive()
-				else
+				do
 					-- CORPSE CLAIM: all tools are armed at once, the real character is killed (every grip breaks in the same server
 					-- step) and, because a dead humanoid cannot pick anything up, each tool is moved into Workspace while it is dead.
 					Status.ReanimState = "Corpse Claim: arming " .. #list .. " tool(s)"
@@ -265516,6 +266514,13 @@ do
 						end
 						if ready < #list then task.wait(0.1) end
 					until ready >= #list or os.clock() > armDeadline or not alive()
+					if not alive() then return end
+					-- replication fix: free the armed handles locally and let the bring loop keep them moving beside the real character while we
+					-- still own them (the Original's State 2), so the server's joint break hands the freed assemblies to this client instead of keeping them
+					for _, c in list do
+						if Valid(c) then Detach(c.Handle) end
+					end
+					task.wait()
 					if not alive() then return end
 					Status.ReanimState = "Corpse Claim: killing the real character"
 					pcall(function()
@@ -265596,7 +266601,7 @@ do
 			if animator then animator:Destroy() end
 			local RootPart = character:WaitForChild("HumanoidRootPart", 10)
 			if not RootPart then return end
-			ParkRoot, ParkChar, ParkHum = RootPart, character, hum
+			ParkRoot = RootPart
 			for _, v in character:GetDescendants() do -- the body must not touch (= pick up) the loose tool handles
 				if v:IsA("BasePart") then v.CanTouch = false end
 			end
@@ -265625,7 +266630,7 @@ do
 		if startChar and startChar:IsDescendantOf(workspace) then
 			task.spawn(OnCharacter, startChar) -- the live character is processed directly (no initial kill like the Original)
 		end
-		local nextsummary, stuckSince, nextscan = 0, nil, 0
+		local nextsummary, stuckSince = 0, nil
 		while not Reanimate.Stopping do
 			RunService.PreSimulation:Wait()
 			workspace.FallenPartsDestroyHeight = 0/0
@@ -265654,40 +266659,10 @@ do
 			end
 			-- stuck watchdog: tools were claimed but none is free + owned -> forget them and force respawn to claim fresh ones
 			Prune()
-			local usable, unowned, now = 0, 0, os.clock()
+			local usable, unowned = 0, 0
 			for _, c in claimed do
 				if IsFree(c) then
-					if Owns(c.Handle) then
-						usable += 1
-						c.UnownedSince = nil
-					else
-						unowned += 1
-						c.UnownedSince = c.UnownedSince or now
-					end
-				else
-					c.UnownedSince = nil
-				end
-			end
-			if DropMode and not Busy then
-				-- Drop Claim: a freed handle that never became really ours is handed back, and the rescan below claims it again as a fresh drop
-				for i = #claimed, 1, -1 do
-					local c = claimed[i]
-					if c.UnownedSince and now - c.UnownedSince > 5 then
-						nextredrop[c] = nil
-						table.remove(claimed, i)
-						pcall(function()
-							local dest = Player:FindFirstChildOfClass("Backpack") or Player.Character
-							if dest then c.Tool.Parent = dest end
-						end)
-						unowned -= 1
-					end
-				end
-			end
-			-- Drop Claim rescan: tools that show up after the first pass (late Backpack fill, pickups, respawn gear) get their own pass
-			if DropMode and not Busy and ParkChar and now > nextscan then
-				nextscan = now + 1
-				if ParkChar == Character and ParkChar == HandledChar and ParkChar:IsDescendantOf(workspace) and #claimed < #LimbOrder and HasNewTools() then
-					task.spawn(ClaimPass, ParkChar, ParkHum, ParkRoot, false)
+					if Owns(c.Handle) then usable += 1 else unowned += 1 end
 				end
 			end
 			if Holding and not Busy and unowned == 0 and ParkRoot then
@@ -265712,10 +266687,13 @@ do
 				local netless = Reanimate.NetlessVelocity + (math.sin(t * 0.5) + 1) / 2
 				local idle = Vector3.new(math.sin(t * 14), math.sin(t * 15 + 1.0472), math.sin(t * 16 + 2.0944)) * 0.001
 				Prune()
+				local flung = ToolReanimator.FlingStep(claimed, Owns, t)
 				for _, c in claimed do
 					local handle = c.Handle
 					local limb = ReanimCharacter:FindFirstChild(c.Limb)
-					if c.Tool.Parent ~= workspace then
+					if c == flung then
+						-- thrown at a fling target this frame (FlingStep moved it)
+					elseif c.Tool.Parent ~= workspace then
 						-- picked back up by touch / re-equipped by the game: drop it again so the handle stays a free Workspace part
 						if t > (nextredrop[c] or 0) then
 							nextredrop[c] = t + 0.25
@@ -265764,7 +266742,7 @@ do
 				Reanimate:CameraLockCharacter()
 			end
 		end
-		-- CLEANUP (both methods): stop parking, give the tools back and return the still-living real character to the reanimate character
+		-- CLEANUP: stop parking, give the tools back and return the still-living real character to the reanimate character
 		Stopped = true
 		CharConn:Disconnect()
 		if ParkConn then ParkConn:Disconnect() ParkConn = nil end
@@ -265785,9 +266763,7 @@ do
 		end
 		if hum and hum.Parent then
 			pcall(function() hum.EvaluateStateMachine = true end)
-			if not DropMode then
-				pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end) -- Corpse Claim: the parked body was a fresh respawn
-			end
+			pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end) -- the parked body was a fresh respawn
 			if hum.Health > 0 then
 				local hrp = hum.RootPart
 				if hrp and ReturnCFrame then
@@ -265800,6 +266776,7 @@ do
 		end
 		table.clear(claimed)
 		table.clear(nextredrop)
+		ToolReanimator.FlingReset()
 		ToolReanimator.HasPermadeath = false
 		ToolReanimator.Summary = "(no tools claimed yet...)"
 		Status.Permadeath = "(no status)"
@@ -265808,7 +266785,7 @@ do
 		Reanimate.DestroyCharacter()
 	end
 	function ToolReanimator.Start()
-		if ToolReanimator.Method ~= 1 then return ToolReanimator.StartAlt(ToolReanimator.Method) end
+		if ToolReanimator.Method ~= 1 then return ToolReanimator.StartAlt() end
 		local Status = ToolReanimator.Status
 		local claimed = {}
 		local CurrentCharacter, HandledChar, Humanoid = nil, nil, nil
@@ -266105,13 +267082,14 @@ do
 				local netless = Reanimate.NetlessVelocity + (math.sin(t * 0.5) + 1) / 2
 				local idle = Vector3.new(math.sin(t * 14), math.sin(t * 15 + 1.0472), math.sin(t * 16 + 2.0944)) * 0.001
 				-- tools are only used once the character has respawned, been broken apart and the handles are free (ReanimOkay)
-				for _, c in (ReanimOkay and claimed or {}) do
+				local flung = ToolReanimator.FlingStep(ReanimOkay and claimed or {}, nil, t)
+					for _, c in (ReanimOkay and claimed or {}) do
 					local handle = c.Handle
 					local limb = ReanimCharacter:FindFirstChild(c.Limb)
 					if c.Tool.Parent ~= Character then
 						pcall(function() c.Tool.Parent = Character end) -- unequipped by the game/backpack: keep it in the character so the handle stays in Workspace
 					end
-					if limb and handle.Parent and handle:IsDescendantOf(workspace) then
+					if c ~= flung and limb and handle.Parent and handle:IsDescendantOf(workspace) then
 						handle.CanCollide = ToolReanimator.Collide
 						handle.LocalTransparencyModifier = ltm
 						if #handle:GetJoints() > 0 then
@@ -266141,6 +267119,7 @@ do
 		end
 		Stopped = true
 		CharConn:Disconnect()
+		ToolReanimator.FlingReset()
 		-- give the tools back and let the game respawn the real character
 		local backpack = Player:FindFirstChildOfClass("Backpack")
 		for _, c in claimed do
@@ -266215,7 +267194,7 @@ do
 	end
 
 	-- ===== NPC Reanimation (Limb method) =====
-	local NPC = {Name = "NPC", FlingEnabled = false, FlingTargets = {}, List = {}, ListSet = {}, ListCount = 0, Rebuilds = 0}
+	local NPC = {Name = "NPC", FlingEnabled = not not RS.NPCFling, FlingTargets = {}, _TempNotFling = {}, List = {}, ListSet = {}, ListCount = 0, Rebuilds = 0}
 	Reanimate.NPCReanimator = NPC
 	RS.NPCRadius = math.clamp(tonumber(RS.NPCRadius) or 200, 20, 1000)
 	NPC.Radius = RS.NPCRadius
@@ -266226,7 +267205,10 @@ do
 	NPC.Rejected = setmetatable({}, {__mode = "k"})
 	local NPC_PARTS = {"HumanoidRootPart", "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
 	local NPC_JOINTS = {{"HumanoidRootPart", "RootJoint"}, {"Torso", "Neck"}, {"Torso", "Left Shoulder"}, {"Torso", "Right Shoulder"}, {"Torso", "Left Hip"}, {"Torso", "Right Hip"}}
-	function NPC.Fling() return false end
+	function NPC.Fling(target, duration)
+		if not NPC.FlingEnabled then return end
+		return Util.Fling.Queue(NPC, target, duration)
+	end
 
 	-- returns {Model, Hum, Root, Motors, Parts} for a usable R6 NPC, or nil + reason + short category (for the scan summary)
 	-- R6 is decided from the real structure (Model + Humanoid + the seven BaseParts + the six Motor6D joints), never from the model name,
@@ -266652,6 +267634,46 @@ do
 		npcPlace(t, npcCfOf)
 	end
 
+	-- Target Fling (toggle): your REAL character flings, never the NPC (the NPC keeps copying the fake character). The real root only leaves its spot
+	-- while a target is active (Util.Fling engine, same duration / glue rules as the Limb reanimator) and is put back once the queue is empty.
+	function NPC.FlingStop()
+		local home, ch = NPC.FlingHome, Player.Character
+		NPC.FlingHome = nil
+		if not home then return end
+		local root = ch and ch:FindFirstChild("HumanoidRootPart")
+		local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+		if root then
+			pcall(sethiddenproperty, root, "PhysicsRepRootRef", nil)
+			root.CFrame = home
+			root.AssemblyLinearVelocity, root.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+		end
+		if hum then
+			pcall(sethiddenproperty, hum, "MoveDirectionInternal", Vector3.zero)
+			pcall(sethiddenproperty, hum, "NetworkHumanoidState", Enum.HumanoidStateType.PlatformStanding.Value)
+		end
+	end
+	function NPC.FlingStep()
+		local ch = Player.Character
+		local root = ch and ch:FindFirstChild("HumanoidRootPart")
+		local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+		local q, ft, flingcf = NPC.FlingTargets
+		if q[1] then
+			if NPC.FlingEnabled and root and hum and hum.Health > 0 and root:IsDescendantOf(workspace) then
+				ft, flingcf = Util.Fling.Step(q, os.clock(), Util.Fling.UseGlue() and Reanimate.PhysicsRepRootPartFling or 2)
+			else
+				table.clear(q)
+			end
+		end
+		if ft then
+			NPC.FlingHome = NPC.FlingHome or root.CFrame
+			root.CanCollide = true
+			Util.Fling.ApplyRoot(root, ft, flingcf)
+			pcall(sethiddenproperty, root, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(ft.Target) or nil)
+			Util.Fling.ApplyHumanoid(hum, ft, 0)
+		elseif NPC.FlingHome and not q[1] then
+			NPC.FlingStop()
+		end
+	end
 	function NPC.Step()
 		RunService.PreSimulation:Wait()
 		workspace.FallenPartsDestroyHeight = 0/0
@@ -266738,6 +267760,7 @@ do
 		else
 			pcall(Util.Notify, "NPC Reanimation: pick an NPC in the list to take it over.")
 		end
+		local flingConn = RunService.Heartbeat:Connect(NPC.FlingStep)
 		local lastErr
 		while not Reanimate.Stopping do
 			local ok, err = pcall(NPC.Step)
@@ -266747,6 +267770,9 @@ do
 			end
 		end
 		NPC.Detach()
+		flingConn:Disconnect()
+		table.clear(NPC.FlingTargets)
+		NPC.FlingStop()
 		pcall(function() if rh and rh.Parent then rh.PlatformStand = oldPS end end)
 		if not (NPC.StatusLabel and NPC.StatusLabel.Parent) then NPC.Unhook() end
 		if oldRadius then pcall(sethiddenproperty, Player, "SimulationRadius", oldRadius) end
@@ -266816,6 +267842,10 @@ do
 		UI.CreateSwitch(parent, "Auto rescan all NPCs", NPC.AutoRescan).Changed:Connect(function(val)
 			NPC.AutoRescan = val
 			RS.NPCAutoRescan = val
+		end)
+		UI.CreateSwitch(parent, "Target Fling Enabled (your real character flings, not the NPC)", NPC.FlingEnabled).Changed:Connect(function(val)
+			NPC.FlingEnabled = val
+			RS.NPCFling = val
 		end)
 		UI.CreateButton(parent, "Release NPC", 15).Activated:Connect(function()
 			NPC.Target = nil
@@ -267373,11 +268403,12 @@ do
 		pcall(Util.Notify, text)
 	end
 
-	-- Limb Reanimator: "Target Fling Enabled" switch. Hats Reanimator: Target Fling Method ~= Disabled.
+	-- Limb / Tool / NPC Reanimators: their "Target Fling Enabled" switch. Hats Reanimator: Target Fling Method ~= Disabled.
 	function NoobyKill.TargetFlingEnabled()
 		local cur = Reanimate.Current
-		if cur == Reanimate.ToolReanimator or cur == Reanimate.NPCReanimator or (cur == nil and (SaveData.SelectedReanimator == 3 or SaveData.SelectedReanimator == 4)) then
-			return false
+		local sel = cur or ({[3] = Reanimate.ToolReanimator, [4] = Reanimate.NPCReanimator})[SaveData.SelectedReanimator]
+		if sel == Reanimate.ToolReanimator or sel == Reanimate.NPCReanimator then
+			return sel.FlingEnabled and true or false
 		end
 		local hats
 		if cur == HatReanimator then
