@@ -517,12 +517,91 @@ Util.FX = (function()
 	end
 
 	-- ───────────────────────── helpers ─────────────────────────
+	-- [v175 LIQUID GLASS] one shared spring driver (a single Heartbeat connection that exists only while a spring is moving).
+	-- Weak / strained devices (Low End, frame governor, Lite tier) get a short plain tween instead, so no per-frame work is added there.
+	local Springs, springConn, springAcc, springFrame = {}, nil, 0, 0
+	local function springStep(dt)
+		springFrame = springFrame + 1
+		springAcc = springAcc + dt
+		if FX.Gov and FX.Gov.Stride > 1 and springFrame % FX.Gov.Stride ~= 0 then return end -- [perf] exact dt is accumulated, motion keeps its speed
+		dt = math.min(springAcc, 1 / 30)
+		springAcc = 0
+		local any = false
+		for obj, props in pairs(Springs) do
+			if obj.Parent == nil then
+				Springs[obj] = nil
+			else
+				local live = false
+				for prop, st in pairs(props) do
+					local a = st.k * (st.t - st.x) - st.c * st.v
+					st.v = st.v + a * dt
+					st.x = st.x + st.v * dt
+					if math.abs(st.t - st.x) < 0.0006 and math.abs(st.v) < 0.01 then
+						pcall(function() obj[prop] = st.t end)
+						props[prop] = nil
+					else
+						pcall(function() obj[prop] = st.x end)
+						live = true
+					end
+				end
+				if live then any = true else Springs[obj] = nil end
+			end
+		end
+		if not any and springConn then
+			springConn:Disconnect()
+			springConn = nil
+		end
+	end
+	-- numeric property spring: k = stiffness, z = damping ratio (0.5 soft settle .. 1 critical), from = optional start value
+	function FX.SpringTo(obj, prop, target, k, z, from)
+		if not obj then return end
+		if not FX.Settings.Transitions or FX.Lite() then
+			local props = Springs[obj]
+			if props then props[prop] = nil end
+			pcall(function()
+				if from then obj[prop] = from end
+				if FX.Settings.Transitions then
+					RealTweenService:Create(obj, TweenInfo.new(0.14, Quad, EOut), {[prop] = target}):Play()
+				else
+					obj[prop] = target
+				end
+			end)
+			return
+		end
+		local props = Springs[obj]
+		if not props then props = {} Springs[obj] = props end
+		local st = props[prop]
+		local ok, cur = pcall(function() return obj[prop] end)
+		if ok and type(cur) == "number" then -- [v176] motion blur scaled by how far the spring travels
+			local d = math.abs(target - (from or cur))
+			if prop == "Rotation" then d = d / 20 end
+			if d > 0.015 then FX.MotionBlur(math.min(3, 1 + d * 5), 0.45) end
+		end
+		if not st then
+			st = {x = ok and cur or target, v = 0}
+			props[prop] = st
+		end
+		if from then st.x, st.v = from, 0 end
+		k = k or 260
+		st.t, st.k, st.c = target, k, 2 * (z or 0.7) * math.sqrt(k)
+		if not springConn then springConn = RunService.Heartbeat:Connect(springStep) end
+	end
+	-- spring feel per interaction: press = crisp, hover = soft overshoot, release = gentle settle (replaces the old elastic wobble)
+	local function liquidParams(style)
+		if style == Quad then return 620, 1 end
+		if style == Back then return 300, 0.68 end
+		return 250, 0.55
+	end
+
 	local tween = (function() -- [perf] TweenInfo objects are cached per (time, style, direction) and rebuilt only when the animation speed changes
 		local cache, speed = {}, nil
 		return function(obj, time, style, dir, props)
 			local sp = FX.Cfg.UIAnimSpeed or 1
 			if sp ~= speed then cache, speed = {}, sp end
 			style, dir = style or Quint, dir or EOut
+			local sprg = Springs[obj] -- [v175] a tween takes over from a running spring on the same properties
+			if sprg then for pk in pairs(props) do sprg[pk] = nil end end
+			if style == Enum.EasingStyle.Elastic or style == Bounce then style = Back end -- [v175] liquid: no wobble / bounce
 			local byStyle = cache[style]
 			if not byStyle then byStyle = {} cache[style] = byStyle end
 			local byDir = byStyle[dir]
@@ -570,7 +649,7 @@ Util.FX = (function()
 		end
 	end
 	local blurToken = 0
-	function FX.BlurPulse(peak, inTime, outTime)
+	function FX.BlurPulse(peak, inTime, outTime, soft)
 		if not FX.Settings.Blur then return end
 		blurToken = blurToken + 1
 		local my = blurToken
@@ -578,7 +657,63 @@ Util.FX = (function()
 		tween(Blur, inTime, Quad, EOut, {Size = peak})
 		task.delay(inTime, function()
 			if my ~= blurToken then return end
-			tween(Blur, outTime or 0.45, Quad, EIn, {Size = 0})
+			tween(Blur, outTime or 0.45, Quad, soft and EOut or EIn, {Size = 0})
+		end)
+	end
+	-- [v176 MOTION] light motion blur: one pooled screen blur, throttled, never stacks, eases fully out as the motion settles (off on weak devices / Low End)
+	local mbLast = 0
+	function FX.MotionBlur(peak, settle)
+		if not FX.Settings.Blur or FX.Lite() then return end
+		local now = os.clock()
+		if now - mbLast < 0.08 then return end
+		peak = math.min(peak or 2, 6)
+		if Blur.Size >= peak then return end
+		mbLast = now
+		FX.BlurPulse(peak, 0.09, math.clamp(settle or 0.4, 0.25, 1), true)
+	end
+	function FX.mtween(obj, time, style, dir, props)
+		if props and time >= 0.12 and (props.Position or props.Size or props.Rotation or props.Scale) then
+			FX.MotionBlur(1.2 + math.min(time, 1) * 2, time)
+		end
+		return tween(obj, time, style, dir, props)
+	end
+	-- [v176 MOTION] smooth wheel scrolling: the wheel notch becomes an eased glide (touch / drag scrolling stays native)
+	local wheelAt = 0
+	UserInputService.InputChanged:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseWheel then wheelAt = os.clock() end
+	end)
+	function FX.SmoothScroll(sf)
+		if sf:GetAttribute("FXS") then return end
+		sf:SetAttribute("FXS", true)
+		local prev, goal, tw, busy, step = sf.CanvasPosition, nil, nil, false, nil
+		sf:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+			if busy then return end
+			local cur = sf.CanvasPosition
+			if os.clock() - wheelAt < 0.05 and (cur - prev).Magnitude > 4 and FX.Settings.Transitions and not FX.Lite() then
+				local d = cur - prev
+				local active = tw and tw.PlaybackState == Enum.PlaybackState.Playing
+				if not active then step = d.Magnitude goal = cur
+				else goal = goal + d.Unit * (step or 48) end
+				if tw then tw:Cancel() end
+				local mx = sf.AbsoluteCanvasSize - sf.AbsoluteWindowSize
+				goal = Vector2.new(math.clamp(goal.X, 0, math.max(0, mx.X)), math.clamp(goal.Y, 0, math.max(0, mx.Y)))
+				busy = true
+				sf.CanvasPosition = prev
+				busy = false
+				FX.MotionBlur(1.4, 0.45)
+				tw = RealTweenService:Create(sf, TweenInfo.new(0.45, Quint, EOut), {CanvasPosition = goal})
+				tw:Play()
+				return
+			end
+			prev = cur
+		end)
+	end
+	function FX.SmoothScrollTree(root)
+		for _, d in ipairs(root:GetDescendants()) do
+			if d:IsA("ScrollingFrame") then pcall(FX.SmoothScroll, d) end
+		end
+		root.DescendantAdded:Connect(function(d)
+			if d:IsA("ScrollingFrame") then pcall(FX.SmoothScroll, d) end
 		end)
 	end
 
@@ -1603,7 +1738,14 @@ Util.FX = (function()
 		gloss.Interactable = false
 		local gg = Util.Instance("UIGradient", gloss)
 		gg.Rotation = 90
-		gg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1)})
+		gg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.45, 0.5), NumberSequenceKeypoint.new(1, 1)})
+		-- [v175 liquid glass] specular rim light: a hairline edge that catches light top-left and bottom-right and fades between
+		local rimS = Util.Instance("UIStroke", host)
+		rimS.Color, rimS.Thickness, rimS.Transparency = WHITE, 1, 0
+		rimS.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		local rimG = Util.Instance("UIGradient", rimS)
+		rimG.Rotation = 38
+		rimG.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.38), NumberSequenceKeypoint.new(0.3, 0.9), NumberSequenceKeypoint.new(0.7, 0.9), NumberSequenceKeypoint.new(1, 0.5)})
 		if FX.Lite() then return gloss, nil end -- [perf] weak device: top gloss only (no rim line / bottom shade layers)
 		local rim = Util.Instance("Frame", host)
 		rim.AnchorPoint = Vector2.new(0.5, 0)
@@ -1666,7 +1808,7 @@ Util.FX = (function()
 		c.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
 		c.BackgroundTransparency = 0.7
 		local big = math.max(host.AbsoluteSize.X, 60) * 2.2
-		tween(c, 0.55, Quint, EOut, {Size = UDim2.fromOffset(big, big), BackgroundTransparency = 1})
+		FX.mtween(c, 0.55, Quint, EOut, {Size = UDim2.fromOffset(big, big), BackgroundTransparency = 1})
 	end
 	local sheenFns = setmetatable({}, {__mode = "k"})
 	function FX.Sheen(b)
@@ -1683,16 +1825,16 @@ Util.FX = (function()
 				if n > 14 then break end
 				local sc = btnScale[d]
 				if sc and sc.Parent then
-					sc.Scale = 0.001
+					FX.SpringTo(sc, "Scale", 0.001, 400, 1, 0.001)
 				end
 				-- [v41] accelerating stagger (the gaps shrink) + alternating twist that untwists: snap-open, no wobble
 				local tilt = (n % 2 == 0) and 2.5 or -2.5
 				task.delay(0.08 + 0.36 * (1 - 0.86 ^ n), function()
-					if sc and sc.Parent then
-						tween(sc, 0.42, FX.Expo, EOut, {Scale = 1})
+					if sc and sc.Parent then -- [v175] liquid pop-in: soft spring, barely-there tilt
+						FX.SpringTo(sc, "Scale", 1, 190, 0.76)
 						if not FX.Lite() then
-							d.Rotation = tilt
-							tween(d, 0.5, FX.Expo, EOut, {Rotation = 0})
+							d.Rotation = tilt * 0.35
+							FX.SpringTo(d, "Rotation", 0, 160, 0.82)
 						end
 					end
 					FX.Sheen(d)
@@ -1727,9 +1869,9 @@ Util.FX = (function()
 			local e = echo
 			if not e then return end
 			echo = nil
-			tween(e, 0.26, FX.Expo, EOut, {Position = UDim2.fromOffset(0, 0)})
+			FX.mtween(e, 0.26, FX.Expo, EOut, {Position = UDim2.fromOffset(0, 0)})
 			local es = e:FindFirstChildOfClass("UIStroke")
-			if es then tween(es, 0.3, Quad, EIn, {Transparency = 1}) end
+			if es then FX.mtween(es, 0.3, Quad, EIn, {Transparency = 1}) end
 			Debris:AddItem(e, 0.4)
 		end
 
@@ -1824,7 +1966,7 @@ Util.FX = (function()
 			if not FX.Settings.Transitions then return end
 			local r = getRec()
 			r.grad.Offset = Vector2.new(-1, 0)
-			tween(r.grad, 0.6, Quad, EOut, {Offset = Vector2.new(1, 0)})
+			FX.mtween(r.grad, 0.85, Quint, EOut, {Offset = Vector2.new(1, 0)})
 		end
 		sheenFns[b] = function()
 			pcall(sheen)
@@ -1836,16 +1978,17 @@ Util.FX = (function()
 		local function refresh(style, time)
 			local s, rot, lift = 1, 0, 0
 			if down then
-				s, rot, lift = 0.95, 0.5, 2.5
+				s, rot, lift = 0.93, 0.5, 2.5
 			elseif hover then
 				s, rot, lift = 1.045, -0.7, -1.5
 			end
 			local fast = FX.Lite() -- [perf] weak / strained device: decorative layers snap instead of spawning a tween each
-			tween(sc, time, style, EOut, {Scale = s})
-			tween(b, time, style, EOut, {Rotation = rot, Position = basePos + UDim2.fromOffset(0, lift)})
+			do local k, z = liquidParams(style) FX.SpringTo(sc, "Scale", s, k, z) end -- [v175] spring press / hover / release
+			do local k, z = liquidParams(style) FX.SpringTo(b, "Rotation", rot, k, z) end -- [v175] spring tilt, glided lift
+			FX.mtween(b, math.max(time, 0.2), Quint, EOut, {Position = basePos + UDim2.fromOffset(0, lift)})
 			if lip then
 				local lp = basePos + UDim2.fromOffset(0, 3 + ((hover and not down) and 1 or 0))
-				if fast then lip.Position = lp else tween(lip, time, style, EOut, {Position = lp}) end
+				if fast then lip.Position = lp else FX.mtween(lip, time, style, EOut, {Position = lp}) end
 				lipK = down and 0.5 or (hover and 0.3 or 0.6)
 				lip.BackgroundColor3 = (stroke and stroke.Color or WHITE):Lerp(Color3.new(0, 0, 0), lipK)
 			end
@@ -1854,19 +1997,19 @@ Util.FX = (function()
 				gloss.BackgroundTransparency = gv
 				if shade then shade.BackgroundTransparency = sv end
 			else
-				tween(gloss, time, Quad, EOut, {BackgroundTransparency = gv})
-				if shade then tween(shade, time, Quad, EOut, {BackgroundTransparency = sv}) end
+				FX.mtween(gloss, time, Quad, EOut, {BackgroundTransparency = gv})
+				if shade then FX.mtween(shade, time, Quad, EOut, {BackgroundTransparency = sv}) end
 			end
 		end
 		b.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
 			hover = true
 			refresh(Back, 0.24)
-			if stroke then tween(stroke, 0.15, Quad, EOut, {Thickness = 2}) end
+			if stroke then FX.mtween(stroke, 0.15, Quad, EOut, {Thickness = 2}) end
 			if not FX.Lite() then
 				local r = getRec()
 				r.bar.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
-				tween(r.bar, 0.28, Back, EOut, {Size = UDim2.new(0, 3, 1, -8)})
+				FX.mtween(r.bar, 0.28, Back, EOut, {Size = UDim2.new(0, 3, 1, -8)})
 				sheen()
 			end
 			FX.Play("tick")
@@ -1876,8 +2019,8 @@ Util.FX = (function()
 			hover, down = false, false
 			echoSnap()
 			refresh(Back, 0.32)
-			if stroke then tween(stroke, 0.2, Quad, EOut, {Thickness = 1}) end
-			if rec then tween(rec.bar, 0.18, Quad, EOut, {Size = UDim2.new(0, 3, 0, 0)}) end
+			if stroke then FX.mtween(stroke, 0.2, Quad, EOut, {Thickness = 1}) end
+			if rec then FX.mtween(rec.bar, 0.18, Quad, EOut, {Size = UDim2.new(0, 3, 0, 0)}) end
 		end)
 		b.InputBegan:Connect(function(input)
 			if not isPress(input) or not FX.Settings.Transitions then return end
@@ -1905,7 +2048,8 @@ Util.FX = (function()
 		local sc = Util.Instance("UIScale", obj)
 		local hov, dn, foc = false, false, false
 		local function settle(style, time)
-			tween(sc, time, style, EOut, {Scale = dn and 0.96 or ((hov or foc) and 1.035 or 1)})
+			local k, z = liquidParams(style)
+			FX.SpringTo(sc, "Scale", dn and 0.965 or ((hov or foc) and 1.03 or 1), k, z)
 		end
 		obj.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
@@ -1993,8 +2137,7 @@ Util.FX = (function()
 			end
 			if lever.Value then
 				dot.Visible = true
-				dsc.Scale = 0.15
-				tween(dsc, 0.34, Back, EOut, {Scale = 1})
+				FX.SpringTo(dsc, "Scale", 1, 260, 0.6, 0.15) -- [v175] spring bead
 				FX.Ring(sw, FX.GetColor and FX.GetColor() or WHITE, 38, 0.4, 2)
 				FX.Play("tick", 1.3)
 			else
@@ -2002,7 +2145,7 @@ Util.FX = (function()
 				task.defer(function()
 					if my == token then dot.Visible = true end
 				end)
-				tween(dsc, 0.18, Quad, EIn, {Scale = 0.01})
+				FX.mtween(dsc, 0.18, Quad, EIn, {Scale = 0.01})
 				task.delay(0.2, function()
 					if my == token and not lever.Value then
 						dot.Visible = false
@@ -2014,7 +2157,8 @@ Util.FX = (function()
 
 		local hov, dn = false, false
 		local function squish(style, time)
-			tween(sc, time, style, EOut, {Scale = dn and 0.86 or (hov and 1.1 or 1)})
+			local k, z = liquidParams(style)
+			FX.SpringTo(sc, "Scale", dn and 0.88 or (hov and 1.08 or 1), k, z)
 		end
 		hit.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
@@ -2059,7 +2203,8 @@ Util.FX = (function()
 		Util.Instance("UICorner", glint).CornerRadius = UDim.new(1, 0)
 		local hov, dn = false, false
 		local function grow(style, time)
-			tween(sc, time, style, EOut, {Scale = dn and 1.3 or (hov and 1.15 or 1)})
+			local k, z = liquidParams(style)
+			FX.SpringTo(sc, "Scale", dn and 1.28 or (hov and 1.14 or 1), k, z)
 		end
 		track.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
@@ -2096,12 +2241,12 @@ Util.FX = (function()
 		gloss.BackgroundTransparency = 0.92
 		tb.Focused:Connect(function()
 			if not FX.Settings.Transitions then return end
-			if stroke then tween(stroke, 0.2, Back, EOut, {Thickness = math.max(2, FX.Cfg.UIBorder + 1)}) end
-			tween(gloss, 0.2, Quad, EOut, {BackgroundTransparency = 0.8})
+			if stroke then FX.mtween(stroke, 0.3, Quint, EOut, {Thickness = math.max(2, FX.Cfg.UIBorder + 1)}) end
+			FX.mtween(gloss, 0.3, Quint, EOut, {BackgroundTransparency = 0.8})
 		end)
 		tb.FocusLost:Connect(function()
-			if stroke then tween(stroke, 0.25, Quad, EOut, {Thickness = FX.Cfg.UIBorder}) end -- UpdateGrads only re-syncs on change
-			tween(gloss, 0.25, Quad, EOut, {BackgroundTransparency = 0.92})
+			if stroke then FX.mtween(stroke, 0.36, Quint, EOut, {Thickness = FX.Cfg.UIBorder}) end -- UpdateGrads only re-syncs on change
+			FX.mtween(gloss, 0.36, Quint, EOut, {BackgroundTransparency = 0.92})
 		end)
 	end
 
@@ -2119,20 +2264,20 @@ Util.FX = (function()
 		item.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
 			hover = true
-			tween(hl, 0.12, Quad, EOut, {BackgroundTransparency = 0.88})
+			FX.mtween(hl, 0.22, Quint, EOut, {BackgroundTransparency = 0.87})
 			FX.Play("tick", 1.2)
 		end)
 		item.MouseLeave:Connect(function()
 			hover = false
-			tween(hl, 0.2, Quad, EOut, {BackgroundTransparency = 1})
+			FX.mtween(hl, 0.34, Quint, EOut, {BackgroundTransparency = 1})
 		end)
 		item.InputBegan:Connect(function(input)
 			if not isPress(input) or not FX.Settings.Transitions then return end
-			tween(hl, 0.06, Quad, EOut, {BackgroundTransparency = 0.78})
+			FX.mtween(hl, 0.06, Quad, EOut, {BackgroundTransparency = 0.78})
 		end)
 		item.InputEnded:Connect(function(input)
 			if not isPress(input) then return end
-			tween(hl, 0.2, Quad, EOut, {BackgroundTransparency = hover and 0.88 or 1})
+			FX.mtween(hl, 0.2, Quad, EOut, {BackgroundTransparency = hover and 0.88 or 1})
 		end)
 		-- the list hides without a MouseLeave: clear the veil so it never reopens stuck highlighted
 		local list = item.Parent
@@ -2164,9 +2309,10 @@ Util.FX = (function()
 			elseif hover then
 				rot, lift = -0.7, -1
 			end
-			tween(b, time, style, EOut, {Rotation = rot, Position = basePos + UDim2.fromOffset(0, lift)})
-			tween(gloss, time, Quad, EOut, {BackgroundTransparency = down and 0.93 or (hover and 0.72 or 0.84)})
-			if shade then tween(shade, time, Quad, EOut, {BackgroundTransparency = down and 0.6 or 0.78}) end
+			do local k, z = liquidParams(style) FX.SpringTo(b, "Rotation", rot, k, z) end -- [v175] spring tilt, glided lift
+			FX.mtween(b, math.max(time, 0.2), Quint, EOut, {Position = basePos + UDim2.fromOffset(0, lift)})
+			FX.mtween(gloss, time, Quad, EOut, {BackgroundTransparency = down and 0.93 or (hover and 0.72 or 0.84)})
+			if shade then FX.mtween(shade, time, Quad, EOut, {BackgroundTransparency = down and 0.6 or 0.78}) end
 		end
 		b.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
@@ -2206,10 +2352,8 @@ Util.FX = (function()
 			PageStyle[page] = forced
 			return forced
 		end
-		styleCount = styleCount + 1
-		local s = styleOrder[(styleCount - 1) % #styleOrder + 1]
-		PageStyle[page] = s
-		return s
+		PageStyle[page] = 16 -- [v175] every page uses the one Liquid Glass transition (the old random style cycle is retired)
+		return 16
 	end
 	local function getRig(page)
 		local r = Rigs[page]
@@ -2708,6 +2852,28 @@ Util.FX = (function()
 		end
 	end
 
+	-- 16 · LIQUID GLASS (v175): a frosted veil melts away while the page rises and settles on a spring; leaving glides out with a soft sink.
+	-- Weak devices: no vertical travel and a lighter veil.
+	Styles[16] = function(page, entering, goal, R)
+		local lite = FX.Lite()
+		if entering then
+			page.Position = goal + UDim2.fromOffset(0, lite and 0 or 34)
+			R.veil.BackgroundTransparency = lite and 0.7 or 0.45
+			tween(R.veil, 1, Quint, EOut, {BackgroundTransparency = 1})
+			FX.SpringTo(R.scale, "Scale", 1, 34, 0.82, 0.94)
+			tween(page, 1, Quint, EOut, {Position = goal})
+			task.wait(1)
+		else
+			tween(R.scale, 1, Quint, EInOut, {Scale = 0.96})
+			tween(R.veil, 0.62, Quint, EIn, {BackgroundTransparency = 0.55})
+			tween(page, 1, Quint, EInOut, {Position = goal})
+			task.delay(0.62, function()
+				if R.alive() then tween(R.veil, 0.38, Quad, EOut, {BackgroundTransparency = 1}) end
+			end)
+			task.wait(1)
+		end
+	end
+
 	-- Tween-like handle so the script's  tween:Play() / tween.Completed:Connect()  keep working
 	local function pageTween(page, props)
 		local goal = props.Position
@@ -2730,7 +2896,7 @@ Util.FX = (function()
 			local myVeil = veilToken
 			resetVeilGeometry()
 			R.veil.BackgroundTransparency = 1
-			FX.BlurPulse(entering and 7 or 5, 0.14, 0.5)
+			FX.BlurPulse((entering and 5 or 4) * (FX.Lite() and 0.5 or 1), 0.18, 0.82, true) -- [v175] adaptive blur
 			FX.Play(entering and "open" or "back")
 			if entering then pcall(FX.Cascade, page) end
 			local ok, err = pcall(Styles[styleId] or Styles[1], page, entering, goal, R)
@@ -2788,9 +2954,13 @@ Util.FX = (function()
 				return pageTween(obj, props)
 			end
 			if obj == FX.Window then
-				FX.BlurPulse(6, 0.12, 0.5)
+				FX.BlurPulse(5, 0.15, 0.85, true)
 				local small = props.Size and props.Size.X.Offset < 200
 				FX.Play(small and "close" or "open")
+			elseif FX.Window and typeof(info) == "TweenInfo" and info.RepeatCount == 0 and info.Time >= 0.15
+				and (props.Position or props.Size or props.Rotation or props.Scale or props.CanvasPosition)
+				and obj:IsDescendantOf(FX.Window) then
+				FX.MotionBlur(1.2 + math.min(info.Time, 1) * 2, info.Time)
 			end
 		end
 		return RealTweenService:Create(obj, info, props)
@@ -14534,113 +14704,83 @@ end
 	--   OPEN:     a laser plate shoots wider than the pill, a tall plate crosses it, the window unfolds width-first, then both
 	--             plates close down onto the frame as the height opens, buttons snap open behind it, the world rack-focuses.
 	-- Returns the duration (the caller releases its toggle lock then) or nil to fall back to the plain tween.
-	function FX.WindowFold(win, content, closing, pos, full)
+	function FX.WindowFold(win, content, closing, pos, full) -- [v175 LIQUID GLASS] frosted plate morphs between pill and window
 		if not FX.Settings.Transitions or not win.Parent then return nil end
-		local Expo, Cubic = FX.Expo, Enum.EasingStyle.Cubic
+		local Expo = FX.Expo
 		local k = 1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
-		local total = 1 -- seconds, before the UI animation speed option; the beats below were written for 0.6s / 0.8s and are stretched to it
-		local T = total / (closing and 0.6 or 0.8)
-		local function tw(o, t, style, dir, props) return tween(o, t * T, style, dir, props) end
-		local function after(t, fn) task.delay(t * T * k, fn) end
+		local lite = FX.Lite()
 		local col = FX.GetColor and FX.GetColor() or WHITE
 		local pill = UDim2.fromOffset(112, 30)
 		local dest = pos or win.Position
 		local fx, fy = full.X.Offset, full.Y.Offset
-		local function fade(p, s, t)
-			tw(s, t, Quad, EOut, {Transparency = 1, Thickness = 0.5})
-			Debris:AddItem(p, t * T * k + 0.2)
+		local function after(t, fn) task.delay(t * k, fn) end
+		local function glass(size, tr)
+			local p, st = FX.Plate(win, WHITE, 1.5, tr, size, dest)
+			p.BackgroundColor3, p.BackgroundTransparency = col:Lerp(WHITE, 0.55), 0.9
+			return p, st
+		end
+		local function melt(p, st, t)
+			tween(st, t, Quint, EOut, {Transparency = 1, Thickness = 0.5})
+			tween(p, t, Quint, EOut, {BackgroundTransparency = 1})
+			Debris:AddItem(p, t * k + 0.25)
 		end
 		if closing then
 			local from = win.Size
-			local g1, s1 = FX.Plate(win, col, 1.5, 0.15, from)
-			local g2, s2 = FX.Plate(win, WHITE, 1, 0.5, from)
+			local g, gs = glass(from, 0.4)
 			FX.Play("close", 0.9)
-			tw(win, 0.5, Cubic, EOut, {Position = dest})
-			tw(win, 0.24, Expo, EOut, {Size = UDim2.fromOffset(from.X.Offset, 30)})
-			after(0.2, function()
-				tw(win, 0.34, Quint, EInOut, {Size = pill})
-			end)
-			after(0.04, function()
-				tw(g1, 0.46, Quint, EOut, {Size = pill, Position = dest})
-				after(0.16, function() fade(g1, s1, 0.28) end)
-			end)
-			after(0.1, function()
-				tw(g2, 0.4, Quint, EOut, {Size = pill, Position = dest})
-				after(0.12, function() fade(g2, s2, 0.24) end)
-			end)
-			after(0.48, function()
-				FX.Ring(win.Parent, col, 66, 0.4, 2, dest)
-				FX.Play("tick", 0.8)
-			end)
-			return total * k
+			FX.BlurPulse(lite and 3 or 6, 0.1, 0.5)
+			tween(win, 0.5, Quint, EOut, {Position = dest})
+			tween(win, 0.26, Quint, EInOut, {Size = UDim2.fromOffset(from.X.Offset, 30)}) -- height folds first
+			after(0.14, function() tween(win, 0.4, Quint, EInOut, {Size = pill}) end) -- then the width melts into the pill
+			after(0.05, function() tween(g, 0.5, Quint, EInOut, {Size = pill, Position = dest}) end)
+			after(0.3, function() melt(g, gs, 0.3) end)
+			return 0.7 * k
 		end
-		local a, sa = FX.Plate(win, col, 2, 0.1, pill)
-		local b, sb = FX.Plate(win, WHITE, 1.5, 0.3, pill)
+		local g, gs = glass(pill, 0.3)
 		FX.Play("open", 0.85)
-		tw(win, 0.5, Cubic, EOut, {Position = dest})
-		tw(a, 0.5, Cubic, EOut, {Position = dest})
-		tw(b, 0.5, Cubic, EOut, {Position = dest})
-		tw(a, 0.3, Expo, EOut, {Size = UDim2.fromOffset(fx + 56, 34)})
-		after(0.06, function()
-			FX.BlurPulse(10, 0.06, 1)
-			tw(b, 0.34, Expo, EOut, {Size = UDim2.fromOffset(46, fy + 40)})
-		end)
-		after(0.08, function()
-			tw(win, 0.3, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)})
-		end)
-		after(0.34, function()
-			tw(win, 0.46, Expo, EOut, {Size = full})
-			tw(a, 0.24, Expo, EOut, {Size = full})
-			tw(b, 0.3, Expo, EOut, {Size = full})
+		FX.BlurPulse(lite and 5 or 10, 0.08, 0.9)
+		tween(win, 0.45, Quint, EOut, {Position = dest})
+		tween(g, 0.34, Expo, EOut, {Size = UDim2.fromOffset(fx + 24, 34)})
+		after(0.06, function() tween(win, 0.3, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)}) end)
+		after(0.26, function()
+			tween(win, 0.5, Expo, EOut, {Size = full})
+			tween(g, 0.46, Expo, EOut, {Size = full})
 			FX.Play("hit", 0.85)
-			pcall(FX.Cascade, content, true) -- buttons collapse (still clipped) and snap open as the height opens
+			pcall(FX.Cascade, content, true) -- buttons spring open as the height opens
 		end)
 		after(0.62, function()
-			FX.Ring(win.Parent, col, math.max(fx, fy) * 1.1, 0.5, 2, dest)
-			fade(a, sa, 0.3)
-			fade(b, sb, 0.3)
+			if not lite then FX.Ring(win.Parent, col, math.max(fx, fy) * 1.1, 0.5, 1.5, dest) end
+			melt(g, gs, 0.4)
 		end)
-		return total * k
+		return 1 * k
 	end
 
 	-- [v41] SIGNATURE MOTION - "REGISTER LOCK". The window leaves its pill as three misregistered outline plates (laser bar,
 	-- tall bar, twisted dark echo) on different axes / easings, they hang for a beat, then lock onto the real frame one
 	-- after another with a hard Expo snap while the world blur racks out. Stillness -> burst -> lock -> stillness.
-	function FX.RegisterLock(win, full, content)
+	function FX.RegisterLock(win, full, content) -- [v175 LIQUID GLASS] boot reveal: one frosted plate blooms wider, the window unfolds inside it
 		local Expo, parent = FX.Expo, win.Parent
 		local col = FX.GetColor and FX.GetColor() or WHITE
 		local fx, fy = full.X.Offset, full.Y.Offset
-		local plates = {}
-		local function plate(color, thick, tr)
-			local p, s = FX.Plate(win, color, thick, tr, UDim2.fromOffset(44, 30))
-			plates[#plates + 1] = {p, s}
-			return p
-		end
-		local a = plate(col, 2, 0.1)
-		local b = plate(WHITE, 1.5, 0.3)
-		local c = plate(col:Lerp(Color3.new(0, 0, 0), 0.5), 3, 0.35)
-		FX.BlurPulse(16, 0.04, 1) -- world drops out of focus, racks back as the plates lock
-		task.wait(0.14) -- stillness before the burst
+		local lite = FX.Lite()
+		local g, gs = FX.Plate(win, WHITE, 1.5, 0.25, UDim2.fromOffset(44, 30))
+		g.BackgroundColor3, g.BackgroundTransparency = col:Lerp(WHITE, 0.55), 0.88
+		FX.BlurPulse(lite and 6 or 12, 0.06, 1.1) -- world softens, racks back as the glass settles
+		task.wait(0.1)
 		FX.Play("open", 0.8)
-		tween(a, 0.34, Expo, EOut, {Size = UDim2.fromOffset(fx + 64, 34)})
-		tween(b, 0.4, Expo, EOut, {Size = UDim2.fromOffset(52, fy + 56)})
-		tween(c, 0.5, Quint, EOut, {Size = UDim2.fromOffset(fx * 0.74, fy * 0.74), Rotation = -5})
-		task.wait(0.12)
-		tween(win, 0.34, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)})
-		task.wait(0.3) -- hang: the plates hold their misregistration
-		FX.Cascade(content, true) -- buttons collapse (still clipped) and snap open in an accelerating stagger as the frame opens
-		tween(win, 0.5, Expo, EOut, {Size = full})
-		tween(a, 0.2, Expo, EOut, {Size = full})
-		tween(b, 0.26, Expo, EOut, {Size = full})
-		tween(c, 0.34, Expo, EOut, {Size = full, Rotation = 0})
+		tween(g, 0.4, Expo, EOut, {Size = UDim2.fromOffset(fx + 40, 34)})
+		task.wait(0.1)
+		tween(win, 0.36, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)})
+		task.wait(0.22)
+		FX.Cascade(content, true) -- buttons collapse (still clipped) and spring open in an accelerating stagger as the frame opens
+		tween(win, 0.62, Expo, EOut, {Size = full})
+		tween(g, 0.55, Expo, EOut, {Size = full})
 		FX.Play("hit", 0.85)
-		task.wait(0.2)
-		FX.Ring(parent, col, math.max(fx, fy) * 1.25, 0.55, 2, win.Position)
-		FX.Sparks(parent, col, 10, math.max(fx, fy) * 0.55, 0.5)
-		for _, pr in ipairs(plates) do
-			tween(pr[2], 0.35, Quad, EOut, {Transparency = 1, Thickness = 0.5})
-			Debris:AddItem(pr[1], 0.5)
-		end
+		task.wait(0.3)
+		if not lite then FX.Ring(parent, col, math.max(fx, fy) * 1.15, 0.6, 1.5, win.Position) end
+		tween(gs, 0.5, Quint, EOut, {Transparency = 1, Thickness = 0.5})
+		tween(g, 0.5, Quint, EOut, {BackgroundTransparency = 1})
+		Debris:AddItem(g, 0.7)
 	end
 
 	function FX.Chrome(env)
@@ -14885,6 +15025,7 @@ end
 		pcall(FX.Audio.Bind, env.UISound and env.UISound.Music)
 		FX.Window = env.UIMainWindow
 		FX.Content = env.WindowContent
+		if FX.Window then pcall(FX.SmoothScrollTree, FX.Window) end
 		FX.GetColor = function()
 			return env.GetUIColor(env.Time and env.Time() or os.clock())
 		end
@@ -15212,12 +15353,122 @@ end
 			end)
 		end
 
-		-- ── page transition: scale settle + accent sweep + edge line + blur pulse ──
+		-- ── [v200] Metro motion kernel: ONE cascade + ONE press/hover spring, reused by every page, sidebar and button ──
+		-- Windows 8-style choreography (staggered slide-in from the right, quint/expo settle, press-down + spring-back).
+		-- Only existing instances are tweened (positions / one reused UIScale each), nothing is rebuilt per transition, stale tweens are
+		-- cancelled before a replay, and FX.Lite() (Low End / frame governor / weak phone) shrinks the whole thing to a short cascade.
+		local M = {Run = setmetatable({}, {__mode = "k"}), Press = setmetatable({}, {__mode = "k"})}
+		local function lite() local ok, v = pcall(FX.Lite) return ok and v == true end
+		local function touchOnly() return UserInputService.TouchEnabled and not UserInputService.MouseEnabled end
+		local function managed(o)
+			for _, k in ipairs(o:GetChildren()) do
+				if k:IsA("UIListLayout") or k:IsA("UIGridLayout") or k:IsA("UITableLayout") or k:IsA("UIPageLayout") then return true end
+			end
+			return false
+		end
+		local function restore(st)
+			for _, t in ipairs(st.tw) do pcall(function() t:Cancel() end) end
+			if st.sc and st.sc.Parent then st.sc.Scale = 1 end
+			for obj, p in pairs(st.pos) do if obj.Parent then obj.Position = p end end
+		end
+		local function clearRun(owner)
+			local run = M.Run[owner]
+			if not run then return end
+			M.Run[owner] = nil
+			for i = 1, #run do pcall(restore, run[i]) end
+		end
+		-- the list container of a page: the (shallow, bounded) descendant with the most visible children
+		local function targets(page)
+			local best, bestN, seen = nil, 0, 0
+			local function scan(o, depth)
+				if seen > 220 then return end
+				local n, kids = 0, o:GetChildren()
+				for _, k in ipairs(kids) do
+					seen = seen + 1
+					if k:IsA("GuiObject") and k.Visible and not k.Name:find("^LT_") then n = n + 1 end
+				end
+				if n > bestN and (o == page or o:IsA("ScrollingFrame") or managed(o)) then best, bestN = o, n end
+				if depth < 3 then
+					for _, k in ipairs(kids) do
+						if k:IsA("GuiObject") and k.Visible and not k:IsA("GuiButton") and not k:IsA("TextBox") then scan(k, depth + 1) end
+					end
+				end
+			end
+			scan(page, 0)
+			return best
+		end
+		local function cascade(list, owner, tok)
+			if not (list and list.Parent) then return end
+			local light = lite()
+			local cap, gap = light and 4 or 10, light and 0.03 or 0.045
+			local rows, lay = {}, managed(list)
+			for _, r in ipairs(list:GetChildren()) do
+				if r:IsA("GuiObject") and r.Visible and not r.Name:find("^LT_") then rows[#rows + 1] = r end
+			end
+			table.sort(rows, function(a, c)
+				local ay, cy = a.AbsolutePosition.Y, c.AbsolutePosition.Y
+				if math.abs(ay - cy) > 4 then return ay < cy end
+				return a.AbsolutePosition.X < c.AbsolutePosition.X
+			end)
+			local run = {}
+			M.Run[owner] = run
+			for i = 1, math.min(#rows, cap) do
+				local row = rows[i]
+				local st = {pos = {}, tw = {}}
+				local dist = math.clamp(row.AbsoluteSize.X * 0.2, 26, 84)
+				local movers = {}
+				if lay then
+					for _, c in ipairs(row:GetChildren()) do
+						if c:IsA("GuiObject") and #movers < 4 and not c.Name:find("^LT_") then movers[#movers + 1] = c end
+					end
+				else
+					movers[1] = row
+				end
+				for _, m in ipairs(movers) do
+					st.pos[m] = m.Position
+					m.Position = m.Position + UDim2.fromOffset(dist, 0)
+				end
+				if lay and not light then
+					local ex = row:FindFirstChildWhichIsA("UIScale")
+					if not ex then ex = Instance.new("UIScale") ex.Name = "LT_NoobyRow" ex.Parent = row end
+					if ex.Name == "LT_NoobyRow" then st.sc = ex ex.Scale = 0.95 end
+				end
+				run[#run + 1] = st
+				task.delay((i - 1) * gap / speed(), function()
+					if sweepTok[owner] ~= tok or M.Run[owner] ~= run then return end
+					for m, p in pairs(st.pos) do
+						if m.Parent then st.tw[#st.tw + 1] = tw(m, 0.55, FX.Expo, EOut, {Position = p}) end
+					end
+					if st.sc and st.sc.Parent then st.tw[#st.tw + 1] = tw(st.sc, 0.5, Quint, EOut, {Scale = 1}) end
+				end)
+			end
+		end
+		-- press-down / spring-back / hover lift (one lazily created UIScale per button; a foreign UIScale is never touched)
+		local function spring(o)
+			local s = M.Press[o]
+			if s ~= nil then return s or nil end
+			local ex = o:FindFirstChildWhichIsA("UIScale")
+			if ex and ex.Name ~= "LT_NoobyPress" then M.Press[o] = false return nil end
+			if not ex then ex = Instance.new("UIScale") ex.Name = "LT_NoobyPress" ex.Parent = o end
+			M.Press[o] = ex
+			return ex
+		end
+		local function feel(o, kind)
+			if not motionOn() then return end
+			local s = spring(o)
+			if not s then return end
+			if kind == "down" then tw(s, 0.08, Quad, EOut, {Scale = 0.95})
+			elseif kind == "hover" then tw(s, 0.16, Quad, EOut, {Scale = 1.025})
+			else tw(s, 0.32, Enum.EasingStyle.Back, EOut, {Scale = 1}) end
+		end
+
+		-- ── page transition: panel settle + cascading row slide-in + accent edge ──
 		function D.PageIn(fr)
 			if not (motionOn() and fr and fr.Parent) then return end
 			local tok = (sweepTok[fr] or 0) + 1
 			sweepTok[fr] = tok
-			local c = accent()
+			clearRun(fr)
+			local c, light = accent(), lite()
 
 			local settle = fr:FindFirstChild("LT_NoobySettle")
 			if not settle then
@@ -15225,31 +15476,13 @@ end
 				settle.Name = "LT_NoobySettle"
 				settle.Parent = fr
 			end
-			settle.Scale = 0.955
-			tw(settle, 0.75, FX.Expo, EOut, {Scale = 1})
+			settle.Scale = light and 0.99 or 0.97
+			tw(settle, 0.6, FX.Expo, EOut, {Scale = 1})
 
 			for _, n in ipairs({"LT_NoobySweep", "LT_NoobyEdge"}) do
 				local old = fr:FindFirstChild(n)
 				if old then old:Destroy() end
 			end
-			local sw = Instance.new("Frame")
-			sw.Name = "LT_NoobySweep"
-			sw.Size = UDim2.fromScale(1, 1)
-			sw.BackgroundColor3 = c
-			sw.BorderSizePixel = 0
-			sw.Active = false
-			sw.ZIndex = 100
-			local g = Instance.new("UIGradient")
-			g.Rotation = 18
-			g.Transparency = NumberSequence.new({
-				NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.38, 1),
-				NumberSequenceKeypoint.new(0.5, 0.84), NumberSequenceKeypoint.new(0.62, 1), NumberSequenceKeypoint.new(1, 1),
-			})
-			g.Offset = Vector2.new(-1.2, 0)
-			g.Parent = sw
-			sw.Parent = fr
-			tw(g, 0.95, Quint, EInOut, {Offset = Vector2.new(1.2, 0)})
-
 			local ln = Instance.new("Frame")
 			ln.Name = "LT_NoobyEdge"
 			ln.Size = UDim2.new(0, 0, 0, 2)
@@ -15262,14 +15495,12 @@ end
 			task.delay(0.55 / speed(), function()
 				if ln.Parent and sweepTok[fr] == tok then tw(ln, 0.45, Quad, EIn, {BackgroundTransparency = 1}) end
 			end)
-			task.delay(1.2 / speed(), function()
-				if sweepTok[fr] == tok then
-					pcall(function() sw:Destroy() end)
-					pcall(function() ln:Destroy() end)
-				end
+			task.delay(1.1 / speed(), function()
+				if sweepTok[fr] == tok then pcall(function() ln:Destroy() end) end
 			end)
 
-			if cfg("DeltaBlur") == true then pcall(FX.BlurPulse, 6, 0.1, 0.55 / speed()) end
+			pcall(cascade, targets(fr), fr, tok)
+			if not light and cfg("DeltaBlur") == true then pcall(FX.BlurPulse, 4, 0.08, 0.45 / speed()) end
 			pcall(FX.Play, "tick", 1.4)
 		end
 
@@ -15301,8 +15532,12 @@ end
 			local function hookBtn(o)
 				if snd[o] or o == D.Button or not o:IsA("GuiButton") then return end
 				snd[o] = true
-				motionConns[#motionConns + 1] = o.MouseButton1Down:Connect(function() pcall(FX.Click, "click", 1, 0.9) end)
-				motionConns[#motionConns + 1] = o.MouseButton1Up:Connect(function() pcall(FX.Click, "release", 1, 1) end)
+				motionConns[#motionConns + 1] = o.MouseButton1Down:Connect(function() pcall(FX.Click, "click", 1, 0.9) pcall(feel, o, "down") end)
+				motionConns[#motionConns + 1] = o.MouseButton1Up:Connect(function() pcall(FX.Click, "release", 1, 1) pcall(feel, o, touchOnly() and "up" or "hover") end)
+				if not touchOnly() then
+					motionConns[#motionConns + 1] = o.MouseEnter:Connect(function() pcall(feel, o, "hover") end)
+					motionConns[#motionConns + 1] = o.MouseLeave:Connect(function() pcall(feel, o, "up") end)
+				end
 			end
 			for _, o in ipairs(main:GetDescendants()) do pcall(hookBtn, o) end
 			motionConns[#motionConns + 1] = main.DescendantAdded:Connect(function(o) task.defer(pcall, hookBtn, o) end)
@@ -15357,6 +15592,10 @@ end
 					sidebar.Position = CLOSED
 					prevX = CLOSED.X.Scale
 					tw(sidebar, 0.5, Enum.EasingStyle.Back, EOut, {Position = OPEN})
+					local stok = (sweepTok[sidebar] or 0) + 1
+					sweepTok[sidebar] = stok
+					clearRun(sidebar)
+					pcall(cascade, sidebar:FindFirstChildWhichIsA("ScrollingFrame") or sidebar, sidebar, stok)
 					pcall(FX.Click, "open", 1.05, 1)
 					task.delay(0.52 / speed(), function()
 						if tok ~= D.CloseTok then return end
@@ -249924,71 +250163,80 @@ do
 
     local __iuiConfig = readImmersiveConfig()
 
+    -- [PRISM] device profile: touch layout + low-end mode (static gradients/rails off, slower effect loop)
+    __iui.touch = (UIS and UIS.TouchEnabled and not UIS.KeyboardEnabled) and true or false
+    do
+        local okQ, q = pcall(function()
+            return UserSettings():GetService("UserGameSettings").SavedQualityLevel.Value
+        end)
+        __iui.lowEnd = __iuiConfig.lowEnd == true or (okQ and type(q) == "number" and q > 0 and q <= 3 and __iui.touch) or false
+    end
+
     local styles = {
         Obsidian = {
-            bg = Color3.fromRGB(9, 11, 15),
-            panel = Color3.fromRGB(18, 22, 29),
-            panel2 = Color3.fromRGB(24, 29, 37),
-            button = Color3.fromRGB(27, 32, 42),
-            accent = Color3.fromRGB(76, 169, 255),
-            accent2 = Color3.fromRGB(118, 97, 255),
-            text = Color3.fromRGB(245, 248, 255),
-            muted = Color3.fromRGB(159, 171, 190),
-            stroke = Color3.fromRGB(69, 82, 104),
-            corner = 12,
-            transparency = 0.02,
+            bg = Color3.fromRGB(8, 9, 13),
+            panel = Color3.fromRGB(16, 18, 25),
+            panel2 = Color3.fromRGB(24, 27, 38),
+            button = Color3.fromRGB(31, 35, 49),
+            accent = Color3.fromRGB(104, 136, 255),
+            accent2 = Color3.fromRGB(171, 112, 255),
+            text = Color3.fromRGB(245, 247, 253),
+            muted = Color3.fromRGB(148, 157, 179),
+            stroke = Color3.fromRGB(60, 67, 90),
+            corner = 16,
+            transparency = 0.03,
         },
         Aurora = {
-            bg = Color3.fromRGB(9, 14, 24),
-            panel = Color3.fromRGB(17, 25, 39),
-            panel2 = Color3.fromRGB(25, 34, 53),
-            button = Color3.fromRGB(27, 39, 58),
-            accent = Color3.fromRGB(83, 218, 255),
-            accent2 = Color3.fromRGB(162, 115, 255),
-            text = Color3.fromRGB(246, 250, 255),
-            muted = Color3.fromRGB(170, 187, 210),
-            stroke = Color3.fromRGB(77, 112, 146),
+            bg = Color3.fromRGB(7, 13, 23),
+            panel = Color3.fromRGB(14, 24, 38),
+            panel2 = Color3.fromRGB(22, 36, 55),
+            button = Color3.fromRGB(26, 42, 63),
+            accent = Color3.fromRGB(64, 224, 208),
+            accent2 = Color3.fromRGB(150, 110, 255),
+            text = Color3.fromRGB(246, 251, 255),
+            muted = Color3.fromRGB(152, 177, 204),
+            stroke = Color3.fromRGB(58, 98, 134),
+            corner = 18,
+            transparency = 0.05,
+        },
+        Glass = {
+            bg = Color3.fromRGB(12, 16, 24),
+            panel = Color3.fromRGB(26, 33, 45),
+            panel2 = Color3.fromRGB(38, 47, 62),
+            button = Color3.fromRGB(50, 60, 77),
+            accent = Color3.fromRGB(150, 212, 255),
+            accent2 = Color3.fromRGB(200, 176, 255),
+            text = Color3.fromRGB(251, 253, 255),
+            muted = Color3.fromRGB(184, 196, 213),
+            stroke = Color3.fromRGB(140, 162, 192),
+            corner = 20,
+            transparency = 0.18,
+        },
+        Crimson = {
+            bg = Color3.fromRGB(13, 7, 10),
+            panel = Color3.fromRGB(28, 14, 19),
+            panel2 = Color3.fromRGB(42, 19, 26),
+            button = Color3.fromRGB(52, 23, 31),
+            accent = Color3.fromRGB(255, 84, 110),
+            accent2 = Color3.fromRGB(255, 150, 84),
+            text = Color3.fromRGB(255, 248, 250),
+            muted = Color3.fromRGB(204, 163, 172),
+            stroke = Color3.fromRGB(124, 62, 76),
             corner = 15,
             transparency = 0.04,
         },
-        Glass = {
-            bg = Color3.fromRGB(12, 16, 23),
-            panel = Color3.fromRGB(25, 31, 42),
-            panel2 = Color3.fromRGB(37, 45, 59),
-            button = Color3.fromRGB(48, 57, 72),
-            accent = Color3.fromRGB(152, 214, 255),
-            accent2 = Color3.fromRGB(197, 174, 255),
-            text = Color3.fromRGB(250, 252, 255),
-            muted = Color3.fromRGB(187, 197, 212),
-            stroke = Color3.fromRGB(133, 156, 186),
-            corner = 18,
-            transparency = 0.16,
-        },
-        Crimson = {
-            bg = Color3.fromRGB(14, 8, 11),
-            panel = Color3.fromRGB(30, 14, 19),
-            panel2 = Color3.fromRGB(45, 19, 27),
-            button = Color3.fromRGB(52, 22, 31),
-            accent = Color3.fromRGB(255, 78, 104),
-            accent2 = Color3.fromRGB(255, 142, 79),
-            text = Color3.fromRGB(255, 247, 249),
-            muted = Color3.fromRGB(208, 165, 174),
-            stroke = Color3.fromRGB(126, 61, 75),
-            corner = 11,
-            transparency = 0.03,
-        },
         Neon = {
-            bg = Color3.fromRGB(4, 9, 12),
-            panel = Color3.fromRGB(7, 17, 21),
-            panel2 = Color3.fromRGB(9, 24, 29),
-            button = Color3.fromRGB(10, 31, 36),
+            bg = Color3.fromRGB(3, 8, 11),
+            panel = Color3.fromRGB(7, 16, 20),
+            panel2 = Color3.fromRGB(10, 24, 29),
+            button = Color3.fromRGB(12, 31, 37),
             accent = Color3.fromRGB(0, 255, 214),
-            accent2 = Color3.fromRGB(89, 143, 255),
+            accent2 = Color3.fromRGB(96, 146, 255),
             text = Color3.fromRGB(236, 255, 252),
-            muted = Color3.fromRGB(136, 191, 184),
-            stroke = Color3.fromRGB(28, 123, 111),
-            corner = 9,
-            transparency = 0.015,
+            muted = Color3.fromRGB(132, 190, 182),
+            stroke = Color3.fromRGB(26, 126, 112),
+            corner = 12,
+            transparency = 0.02,
         },
     }
 
@@ -250135,6 +250383,13 @@ do
         if not isUiObject(object) then
             return nil
         end
+        if __iui.lowEnd then
+            local old = object:FindFirstChild("LT_IUIGradient")
+            if old then
+                old:Destroy()
+            end
+            return nil
+        end
         local gradient = object:FindFirstChild("LT_IUIGradient")
         if not gradient then
             gradient = track(Instance.new("UIGradient"))
@@ -250178,6 +250433,7 @@ do
             or object:IsA("ImageButton")
             or object:IsA("TextLabel")
             or object:IsA("ImageLabel")
+            or (object:IsA("TextBox") and object.Name == "ValueBox")
     end
 
     __iui.isColoredState = function(color)
@@ -250185,50 +250441,179 @@ do
         return s >= 0.45 and v >= 0.35
     end
 
+    local function textOn(color)
+        local lum = 0.299 * color.R + 0.587 * color.G + 0.114 * color.B
+        return lum > 0.6 and Color3.fromRGB(12, 14, 20) or Color3.fromRGB(255, 255, 255)
+    end
+
+    local function inSection(object)
+        local p = object.Parent
+        for _ = 1, 3 do
+            if not p or p == __iuiParent then
+                return false
+            end
+            if p.Name:sub(1, 8) == "Section_" then
+                return true
+            end
+            p = p.Parent
+        end
+        return false
+    end
+
+    local function styleNativeStroke(object, color, transparency)
+        local native = object:FindFirstChildWhichIsA("UIStroke")
+        if native then
+            setTracked(native, "Color", color)
+            setTracked(native, "Transparency", transparency)
+            setTracked(native, "Thickness", 1)
+        else
+            local s = ensureStroke(object, color, 1)
+            if s then
+                s.Transparency = transparency
+            end
+        end
+    end
+
+    local function ensureRail(object, strong)
+        local rail = object:FindFirstChild("LT_IUIRail")
+        if __iui.lowEnd or object:FindFirstChildWhichIsA("UIListLayout") or object:FindFirstChildWhichIsA("UIGridLayout") then
+            if rail then
+                rail:Destroy()
+            end
+            return
+        end
+        if not rail then
+            rail = track(Instance.new("Frame"))
+            rail.Name = "LT_IUIRail"
+            rail.AnchorPoint = Vector2.new(0, 0.5)
+            rail.Position = UDim2.new(0, 4, 0.5, 0)
+            rail.BorderSizePixel = 0
+            rail.ZIndex = object.ZIndex + 1
+            rail.Parent = object
+            local c = Instance.new("UICorner")
+            c.CornerRadius = UDim.new(1, 0)
+            c.Parent = rail
+        end
+        rail.Size = UDim2.new(0, 3, strong and 0.64 or 0.4, 0)
+        rail.BackgroundColor3 = style.accent
+        rail.BackgroundTransparency = strong and 0 or 0.4
+    end
+
     local function styleObject(object)
         if not shouldStyle(object) then
             return
         end
         __iui.styled[object] = true
+        local lname = string.lower(object.Name or "")
+        local parent = object.Parent
+        local pname = parent and parent.Name or ""
 
-        if object:IsA("TextLabel") or object:IsA("TextButton") then
+        if object:IsA("TextLabel") then
+            if lname == "title" then
+                setTracked(object, "Font", Enum.Font.GothamBold)
+                setTracked(object, "TextColor3", inSection(object) and style.accent or style.text)
+            elseif lname == "desc" then
+                setTracked(object, "Font", Enum.Font.Gotham)
+                setTracked(object, "TextColor3", style.muted)
+            else
+                setTracked(object, "TextColor3", style.text)
+            end
+        elseif object:IsA("TextBox") then
+            setTracked(object, "BackgroundColor3", lerpColor(style.panel, style.bg, 0.5))
             setTracked(object, "TextColor3", style.text)
-            if object:IsA("TextButton") then
-                setTracked(object, "AutoButtonColor", false)
-                if not __iui.isColoredState(object.BackgroundColor3) then
-                    setTracked(object, "BackgroundColor3", style.button)
+            setTracked(object, "Font", Enum.Font.GothamMedium)
+            ensureCorner(object, 8)
+            local s = ensureStroke(object, style.stroke, 1)
+            if s then
+                s.Transparency = 0.6
+            end
+        elseif object:IsA("TextButton") then
+            setTracked(object, "AutoButtonColor", false)
+            local colored = __iui.isColoredState(object.BackgroundColor3)
+            if colored then
+                setTracked(object, "TextColor3", textOn(object.BackgroundColor3))
+            else
+                setTracked(object, "BackgroundColor3", style.button)
+                setTracked(object, "TextColor3", style.text)
+            end
+            setTracked(object, "BackgroundTransparency", style.transparency + 0.01)
+            local inRow = object.Name == "Button"
+            if inRow then
+                setTracked(object, "Font", Enum.Font.GothamBold)
+            end
+            ensureCorner(object, inRow and 999 or math.max(8, style.corner - 4))
+            local s = ensureStroke(object, colored and style.accent or style.stroke, 1)
+            if s then
+                s.Transparency = colored and 0.35 or 0.6
+            end
+            if __iui.touch and inRow then
+                local min = object:FindFirstChild("LT_IUIMin")
+                if not min then
+                    min = track(Instance.new("UISizeConstraint"))
+                    min.Name = "LT_IUIMin"
+                    min.Parent = object
                 end
-                setTracked(object, "BackgroundTransparency", style.transparency + 0.01)
-                ensureCorner(object, math.max(7, style.corner - 3))
-                ensureStroke(object, style.stroke, 1)
+                min.MinSize = Vector2.new(0, 30)
             end
         elseif object:IsA("ImageButton") then
             if not __iui.isColoredState(object.BackgroundColor3) then
                 setTracked(object, "BackgroundColor3", style.button)
             end
             setTracked(object, "BackgroundTransparency", style.transparency + 0.01)
-            ensureCorner(object, math.max(7, style.corner - 3))
-            ensureStroke(object, style.stroke, 1)
+            ensureCorner(object, math.max(8, style.corner - 4))
+            local s = ensureStroke(object, style.stroke, 1)
+            if s then
+                s.Transparency = 0.6
+            end
         elseif object:IsA("Frame") or object:IsA("ScrollingFrame") then
-            local n = string.lower(object.Name or "")
-            local isPanel = n == "sidebar"
-                or n == "executor"
-                or n == "scripthub"
-                or n == "settings"
-                or n == "home"
-                or n == "console"
-                or n == "music"
-                or n:find("overlay", 1, true) ~= nil
-                or n:find("panel", 1, true) ~= nil
-                or n:find("card", 1, true) ~= nil
-                or n:find("holder", 1, true) ~= nil
-            if isPanel then
+            local isSection = lname:sub(1, 8) == "section_"
+            local isRow = isSection
+                or (pname == "Holder" and object:IsA("Frame") and object:FindFirstChild("Title", true) ~= nil)
+            local isPanel = lname == "sidebar"
+                or lname == "executor"
+                or lname == "scripthub"
+                or lname == "settings"
+                or lname == "home"
+                or lname == "console"
+                or lname == "music"
+                or lname:find("overlay", 1, true) ~= nil
+                or lname:find("panel", 1, true) ~= nil
+                or lname:find("card", 1, true) ~= nil
+                or lname:find("holder", 1, true) ~= nil
+            if isRow then
+                local fill = isSection and lerpColor(style.panel, style.accent, 0.14) or style.panel2
+                setTracked(object, "BackgroundColor3", fill)
+                setTracked(object, "BackgroundTransparency", math.clamp(style.transparency + 0.03, 0, 0.5))
+                ensureCorner(object, math.max(10, style.corner - 2))
+                styleNativeStroke(object, isSection and style.accent or style.stroke, isSection and 0.55 or 0.68)
+                local native = object:FindFirstChildWhichIsA("UIGradient")
+                if native and native.Name ~= "LT_IUIGradient" then
+                    setTracked(native, "Color", ColorSequence.new(fill, style.panel))
+                else
+                    ensureGradient(object, fill, style.panel)
+                end
+                ensureRail(object, isSection)
+            elseif pname == "Slider" and lname == "bar" then
+                setTracked(object, "BackgroundColor3", lerpColor(style.panel, style.stroke, 0.55))
+                ensureCorner(object, 99)
+            elseif pname == "Slider" and lname == "fill" then
+                setTracked(object, "BackgroundColor3", style.accent)
+                ensureCorner(object, 99)
+                ensureGradient(object, style.accent, style.accent2)
+            elseif pname == "Slider" and lname == "knob" then
+                setTracked(object, "BackgroundColor3", Color3.new(1, 1, 1))
+                ensureCorner(object, 99)
+                local s = ensureStroke(object, style.accent, 2)
+                if s then
+                    s.Transparency = 0.1
+                end
+            elseif isPanel then
                 setTracked(object, "BackgroundColor3", style.panel)
                 setTracked(object, "BackgroundTransparency", style.transparency)
                 ensureCorner(object, style.corner)
                 local stroke = ensureStroke(object, style.stroke, 1)
                 if stroke then
-                    stroke.Transparency = (style.__base or style) == styles.Neon and 0.22 or 0.42
+                    stroke.Transparency = (style.__base or style) == styles.Neon and 0.22 or 0.5
                 end
                 ensureGradient(object, style.panel, style.panel2)
             end
@@ -250236,7 +250621,7 @@ do
 
         if object:IsA("ImageLabel") and object.Name ~= "Code" then
             pcall(function()
-                object.ImageColor3 = lerpColor(style.icon or Color3.new(1, 1, 1), style.accent, 0.18)
+                object.ImageColor3 = lerpColor(style.icon or Color3.new(1, 1, 1), style.accent, 0.22)
             end)
         end
     end
@@ -250359,7 +250744,7 @@ do
         end
         -- ~45 updates per second is plenty for these subtle effects and halves the cost on 90/120 Hz devices
         __iui.animAcc = (__iui.animAcc or 0) + dt
-        if __iui.animAcc < 0.022 then
+        if __iui.animAcc < (__iui.lowEnd and 0.066 or 0.022) then
             return
         end
         dt = __iui.animAcc
@@ -250374,6 +250759,9 @@ do
             __iui.animTargetsAt = now
         end
         local name = animationNames[animationIndex]
+        if __iui.lowEnd and (name == "Aurora Sweep" or name == "Icon Drift" or name == "Scanline") then
+            name = "Breathing"
+        end
 
         for index, target in targets do
             if hasParent(target) then
@@ -250744,7 +251132,68 @@ do
         end
     end
 
+    __iui.bound = setmetatable({}, { __mode = "k" })
     local function bindStyleHover(button)
+        if not button or __iui.bound[button] or __iui.lowEnd or not TS then
+            return
+        end
+        if not (button:IsA("TextButton") or button:IsA("ImageButton")) then
+            return
+        end
+        __iui.bound[button] = true
+        local info = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local function press(v)
+            if not __iui.alive or not uiEnabled or __iui.lowEnd then
+                return
+            end
+            local s = button:FindFirstChild("LT_IUIPress")
+            if not s then
+                s = track(Instance.new("UIScale"))
+                s.Name = "LT_IUIPress"
+                s.Scale = 1
+                s.Parent = button
+            end
+            pcall(function()
+                TS:Create(s, info, { Scale = v }):Play()
+            end)
+        end
+        local function isPointer(input)
+            local t = input.UserInputType
+            return t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch
+        end
+        connect(button.InputBegan, function(input)
+            if isPointer(input) then
+                press(0.965)
+            end
+        end)
+        connect(button.InputEnded, function(input)
+            if isPointer(input) then
+                press(1)
+            end
+        end)
+        if not __iui.touch then
+            connect(button.MouseEnter, function()
+                local st = button:FindFirstChild("LT_IUIStroke")
+                if st and uiEnabled then
+                    if st:GetAttribute("LT_base") == nil then
+                        st:SetAttribute("LT_base", st.Transparency)
+                    end
+                    pcall(function()
+                        TS:Create(st, info, { Transparency = 0.15, Color = style.accent }):Play()
+                    end)
+                end
+            end)
+            connect(button.MouseLeave, function()
+                press(1)
+                local st = button:FindFirstChild("LT_IUIStroke")
+                local base = st and st:GetAttribute("LT_base")
+                if st and base then
+                    pcall(function()
+                        TS:Create(st, info, { Transparency = base, Color = style.stroke }):Play()
+                    end)
+                end
+            end)
+        end
     end
 
     local function buildControlPanel()
@@ -250755,9 +251204,12 @@ do
 
         local panel = track(Instance.new("Frame"))
         panel.Name = "LT_ImmersiveCustomizer"
-        panel.AnchorPoint = Vector2.new(1, 1)
-        panel.Position = UDim2.new(1, -18, 1, -18)
-        panel.Size = UDim2.fromOffset(280, 0)
+        local cam = workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+        local compact = __iui.touch or vp.X < 760
+        panel.AnchorPoint = compact and Vector2.new(0.5, 1) or Vector2.new(1, 1)
+        panel.Position = compact and UDim2.new(0.5, 0, 1, -12) or UDim2.new(1, -20, 1, -20)
+        panel.Size = UDim2.fromOffset(math.clamp(vp.X - 24, 240, compact and 360 or 300), 0)
         panel.AutomaticSize = Enum.AutomaticSize.Y
         panel.BackgroundColor3 = style.panel
         panel.BackgroundTransparency = math.min(style.transparency + 0.02, 0.32)
@@ -250787,7 +251239,7 @@ do
         title.BackgroundTransparency = 1
         title.Size = UDim2.new(1, 0, 0, 24)
         title.Font = Enum.Font.GothamBold
-        title.Text = "IMMERSIVE UI"
+        title.Text = "PRISM  ·  DESIGN"
         title.TextColor3 = style.text
         title.TextSize = 15
         title.TextXAlignment = Enum.TextXAlignment.Left
@@ -250799,7 +251251,7 @@ do
         subtitle.BackgroundTransparency = 1
         subtitle.Size = UDim2.new(1, 0, 0, 26)
         subtitle.Font = Enum.Font.Gotham
-        subtitle.Text = "Depth, motion and transition controls"
+        subtitle.Text = "Theme, motion and transitions"
         subtitle.TextColor3 = style.muted
         subtitle.TextSize = 10
         subtitle.TextWrapped = true
@@ -250807,22 +251259,32 @@ do
         subtitle.ZIndex = 25001
         subtitle.Parent = panel
 
+        local prismBar = track(Instance.new("Frame"))
+        prismBar.Name = "LT_PrismBar"
+        prismBar.LayoutOrder = 0
+        prismBar.Size = UDim2.new(1, 0, 0, 3)
+        prismBar.BackgroundColor3 = style.accent
+        prismBar.BorderSizePixel = 0
+        prismBar.ZIndex = 25001
+        prismBar.Parent = panel
+        ensureCorner(prismBar, 2)
+        ensureGradient(prismBar, style.accent, style.accent2)
         local function makeButton(name, text, order, callback)
             local b = track(Instance.new("TextButton"))
             b.Name = name
             b.LayoutOrder = order
-            b.Size = UDim2.new(1, 0, 0, 34)
+            b.Size = UDim2.new(1, 0, 0, __iui.touch and 42 or 34)
             b.BackgroundColor3 = style.button
             b.BackgroundTransparency = 0.05
             b.BorderSizePixel = 0
-            b.Font = Enum.Font.GothamSemibold
+            b.Font = Enum.Font.GothamBold
             b.Text = text
             b.TextColor3 = style.text
-            b.TextSize = 11
+            b.TextSize = __iui.touch and 12 or 11
             b.AutoButtonColor = false
             b.ZIndex = 25002
             b.Parent = panel
-            ensureCorner(b, math.max(7, style.corner - 4))
+            ensureCorner(b, 11)
             ensureStroke(b, style.stroke, 1)
             bindStyleHover(b)
             connect(b.Activated, callback)
@@ -250900,7 +251362,7 @@ do
         hint.BackgroundTransparency = 1
         hint.Size = UDim2.new(1, 0, 0, 28)
         hint.Font = Enum.Font.Gotham
-        hint.Text = "Tap the controls to cycle presets."
+        hint.Text = "Tap to cycle  ·  drag to move"
         hint.TextColor3 = style.muted
         hint.TextSize = 9
         hint.TextWrapped = true
@@ -250915,6 +251377,10 @@ do
             panel.BackgroundColor3 = style.panel
             ensureStroke(panel, style.stroke, 1)
             ensureGradient(panel, style.panel, style.panel2)
+            if prismBar and prismBar.Parent then
+                prismBar.BackgroundColor3 = style.accent
+                ensureGradient(prismBar, style.accent, style.accent2)
+            end
             title.TextColor3 = style.text
             subtitle.TextColor3 = style.muted
             hint.TextColor3 = style.muted
@@ -251040,6 +251506,16 @@ do
             end
         end
         connect(RS and RS.RenderStepped or nil, function(dt)
+            __iui.ema = (__iui.ema or dt) * 0.95 + dt * 0.05
+            if not __iui.lowEnd and __iui.ema > 0.036 then
+                __iui.slowFor = (__iui.slowFor or 0) + dt
+                if __iui.slowFor > 3 then
+                    __iui.lowEnd = true
+                    task.defer(applyStyle)
+                end
+            else
+                __iui.slowFor = 0
+            end
             local ok, err = pcall(updateAnimation, dt)
             if ok then
                 __iui.animFails = 0
