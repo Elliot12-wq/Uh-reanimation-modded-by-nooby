@@ -2800,14 +2800,6 @@ Util.FX = (function()
 	-- ═════════════════════════ REMASTERED INTRO ═════════════════════════
 	local NAME = "STEVETHEREALONE"
 	local GLYPHS = "01#%&$@?/\\<>"
-	local function glyphs(n)
-		local s = ""
-		for _ = 1, n do
-			local k = math.random(1, #GLYPHS)
-			s = s .. GLYPHS:sub(k, k)
-		end
-		return s
-	end
 
 	-- ═════════════════════════ REMASTERED INTRO v4 : 60 SECOND ACTION-MOVIE OPENING ═════════════════════════
 	-- Locked to the theme song (measured: 126.02 BPM, bar = 1.905 s, first downbeat 0.18 s, the drop lands on bar 4).
@@ -18665,7 +18657,6 @@ Util.Color = (function()
 	C.Cur = WHITE
 	C.ThemeCol = WHITE
 	local function cfg() return (Util.FX and Util.FX.Cfg) or {} end
-	local function hsv(c) return c:ToHSV() end
 	local function clamp(x, a, b) if x < a then return a elseif x > b then return b end return x end
 	local function hueLerp(a, b, k)
 		local d = ((b - a + 0.5) % 1) - 0.5
@@ -20005,14 +19996,12 @@ end
  local TweenService = game:GetService("TweenService")
  local RunService = game:GetService("RunService")
  local TeleportService = game:GetService("TeleportService")
- local RunService2 = game:FindService("RunService")
  local StarterGui = game:GetService("StarterGui")
  local SoundService = game:GetService("SoundService")
  sethidden = sethiddenproperty or set_hidden_property or set_hidden_prop
  local Player = game.Players.LocalPlayer
  local Humanoid = Character and Character:FindFirstChildWhichIsA("Humanoid") or false
  local Character = game.Players.LocalPlayer.Character
- local Clicked = true
  _G.Spam = false
  --[[ FOR LOOP COMMANDS ]]--
  view = false
@@ -20056,7 +20045,6 @@ end
  local character = localPlayer.Character
  local mouse = localPlayer:GetMouse()
  local camera = workspace.CurrentCamera
- local camtype = camera.CameraType
  local Commands, Aliases = {}, {}
  player, plr, lp = localPlayer, localPlayer, localPlayer, localPlayer
  
@@ -20236,7 +20224,6 @@ function sFLY(vfly, requestedSpeed)
 	if not player then return false end
 
 	local keyboardControl = {F = 0, B = 0, L = 0, R = 0, Q = 0, E = 0}
-	local jumpUntil = 0
 	local activeSpeed = tonumber(vfly and speedofthevfly or speedofthefly) or 10
 
 	_G.__UH_FLY_INPUT_BEGAN = UserInputService.InputBegan:Connect(function(input, gp)
@@ -25152,10 +25139,8 @@ end)
 	 end)
 
 	 active = false
-	 local MobileCameraFramework = {}
 	local players = game:GetService("Players")
 	local runservice = game:GetService("RunService")
-	local CAS = game:GetService("ContextActionService")
 	local camera = workspace.CurrentCamera
 	
 	uis = game:GetService("UserInputService")
@@ -30059,7 +30044,6 @@ end
 				 local function AirWalk()
  
 					 local AirWPart = Instance.new("Part", workspace)
-					 local crtl = true
 					 local Mouse = game.Players.LocalPlayer:GetMouse()
 					 AirWPart.Size = Vector3.new(7, 2, 3)
 					 AirWPart.CFrame = game:GetService("Players").LocalPlayer.Character.HumanoidRootPart.CFrame + Vector3.new(0, -4, 0)
@@ -31451,7 +31435,6 @@ end
 								 table.insert(tools, v)
 						 end
 				 end
-				 local currentTargets = {}
 				 for i, tool in next, tools do
 						 tool.Handle.Massless = true
 						 tool.Grip = CFrame.new()
@@ -273950,6 +273933,292 @@ do -- [v36] FEATURE CENTER: groups the original main page controls (same instanc
 	if not built then
 		warn("[v36] Feature Center failed to build: " .. tostring(buildErr))
 	end
+end
+
+do -- [perf-monitor] Main tab entry under Feature Center. Real metrics only: Heartbeat frame time + Roblox memory stats. CPU % and memory limit are not exposed to scripts, so they are labelled unavailable and never faked.
+	local okPM, errPM = pcall(function()
+		local Stats = game:GetService("Stats")
+		local reg = RegisterTextLabel or function() end
+		local WHITE = Color3.new(1, 1, 1)
+		local L, R = Enum.TextXAlignment.Left, Enum.TextXAlignment.Right
+		local N = 40
+		local function themeCol() return (UITextColor and UITextColor.Value) or WHITE end
+		local function fmtMB(v) if v >= 1024 then return string.format("%.2f GB", v / 1024) end return string.format("%.0f MB", v) end
+		local function readMem()
+			local ok, v = pcall(Stats.GetTotalMemoryUsageMb, Stats)
+			if ok and type(v) == "number" and v > 0 then return v end
+		end
+		local function readLua()
+			local ok, v = pcall(collectgarbage, "count")
+			if ok and type(v) == "number" and v > 0 then return v / 1024 end
+		end
+
+
+		local cpuItem
+		local function readCpuMs() -- Roblox PerformanceStats "CPU" item; only accepted when the value string carries an ms unit
+			if not cpuItem or not cpuItem.Parent then
+				local ps = Stats:FindFirstChild("PerformanceStats")
+				cpuItem = ps and ps:FindFirstChild("CPU")
+				if not cpuItem then return nil end
+			end
+			local ok, s = pcall(cpuItem.GetValueString, cpuItem)
+			if not ok or type(s) ~= "string" then return nil end
+			local num, unit = s:match("([%d%.]+)%s*(%a+)")
+			num = tonumber(num)
+			if num and unit == "ms" then return num end
+		end
+		local hw
+		local function safe(f, ...) local ok, v = pcall(f, ...) if ok then return v end end
+		local function clean(s) if type(s) == "string" then return (s:gsub("[<>&]", ""):sub(1, 48)) end end
+		local function readHW() -- read once; every field stays nil when neither Roblox nor the executor reports it
+			if hw then return hw end
+			hw = {}
+			hw.platform = safe(function() return (tostring(game:GetService("UserInputService"):GetPlatform()):gsub("^Enum%.Platform%.", "")) end)
+			hw.exec = clean(safe(function() return (identifyexecutor()) end))
+			local ts = safe(function() return settings():GetService("TaskScheduler") end)
+			if ts then
+				hw.pool = safe(function() local v = ts.ThreadPoolSize return type(v) == "number" and v > 0 and v or nil end)
+				hw.poolCfg = safe(function() return (tostring(ts.ThreadPoolConfig):gsub("^Enum%.ThreadPoolConfig%.", "")) end)
+			end
+			local dev = (FX and FX.Device) or _G.UHDevProfile
+			if type(dev) == "table" and type(dev.RAM) == "number" then hw.ram, hw.ramConf = dev.RAM, dev.Confidence end
+			local env = type(genv) == "table" and genv or _G
+			local function scan(t, d)
+				for k, v in pairs(t) do
+					local ks = type(k) == "string" and k:lower() or ""
+					if type(v) == "table" then
+						if d < 2 then scan(v, d + 1) end
+					elseif type(v) == "string" and #v > 2 and (ks:find("cpu", 1, true) or ks:find("processor", 1, true)) and (ks:find("name", 1, true) or ks:find("model", 1, true) or ks:find("brand", 1, true) or ks == "cpu" or ks == "processor") then
+						hw.cpuName = hw.cpuName or clean(v)
+					elseif type(v) == "number" and v >= 1 and v <= 256 and v % 1 == 0 then
+						if ks:find("thread", 1, true) or ks:find("logical", 1, true) then hw.threads = hw.threads or v
+						elseif ks:find("core", 1, true) and not ks:find("score", 1, true) then hw.cores = hw.cores or v end
+					end
+				end
+			end
+			for _, n in ipairs({"getdeviceinfo", "getsysteminfo", "getcpuinfo", "getprocessorinfo"}) do
+				local fn = env[n] or _G[n]
+				if type(fn) == "function" then
+					local r = safe(fn)
+					if type(r) == "table" then scan(r, 0)
+					elseif type(r) == "string" and #r > 2 and n:find("cpu", 1, true) then hw.cpuName = hw.cpuName or clean(r) end
+				end
+			end
+			return hw
+		end
+		local function hwText()
+			local h = readHW()
+			local thr = {}
+			if h.threads then thr[#thr + 1] = h.threads .. " logical threads (executor)" end
+			if h.cores then thr[#thr + 1] = h.cores .. " cores (executor)" end
+			if h.pool then thr[#thr + 1] = "Roblox scheduler pool " .. h.pool .. (h.poolCfg and (" [" .. h.poolCfg .. "]") or "") end
+			return "<b>Hardware</b> (read locally)\n"
+				.. "CPU: " .. (h.cpuName or "name not exposed") .. "\n"
+				.. "Threads: " .. (#thr > 0 and table.concat(thr, ", ") or "not exposed") .. "\n"
+				.. "RAM: " .. (h.ram and string.format("%.1f GB (%s confidence)", h.ram, tostring(h.ramConf or "?")) or "not exposed") .. "\n"
+				.. "Platform: " .. (h.platform or "?") .. "  |  Executor: " .. (h.exec or "?")
+		end
+
+		local btn, btnText = UI.CreateButton(MainPage, "Performance Monitor &gt;", 20)
+		local box = UI.CreateCanvas(MainPage)
+		local boxCont = box.Parent
+		boxCont.Visible = false
+
+		local function label(parent, pos, size, align, ts)
+			local t = Util.Instance("TextLabel", parent)
+			t.BackgroundTransparency = 1
+			t.Position, t.Size = pos, size
+			t.Font = Enum.Font.Code
+			t.TextColor3 = WHITE
+			t.TextSize = ts
+			t.TextXAlignment = align
+			t.TextYAlignment = Enum.TextYAlignment.Top
+			t.RichText = true
+			t.Interactable = false
+			reg(t)
+			return t
+		end
+
+		local hdr = Util.Instance("Frame", box)
+		hdr.Size = UDim2.new(1, 0, 0, 22)
+		hdr.BackgroundTransparency = 1
+		hdr.LayoutOrder = #box:GetChildren()
+		label(hdr, UDim2.new(0, 6, 0, 3), UDim2.new(0.5, -6, 1, -3), L, 14).Text = "<b>Performance</b>"
+		local status = label(hdr, UDim2.new(0.5, 0, 0, 5), UDim2.new(0.5, -6, 1, -5), R, 11)
+		local pbtn, ptext = UI.CreateButton(box, "Pause", 16)
+
+		local barsA, barsB, lines, strokes = {}, {}, {}, {}
+		local function tile(bars, titleTxt)
+			local f = Util.Instance("Frame", box)
+			f.Size = UDim2.new(1, 0, 0, 118)
+			f.BackgroundTransparency = 1
+			f.LayoutOrder = #box:GetChildren()
+			local title = label(f, UDim2.new(0, 6, 0, 0), UDim2.new(0.5, -6, 0, 16), L, 12)
+			title.Text = titleTxt
+			local value = label(f, UDim2.new(0.5, 0, 0, 0), UDim2.new(0.5, -6, 0, 16), R, 12)
+			local g = Util.Instance("Frame", f)
+			g.Position, g.Size = UDim2.new(0, 6, 0, 18), UDim2.new(1, -12, 0, 52)
+			g.BackgroundColor3 = Color3.fromRGB(12, 14, 20)
+			g.BackgroundTransparency = 0.2
+			g.BorderSizePixel = 0
+			g.ClipsDescendants = true
+			local st = Util.Instance("UIStroke", g)
+			st.Thickness, st.Transparency = 1, 0.5
+			strokes[#strokes + 1] = st
+			if FX and FX.RoundCorner then FX.RoundCorner(g, -5) end
+			for i = 1, 3 do
+				local l = Util.Instance("Frame", g)
+				l.Position, l.Size = UDim2.new(0, 0, i / 4, 0), UDim2.new(1, 0, 0, 1)
+				l.BorderSizePixel, l.BackgroundTransparency, l.ZIndex = 0, 0.88, 1
+				lines[#lines + 1] = l
+			end
+			for i = 1, N do
+				local b = Util.Instance("Frame", g)
+				b.AnchorPoint = Vector2.new(0, 1)
+				b.Position, b.Size = UDim2.new((i - 1) / N, 0, 1, 0), UDim2.new(1 / N, -1, 0, 0)
+				b.BorderSizePixel, b.BackgroundTransparency, b.ZIndex = 0, 0.25, 2
+				bars[i] = b
+			end
+			local scale = label(g, UDim2.new(0, 4, 0, 1), UDim2.new(1, -8, 0, 12), R, 10)
+			scale.ZIndex, scale.TextTransparency = 3, 0.45
+			local detail = label(f, UDim2.new(0, 6, 0, 73), UDim2.new(1, -12, 0, 42), L, 11)
+			detail.RichText, detail.TextTransparency, detail.TextWrapped = false, 0.25, true
+			return value, detail, scale, title
+		end
+		local fVal, fDet, fScale, fTitle = tile(barsA, "<b>CPU</b>")
+		local mVal, mDet, mScale = tile(barsB, "<b>Memory</b> (Roblox)")
+		local hwLabel = UI.CreateText(box, "<b>Hardware</b> (read locally)\nopen to detect...", 11, L)
+		local note = UI.CreateText(box, "<i>System-wide CPU % is not exposed by Roblox. The CPU graph is Roblox's own per-frame CPU time as a share of the frame (it falls back to frame time if that is unreadable). Hardware lines show only what Roblox or your executor reports.</i>", 11, L)
+		note.TextTransparency = 0.35
+
+		local function tint()
+			local c = themeCol()
+			local c2 = c:Lerp(WHITE, 0.45)
+			for i = 1, N do barsA[i].BackgroundColor3 = c; barsB[i].BackgroundColor3 = c2 end
+			for _, s in ipairs(strokes) do s.Color = c end
+			for _, l in ipairs(lines) do l.BackgroundColor3 = c end
+		end
+		tint()
+		pcall(function() Util.LinkDestroyI2C(box, UITextColor.Changed:Connect(tint)) end)
+
+		local ftH, memH = table.create(N, 0), table.create(N, 0)
+		local w, pkAvg, pkWorst, pkMem, pkLua = 1, 0, 0, 0, 0
+		local cpuMode, lastCpuMs, lastCpuPct, pkCpu, hwDone = false, 0, 0, 0, false
+		local function draw(bars, hist, top)
+			for i = 1, N do
+				bars[i].Size = UDim2.new(1 / N, -1, math.clamp(hist[(w + i - 2) % N + 1] / top, 0, 1), 0)
+			end
+		end
+		local function sample(avgMs, fps, worst)
+			if avgMs > pkAvg then pkAvg = avgMs end
+			if worst > pkWorst then pkWorst = worst end
+			local cpuMs, cpuPct
+			if cpuMode then
+				cpuMs = readCpuMs()
+				if cpuMs then
+					cpuPct = math.clamp(cpuMs / avgMs * 100, 0, 100)
+					lastCpuMs, lastCpuPct = cpuMs, cpuPct
+					if cpuPct > pkCpu then pkCpu = cpuPct end
+				else
+					cpuMs, cpuPct = lastCpuMs, lastCpuPct
+				end
+			end
+			local m, l = readMem(), readLua()
+			ftH[w], memH[w] = cpuMode and cpuPct or avgMs, m or 0
+			if m and m > pkMem then pkMem = m end
+			if l and l > pkLua then pkLua = l end
+			w = w % N + 1
+			if not MainPage.Visible then return end
+			local topF, topM = cpuMode and 100 or 33.4, 1
+			for i = 1, N do
+				if not cpuMode and ftH[i] > topF then topF = ftH[i] end
+				if memH[i] > topM then topM = memH[i] end
+			end
+			topM = topM * 1.15
+			draw(barsA, ftH, topF)
+			draw(barsB, memH, topM)
+			local h = readHW()
+			local pct = m and h.ram and (h.ramConf == "exact" or h.ramConf == "high") and m / (h.ram * 1024) * 100
+			mScale.Text = "max " .. fmtMB(topM)
+			if cpuMode then
+				fScale.Text = "max 100%"
+				fVal.Text = string.format("%d%%  %.1f ms", math.floor(cpuPct + 0.5), cpuMs)
+				fDet.Text = string.format("Peak %d%%  |  Frame %.1f ms  %d FPS\nSystem-wide CPU %%: not exposed", math.floor(pkCpu + 0.5), avgMs, math.floor(fps + 0.5))
+			else
+				fScale.Text = string.format("max %d ms", math.ceil(topF))
+				fVal.Text = string.format("%.1f ms  %d FPS", avgMs, math.floor(fps + 0.5))
+				fDet.Text = string.format("Peak avg %.1f ms  |  Worst %.1f ms\nCPU %%: not exposed by Roblox", pkAvg, pkWorst)
+			end
+			mVal.Text = m and (fmtMB(m) .. (pct and string.format("  (%d%%)", math.floor(pct + 0.5)) or "")) or "unavailable"
+			mDet.Text = (m and ("Peak " .. fmtMB(pkMem)) or "Peak n/a") .. "  |  Device RAM " .. (h.ram and string.format("%.1f GB", h.ram) or "n/a") .. "\n"
+				.. (l and string.format("Lua heap %.1f MB  |  Peak %.1f MB", l, pkLua) or "Lua heap: unavailable")
+		end
+
+		local opened, paused, conn, interval = false, false, nil, 1
+		local t, fsum, n, mx = 0, 0, 0, 0
+		local function setStatus() status.Text = paused and "PAUSED" or string.format("LIVE  %ds", interval) end
+		local function stop() if conn then conn:Disconnect() conn = nil end end
+		local function start()
+			if conn or not opened or paused then return end
+			interval = 1
+			pcall(function() if Util.FX.IsLowEnd() then interval = 2 end end)
+			local c = readCpuMs()
+			if (c ~= nil) ~= cpuMode then
+				cpuMode = c ~= nil
+				for i = 1, N do ftH[i] = 0 end
+			end
+			if c then lastCpuMs = c end
+			fTitle.Text = cpuMode and "<b>CPU</b> frame load" or "<b>Frame time</b> (CPU n/a)"
+			t, fsum, n, mx = math.max(0, interval - 0.2), 0, 0, 0
+			conn = RunService.Heartbeat:Connect(function(dt)
+				t += dt; fsum += dt; n += 1
+				if dt > mx then mx = dt end
+				if t >= interval then
+					local a, c, m = fsum / n * 1000, n / fsum, mx * 1000
+					t, fsum, n, mx = 0, 0, 0, 0
+					sample(a, c, m)
+				end
+			end)
+		end
+		setStatus()
+		btn.Activated:Connect(function()
+			opened = not opened
+			if opened and not hwDone then hwDone = true hwLabel.Text = hwText() end
+			boxCont.Visible = opened
+			btnText.Text = opened and "Hide Performance Monitor" or "Performance Monitor &gt;"
+			if opened then start() else stop() end
+			setStatus()
+		end)
+		pbtn.Activated:Connect(function()
+			paused = not paused
+			ptext.Text = paused and "Resume" or "Pause"
+			if paused then stop() else start() end
+			setStatus()
+		end)
+
+		-- place directly under Feature Center (fallback: under "Back to cool scene"); everything after shifts down by 2
+		local btnCont = btn.Parent
+		local function findRow(needle)
+			for _, k in ipairs(MainPage:GetChildren()) do
+				if k:IsA("GuiObject") and k ~= btnCont and k ~= boxCont then
+					for _, d in ipairs(k:GetDescendants()) do
+						if (d:IsA("TextLabel") or d:IsA("TextButton")) and d.Text:find(needle, 1, true) then return k end
+					end
+				end
+			end
+		end
+		local anchor = findRow("Feature Center &gt;") or findRow("Back to cool scene")
+		if anchor then
+			local base = anchor.LayoutOrder
+			for _, k in ipairs(MainPage:GetChildren()) do
+				if k:IsA("GuiObject") and k ~= btnCont and k ~= boxCont and k.LayoutOrder > base then
+					k.LayoutOrder = k.LayoutOrder + 2
+				end
+			end
+			btnCont.LayoutOrder, boxCont.LayoutOrder = base + 1, base + 2
+		end
+	end)
+	if not okPM then warn("[perf-monitor] failed to build: " .. tostring(errPM)) end
 end
 
 UI.CreateText(MarketPage, "welcome to <b>the user generated content marketplace thing</b>", 15, Enum.TextXAlignment.Center)
