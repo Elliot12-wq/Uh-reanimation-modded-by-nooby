@@ -424,6 +424,7 @@ Util.FX = (function()
 		AccentMode = 1, HarmonyMode = 1, ColorSpeed = 1, ColorSat = 1, ColorBright = 1,
 		-- [v24] extra ui options
 		UIScale = 1, UIFont = 1, UIAnimSpeed = 1, UIParticles = true, UIGradient = true, UITrail = true,
+		PageTrans = 1, BtnAnim = 1, -- [v178 MOTION] page transition / button animation pickers (1 = original)
 		-- [settings] Roblox icon + chat visuals (follow the UI theme)
 		RbxIconTheme = true, RbxBarTheme = true, ChatStyle = true, ChatTextSize = 14, ChatBgTr = 0.3, ChatWinW = 1, ChatWinH = 1, BubbleDur = 15, BubbleDist = 100, BubbleTail = true,
 		-- [v24] minigames
@@ -575,7 +576,8 @@ Util.FX = (function()
 		if ok and type(cur) == "number" then -- [v176] motion blur scaled by how far the spring travels
 			local d = math.abs(target - (from or cur))
 			if prop == "Rotation" then d = d / 20 end
-			if d > 0.015 then FX.MotionBlur(math.min(3, 1 + d * 5), 0.45) end
+			if d > 0.015 and not FX.NoMB then FX.MotionBlur(math.min(3, 1 + d * 5), 0.45) end
+			if st and st.v and st.v * (target - st.x) < -0.01 then FX.MotionBlur(1.5, 0.45) end -- [v177 MOTION] direction change
 		end
 		if not st then
 			st = {x = ok and cur or target, v = 0}
@@ -659,21 +661,29 @@ Util.FX = (function()
 			if my ~= blurToken then return end
 			tween(Blur, outTime or 0.45, Quad, soft and EOut or EIn, {Size = 0})
 		end)
+		task.delay((inTime + (outTime or 0.45)) / math.max(0.2, FX.Cfg.UIAnimSpeed or 1) + 0.25, function() -- [v177 MOTION] failsafe: never stay blurry
+			if my == blurToken and Blur.Size > 0 then Blur.Size = 0 end
+		end)
 	end
 	-- [v176 MOTION] light motion blur: one pooled screen blur, throttled, never stacks, eases fully out as the motion settles (off on weak devices / Low End)
 	local mbLast = 0
 	function FX.MotionBlur(peak, settle)
-		if not FX.Settings.Blur or FX.Lite() then return end
+		if not FX.Settings.Blur or FX.IsLowEnd() or (FX.Gov and FX.Gov.Stride > 1) then return end
+		local lite = FX.Lite() -- [v177 MOTION] weak / mobile: half strength, rarer pulses
 		local now = os.clock()
-		if now - mbLast < 0.08 then return end
-		peak = math.min(peak or 2, 6)
+		if now - mbLast < (lite and 0.16 or 0.08) then return end
+		peak = math.min(peak or 2, 6) * (lite and 0.5 or 1)
 		if Blur.Size >= peak then return end
 		mbLast = now
 		FX.BlurPulse(peak, 0.09, math.clamp(settle or 0.4, 0.25, 1), true)
 	end
 	function FX.mtween(obj, time, style, dir, props)
-		if props and time >= 0.12 and (props.Position or props.Size or props.Rotation or props.Scale) then
-			FX.MotionBlur(1.2 + math.min(time, 1) * 2, time)
+		if props and time >= 0.12 then
+			if props.Position or props.Size or props.Rotation or props.Scale then
+				FX.MotionBlur(1.2 + math.min(time, 1) * 2, time)
+			elseif time >= 0.14 and (props.BackgroundTransparency or props.TextTransparency or props.ImageTransparency or props.GroupTransparency or props.Transparency or props.Thickness or props.Offset) then
+				FX.MotionBlur(0.9, time) -- [v177 MOTION] fades, strokes, sheens
+			end
 		end
 		return tween(obj, time, style, dir, props)
 	end
@@ -700,11 +710,13 @@ Util.FX = (function()
 				busy = true
 				sf.CanvasPosition = prev
 				busy = false
-				FX.MotionBlur(1.4, 0.45)
-				tw = RealTweenService:Create(sf, TweenInfo.new(0.45, Quint, EOut), {CanvasPosition = goal})
+				FX.MotionBlur(1.4 + math.min(1.2, d.Magnitude / 120), 0.6)
+				tw = RealTweenService:Create(sf, TweenInfo.new(0.6, Quint, EOut), {CanvasPosition = goal})
 				tw:Play()
 				return
 			end
+			local mv = (cur - prev).Magnitude -- [v177 MOTION] touch / drag / glide: blur follows the speed (event driven, no per-frame work)
+			if mv > 22 then FX.MotionBlur(math.min(2.2, 0.8 + mv / 60), 0.5) end
 			prev = cur
 		end)
 	end
@@ -1843,6 +1855,51 @@ Util.FX = (function()
 		end
 	end
 
+	-- ═════ [v178 MOTION] 10 selectable button animations (Customization > Button animation). 1 = the original feel. ═════
+	function FX.BtnAnim(b, sc, basePos, stroke, hover)
+		local kind = tonumber(FX.Cfg.BtnAnim) or 1
+		if kind <= 1 or kind > 11 or not FX.Settings.Transitions or FX.IsLowEnd() or not b.Parent then return end
+		local lite = FX.Lite()
+		local rest = hover and 1.045 or 1
+		local restPos = basePos + UDim2.fromOffset(0, hover and -1.5 or 0)
+		local col = FX.GetColor and FX.GetColor() or WHITE
+		if kind == 2 then -- JELLY: squashed, then wobbles back
+			FX.SpringTo(sc, "Scale", rest, 330, 0.2, 0.84)
+		elseif kind == 3 then -- WIGGLE: iOS jiggle
+			FX.SpringTo(b, "Rotation", 0, 300, 0.14, 5.5)
+			FX.SpringTo(sc, "Scale", rest, 300, 0.6, rest * 1.05)
+		elseif kind == 4 then -- POP BURST: overshoot pop + accent ring
+			FX.SpringTo(sc, "Scale", rest, 230, 0.42, 1.2)
+			FX.Ring(b, col, 74, 0.5, 2)
+		elseif kind == 5 then -- HAPTIC NUDGE: a tiny tap-down that springs back
+			b.Position = basePos + UDim2.fromOffset(0, 4)
+			FX.mtween(b, 0.4, Back, EOut, {Position = restPos})
+			FX.SpringTo(sc, "Scale", rest, 420, 0.5, rest * 0.955)
+		elseif kind == 6 then -- SHOCKWAVE: two expanding accent rings
+			FX.SpringTo(sc, "Scale", rest, 260, 0.5, rest * 1.1)
+			FX.Ring(b, col, 96, 0.55, 2)
+			task.delay(0.09, function() if b.Parent then FX.Ring(b, col, 138, 0.6, 1.5) end end)
+		elseif kind == 7 then -- WHIRL: a full turn that eases to rest
+			FX.SpringTo(b, "Rotation", 0, 120, 0.82, -360)
+			FX.SpringTo(sc, "Scale", rest, 200, 0.6, rest * 0.92)
+		elseif kind == 8 then -- TILT FOLLOW: the pointer tilts it live (see MouseMoved); release adds a soft rebound
+			FX.SpringTo(sc, "Scale", rest, 280, 0.45, rest * 0.93)
+		elseif kind == 9 then -- GLOW PULSE: the outline flares and relaxes
+			if stroke then
+				stroke.Thickness = 4.5
+				FX.mtween(stroke, 0.6, Quint, EOut, {Thickness = hover and 2 or 1})
+			end
+			FX.SpringTo(sc, "Scale", rest, 260, 0.55, rest * 1.07)
+		elseif kind == 10 then -- DROP & SETTLE: drops, then rises into place
+			b.Position = basePos + UDim2.fromOffset(0, 8)
+			FX.mtween(b, 0.55, Back, EOut, {Position = restPos})
+			FX.SpringTo(sc, "Scale", rest, 300, 0.5, rest * 0.94)
+		elseif kind == 11 then -- SHEEN SWEEP: a light sweep across the face
+			if not lite then pcall(FX.Sheen, b) end
+			FX.SpringTo(sc, "Scale", rest, 300, 0.55, rest * 1.05)
+		end
+	end
+
 	function FX.EnhanceButton(b)
 		if b:GetAttribute("FXB") then return end
 		b:SetAttribute("FXB", true)
@@ -2038,6 +2095,15 @@ Util.FX = (function()
 			echoSnap()
 			refresh(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.55) -- [v34] low end: plain quick release
 			FX.Click("release")
+			FX.BtnAnim(b, sc, basePos, stroke, hover) -- [v178 MOTION] selected button animation
+		end)
+		b.MouseMoved:Connect(function(x) -- [v178 MOTION] tilt follow (pointer only, event driven)
+			if FX.Cfg.BtnAnim ~= 8 or down or not hover or not FX.Settings.Transitions or FX.IsLowEnd() then return end
+			local w = b.AbsoluteSize.X * 0.5
+			if w <= 0 then return end
+			FX.NoMB = true
+			FX.SpringTo(b, "Rotation", math.clamp((x - (b.AbsolutePosition.X + w)) / w, -1, 1) * 2.4, 170, 0.8)
+			FX.NoMB = nil
 		end)
 	end
 
@@ -2862,7 +2928,7 @@ Util.FX = (function()
 			tween(R.veil, 1, Quint, EOut, {BackgroundTransparency = 1})
 			FX.SpringTo(R.scale, "Scale", 1, 34, 0.82, 0.94)
 			tween(page, 1, Quint, EOut, {Position = goal})
-			task.wait(1)
+			task.wait(1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1))
 		else
 			tween(R.scale, 1, Quint, EInOut, {Scale = 0.96})
 			tween(R.veil, 0.62, Quint, EIn, {BackgroundTransparency = 0.55})
@@ -2870,15 +2936,182 @@ Util.FX = (function()
 			task.delay(0.62, function()
 				if R.alive() then tween(R.veil, 0.38, Quad, EOut, {BackgroundTransparency = 1}) end
 			end)
-			task.wait(1)
+			task.wait(1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1))
 		end
+	end
+
+	-- ═════ [v178 MOTION] 10 iOS-inspired page transitions (Customization > Page transition). Each runs exactly 1000 ms at the default speed. ═════
+	local function endWait() task.wait(1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)) end
+	local function dim(R, from) -- soft dim that lifts as the page lands
+		R.veil.BackgroundTransparency = from
+		tween(R.veil, 1, Quint, EOut, {BackgroundTransparency = 1})
+	end
+	local function blurAt(t, peak) -- blur follows the overshoot / direction change, then settles
+		task.delay(t / math.max(0.2, FX.Cfg.UIAnimSpeed or 1), function() FX.MotionBlur(peak, 0.5) end)
+	end
+	-- 17 · PUSH : navigation push, new page glides in from the right while the old one recedes
+	Styles[17] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal + UDim2.fromOffset(340, 0)
+			dim(R, 0.55)
+			tween(page, 1, Quint, EOut, {Position = goal})
+		else
+			tween(R.scale, 1, Quint, EInOut, {Scale = 0.94})
+			tween(page, 1, Quint, EInOut, {Position = goal})
+		end
+		endWait()
+	end
+	-- 18 · SHEET RISE : modal sheet rises from the bottom edge; leaving sinks straight down
+	Styles[18] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal + UDim2.fromOffset(0, 235)
+			R.scale.Scale = 0.95
+			dim(R, 0.5)
+			tween(page, 1, Quint, EOut, {Position = goal})
+			tween(R.scale, 1, Quint, EOut, {Scale = 1})
+		else
+			tween(R.scale, 1, Quint, EInOut, {Scale = 0.96})
+			tween(page, 1, Quint, EInOut, {Position = UDim2.new(0.5, 0, 0.5, 235)})
+		end
+		endWait()
+	end
+	-- 19 · ZOOM THROUGH : app-open zoom from small, the old page recedes
+	Styles[19] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal
+			R.scale.Scale = 0.78
+			dim(R, 0.75)
+			tween(R.scale, 1, Quint, EOut, {Scale = 1})
+		else
+			tween(R.scale, 1, Quint, EInOut, {Scale = 0.82})
+			tween(page, 1, Quint, EIn, {Position = goal})
+		end
+		endWait()
+	end
+	-- 20 · DEPTH DIVE : the new page comes forward from behind the glass-free depth plane
+	Styles[20] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal
+			R.scale.Scale = 1.2
+			dim(R, 0.65)
+			tween(R.scale, 1, Quint, EOut, {Scale = 1})
+		else
+			tween(R.scale, 1, Quint, EInOut, {Scale = 0.88})
+			tween(page, 1, Quint, EInOut, {Position = goal})
+		end
+		endWait()
+	end
+	-- 21 · FAN CARD : card swings in from the left with a spring tilt; leaving fans out to the right
+	Styles[21] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal + UDim2.fromOffset(-300, 10)
+			page.Rotation = -9
+			dim(R, 0.5)
+			tween(page, 1, Quint, EOut, {Position = goal})
+			tween(page, 1, Back, EOut, {Rotation = 0})
+			blurAt(0.35, 1.6)
+		else
+			tween(page, 1, Quint, EInOut, {Rotation = 9})
+			tween(page, 1, Quint, EInOut, {Position = goal})
+		end
+		endWait()
+	end
+	-- 22 · ISLAND MORPH : pops out of the top edge like the Dynamic Island, leaving shrinks back up
+	Styles[22] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal + UDim2.fromOffset(0, -80)
+			R.scale.Scale = 0.42
+			dim(R, 0.6)
+			tween(R.scale, 1, Back, EOut, {Scale = 1})
+			tween(page, 1, Quint, EOut, {Position = goal})
+			blurAt(0.4, 1.6)
+		else
+			tween(R.scale, 1, Quint, EInOut, {Scale = 0.42})
+			tween(page, 1, Quint, EInOut, {Position = UDim2.new(0.5, 0, 0.5, -235)})
+		end
+		endWait()
+	end
+	-- 23 · PULL DOWN : notification-centre drop from the top; leaving slides away downward
+	Styles[23] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal + UDim2.fromOffset(0, -235)
+			R.scale.Scale = 1.03
+			dim(R, 0.45)
+			tween(page, 1, Quint, EOut, {Position = goal})
+			tween(R.scale, 1, Quint, EOut, {Scale = 1})
+		else
+			tween(page, 1, Quint, EInOut, {Position = UDim2.new(0.5, 0, 0.5, 235)})
+		end
+		endWait()
+	end
+	-- 24 · STACK SHUFFLE : Safari-style card shuffle, tiny lift + tilt settle; leaving tucks away tilted
+	Styles[24] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal + UDim2.fromOffset(0, 28)
+			page.Rotation = 3
+			R.scale.Scale = 0.9
+			dim(R, 0.6)
+			tween(page, 1, Quint, EOut, {Position = goal})
+			tween(page, 1, Quint, EOut, {Rotation = 0})
+			tween(R.scale, 1, Quint, EOut, {Scale = 1})
+		else
+			tween(page, 1, Quint, EIn, {Rotation = -5})
+			tween(R.scale, 1, Quint, EInOut, {Scale = 0.9})
+			tween(page, 1, Quint, EIn, {Position = goal})
+		end
+		endWait()
+	end
+	-- 25 · ELASTIC POP : springy pop from small with a soft overshoot; leaving collapses and slips away
+	Styles[25] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal
+			R.scale.Scale = 0.55
+			dim(R, 0.55)
+			tween(R.scale, 1, Back, EOut, {Scale = 1})
+			blurAt(0.4, 1.5)
+		else
+			tween(R.scale, 1, Back, EIn, {Scale = 0.55})
+			tween(page, 1, Quint, EIn, {Position = goal})
+		end
+		endWait()
+	end
+	-- 26 · SWIPE AWAY : home-gesture flick; enters from the lower left, leaves flicked to the upper right
+	Styles[26] = function(page, entering, goal, R)
+		if entering then
+			page.Position = goal + UDim2.fromOffset(-150, 190)
+			page.Rotation = 7
+			R.scale.Scale = 0.9
+			dim(R, 0.55)
+			tween(page, 1, Quint, EOut, {Position = goal})
+			tween(page, 1, Quint, EOut, {Rotation = 0})
+			tween(R.scale, 1, Quint, EOut, {Scale = 1})
+		else
+			tween(page, 1, Quint, EInOut, {Rotation = -9})
+			tween(R.scale, 1, Quint, EInOut, {Scale = 0.92})
+			tween(page, 1, Quint, EInOut, {Position = UDim2.new(0.5, 150, 0.5, -235)})
+		end
+		endWait()
+	end
+	local cycleN, cycleAt = 0, -1
+	local function pickStyle(page)
+		local st = PageStyle[page] or assignStyle(page)
+		if st ~= 16 then return st end -- forced styles (the cracktro page) stay as they are
+		local sel = tonumber(FX.Cfg.PageTrans) or 1
+		if sel >= 2 and sel <= 11 then return 15 + sel end
+		if sel == 12 then -- cycle all: the outgoing and incoming page of one switch share a style
+			local now = os.clock()
+			if now - cycleAt > 0.3 then cycleN = cycleN % 10 + 1 end
+			cycleAt = now
+			return 16 + cycleN
+		end
+		return 16
 	end
 
 	-- Tween-like handle so the script's  tween:Play() / tween.Completed:Connect()  keep working
 	local function pageTween(page, props)
 		local goal = props.Position
 		local entering = goal.X.Offset == 0 and goal.Y.Offset == 0
-		local styleId = PageStyle[page] or assignStyle(page)
+		local styleId = pickStyle(page)
 		local handle = {PlaybackState = Enum.PlaybackState.Begin}
 		local done = Instance.new("BindableEvent")
 		handle.Completed = done.Event
@@ -2957,10 +3190,13 @@ Util.FX = (function()
 				FX.BlurPulse(5, 0.15, 0.85, true)
 				local small = props.Size and props.Size.X.Offset < 200
 				FX.Play(small and "close" or "open")
-			elseif FX.Window and typeof(info) == "TweenInfo" and info.RepeatCount == 0 and info.Time >= 0.15
-				and (props.Position or props.Size or props.Rotation or props.Scale or props.CanvasPosition)
+			elseif FX.Window and typeof(info) == "TweenInfo" and info.RepeatCount == 0 and info.Time >= 0.15 and not FX.IntroActive
 				and obj:IsDescendantOf(FX.Window) then
-				FX.MotionBlur(1.2 + math.min(info.Time, 1) * 2, info.Time)
+				if props.Position or props.Size or props.Rotation or props.Scale or props.CanvasPosition then
+					FX.MotionBlur(1.2 + math.min(info.Time, 1) * 2, info.Time)
+				elseif info.Time >= 0.2 and (props.BackgroundTransparency or props.TextTransparency or props.ImageTransparency or props.GroupTransparency or props.Transparency) then
+					FX.MotionBlur(0.9, info.Time) -- [v177 MOTION] coordinated fades carry a feather of blur
+				end
 			end
 		end
 		return RealTweenService:Create(obj, info, props)
@@ -14724,33 +14960,33 @@ end
 			tween(p, t, Quint, EOut, {BackgroundTransparency = 1})
 			Debris:AddItem(p, t * k + 0.25)
 		end
-		if closing then
+		if closing then -- [v177 MOTION] exactly 1000 ms
 			local from = win.Size
 			local g, gs = glass(from, 0.4)
 			FX.Play("close", 0.9)
-			FX.BlurPulse(lite and 3 or 6, 0.1, 0.5)
-			tween(win, 0.5, Quint, EOut, {Position = dest})
-			tween(win, 0.26, Quint, EInOut, {Size = UDim2.fromOffset(from.X.Offset, 30)}) -- height folds first
-			after(0.14, function() tween(win, 0.4, Quint, EInOut, {Size = pill}) end) -- then the width melts into the pill
-			after(0.05, function() tween(g, 0.5, Quint, EInOut, {Size = pill, Position = dest}) end)
-			after(0.3, function() melt(g, gs, 0.3) end)
-			return 0.7 * k
+			FX.BlurPulse(lite and 3 or 6, 0.12, 0.88)
+			tween(win, 1, Quint, EInOut, {Position = dest})
+			tween(win, 0.45, Quint, EInOut, {Size = UDim2.fromOffset(from.X.Offset, 30)}) -- height folds first
+			after(0.2, function() tween(win, 0.8, Quint, EInOut, {Size = pill}) end) -- then the width melts into the pill, landing at 1000 ms
+			after(0.05, function() tween(g, 0.95, Quint, EInOut, {Size = pill, Position = dest}) end)
+			after(0.6, function() melt(g, gs, 0.4) end)
+			return 1 * k
 		end
 		local g, gs = glass(pill, 0.3)
 		FX.Play("open", 0.85)
-		FX.BlurPulse(lite and 5 or 10, 0.08, 0.9)
-		tween(win, 0.45, Quint, EOut, {Position = dest})
-		tween(g, 0.34, Expo, EOut, {Size = UDim2.fromOffset(fx + 24, 34)})
-		after(0.06, function() tween(win, 0.3, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)}) end)
-		after(0.26, function()
-			tween(win, 0.5, Expo, EOut, {Size = full})
-			tween(g, 0.46, Expo, EOut, {Size = full})
+		FX.BlurPulse(lite and 5 or 10, 0.1, 0.9)
+		tween(win, 0.6, Quint, EOut, {Position = dest})
+		tween(g, 0.4, Expo, EOut, {Size = UDim2.fromOffset(fx + 24, 34)})
+		after(0.08, function() tween(win, 0.4, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)}) end)
+		after(0.3, function()
+			tween(win, 0.7, Quint, EOut, {Size = full}) -- lands at 1000 ms
+			tween(g, 0.65, Quint, EOut, {Size = full})
 			FX.Play("hit", 0.85)
 			pcall(FX.Cascade, content, true) -- buttons spring open as the height opens
 		end)
-		after(0.62, function()
+		after(0.55, function()
 			if not lite then FX.Ring(win.Parent, col, math.max(fx, fy) * 1.1, 0.5, 1.5, dest) end
-			melt(g, gs, 0.4)
+			melt(g, gs, 0.45)
 		end)
 		return 1 * k
 	end
@@ -14758,31 +14994,32 @@ end
 	-- [v41] SIGNATURE MOTION - "REGISTER LOCK". The window leaves its pill as three misregistered outline plates (laser bar,
 	-- tall bar, twisted dark echo) on different axes / easings, they hang for a beat, then lock onto the real frame one
 	-- after another with a hard Expo snap while the world blur racks out. Stillness -> burst -> lock -> stillness.
-	function FX.RegisterLock(win, full, content) -- [v175 LIQUID GLASS] boot reveal: one frosted plate blooms wider, the window unfolds inside it
+	function FX.RegisterLock(win, full, content) -- [v177 MOTION] boot reveal: frosted plate blooms, the window unfolds inside it; exactly 1000 ms
 		local Expo, parent = FX.Expo, win.Parent
 		local col = FX.GetColor and FX.GetColor() or WHITE
 		local fx, fy = full.X.Offset, full.Y.Offset
 		local lite = FX.Lite()
+		local k = 1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
 		local g, gs = FX.Plate(win, WHITE, 1.5, 0.25, UDim2.fromOffset(44, 30))
 		g.BackgroundColor3, g.BackgroundTransparency = col:Lerp(WHITE, 0.55), 0.88
-		FX.BlurPulse(lite and 6 or 12, 0.06, 1.1) -- world softens, racks back as the glass settles
-		task.wait(0.1)
+		FX.BlurPulse(lite and 5 or 10, 0.1, 0.9) -- world softens, racks back by the end of the second
+		task.wait(0.08 * k)
 		FX.Play("open", 0.8)
 		tween(g, 0.4, Expo, EOut, {Size = UDim2.fromOffset(fx + 40, 34)})
-		task.wait(0.1)
+		task.wait(0.08 * k)
 		tween(win, 0.36, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)})
-		task.wait(0.22)
+		task.wait(0.2 * k)
 		FX.Cascade(content, true) -- buttons collapse (still clipped) and spring open in an accelerating stagger as the frame opens
-		tween(win, 0.62, Expo, EOut, {Size = full})
-		tween(g, 0.55, Expo, EOut, {Size = full})
+		tween(win, 0.64, Quint, EOut, {Size = full})
+		tween(g, 0.58, Quint, EOut, {Size = full})
 		FX.Play("hit", 0.85)
-		task.wait(0.3)
-		if not lite then FX.Ring(parent, col, math.max(fx, fy) * 1.15, 0.6, 1.5, win.Position) end
-		tween(gs, 0.5, Quint, EOut, {Transparency = 1, Thickness = 0.5})
-		tween(g, 0.5, Quint, EOut, {BackgroundTransparency = 1})
-		Debris:AddItem(g, 0.7)
+		task.wait(0.3 * k)
+		if not lite then FX.Ring(parent, col, math.max(fx, fy) * 1.15, 0.5, 1.5, win.Position) end
+		tween(gs, 0.34, Quint, EOut, {Transparency = 1, Thickness = 0.5})
+		tween(g, 0.34, Quint, EOut, {BackgroundTransparency = 1})
+		Debris:AddItem(g, 0.5 * k)
+		task.wait(0.34 * k)
 	end
-
 	function FX.Chrome(env)
 		local win, content = env.UIMainWindow, env.WindowContent
 		local music = env.UISound and env.UISound.Music
@@ -16648,6 +16885,18 @@ UIMainFrame.BackgroundColor3 = Color3.new(0, 0, 0)
 UIMainFrame.BackgroundTransparency = 1
 UIMainFrame.BorderSizePixel = 0
 UIMainFrame.ZIndex = 2147483647
+
+do -- default rounded corners: every visible UI surface built under the main UI gets a UICorner that follows Corner Roundness
+	local kinds = {Frame = false, TextLabel = false, ScrollingFrame = false, CanvasGroup = false, TextButton = true, TextBox = true, ImageButton = true}
+	local function round(o)
+		if o.Parent and not o:FindFirstChildOfClass("UICorner") and (kinds[o.ClassName] or o.BackgroundTransparency < 1) then
+			pcall(Util.FX.RoundCorner, o)
+		end
+	end
+	UIMainFrame.DescendantAdded:Connect(function(o)
+		if kinds[o.ClassName] ~= nil then task.defer(round, o) end
+	end)
+end
 
 local SaveData = {}
 do
@@ -252147,18 +252396,18 @@ local UIMainWindow, WindowContent do
 			local okF, foldT = pcall(Util.FX.WindowFold, UIMainWindow, WindowContent, true, MainWindowPosClose, UDim2.fromOffset(360, 240)) -- [v41]
 			if not okF then foldT = nil end
 			if not foldT then
-				TweenService:Create(UIMainWindow, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+				TweenService:Create(UIMainWindow, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {
 					Position = MainWindowPosClose,
 					Size = UDim2.fromOffset(112, 30)
 				}):Play()
 			end
-			TweenService:Create(TopBarClose.A, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+			TweenService:Create(TopBarClose.A, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {
 				Rotation = 180
 			}):Play()
-			TweenService:Create(TopBarClose.A.B, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+			TweenService:Create(TopBarClose.A.B, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {
 				Size = UDim2.new(0, 2, 0, 16)
 			}):Play()
-			task.delay(foldT or 0.6, function()
+			task.delay(foldT or 1, function()
 				if foldT then UIMainWindow.Size = UDim2.fromOffset(112, 30) end -- [v41] failsafe: land exactly on the pill
 				WindowContent.Visible = false
 				MainWindowTweening = false
@@ -252170,18 +252419,18 @@ local UIMainWindow, WindowContent do
 			local okF, foldT = pcall(Util.FX.WindowFold, UIMainWindow, WindowContent, false, MainWindowPosOpen, UDim2.fromOffset(360, 240)) -- [v41]
 			if not okF then foldT = nil end
 			if not foldT then
-				TweenService:Create(UIMainWindow, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+				TweenService:Create(UIMainWindow, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {
 					Position = MainWindowPosOpen,
 					Size = UDim2.fromOffset(360, 240)
 				}):Play()
 			end
-			TweenService:Create(TopBarClose.A, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+			TweenService:Create(TopBarClose.A, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {
 				Rotation = 0
 			}):Play()
-			TweenService:Create(TopBarClose.A.B, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+			TweenService:Create(TopBarClose.A.B, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {
 				Size = UDim2.new(0, 2, 0, 0)
 			}):Play()
-			task.delay(foldT or 0.6, function()
+			task.delay(foldT or 1, function()
 				if foldT then UIMainWindow.Size = UDim2.fromOffset(360, 240) end -- [v41] failsafe: land exactly on full size
 				MainWindowTweening = false
 			end)
@@ -252612,9 +252861,11 @@ do
 	UINotifyFrame.BorderSizePixel = 0
 	UINotifyFrame.Visible = false
 	UINotifyFrame.ZIndex = -1
+	UINotifyFrame.ClipsDescendants = true -- [v179 MOTION] the island reveals its content as it grows
 	Stylize(UINotifyFrame, {
 		Glow = true,
 	})
+	local NotifyCor = UINotifyFrame:FindFirstChildOfClass("UICorner")
 	local Progress = Instance.new("Frame", UINotifyFrame)
 	Progress.AnchorPoint = Vector2.new(0.5, 0)
 	Progress.Position = UDim2.new(0.5, 0, 0, 0)
@@ -252659,7 +252910,29 @@ do
 		else
 			uinotif.Animation = math.min(1, uinotif.Animation + dt * 2 * CFG.NotifSpeed)
 		end
-		if uinotif.Animation < 1 then
+		-- [v179 MOTION] DYNAMIC ISLAND: a pill pops out, stretches wide, then drops open; the text fades in last.
+		-- Leaving reverses it: text fades, height folds, width folds into the pill, the pill shrinks away. Three springs, no tween objects.
+		local nEnter = t - uinotif.LastNotif < CFG.NotifDuration or uinotif.Progress < 1
+		local isl = uinotif.Isl
+		if not isl then isl = {a = {x = 0, v = 0}, w = {x = 0, v = 0}, h = {x = 0, v = 0}} uinotif.Isl = isl end
+		local ia, iw, ih = isl.a, isl.w, isl.h
+		local sdt = math.min(dt, 1 / 30) * math.clamp((CFG.NotifSpeed or 3) / 3, 0.4, 3)
+		local steps = math.max(1, math.ceil(sdt * 90))
+		sdt = sdt / steps
+		local ta = (nEnter or iw.x > 0.2 or ih.x > 0.2) and 1 or 0
+		local tw = nEnter and ((ia.x > 0.55) and 1 or 0) or ((ih.x > 0.3) and 1 or 0)
+		local th = (nEnter and ia.x > 0.55 and iw.x > 0.1) and 1 or 0
+		for _ = 1, steps do
+			ia.v = ia.v + (300 * (ta - ia.x) - 2 * 0.7 * 17.32 * ia.v) * sdt
+			ia.x = ia.x + ia.v * sdt
+			iw.v = iw.v + (190 * (tw - iw.x) - 2 * (nEnter and 0.58 or 0.85) * 13.78 * iw.v) * sdt
+			iw.x = iw.x + iw.v * sdt
+			ih.v = ih.v + (160 * (th - ih.x) - 2 * (nEnter and 0.62 or 0.88) * 12.65 * ih.v) * sdt
+			ih.x = ih.x + ih.v * sdt
+		end
+		if uinotif.Dir ~= nEnter then uinotif.Dir = nEnter pcall(Util.FX.MotionBlur, 1.5, 0.6) end -- blur follows the pill in / out
+		if uinotif.Exp ~= (th == 1) then uinotif.Exp = th == 1 pcall(Util.FX.MotionBlur, 1.8, 0.7) end -- and the stretch / fold
+		if ia.x > 0.012 or nEnter then
 			UINotifyFrame.Visible = true
 			local nh = math.max(30, CFG.NotifSize + 12)
 			if uinotif.Wrap then -- [v93] long announcements wrap onto several lines
@@ -252672,19 +252945,24 @@ do
 				if uinotif.WrapH then nh = math.max(nh, uinotif.WrapH) end
 			end
 			NotifyText.TextWrapped = uinotif.Wrap == true
-			UINotifyFrame.Size = UDim2.new(0, CFG.NotifWidth, 0, nh)
+			local fullW = CFG.NotifWidth
+			local pillW, pillH = math.min(92, fullW), math.min(26, nh)
+			local ax, wx, hx = math.max(ia.x, 0), math.max(iw.x, 0), math.max(ih.x, 0)
+			UINotifyFrame.Size = UDim2.fromOffset(math.max(2, (pillW + (fullW - pillW) * wx) * ax), math.max(2, (pillH + (nh - pillH) * hx) * ax))
+			if NotifyCor then NotifyCor.CornerRadius = UDim.new(0, pillH * 0.5 + (CFG.UIRound - pillH * 0.5) * math.min(hx, 1)) end -- full pill -> the UI's own corner
 			NotifyText.TextSize = CFG.NotifSize
-			NotifyText.Size = UDim2.new(1, 0, 0, nh)
-			local slide = math.pow(uinotif.Animation, 3)
+			NotifyText.Size = UDim2.new(0, fullW, 0, nh) -- fixed width: the island reveals the text instead of reflowing it
+			local tt = math.clamp(1 - (math.min(wx, hx) - 0.55) / 0.35, 0, 1)
+			local yo = -(1 - math.min(ax, 1)) * 16 -- the pill drops in from just above its resting place
 			local pos = CFG.NotifPos
 			if pos == 2 then -- above the window
-				UINotifyFrame.Position = UIMainWindow.Position + UDim2.new(0, 0, 0, -UIMainWindow.Size.Y.Offset / 2 - 10 - nh + slide * (nh + 10))
+				UINotifyFrame.Position = UIMainWindow.Position + UDim2.new(0, 0, 0, -UIMainWindow.Size.Y.Offset / 2 - 10 - nh + yo)
 			elseif pos == 3 then -- top of the screen
-				UINotifyFrame.Position = UDim2.new(0.5, 0, 0, 10 - slide * (nh + 20))
+				UINotifyFrame.Position = UDim2.new(0.5, 0, 0, 10 + yo)
 			elseif pos == 4 then -- bottom of the screen
-				UINotifyFrame.Position = UDim2.new(0.5, 0, 1, -(nh + 10) + slide * (nh + 20))
+				UINotifyFrame.Position = UDim2.new(0.5, 0, 1, -(nh + 10) + yo)
 			else -- below the window (default)
-				UINotifyFrame.Position = UIMainWindow.Position + UDim2.new(0, 0, 0, UIMainWindow.Size.Y.Offset / 2 + 10 + slide * -(nh + 10))
+				UINotifyFrame.Position = UIMainWindow.Position + UDim2.new(0, 0, 0, UIMainWindow.Size.Y.Offset / 2 + 10 + yo)
 			end
 			if uinotif.Progress >= 1 then
 				Progress.BackgroundTransparency = math.min(t - uinotif.LastNotif, 0.5) * 2 * 0.3 + 0.7
@@ -252716,10 +252994,16 @@ do
 				ProgressTop.BackgroundTransparency = 1
 				ProgressBot.BackgroundTransparency = 1
 			end
+			if tt > 0 then -- the progress line appears together with the text
+				Progress.BackgroundTransparency = math.max(Progress.BackgroundTransparency, tt)
+				ProgressTop.BackgroundTransparency = math.max(ProgressTop.BackgroundTransparency, tt)
+				ProgressBot.BackgroundTransparency = math.max(ProgressBot.BackgroundTransparency, tt)
+			end
 			NotifyText.Text = uinotif.Text
-			NotifyText.TextTransparency = math.clamp(slide * 1.5, 0, 1) -- [v54] text fades with the slide
+			NotifyText.TextTransparency = tt -- text fades in last / out first
 		else
 			UINotifyFrame.Visible = false
+			ia.x, ia.v, iw.x, iw.v, ih.x, ih.v = 0, 0, 0, 0, 0, 0
 		end
 	end, UINotifyFrame)
 end
@@ -253602,8 +253886,9 @@ function UI.CreateDropdown(parent, text, array, value)
 			opened = false
 		end)
 	end
-	local opentween = 0
+	local opentween, lastOpen = 0, false
 	AddToRenderStep(function(t, dt)
+		if opened ~= lastOpen then lastOpen = opened pcall(Util.FX.MotionBlur, 1.5, 0.5) end -- [v177 MOTION] blur follows the menu, then settles
 		if not opened and opentween < 0.002 then -- [perf] a fully closed dropdown does no per-frame work
 			if opentween ~= 0 or Droplist.Visible then
 				opentween = 0
@@ -253614,11 +253899,11 @@ function UI.CreateDropdown(parent, text, array, value)
 			return
 		end
 		if opened then
-			opentween = 1 + (opentween - 1) * math.exp(-32 * dt)
+			opentween = 1 + (opentween - 1) * math.exp(-11 * dt)
 			Droplist.ZIndex = 4
 			Droplist.Interactable = true
 		else
-			opentween *= math.exp(-32 * dt)
+			opentween *= math.exp(-14 * dt)
 			Droplist.ZIndex = 3
 			Droplist.Interactable = false
 		end
@@ -253630,9 +253915,12 @@ function UI.CreateDropdown(parent, text, array, value)
 			local fade = 1 - math.clamp(opentween, 0, 1) -- [v54] fades in / out with the open animation
 			Droplist.BackgroundTransparency = fade
 			if dropStroke then dropStroke.Transparency = fade end
+			local n = 0
 			for _, v in items do
-				v.BackgroundTransparency = fade
-				v.TextTransparency = fade
+				n = n + 1
+				local f = math.max(fade, math.clamp(1 - (opentween * 1.35 - (n - 1) * 0.07), 0, 1)) -- [v177 MOTION] items fade in one after another
+				v.BackgroundTransparency = f
+				v.TextTransparency = f
 			end
 		else
 			Droplist.Visible = false
@@ -260527,6 +260815,8 @@ do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 
 			pcall(Util.UIPlus.ApplyFont)
 		end)
 		sl("Animation speed (effects, transitions)", "UIAnimSpeed", 0.4, 3, 0.1)
+		dd("Page transition", "PageTrans", {"Liquid (default)", "Push", "Sheet Rise", "Zoom Through", "Depth Dive", "Fan Card", "Island Morph", "Pull Down", "Stack Shuffle", "Elastic Pop", "Swipe Away", "Cycle all"})
+		dd("Button animation", "BtnAnim", {"Original", "Jelly", "Wiggle", "Pop Burst", "Haptic Nudge", "Shockwave", "Whirl", "Tilt Follow", "Glow Pulse", "Drop & Settle", "Sheen Sweep"})
 		UI.CreateSwitch(Canvas, "Ambient Particles (palette colored)", FX.Cfg.UIParticles).Changed:Connect(function(val)
 			FX.SetCfg("UIParticles", val)
 			pcall(Util.UIPlus.ApplyParticles)
@@ -262808,7 +263098,9 @@ Util.PredictionFling = function(target)
 			local t2 = math.sin(t * 15) + 1
 			local cf = target.CFrame * CFrame.Angles(1.57, 0, 0)
 			if not Util.Fling.UseGlue() then
-				cf += target.AssemblyLinearVelocity * t2 + Vector3.new(0, -workspace.Gravity * 0.5 * t2 * t2 + math.sin(t * 60), 0)
+				local tv = target.AssemblyLinearVelocity
+				if tv.Magnitude > 300 or tv.X ~= tv.X or tv.Y ~= tv.Y or tv.Z ~= tv.Z then tv = Vector3.zero end -- already launched / NaN: don't chase it
+				cf += tv * t2 + Vector3.new(0, -workspace.Gravity * 0.5 * t2 * t2 + math.sin(t * 60), 0)
 				if cf.Position.Y < target.Position.Y - 1 then
 					cf = cf.Rotation + Vector3.new(cf.Position.X, target.Position.Y - 1, cf.Position.Z)
 				end
@@ -262871,7 +263163,7 @@ Util.Fling.Descriptions = {
 Util.Fling.WeakDuration = 0.4        -- how long a weak fling lasts (seconds)
 Util.Fling.NaNWindow = 0.6           -- seconds to wait for the NaN state to work before escalating
 Util.Fling.NaNEscalateDistance = 60  -- target moved less than this = it only got pushed
-Util.Fling.NoobyMaxTime = 15         -- safety cap for nooby's method (god-mode targets can't die)
+Util.Fling.NoobyMaxTime = 90         -- safety cap for nooby's method (god-mode targets can't die)
 -- GitHub/legacy fling variants are kept inside the shared method engine so the
 -- external Uh Admin exposes walkfling only; these three are dropdown methods.
 Util.Fling.SourceFling1Duration = 2.0
@@ -263001,6 +263293,9 @@ Util.Fling.Step = function(queue, t, defaultduration)
 			table.remove(queue, 1)
 			return nil, CFrame.identity, true
 		end
+		if ft.Mode == 3 and t - ft.Start < Util.Fling.NoobyMaxTime then -- stay attached for as long as they are alive
+			ft.Time = math.max(ft.Time, t + 1)
+		end
 		-- Fling 2 (carpet): once they are launched far from where we started, count it as flung
 		if ft.Mode == 6 and ft.StartPos and t - ft.Start > 0.15 and (p - ft.StartPos).Magnitude > 150 then
 			table.remove(queue, 1)
@@ -263022,7 +263317,9 @@ Util.Fling.Step = function(queue, t, defaultduration)
 		-- feeding a stale prediction into the source-style sequences and keeps NaN-safe modes
 		-- isolated from the player's own RootPart.
 		if ft.Mode == 2 then
-			flingcf = CFrame.new(part.Position + Vector3.new(0, -2, 0))
+			local wv = part.AssemblyLinearVelocity
+			if wv.Magnitude > 60 then wv = wv.Unit * 60 end
+			flingcf = CFrame.new(part.Position + wv * 0.08 + Vector3.new(0, -2, 0))
 		elseif ft.Mode == 6 then
 			local speed = part.AssemblyLinearVelocity.Magnitude
 			if speed <= 28 then
@@ -263079,7 +263376,12 @@ Util.Fling.Step = function(queue, t, defaultduration)
 			local index = (math.floor(elapsed / interval) % #offsets) + 1
 			flingcf = part.CFrame * CFrame.new(offsets[index])
 		else
-			flingcf = part.CFrame
+			local cv = part.AssemblyLinearVelocity
+			if (ft.Mode == 3 or ft.Mode == 4) and cv.Magnitude < 80 then
+				flingcf = part.CFrame + cv * 0.05
+			else
+				flingcf = part.CFrame
+			end
 		end
 		flinged = false
 	else
@@ -263097,17 +263399,21 @@ Util.Fling.ApplyRoot = function(RootPart, ft, flingcf)
 	local jitter = Vector3.new(0, 0, math.random(0, 1) * 0.005)
 	if mode == 4 then
 		-- NaN state fling: stay inside their root, velocity stays clean, the NaN comes from the humanoid state
-		RootPart.CFrame = CFrame.new(flingcf.Position + jitter) * CFrame.Angles(0, t * 15, 0)
+		RootPart.CFrame = CFrame.new(flingcf.Position + jitter + Vector3.new(math.sin(t * 40) * 0.15, 0, math.cos(t * 40) * 0.15)) * CFrame.Angles(0, t * 15, 0)
 		RootPart.Velocity, RootPart.RotVelocity = Vector3.zero, Vector3.zero
+		pcall(function() RootPart.AssemblyLinearVelocity, RootPart.AssemblyAngularVelocity = Vector3.zero, Vector3.zero end)
 	elseif mode == 2 then
 		-- weak fling: low speed shove at leg height, enough to trip, not enough to launch
 		RootPart.CFrame = CFrame.new(flingcf.Position + jitter) * CFrame.Angles(0, t * 10, 0)
-		RootPart.Velocity = Vector3.new(math.sin(t * 25) * 22, 0, math.cos(t * 25) * 22)
+		RootPart.Velocity = Vector3.new(math.sin(t * 25) * 26, -4, math.cos(t * 25) * 26)
 		RootPart.RotVelocity = Vector3.new(0, 30, 0)
 	elseif mode == 3 and typeof(ft.Target) == "Instance" then
 		-- nooby's method: clipped inside their HumanoidRootPart, re-attached every frame while they fall
-		RootPart.CFrame = CFrame.new(flingcf.Position + jitter) * CFrame.Angles(t * 31, t * 47, 0)
-		RootPart.Velocity, RootPart.RotVelocity = Vector3.new(0, -16384, 0), Vector3.one * 16384
+		local nf = (math.floor(t * 120) % 2 == 0) and 1 or -1
+		local tp = Util.Fling.GetPart(ft.Target)
+		local at = tp and tp.Position or flingcf.Position -- glue to their live root every frame
+		RootPart.CFrame = CFrame.new(at + jitter + Vector3.new(0, nf * 0.2, 0)) * CFrame.Angles(t * 31, t * 47, 0)
+		RootPart.Velocity, RootPart.RotVelocity = Vector3.new(0, -16384 * nf, 0), Vector3.one * 16384
 	elseif mode == 5 then
 		-- Fling 1: source-style high-velocity position cycling.
 		RootPart.CFrame = flingcf + jitter
@@ -263135,15 +263441,16 @@ Util.Fling.ApplyRoot = function(RootPart, ft, flingcf)
 		RootPart.Velocity = Vector3.new(9e7, 9e8, 9e7)
 		RootPart.RotVelocity = Vector3.new(9e8, 9e8, 9e8)
 	else
-		-- default fling
+		-- default fling: velocity flips direction every frame so the push lands after the position update
+		local df = (math.floor(t * 120) % 2 == 0) and 1 or -1
 		RootPart.CFrame = flingcf + jitter
-		RootPart.Velocity, RootPart.RotVelocity = Vector3.new(0, -16384, 0), Vector3.one * 16384
+		RootPart.Velocity, RootPart.RotVelocity = Vector3.new(0, -16384 * df, 0), Vector3.new(16384, 16384 * df, 16384)
 	end
 end
 Util.Fling.ApplyHumanoid = function(Humanoid, ft, lastspawn)
 	local nan = (ft and ft.Mode or Util.Fling.Method) == 4
 	if nan then
-		if os.clock() - lastspawn > 0.1 then
+		if os.clock() - lastspawn > 0.08 then
 			pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.new(0/0, 0/0, 0/0))
 		else
 			pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.zero)
