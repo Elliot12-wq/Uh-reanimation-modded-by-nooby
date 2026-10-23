@@ -415,7 +415,7 @@ Util.FX = (function()
 		NotifMode = 1, NotifDuration = 4, NotifTitle = "Nooby's uh modded reanimation v1.1.1", NotifPos = 1, NotifWidth = 300,
 		NotifSize = 18, NotifProgress = true, NotifColor = "", NotifSound = false, NotifSpeed = 1,
 		-- extra ui
-		UIBgTr = 0, UIBorder = 1, UIRound = 8, UIGlow = true, UIAccent = "",
+		UIBgTr = 0.28, UIBorder = 1, UIRound = 16, UIGlow = false, UIAccent = "", GlassBlur = true,
 		-- command triangle (floating button that opens the command bar)
 		AdminTriHidden = false,
 		AdminTriTab = true,   -- tiny restore tab at the top edge while the triangle is hidden
@@ -423,7 +423,7 @@ Util.FX = (function()
 		-- [v24] dynamic colour system
 		AccentMode = 1, HarmonyMode = 1, ColorSpeed = 1, ColorSat = 1, ColorBright = 1,
 		-- [v24] extra ui options
-		UIScale = 1, UIFont = 1, UIAnimSpeed = 1, UIParticles = true, UIGradient = true, UITrail = true,
+		UIScale = 1, UIFont = 2, UIAnimSpeed = 1, UIParticles = true, UIGradient = true, UITrail = true,
 		PageTrans = 1, BtnAnim = 1, -- [v178 MOTION] page transition / button animation pickers (1 = original)
 		-- [settings] Roblox icon + chat visuals (follow the UI theme)
 		RbxIconTheme = true, RbxBarTheme = true, ChatStyle = true, ChatTextSize = 14, ChatBgTr = 0.3, ChatWinW = 1, ChatWinH = 1, BubbleDur = 15, BubbleDist = 100, BubbleTail = true,
@@ -467,6 +467,13 @@ Util.FX = (function()
 				v = d
 			end
 			FX.Cfg[k] = v
+		end
+		if not SaveData.GlassSkin1 then -- [glass] one-time move of saved settings to the glass look
+			SaveData.GlassSkin1 = true
+			for k, v in pairs({UIBgTr = 0.28, UIRound = 16, UIGlow = false, UIFont = 2}) do
+				FX.Cfg[k] = v
+				FX.Store[k] = v
+			end
 		end
 	end
 	function FX.SetCfg(key, value)
@@ -20026,7 +20033,7 @@ end
 		 AnchorPoint = Vector2.new(0.5, 0.5),
 		 Position = UDim2.new(0.5, 0, 0.5, 0),
 		 Size = UDim2.new(1, -18, 0, 0),
-		 BackgroundTransparency = 0.12,
+		 BackgroundTransparency = 0.2,
 		 BorderSizePixel = 0,
 		 ClipsDescendants = true,
 		 Visible = true,
@@ -20058,7 +20065,7 @@ end
 		 }),
 	 }, barScan)
 	 Util.UhAdmin.BarStroke, Util.UhAdmin.BarGrad, Util.UhAdmin.BarScan = barStroke, barGrad, barScan
-	 uhNew("UICorner", {}, centerBar)
+	 uhNew("UICorner", {CornerRadius = UDim.new(0, 16)}, centerBar)
 
 	 -- dynamic 3D triangle logo (replaces the Nameless Admin logo PNG)
 	 local logoHolder = uhNew("Frame", {
@@ -251804,9 +251811,10 @@ local function Stylize(obj, options)
 	Out.Color = Color3.new(1, 1, 1)
 	Out.LineJoinMode = Enum.LineJoinMode.Round
 	Out.Thickness = Util.FX.Cfg.UIBorder
-	Out.Transparency = 0
+	Out.Transparency = 0.7 -- [glass] hairline translucent rim
 	Out.Enabled = true
 	obj.BackgroundColor3 = Color3.new(0, 0, 0)
+	if not options.BgTr and obj.BackgroundTransparency < 0.3 then obj.BackgroundTransparency = 0.3 end -- [glass] translucent card
 	local Glos = {}
 	if options.Glow == true then
 		local GloF = Util.Instance("Frame", UIMainFrame)
@@ -251955,7 +251963,7 @@ local function UpdateGrads(t, all)
 		if all or grad.vis ~= false or grad.force then
 		grad.force = nil
 		local obj, Out, Glos, options = grad.obj, grad.Out, grad.Glos, grad.options
-		Out.Color = c
+		Out.Color = c:Lerp(Color3.new(1, 1, 1), 0.55) -- [glass] soft accent-tinted rim
 		if grad.thick ~= CFG.UIBorder then
 			grad.thick = CFG.UIBorder
 			Out.Thickness = CFG.UIBorder
@@ -252081,7 +252089,7 @@ local UIMainWindow, WindowContent do
 	UIMainWindow.Active = true
 	UIMainWindow.AnchorPoint = Vector2.new(0.5, 0.5)
 	UIMainWindow.Position = UDim2.new(0.5, 0, 0.5, 0)
-	UIMainWindow.Size = UDim2.new(0, 360, 0, 240)
+	UIMainWindow.Size = UDim2.new(0, 360, 0, 285)
 	UIMainWindow.BackgroundTransparency = 0
 	UIMainWindow.BackgroundColor3 = Color3.new(1, 1, 1)
 	UIMainWindow.BorderSizePixel = 0
@@ -252369,7 +252377,7 @@ local UIMainWindow, WindowContent do
 	
 	WindowContent = Util.Instance("Frame", UIMainWindow)
 	WindowContent.Position = UDim2.new(0, 0, 0, 30)
-	WindowContent.Size = UDim2.new(1, 0, 1, -35)
+	WindowContent.Size = UDim2.new(1, 0, 1, -80)
 	WindowContent.BackgroundTransparency = 1
 	WindowContent.ClipsDescendants = true
 	WindowContent.ZIndex = 0
@@ -252393,7 +252401,7 @@ local UIMainWindow, WindowContent do
 		MainWindowClosed = not MainWindowClosed
 		if MainWindowClosed then
 			MainWindowPosOpen = UIMainWindow.Position
-			local okF, foldT = pcall(Util.FX.WindowFold, UIMainWindow, WindowContent, true, MainWindowPosClose, UDim2.fromOffset(360, 240)) -- [v41]
+			local okF, foldT = pcall(Util.FX.WindowFold, UIMainWindow, WindowContent, true, MainWindowPosClose, UDim2.fromOffset(360, 285)) -- [v41]
 			if not okF then foldT = nil end
 			if not foldT then
 				TweenService:Create(UIMainWindow, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {
@@ -252416,12 +252424,12 @@ local UIMainWindow, WindowContent do
 			WindowContent.Visible = true
 			MainWindowPosClose = UIMainWindow.Position
 			SaveData.WindowClosedPosition = {MainWindowPosClose.X.Scale, MainWindowPosClose.X.Offset, MainWindowPosClose.Y.Scale, MainWindowPosClose.Y.Offset}
-			local okF, foldT = pcall(Util.FX.WindowFold, UIMainWindow, WindowContent, false, MainWindowPosOpen, UDim2.fromOffset(360, 240)) -- [v41]
+			local okF, foldT = pcall(Util.FX.WindowFold, UIMainWindow, WindowContent, false, MainWindowPosOpen, UDim2.fromOffset(360, 285)) -- [v41]
 			if not okF then foldT = nil end
 			if not foldT then
 				TweenService:Create(UIMainWindow, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {
 					Position = MainWindowPosOpen,
-					Size = UDim2.fromOffset(360, 240)
+					Size = UDim2.fromOffset(360, 285)
 				}):Play()
 			end
 			TweenService:Create(TopBarClose.A, TweenInfo.new(1, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {
@@ -252431,7 +252439,7 @@ local UIMainWindow, WindowContent do
 				Size = UDim2.new(0, 2, 0, 0)
 			}):Play()
 			task.delay(foldT or 1, function()
-				if foldT then UIMainWindow.Size = UDim2.fromOffset(360, 240) end -- [v41] failsafe: land exactly on full size
+				if foldT then UIMainWindow.Size = UDim2.fromOffset(360, 285) end -- [v41] failsafe: land exactly on full size
 				MainWindowTweening = false
 			end)
 		end
@@ -253309,7 +253317,7 @@ function UI.CreatePage()
 	Frame.Size = UDim2.new(0, 360, 0, 205)
 	Frame.BackgroundTransparency = 0
 	Frame.BackgroundColor3 = Color3.new(0, 0, 0)
-	Frame.BorderSizePixel = 1
+	Frame.BorderSizePixel = 0
 	Frame.BorderColor3 = Color3.new(1, 1, 1)
 	Frame.Visible = true
 	Frame.ZIndex = 0
@@ -253338,8 +253346,8 @@ function UI.CreatePage()
 		Frame.ScrollBarImageColor3 = val
 	end))
 	local Padding = Util.Instance("UIPadding", Frame)
-	Padding.PaddingTop = UDim.new(0, 5)
-	Padding.PaddingBottom = UDim.new(0, 0)
+	Padding.PaddingTop = UDim.new(0, 6)
+	Padding.PaddingBottom = UDim.new(0, 10)
 	Padding.PaddingLeft = UDim.new(0, 0)
 	Padding.PaddingRight = UDim.new(0, 0)
 	local UIList = Util.Instance("UIListLayout", Frame)
@@ -253348,6 +253356,7 @@ function UI.CreatePage()
 	UIList.VerticalAlignment = Enum.VerticalAlignment.Top
 	UIList.Padding = UDim.new(0, 0)
 	UIList.SortOrder = Enum.SortOrder.LayoutOrder
+	pcall(function() Util.AllPages = Util.AllPages or {}; table.insert(Util.AllPages, Frame) end) -- [glass] page registry for the dock
 	return Frame
 end
 function UI.CreateText(parent, text, size, alignment)
@@ -253444,6 +253453,16 @@ function UI.CreateButton(parent, text, size)
 	ButtonText.Text = text
 	update()
 	ButtonText.Changed:Connect(update)
+	pcall(function() -- [glass] navigation registry for the pill dock
+		if text == "&lt; Back" then
+			Util.BackBtns = Util.BackBtns or setmetatable({}, {__mode = "k"})
+			if not Util.BackBtns[parent] then Util.BackBtns[parent] = Button end
+		elseif parent == Util.MainPageRef and (text == "Music &gt;" or text == "Customization &gt;" or text == "Minigames &gt;") then
+			Util.NavBtns = Util.NavBtns or {}
+			Util.NavBtns[text] = Button
+			Button.Activated:Connect(function() Util.NavLast = text end)
+		end
+	end)
 	return Button, ButtonText
 end
 function UI.CreateSwitch(parent, text, value)
@@ -254034,7 +254053,7 @@ function UI.CreateItemListPage()
 	Frame.Size = UDim2.new(0, 360, 0, 205)
 	Frame.BackgroundTransparency = 0
 	Frame.BackgroundColor3 = Color3.new(0, 0, 0)
-	Frame.BorderSizePixel = 1
+	Frame.BorderSizePixel = 0
 	Frame.BorderColor3 = Color3.new(1, 1, 1)
 	Frame.Visible = true
 	Frame.ZIndex = 0
@@ -254198,6 +254217,7 @@ Util.FX.Bind({
 })
 
 local MainPage = UI.CreatePage()
+Util.MainPageRef = MainPage
 MainPage.Interactable = false
 do -- [v36] FEATURE CENTER bookkeeping: remembers where each section of the main page starts (creation order)
 	Util.FCMarks = {}
@@ -256058,7 +256078,7 @@ Util.UIPlus = (function()
 		end
 	end
 	function P.ApplyScale()
-		local s = cfg().UIScale or 1
+		local s = (cfg().UIScale or 1) * (Util.GlassFit and Util.GlassFit() or 1) -- [glass] small screens shrink the whole UI to fit
 		if not P.scaleObj then
 			if s == 1 then return end
 			UIMainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -261536,16 +261556,16 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 		end)
 
 		----------------------------------------------------------------- 7 · tabs (UP NEXT / LYRICS / RELATED) + track list drawer
-		local tabsBox = section("Tabs", 38, 7)
+		local tabsBox = section("Tabs", 38, 8)
 		local function tabBtn(txt, x, dim)
 			return mk("TextButton", { Name = txt, BackgroundTransparency = 1, AutoButtonColor = false, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(x, 0, 0.5, -3), Size = UDim2.new(0.3, 0, 0, 28), Text = txt, TextColor3 = dim and DIMC or LIGHT, Font = Enum.Font.GothamMedium, TextSize = 14, Parent = tabsBox })
 		end
-		local upB, lyB, reB = tabBtn("UP NEXT", 0.197), tabBtn("LYRICS", 0.5, true), tabBtn("RELATED", 0.8)
+		local upB, lyB, reB = tabBtn("UP NEXT", 0.197), tabBtn("LIBRARY", 0.5), tabBtn("PLAYLISTS", 0.8)
 		local ul = mk("Frame", { BackgroundColor3 = WHITE, BackgroundTransparency = 1, BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.197, 0, 1, -2), Size = UDim2.new(0, 36, 0, 2), Parent = tabsBox }, { corner() })
 		juice(upB, upB, nil, nil, 1.06)
 		juice(reB, reB, nil, nil, 1.06)
 
-		local drawer = mk("Frame", { Name = "Drawer", BackgroundTransparency = 1, ClipsDescendants = true, Size = UDim2.new(1, 0, 0, 0), LayoutOrder = 8, Parent = np })
+		local drawer = mk("Frame", { Name = "Drawer", BackgroundTransparency = 1, ClipsDescendants = true, Size = UDim2.new(1, 0, 0, 0), LayoutOrder = 9, Parent = np })
 		local list = mk("ScrollingFrame", { Name = "Tracks", BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, 0, 1, 0), CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3, ScrollBarImageColor3 = accent, ElasticBehavior = Enum.ElasticBehavior.Never, Parent = drawer }, {
 			mk("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }),
 			mk("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 10), PaddingTop = UDim.new(0, 2), PaddingBottom = UDim.new(0, 4) }),
@@ -261565,8 +261585,12 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 			})
 			juice(backRow, backRow, PILL, PILLH, 1.02)
 			backRow.MouseButton1Click:Connect(function() if closeDrawer then closeDrawer() end end)
-			for i, hi in ipairs(MusicPlayer.Database) do
-				if which == "up" or (artistOf(hi[2]) == cur and i ~= MusicPlayer.LastMusic) then
+			local DB = MusicPlayer.Database
+			for k = 1, #DB do
+				local i = k
+				if which == "up" and MusicPlayer.LastMusic then i = (MusicPlayer.LastMusic + k - 1) % #DB + 1 end -- [glass] UP NEXT starts at the current track
+				local hi = DB[i]
+				if which == "up" or which == "lib" or (artistOf(hi[2]) == cur and i ~= MusicPlayer.LastMusic) then
 					rows += 1
 					local isCur = i == MusicPlayer.LastMusic
 					local r = mk("TextButton", { AutoButtonColor = false, BackgroundColor3 = PILL, BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 34), Text = hi[2], TextColor3 = isCur and accent or WHITE, TextTransparency = 1, Font = Enum.Font.GothamMedium, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd, LayoutOrder = rows, Parent = list }, {
@@ -261580,7 +261604,7 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 					end)
 					task.delay(math.min(rows, 12) * 0.03, function()
 						if r.Parent then
-							tw(r, 0.35, { BackgroundTransparency = 0, TextTransparency = 0 })
+							tw(r, 0.35, { BackgroundTransparency = 0.3, TextTransparency = 0 })
 						end
 					end)
 				end
@@ -261598,8 +261622,9 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 			tw(drawer, 0.4, { Size = UDim2.new(1, 0, 0, h) })
 			tw(upB, 0.2, { TextColor3 = which == "up" and WHITE or LIGHT })
 			tw(reB, 0.2, { TextColor3 = which == "rel" and WHITE or LIGHT })
+			tw(lyB, 0.2, { TextColor3 = which == "lib" and WHITE or LIGHT })
 			if which then
-				tw(ul, 0.35, { Position = UDim2.new(which == "up" and 0.197 or 0.8, 0, 1, -2), BackgroundTransparency = 0 }, Enum.EasingStyle.Back)
+				tw(ul, 0.35, { Position = UDim2.new(which == "up" and 0.197 or (which == "lib" and 0.5 or 0.8), 0, 1, -2), BackgroundTransparency = 0 }, Enum.EasingStyle.Back)
 				task.delay(0.42, function()
 					if MusicPage.Parent then
 						tw(MusicPage, 0.35, { CanvasPosition = Vector2.new(0, math.max(0, MusicPage.AbsoluteCanvasSize.Y - MusicPage.AbsoluteSize.Y)) })
@@ -261611,6 +261636,8 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 		end
 		upB.MouseButton1Click:Connect(function() setDrawer("up") end)
 		reB.MouseButton1Click:Connect(function() setDrawer("rel") end)
+		lyB.MouseButton1Click:Connect(function() setDrawer("lib") end)
+		juice(lyB, lyB, nil, nil, 1.06)
 		pickB.MouseButton1Click:Connect(function() setDrawer("up") end) -- tap the song title to open / close the track list
 		closeDrawer = function() -- Back row in the track list: close the list and return to the top of the player
 			if open then setDrawer(open) end
@@ -261719,6 +261746,80 @@ do -- [v60] MUSIC PAGE (Main UI > Music): "Now Playing" layout, same music syste
 			repB.TextColor3 = snd.Looped and accent or LIGHT
 			repCap.Text = snd.Looped and "LOOP ON" or "LOOP OFF"
 		end)
+
+		-- [glass] music page skin: translucent pills, rounded art card, volume pill + Shuffle / Library / Playlists tiles
+		do
+			for _, d in ipairs(np:GetDescendants()) do
+				if (d:IsA("TextButton") or d:IsA("Frame")) and (d.BackgroundColor3 == PILL or d.BackgroundColor3 == PILLH) and d.BackgroundTransparency < 0.3 then
+					d.BackgroundTransparency = 0.3
+				end
+			end
+			np.BackgroundTransparency = 1
+			mk("UICorner", { CornerRadius = UDim.new(0, 18), Parent = artCv })
+			mk("UIStroke", { Color = WHITE, Transparency = 0.84, Parent = artCv })
+
+			local tilesBox = section("Tiles", 104, 7, 0.04)
+			local vol = mk("Frame", { Name = "Volume", BackgroundColor3 = PILL, BackgroundTransparency = 0.3, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 30), Parent = tilesBox }, { corner(), mk("UIStroke", { Color = WHITE, Transparency = 0.86 }) })
+			mk("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0, 14, 0, 0), Size = UDim2.new(0, 30, 1, 0), Text = "VOL", TextColor3 = GREY, Font = Enum.Font.GothamBold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left, Parent = vol })
+			local vTrack = mk("Frame", { BackgroundColor3 = RGB(112, 112, 112), BackgroundTransparency = 0.4, BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 48, 0.5, 0), Size = UDim2.new(1, -104, 0, 4), Parent = vol }, { corner() })
+			local vFill = mk("Frame", { BackgroundColor3 = WHITE, BorderSizePixel = 0, Size = UDim2.new(math.clamp(snd.Volume > 0 and snd.Volume or 1, 0, 1), 0, 1, 0), Parent = vTrack }, { corner() })
+			local vLbl = mk("TextLabel", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 40, 1, 0), Text = "100%", TextColor3 = GREY, Font = Enum.Font.GothamMedium, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Right, Parent = vol })
+			local vHit = mk("TextButton", { BackgroundTransparency = 1, Text = "", AutoButtonColor = false, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 42, 0.5, 0), Size = UDim2.new(1, -92, 1, 0), ZIndex = 5, Parent = vol })
+			vLbl.Text = math.floor(vFill.Size.X.Scale * 100 + 0.5) .. "%"
+			local function setVol(a)
+				a = math.clamp(a, 0, 1)
+				vFill.Size = UDim2.new(a, 0, 1, 0)
+				vLbl.Text = math.floor(a * 100 + 0.5) .. "%"
+				if not SaveData.MuteUIMusic then pcall(function() snd.Volume = a end) end
+			end
+			local vDrag = false
+			local function vSeek(x) setVol((x - vTrack.AbsolutePosition.X) / math.max(vTrack.AbsoluteSize.X, 1)) end
+			vHit.InputBegan:Connect(function(i)
+				if i.UserInputType == MB1 or i.UserInputType == TOUCH then
+					vDrag = true
+					vSeek(i.Position.X)
+				end
+			end)
+			UIS.InputChanged:Connect(function(i)
+				if vDrag and (i.UserInputType == MM or i.UserInputType == TOUCH) then vSeek(i.Position.X) end
+			end)
+			UIS.InputEnded:Connect(function(i)
+				if vDrag and (i.UserInputType == MB1 or i.UserInputType == TOUCH) then vDrag = false end
+			end)
+
+			local function mtile(x, name, sub, tint, cb)
+				local b = mk("TextButton", { AutoButtonColor = false, Text = "", BackgroundColor3 = tint, BackgroundTransparency = 0.5, BorderSizePixel = 0, Position = UDim2.new(x, 0, 0, 38), Size = UDim2.new(0.3, 0, 0, 62), Parent = tilesBox }, { corner(UDim.new(0, 16)), mk("UIStroke", { Color = tint:Lerp(WHITE, 0.5), Transparency = 0.75 }) })
+				mk("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0, 12, 0, 13), Size = UDim2.new(1, -24, 0, 18), Text = name, TextColor3 = WHITE, Font = Enum.Font.GothamBold, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left, Parent = b })
+				local n2 = mk("TextLabel", { BackgroundTransparency = 1, Position = UDim2.new(0, 12, 0, 33), Size = UDim2.new(1, -24, 0, 14), Text = sub, TextColor3 = LIGHT, TextTransparency = 0.25, Font = Enum.Font.GothamMedium, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, Parent = b })
+				juice(b, b, tint, tint:Lerp(WHITE, 0.12), 1.04)
+				b.MouseButton1Click:Connect(cb)
+				return b, n2
+			end
+			local _, shufSub = mtile(0, "Shuffle", "On", RGB(36, 44, 66), function() MusicPlayer.Sequential = not MusicPlayer.Sequential end)
+			local _, libSub = mtile(0.35, "Library", "0 songs", RGB(16, 76, 98), function() setDrawer("lib") end)
+			local _, plSub = mtile(0.7, "Playlists", "0 artists", RGB(58, 38, 112), function() setDrawer("rel") end)
+			task.spawn(function()
+				while np.Parent do
+					if MusicPage.Visible then
+						pcall(function()
+							shufSub.Text = MusicPlayer.Sequential and "Off" or "On"
+							local DB = MusicPlayer.Database or {}
+							libSub.Text = #DB .. " songs"
+							local seen, n = {}, 0
+							for _, hi in ipairs(DB) do
+								local a = artistOf(hi[2])
+								if a ~= "" and not seen[a] then
+									seen[a] = true
+									n += 1
+								end
+							end
+							plSub.Text = n .. " artists"
+						end)
+					end
+					task.wait(0.5)
+				end
+			end)
+		end
 	end
 	buildMusicPage()
 end
@@ -275004,6 +275105,707 @@ do -- [perf-monitor] Main tab entry under Feature Center. Real metrics only: Hea
 	end)
 	if not okPM then warn("[perf-monitor] failed to build: " .. tostring(errPM)) end
 end
+
+-- ═════ [GLASS UI] premium dark glassmorphism layer: soft shadow, backdrop blur, pill dock, card home page, players page, responsive fit ═════
+xpcall(function()
+	local Players = game:GetService("Players")
+	local RunService = game:GetService("RunService")
+	local TweenService = game:GetService("TweenService")
+	local TeleportService = game:GetService("TeleportService")
+	local HttpService = game:GetService("HttpService")
+	local Lighting = game:GetService("Lighting")
+	local Stats = game:GetService("Stats")
+	local FX = Util.FX
+	local W = Color3.new(1, 1, 1)
+	local C = {
+		card = Color3.fromRGB(16, 16, 22), text = Color3.fromRGB(245, 245, 250), mute = Color3.fromRGB(150, 150, 164),
+		blue = Color3.fromRGB(56, 140, 255), cyan = Color3.fromRGB(40, 170, 200), purple = Color3.fromRGB(128, 84, 235),
+		pink = Color3.fromRGB(240, 80, 150), green = Color3.fromRGB(60, 200, 120), amber = Color3.fromRGB(250, 170, 60),
+	}
+	local BOLD, MED = Enum.Font.GothamBold, Enum.Font.GothamMedium
+	local LEFT, RIGHT, CENTER = Enum.TextXAlignment.Left, Enum.TextXAlignment.Right, Enum.TextXAlignment.Center
+
+	----------------------------------------------------------------- helpers
+	local function new(class, props, parent)
+		local o = Instance.new(class)
+		for k, v in pairs(props) do o[k] = v end
+		o.Parent = parent
+		return o
+	end
+	local function tw(o, t, props, style, dir)
+		local ok, tn = pcall(function()
+			return TweenService:Create(o, TweenInfo.new(t, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
+		end)
+		if ok and tn then
+			tn:Play()
+			return tn
+		end
+	end
+	local function corner(o, r)
+		return new("UICorner", {CornerRadius = r or UDim.new(0, 14)}, o)
+	end
+	local function stroke(o, tr, col)
+		return new("UIStroke", {Color = col or W, Transparency = tr or 0.84, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, o)
+	end
+	local function label(parent, text, size, color, font, xa, extra)
+		local l = new("TextLabel", {
+			BackgroundTransparency = 1, BorderSizePixel = 0, Text = text, TextSize = size, TextColor3 = color or C.text,
+			Font = font or MED, TextXAlignment = xa or LEFT, TextYAlignment = Enum.TextYAlignment.Center,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}, parent)
+		if extra then
+			for k, v in pairs(extra) do l[k] = v end
+		end
+		return l
+	end
+	local function note(t)
+		pcall(function() Util.UINotify(t) end)
+	end
+	local function feel(b, base, hover)
+		local sc = new("UIScale", {Scale = 1}, b)
+		b.MouseEnter:Connect(function() tw(b, 0.2, {BackgroundTransparency = hover}) end)
+		b.MouseLeave:Connect(function()
+			tw(b, 0.25, {BackgroundTransparency = base})
+			tw(sc, 0.25, {Scale = 1})
+		end)
+		b.MouseButton1Down:Connect(function() tw(sc, 0.08, {Scale = 0.95}) end)
+		b.MouseButton1Up:Connect(function() tw(sc, 0.4, {Scale = 1}, Enum.EasingStyle.Back) end)
+	end
+	local function glass(parent, pos, size, color, tr, r)
+		local f = new("Frame", {
+			BackgroundColor3 = color or C.card, BackgroundTransparency = tr or 0.4, BorderSizePixel = 0,
+			Position = pos or UDim2.new(), Size = size or UDim2.new(1, 0, 1, 0),
+		}, parent)
+		corner(f, UDim.new(0, r or 16))
+		stroke(f, 0.84)
+		return f
+	end
+	local function tile(parent, pos, size, title, sub, tint, cb)
+		local b = new("TextButton", {
+			AutoButtonColor = false, Text = "", BackgroundColor3 = tint, BackgroundTransparency = 0.5, BorderSizePixel = 0,
+			Position = pos, Size = size,
+		}, parent)
+		corner(b, UDim.new(0, 14))
+		stroke(b, 0.76, tint:Lerp(W, 0.45))
+		local t1 = label(b, title, 13, W, BOLD, LEFT, {Position = UDim2.new(0, 10, 0.5, -15), Size = UDim2.new(1, -20, 0, 16)})
+		local t2 = label(b, sub or "", 10, C.text, MED, LEFT, {Position = UDim2.new(0, 10, 0.5, 2), Size = UDim2.new(1, -20, 0, 13), TextTransparency = 0.3})
+		feel(b, 0.5, 0.35)
+		b.Activated:Connect(function()
+			if cb then task.spawn(cb) end
+		end)
+		return b, t1, t2
+	end
+	local thumbs = {}
+	local function loadAvatar(img, uid)
+		if thumbs[uid] then
+			img.Image = thumbs[uid]
+			return
+		end
+		task.spawn(function()
+			local ok, url = pcall(function()
+				return Players:GetUserThumbnailAsync(uid, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size100x100)
+			end)
+			if ok and url then
+				thumbs[uid] = url
+				if img.Parent then img.Image = url end
+			end
+		end)
+	end
+	local function rootOf(plr)
+		local ch = plr.Character
+		if plr == Player then
+			local ok, rc = pcall(function() return Reanimate and Reanimate.Character end)
+			if ok and rc and rc.Parent then ch = rc end
+		end
+		return ch and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Torso") or ch:FindFirstChild("UpperTorso"))
+	end
+	local function rowOf(page, h)
+		local r = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, h), LayoutOrder = #page:GetChildren()}, page)
+		local holder = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.new(0, 8, 0, 0), Size = UDim2.new(1, -16, 1, -6)}, r)
+		return holder, r
+	end
+
+	----------------------------------------------------------------- navigation (pill dock + pages)
+	local Nav = {Closers = setmetatable({}, {__mode = "k"})}
+	Util.Nav = Nav
+	local function press(btn)
+		if not btn then return false end
+		if type(firesignal) == "function" and pcall(firesignal, btn.Activated) then return true end
+		if type(getconnections) == "function" then
+			local ok = pcall(function()
+				for _, c in ipairs(getconnections(btn.Activated)) do
+					if c.Fire then c:Fire() elseif c.Function then c.Function() end
+				end
+			end)
+			if ok then return true end
+		end
+		return false
+	end
+	function Nav.TopPage()
+		local best
+		for _, p in ipairs(Util.AllPages or {}) do
+			if p ~= MainPage and p.Parent and p.Visible and math.abs(p.Position.X.Offset) < 2 and p.Position.X.Scale == 0.5 then
+				if not best or p.ZIndex >= best.ZIndex then best = p end
+			end
+		end
+		return best
+	end
+	function Nav.Open(p)
+		p.Interactable = false
+		p.Visible = true
+		MainPage.Interactable = false
+		local t = TweenService:Create(p, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.In), {Position = UDim2.new(0.5, 0, 0.5, 0)})
+		t:Play()
+		t.Completed:Connect(function() p.Interactable = true end)
+	end
+	function Nav.Close(p)
+		p.Interactable = false
+		MainPage.Interactable = false
+		local t = TweenService:Create(p, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 360, 0.5, 0)})
+		t:Play()
+		t.Completed:Connect(function()
+			MainPage.Interactable = true
+			p.Visible = false
+		end)
+	end
+	function Nav.CloseTop()
+		local p = Nav.TopPage()
+		if not p then return false end
+		local c = Nav.Closers[p]
+		if c then
+			c()
+			return true
+		end
+		local back = Util.BackBtns and Util.BackBtns[p]
+		if back then return press(back) end
+		return false
+	end
+	local function newPage()
+		local p = UI.CreatePage()
+		p.ZIndex = 1
+		p.Position = UDim2.new(0.5, 360, 0.5, 0)
+		p.Interactable = false
+		p.Visible = false
+		UI.CreateButton(p, "&lt; Back", 20).Activated:Connect(function() Nav.Close(p) end)
+		Nav.Closers[p] = function() Nav.Close(p) end
+		return p
+	end
+	local function toggleMusic()
+		local snd = UISound.Music
+		if snd.IsPlaying then
+			pcall(function() snd:Pause() end)
+		elseif snd.IsPaused then
+			pcall(function() snd:Resume() end)
+		else
+			pcall(function() snd:Play() end)
+		end
+	end
+
+	----------------------------------------------------------------- live data
+	local fpsVal = 60
+	do
+		local acc, n = 0, 0
+		RunService.Heartbeat:Connect(function(dt)
+			acc += dt
+			n += 1
+			if acc >= 0.5 then
+				fpsVal = math.floor(n / acc + 0.5)
+				acc, n = 0, 0
+			end
+		end)
+	end
+	local friends, friendBusy = {}, {}
+	local function queueFriend(plr, after)
+		if plr == Player or friends[plr.UserId] ~= nil or friendBusy[plr.UserId] then return end
+		friendBusy[plr.UserId] = true
+		task.spawn(function()
+			local ok, res = pcall(function() return Player:IsFriendsWith(plr.UserId) end)
+			friends[plr.UserId] = ok and res == true
+			friendBusy[plr.UserId] = nil
+			if after then after() end
+		end)
+	end
+	local function friendsHere(after)
+		local out = {}
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= Player then
+				queueFriend(plr, after)
+				if friends[plr.UserId] then out[#out + 1] = plr end
+			end
+		end
+		return out
+	end
+	local function fmtTime(s)
+		s = math.max(0, math.floor(s))
+		if s >= 3600 then return string.format("%dh %02dm", s // 3600, (s % 3600) // 60) end
+		return string.format("%dm %02ds", s // 60, s % 60)
+	end
+
+	----------------------------------------------------------------- CARDS PAGE (home dashboard)
+	local cards = newPage()
+	Nav.Cards = cards
+	local updaters = {}
+	do
+		local h = rowOf(cards, 50)
+		local hello = label(h, "Welcome back", 20, C.text, BOLD, LEFT, {Position = UDim2.new(0, 4, 0, 2), Size = UDim2.new(1, -8, 0, 26)})
+		local sub = label(h, "", 12, C.mute, MED, LEFT, {Position = UDim2.new(0, 4, 0, 28), Size = UDim2.new(1, -8, 0, 16)})
+		updaters[#updaters + 1] = function()
+			local hr = tonumber(os.date("%H")) or 12
+			local g = hr < 5 and "Still up" or hr < 12 and "Good morning" or hr < 18 and "Good afternoon" or "Good evening"
+			hello.Text = "Welcome back, " .. Player.DisplayName
+			sub.Text = g .. "  |  " .. os.date("%H:%M")
+		end
+
+		-- widgets + quick commands
+		local r1 = rowOf(cards, 88)
+		local fpsCard = glass(r1, UDim2.new(0, 0, 0, 0), UDim2.new(0.36, -3, 1, 0))
+		label(fpsCard, "WIDGETS", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
+		local fpsNum = label(fpsCard, "60", 28, C.green, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 24), Size = UDim2.new(1, -24, 0, 32)})
+		label(fpsCard, "frames / sec", 11, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 56), Size = UDim2.new(1, -24, 0, 14)})
+		updaters[#updaters + 1] = function()
+			fpsNum.Text = tostring(fpsVal)
+			fpsNum.TextColor3 = fpsVal >= 50 and C.green or (fpsVal >= 30 and C.amber or C.pink)
+		end
+		local qc = glass(r1, UDim2.new(0.36, 3, 0, 0), UDim2.new(0.64, -3, 1, 0))
+		label(qc, "QUICK COMMANDS", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
+		tile(qc, UDim2.new(0, 8, 0, 26), UDim2.new(0.5, -11, 0, 46), "Command bar", "Type a command", C.blue, function()
+			if Util.UhAdmin and Util.UhAdmin.OpenBar then Util.UhAdmin.OpenBar() end
+		end)
+		tile(qc, UDim2.new(0.5, 3, 0, 26), UDim2.new(0.5, -11, 0, 46), "Command list", "Browse all", C.purple, function()
+			if Util.UhAdmin and Util.UhAdmin.OpenList then Util.UhAdmin.OpenList() end
+		end)
+
+		-- profile + now playing
+		local r2 = rowOf(cards, 112)
+		local prof = glass(r2, UDim2.new(0, 0, 0, 0), UDim2.new(0.5, -3, 1, 0))
+		local av = new("ImageLabel", {BackgroundColor3 = W, BackgroundTransparency = 0.88, BorderSizePixel = 0, Position = UDim2.new(0, 12, 0, 12), Size = UDim2.fromOffset(44, 44), Image = ""}, prof)
+		corner(av, UDim.new(1, 0))
+		loadAvatar(av, Player.UserId)
+		label(prof, Player.DisplayName, 14, C.text, BOLD, LEFT, {Position = UDim2.new(0, 64, 0, 14), Size = UDim2.new(1, -72, 0, 18)})
+		label(prof, "@" .. Player.Name, 11, C.mute, MED, LEFT, {Position = UDim2.new(0, 64, 0, 33), Size = UDim2.new(1, -72, 0, 14)})
+		local st1 = label(prof, "", 11, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 68), Size = UDim2.new(1, -24, 0, 14)})
+		local st2 = label(prof, "", 11, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 84), Size = UDim2.new(1, -24, 0, 14)})
+		updaters[#updaters + 1] = function()
+			st1.Text = "Account age: " .. Player.AccountAge .. " days"
+			st2.Text = "Friends in server: " .. #friendsHere()
+		end
+
+		local np = glass(r2, UDim2.new(0.5, 3, 0, 0), UDim2.new(0.5, -3, 1, 0))
+		label(np, "NOW PLAYING", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
+		local nTitle = label(np, "Nothing playing", 13, C.text, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 26), Size = UDim2.new(1, -24, 0, 18)})
+		local nSub = label(np, "UI Music", 11, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 44), Size = UDim2.new(1, -24, 0, 14)})
+		local play = new("TextButton", {AutoButtonColor = false, Text = "\u{25B6}", TextSize = 14, Font = BOLD, TextColor3 = Color3.new(0, 0, 0), BackgroundColor3 = W, BackgroundTransparency = 0.04, BorderSizePixel = 0, Position = UDim2.new(0, 12, 0, 64), Size = UDim2.fromOffset(34, 34)}, np)
+		corner(play, UDim.new(1, 0))
+		feel(play, 0.04, 0.15)
+		play.Activated:Connect(toggleMusic)
+		local open = new("TextButton", {AutoButtonColor = false, Text = "Open player", TextSize = 11, Font = MED, TextColor3 = C.text, BackgroundColor3 = W, BackgroundTransparency = 0.9, BorderSizePixel = 0, Position = UDim2.new(0, 54, 0, 66), Size = UDim2.new(1, -66, 0, 30)}, np)
+		corner(open, UDim.new(1, 0))
+		stroke(open, 0.85)
+		feel(open, 0.9, 0.8)
+		open.Activated:Connect(function() Nav.Go("Music") end)
+		updaters[#updaters + 1] = function()
+			local name = MusicName.Name or UISound.Music.Name
+			local artist, song = tostring(name):match("^(.-) %- (.+)$")
+			nTitle.Text = song or tostring(name ~= "" and name or "Nothing playing")
+			nSub.Text = artist or "UI Music"
+			play.Text = UISound.Music.IsPlaying and "II" or "\u{25B6}"
+		end
+
+		-- quick actions
+		local r3 = rowOf(cards, 92)
+		local qa = glass(r3)
+		label(qa, "QUICK ACTIONS", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
+		tile(qa, UDim2.new(0, 8, 0, 26), UDim2.new(1 / 3, -9, 0, 50), "Commands", "Command list", C.blue, function() Nav.Go("Cmds") end)
+		tile(qa, UDim2.new(1 / 3, 1, 0, 26), UDim2.new(1 / 3, -9, 0, 50), "Music", "Player", C.cyan, function() Nav.Go("Music") end)
+		tile(qa, UDim2.new(2 / 3, 2, 0, 26), UDim2.new(1 / 3, -9, 0, 50), "Settings", "Customize", C.purple, function() Nav.Go("Settings") end)
+
+		-- this server
+		local r4 = rowOf(cards, 116)
+		local sv = glass(r4)
+		label(sv, "THIS SERVER", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
+		local cols = {}
+		for i, cap in ipairs({"Players", "Ping", "Uptime"}) do
+			local x = (i - 1) / 3
+			cols[i] = label(sv, "-", 16, C.text, BOLD, LEFT, {Position = UDim2.new(x, 12, 0, 24), Size = UDim2.new(1 / 3, -12, 0, 20)})
+			label(sv, cap, 10, C.mute, MED, LEFT, {Position = UDim2.new(x, 12, 0, 44), Size = UDim2.new(1 / 3, -12, 0, 12)})
+		end
+		updaters[#updaters + 1] = function()
+			cols[1].Text = #Players:GetPlayers() .. "/" .. Players.MaxPlayers
+			local okP, ping = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+			cols[2].Text = okP and (math.floor(ping + 0.5) .. "ms") or "-"
+			cols[3].Text = fmtTime(workspace.DistributedGameTime)
+		end
+		tile(sv, UDim2.new(0, 8, 0, 66), UDim2.new(0.5, -11, 0, 40), "Rejoin", "Same server", C.green, function()
+			pcall(function()
+				if #Players:GetPlayers() <= 1 then
+					TeleportService:Teleport(game.PlaceId, Player)
+				else
+					TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, Player)
+				end
+			end)
+		end)
+		tile(sv, UDim2.new(0.5, 3, 0, 66), UDim2.new(0.5, -11, 0, 40), "Server hop", "Find another", C.amber, function()
+			local ok, data = pcall(function()
+				local raw = game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")
+				return HttpService:JSONDecode(raw)
+			end)
+			if not ok or type(data) ~= "table" or type(data.data) ~= "table" then
+				note("Server hop failed (could not read the server list)")
+				return
+			end
+			for _, s in ipairs(data.data) do
+				if s.id ~= game.JobId and s.playing and s.maxPlayers and s.playing < s.maxPlayers then
+					note("Hopping servers...")
+					pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, Player) end)
+					return
+				end
+			end
+			note("No other open server found")
+		end)
+
+		-- friends online (in this server)
+		local r5 = rowOf(cards, 80)
+		local fr = glass(r5)
+		label(fr, "FRIENDS IN THIS SERVER", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -90, 0, 12)})
+		local frCount = label(fr, "0", 11, C.mute, BOLD, RIGHT, {Position = UDim2.new(1, -62, 0, 8), Size = UDim2.new(0, 50, 0, 12)})
+		local frBody = label(fr, "", 12, C.text, MED, LEFT, {Position = UDim2.new(0, 12, 0, 26), Size = UDim2.new(1, -24, 0, 40), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, TextTruncate = Enum.TextTruncate.None})
+		updaters[#updaters + 1] = function()
+			local list = friendsHere()
+			frCount.Text = tostring(#list)
+			if #list == 0 then
+				frBody.Text = "None of your friends are in this server"
+				frBody.TextColor3 = C.mute
+			else
+				local names = {}
+				for i = 1, math.min(#list, 6) do names[i] = list[i].DisplayName end
+				frBody.Text = table.concat(names, ", ") .. (#list > 6 and (" +" .. (#list - 6)) or "")
+				frBody.TextColor3 = C.text
+			end
+		end
+		pcall(function()
+			local lever = UI.CreateSwitch(cards, "Backdrop blur", FX.Cfg.GlassBlur ~= false)
+			lever.Changed:Connect(function() FX.SetCfg("GlassBlur", lever.Value) end)
+		end)
+	end
+	task.spawn(function()
+		while cards.Parent do
+			if cards.Visible then
+				for _, f in ipairs(updaters) do pcall(f) end
+			end
+			task.wait(0.5)
+		end
+	end)
+
+	----------------------------------------------------------------- PLAYERS PAGE
+	local pp = newPage()
+	Nav.Players = pp
+	do
+		local selected, filter, rows = nil, "All", {}
+		local refresh, setChips, updateDetail
+		local hHost = rowOf(pp, 40)
+		label(hHost, "Players", 20, C.text, BOLD, LEFT, {Position = UDim2.new(0, 4, 0, 0), Size = UDim2.new(0.5, 0, 1, -6)})
+		local countL = label(hHost, "", 12, C.mute, MED, RIGHT, {Position = UDim2.new(0.5, 0, 0, 0), Size = UDim2.new(0.5, -4, 1, -6)})
+
+		local cHost = rowOf(pp, 38)
+		local chips = {}
+		for i, name in ipairs({"All", "Friends", "Nearby"}) do
+			local b = new("TextButton", {AutoButtonColor = false, Text = name, TextSize = 12, Font = MED, TextColor3 = C.mute, BackgroundColor3 = W, BackgroundTransparency = 0.92, BorderSizePixel = 0, Position = UDim2.new(0, (i - 1) * 72, 0, 0), Size = UDim2.new(0, 66, 0, 30)}, cHost)
+			corner(b, UDim.new(1, 0))
+			stroke(b, 0.86)
+			chips[name] = b
+			b.Activated:Connect(function()
+				filter = name
+				setChips()
+				refresh()
+			end)
+		end
+		setChips = function()
+			for name, b in pairs(chips) do
+				tw(b, 0.25, {BackgroundTransparency = name == filter and 0.78 or 0.93, TextColor3 = name == filter and W or C.mute})
+			end
+		end
+		setChips()
+
+		local sHost = rowOf(pp, 44)
+		local search = new("TextBox", {BackgroundColor3 = C.card, BackgroundTransparency = 0.4, BorderSizePixel = 0, PlaceholderText = "Search players", PlaceholderColor3 = C.mute, Text = "", TextColor3 = W, ClearTextOnFocus = false, Font = MED, TextSize = 13, TextXAlignment = LEFT, Size = UDim2.new(1, 0, 1, 0)}, sHost)
+		corner(search, UDim.new(1, 0))
+		stroke(search, 0.84)
+		new("UIPadding", {PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14)}, search)
+
+		-- selected player card
+		local dHost, dRow = rowOf(pp, 132)
+		dRow.Visible = false
+		local dCard = glass(dHost)
+		local dAv = new("ImageLabel", {BackgroundColor3 = W, BackgroundTransparency = 0.88, BorderSizePixel = 0, Position = UDim2.new(0, 12, 0, 12), Size = UDim2.fromOffset(48, 48), Image = ""}, dCard)
+		corner(dAv, UDim.new(1, 0))
+		local dName = label(dCard, "", 15, C.text, BOLD, LEFT, {Position = UDim2.new(0, 70, 0, 12), Size = UDim2.new(1, -80, 0, 20)})
+		local dUser = label(dCard, "", 11, C.mute, MED, LEFT, {Position = UDim2.new(0, 70, 0, 32), Size = UDim2.new(1, -80, 0, 14)})
+		local dInfo = label(dCard, "", 10, C.mute, MED, LEFT, {Position = UDim2.new(0, 70, 0, 46), Size = UDim2.new(1, -80, 0, 14)})
+		local function setSpectate(plr)
+			local cam = workspace.CurrentCamera
+			if not cam then return end
+			local hum
+			if plr then
+				hum = plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+			else
+				local ok, rc = pcall(function() return Reanimate and Reanimate.Character end)
+				hum = (ok and rc and rc:FindFirstChildOfClass("Humanoid")) or (Player.Character and Player.Character:FindFirstChildOfClass("Humanoid"))
+			end
+			if hum then cam.CameraSubject = hum end
+		end
+		local specTile, specT1
+		tile(dCard, UDim2.new(0, 8, 0, 72), UDim2.new(1 / 3, -9, 0, 50), "Goto", "Teleport", C.blue, function()
+			if not selected then return end
+			local me, tg = rootOf(Player), rootOf(selected)
+			if me and tg then
+				me.CFrame = tg.CFrame * CFrame.new(0, 0, 3)
+			else
+				note("Could not find a character to teleport")
+			end
+		end)
+		local specSpec = false
+		specTile, specT1 = tile(dCard, UDim2.new(1 / 3, 1, 0, 72), UDim2.new(1 / 3, -9, 0, 50), "Spectate", "Camera", C.purple, function()
+			if not selected then return end
+			specSpec = not specSpec
+			setSpectate(specSpec and selected or nil)
+			specT1.Text = specSpec and "Stop" or "Spectate"
+		end)
+		tile(dCard, UDim2.new(2 / 3, 2, 0, 72), UDim2.new(1 / 3, -9, 0, 50), "Copy name", "Clipboard", C.cyan, function()
+			if not selected then return end
+			if type(setclipboard) == "function" and pcall(setclipboard, selected.Name) then
+				note("Copied " .. selected.Name)
+			else
+				note("Clipboard is not available")
+			end
+		end)
+		updateDetail = function()
+			if selected and selected.Parent == Players then
+				dRow.Visible = true
+				dName.Text = selected.DisplayName
+				dUser.Text = "@" .. selected.Name
+				dInfo.Text = "Account age " .. selected.AccountAge .. " days  |  ID " .. selected.UserId
+				loadAvatar(dAv, selected.UserId)
+			else
+				selected = nil
+				dRow.Visible = false
+			end
+		end
+
+		-- list
+		local listFrame = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 0), LayoutOrder = #pp:GetChildren()}, pp)
+		new("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), HorizontalAlignment = Enum.HorizontalAlignment.Center}, listFrame)
+		new("UIPadding", {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8)}, listFrame)
+		local function rebuild()
+			for _, r in ipairs(rows) do r:Destroy() end
+			rows = {}
+			local q = string.lower(search.Text or "")
+			local list = Players:GetPlayers()
+			table.sort(list, function(a, b)
+				if a == Player then return true end
+				if b == Player then return false end
+				return a.Name:lower() < b.Name:lower()
+			end)
+			local shown = 0
+			local myRoot = rootOf(Player)
+			for _, plr in ipairs(list) do
+				queueFriend(plr, function() refresh() end)
+				local okQ = q == "" or plr.Name:lower():find(q, 1, true) ~= nil or plr.DisplayName:lower():find(q, 1, true) ~= nil
+				local okF = true
+				if filter == "Friends" then
+					okF = friends[plr.UserId] == true
+				elseif filter == "Nearby" then
+					local r = rootOf(plr)
+					okF = plr ~= Player and r ~= nil and myRoot ~= nil and (r.Position - myRoot.Position).Magnitude <= 150
+				end
+				if okQ and okF then
+					shown += 1
+					local sel = selected == plr
+					local b = new("TextButton", {AutoButtonColor = false, Text = "", BackgroundColor3 = C.card, BackgroundTransparency = sel and 0.2 or 0.45, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 40), LayoutOrder = shown}, listFrame)
+					corner(b, UDim.new(0, 14))
+					stroke(b, sel and 0.5 or 0.88)
+					local av = new("ImageLabel", {BackgroundColor3 = W, BackgroundTransparency = 0.88, BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 8, 0.5, 0), Size = UDim2.fromOffset(26, 26), Image = ""}, b)
+					corner(av, UDim.new(1, 0))
+					loadAvatar(av, plr.UserId)
+					label(b, plr.DisplayName .. (plr == Player and "  (you)" or ""), 13, C.text, BOLD, LEFT, {Position = UDim2.new(0, 42, 0, 4), Size = UDim2.new(1, -96, 0, 16)})
+					label(b, "@" .. plr.Name, 10, C.mute, MED, LEFT, {Position = UDim2.new(0, 42, 0, 21), Size = UDim2.new(1, -96, 0, 13)})
+					if friends[plr.UserId] then
+						label(b, "Friend", 10, C.green, BOLD, RIGHT, {Position = UDim2.new(1, -58, 0, 0), Size = UDim2.new(0, 48, 1, 0)})
+					end
+					feel(b, sel and 0.2 or 0.45, 0.3)
+					b.Activated:Connect(function()
+						selected = plr
+						specSpec = false
+						specT1.Text = "Spectate"
+						updateDetail()
+						refresh()
+					end)
+					rows[#rows + 1] = b
+				end
+			end
+			countL.Text = shown .. " of " .. #list
+		end
+		local pending = false
+		refresh = function()
+			if pending then return end
+			pending = true
+			task.defer(function()
+				pending = false
+				pcall(rebuild)
+				pcall(updateDetail)
+			end)
+		end
+		search:GetPropertyChangedSignal("Text"):Connect(refresh)
+		Players.PlayerAdded:Connect(refresh)
+		Players.PlayerRemoving:Connect(function() task.delay(0.1, refresh) end)
+		task.spawn(function()
+			while pp.Parent do
+				if pp.Visible and filter == "Nearby" then refresh() end
+				task.wait(1.5)
+			end
+		end)
+		refresh()
+	end
+
+	----------------------------------------------------------------- shadow + backdrop blur + responsive fit
+	local shadow = new("ImageLabel", {
+		Name = "GlassShadow", BackgroundTransparency = 1, Image = "rbxassetid://1316045217", ImageColor3 = Color3.new(0, 0, 0),
+		ImageTransparency = 0.5, ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(10, 10, 118, 118),
+		AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = 0, Interactable = false,
+	}, UIMainFrame)
+	local function syncShadow()
+		local ap, as, base = UIMainWindow.AbsolutePosition, UIMainWindow.AbsoluteSize, UIMainFrame.AbsolutePosition
+		local sc = (Util.UIPlus and Util.UIPlus.scaleObj and Util.UIPlus.scaleObj.Scale) or 1
+		shadow.Position = UDim2.fromOffset((ap.X - base.X + as.X / 2) / sc, (ap.Y - base.Y + as.Y / 2) / sc + 10)
+		shadow.Size = UDim2.fromOffset(as.X / sc + 56, as.Y / sc + 56)
+		shadow.Visible = UIMainWindow.Visible
+	end
+	for _, prop in ipairs({"AbsolutePosition", "AbsoluteSize", "Visible"}) do
+		UIMainWindow:GetPropertyChangedSignal(prop):Connect(syncShadow)
+	end
+	syncShadow()
+
+	local blur
+	pcall(function()
+		for _, o in ipairs(Lighting:GetChildren()) do
+			if o.Name == "UhGlassBlur" then o:Destroy() end
+		end
+		blur = Instance.new("BlurEffect")
+		blur.Name = "UhGlassBlur"
+		blur.Size = 0
+		blur.Parent = Lighting
+	end)
+	task.spawn(function()
+		while UIMainWindow.Parent do
+			pcall(function()
+				local on = FX.Cfg.GlassBlur ~= false and not (FX.IsLowEnd and FX.IsLowEnd()) and Util.IsGuiVisible(UIMainWindow) and WindowContent.Visible and not CracktroFrame.Visible
+				if blur then tw(blur, 0.5, {Size = on and 9 or 0}) end
+			end)
+			task.wait(0.5)
+		end
+		if blur then blur:Destroy() end
+	end)
+
+	Util.GlassFit = function()
+		local cam = workspace.CurrentCamera
+		if not cam then return 1 end
+		local vp = cam.ViewportSize
+		return math.clamp(math.min(vp.X / 392, vp.Y / 320), 0.6, 1)
+	end
+	pcall(function()
+		local cam = workspace.CurrentCamera
+		if cam then
+			cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+				pcall(Util.UIPlus.ApplyScale)
+				task.defer(syncShadow)
+			end)
+		end
+		Util.UIPlus.ApplyScale()
+		task.defer(syncShadow)
+	end)
+
+	----------------------------------------------------------------- pill dock
+	local dock = new("Frame", {
+		Name = "GlassDock", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -7), Size = UDim2.new(1, -20, 0, 38),
+		BackgroundColor3 = Color3.fromRGB(8, 8, 12), BackgroundTransparency = 0.3, BorderSizePixel = 0, ZIndex = 5,
+	}, UIMainWindow)
+	corner(dock, UDim.new(1, 0))
+	stroke(dock, 0.8)
+	new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center, VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, dock)
+	local dockBtns, activeKey = {}, nil
+	local function setActive(key)
+		if key == activeKey then return end
+		activeKey = key
+		for name, b in pairs(dockBtns) do
+			local on = name == key
+			tw(b, 0.3, {BackgroundTransparency = on and 0.8 or 1, TextColor3 = on and W or C.mute})
+		end
+	end
+	for i, key in ipairs({"Home", "Menu", "Players", "Music", "Cmds", "Settings"}) do
+		local b = new("TextButton", {Name = key, AutoButtonColor = false, Text = key, TextSize = 12, Font = MED, TextColor3 = C.mute, BackgroundColor3 = W, BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(0, 52, 0, 28), LayoutOrder = i, ZIndex = 6}, dock)
+		corner(b, UDim.new(1, 0))
+		local sc = new("UIScale", {Scale = 1}, b)
+		b.MouseButton1Down:Connect(function() tw(sc, 0.08, {Scale = 0.92}) end)
+		b.MouseButton1Up:Connect(function() tw(sc, 0.4, {Scale = 1}, Enum.EasingStyle.Back) end)
+		b.MouseLeave:Connect(function() tw(sc, 0.25, {Scale = 1}) end)
+		b.Activated:Connect(function()
+			if CracktroFrame.Visible then return end
+			Nav.Go(key)
+		end)
+		dockBtns[key] = b
+	end
+	local function syncDock() dock.Visible = WindowContent.Visible end
+	WindowContent:GetPropertyChangedSignal("Visible"):Connect(syncDock)
+	syncDock()
+
+	Nav.Targets = {
+		Menu = function() end,
+		Home = function() Nav.Open(cards) end,
+		Players = function() Nav.Open(pp) end,
+		Music = function()
+			if not press(Util.NavBtns and Util.NavBtns["Music &gt;"]) then note("Music needs firesignal / getconnections support") end
+		end,
+		Settings = function()
+			if not press(Util.NavBtns and Util.NavBtns["Customization &gt;"]) then note("Settings needs firesignal / getconnections support") end
+		end,
+		Cmds = function()
+			if Util.UhAdmin and Util.UhAdmin.OpenList then Util.UhAdmin.OpenList() end
+		end,
+	}
+	function Nav.CurrentKey()
+		local p = Nav.TopPage()
+		if not p then return "Menu" end
+		if p == cards then return "Home" end
+		if p == pp then return "Players" end
+		if Util.NavLast == "Music &gt;" then return "Music" end
+		if Util.NavLast == "Customization &gt;" then return "Settings" end
+		return "Menu"
+	end
+	function Nav.Go(key)
+		if Nav.Busy then return end
+		Nav.Busy = true
+		task.spawn(function()
+			pcall(function()
+				local same = Nav.CurrentKey() == key and key ~= "Cmds"
+				local closed = Nav.CloseTop()
+				if closed then task.wait(0.65) end
+				if not same then
+					local fn = Nav.Targets[key]
+					if fn then fn() end
+				end
+			end)
+			task.wait(0.25)
+			Nav.Busy = false
+		end)
+	end
+	task.spawn(function()
+		while dock.Parent do
+			pcall(function() setActive(Nav.CurrentKey()) end)
+			task.wait(0.2)
+		end
+	end)
+end, function(e)
+	warn("[GlassUI] " .. tostring(e))
+end)
 
 UI.CreateText(MarketPage, "welcome to <b>the user generated content marketplace thing</b>", 15, Enum.TextXAlignment.Center)
 UI.CreateText(MarketPage, "this where you download ur movesets and dances made by actual people and totally not ai", 15, Enum.TextXAlignment.Center)
