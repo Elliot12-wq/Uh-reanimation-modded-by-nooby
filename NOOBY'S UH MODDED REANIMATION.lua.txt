@@ -320,7 +320,7 @@ Util.FX = (function()
 	local LOWEND_CFG = {
 		UIParticles = false, UIGradient = false, UITrail = false, UIGlow = false, RbxIconTheme = false, RbxBarTheme = false, ChatStyle = false,
 		TriNodes = false, TriFaces = true, TriExplode = false, TriMusic = false,
-		UIAnimSpeed = 3, NotifSpeed = 3,
+		UIAnimSpeed = 3, NotifSpeed = 3, LiquidGlass = false,
 	}
 	FX.LowEndTriFPS = 30 -- 3D triangles update at this rate in low end mode
 	FX.LowEndUIFPS = 30  -- UI colour / animation hooks update at this rate in low end mode
@@ -424,6 +424,7 @@ Util.FX = (function()
 		AccentMode = 1, HarmonyMode = 1, ColorSpeed = 1, ColorSat = 1, ColorBright = 1,
 		-- [v24] extra ui options
 		UIScale = 1, UIFont = 2, UIAnimSpeed = 1, UIParticles = true, UIGradient = true, UITrail = true,
+		LiquidGlass = true, GlassClarity = 0.4, Haptics = true, -- [liquid glass] glass toggle thumbs (default on) / phone vibration on presses (default on)
 		PageTrans = 1, BtnAnim = 1, -- [v178 MOTION] page transition / button animation pickers (1 = original)
 		-- [settings] Roblox icon + chat visuals (follow the UI theme)
 		RbxIconTheme = true, RbxBarTheme = true, ChatStyle = true, ChatTextSize = 14, ChatBgTr = 0.3, ChatWinW = 1, ChatWinH = 1, BubbleDur = 15, BubbleDist = 100, BubbleTail = true,
@@ -771,7 +772,33 @@ Util.FX = (function()
 		if not FX.Settings.ExtraSounds then return end
 		playSnd(kind, pitchMul, volMul)
 	end
-	FX.Click = playSnd -- [v148] click / open / close feedback: only the UI mute option silences it
+	-- [haptics] short phone vibration (touch devices only). Tries the gamepad slot phones report under, then Touch.
+	local hapSvc, hapType, hapMotor, hapTok = nil, nil, nil, 0
+	function FX.Haptic(power, dur)
+		if FX.Cfg.Haptics == false or not UserInputService.TouchEnabled then return end
+		if hapType == nil then
+			hapType = false
+			pcall(function()
+				hapSvc = cloneref(game:GetService("HapticService"))
+				for _, it in ipairs({Enum.UserInputType.Gamepad1, Enum.UserInputType.Touch}) do
+					for _, m in ipairs({Enum.VibrationMotor.Small, Enum.VibrationMotor.Large}) do
+						if not hapType and hapSvc:IsVibrationSupported(it) and hapSvc:IsMotorSupported(it, m) then hapType, hapMotor = it, m end
+					end
+				end
+			end)
+		end
+		if not hapType then return end
+		hapTok = hapTok + 1
+		local my = hapTok
+		pcall(hapSvc.SetMotor, hapSvc, hapType, hapMotor, math.clamp(power or 0.6, 0, 1))
+		task.delay(dur or 0.045, function()
+			if my == hapTok then pcall(hapSvc.SetMotor, hapSvc, hapType, hapMotor, 0) end
+		end)
+	end
+	FX.Click = function(kind, ...) -- [v148] click / open / close feedback: only the UI mute option silences it; [haptics] presses also buzz a phone
+		if kind == "click" or kind == "open" or kind == "close" or kind == "back" then FX.Haptic(0.55, 0.045) end
+		return playSnd(kind, ...)
+	end
 
 	-- ───────────────────────── tiny fx: rings + sparks ─────────────────────────
 	function FX.Ring(parent, color, size, time, thick, pos)
@@ -1738,6 +1765,56 @@ Util.FX = (function()
 		skinStart()
 		return c
 	end
+	-- [liquid glass iOS 27] shared glass state. Cfg.LiquidGlass = on / off, Cfg.GlassClarity = 0 clear .. 1 frosted + tinted
+	-- (the continuous slider iOS 27 added in place of the old Clear / Tinted presets). Every glass layer registers an updater here.
+	local glassHosts = setmetatable({}, {__mode = "k"})
+	function FX.GlassOn() return FX.Cfg.LiquidGlass ~= false and not FX.Lite() end
+	function FX.GlassK() return math.clamp(tonumber(FX.Cfg.GlassClarity) or 0.4, 0, 1) end
+	function FX.ApplyGlass()
+		local on, k = FX.GlassOn(), FX.GlassK()
+		for h, fn in pairs(glassHosts) do
+			if h.Parent then pcall(fn, on, k) else glassHosts[h] = nil end
+		end
+	end
+	-- interactive glass: soft white light blooms under the finger / cursor on press and fades on release
+	local glassGlow = setmetatable({}, {__mode = "k"})
+	function FX.GlassTouch(b, input)
+		if not FX.GlassOn() or not FX.Settings.Transitions then return end
+		local g = glassGlow[b]
+		if not g or not g.host.Parent then
+			local host = Util.Instance("Frame", b)
+			host.Size = UDim2.fromScale(1, 1)
+			host.BackgroundTransparency = 1
+			host.BorderSizePixel, host.ZIndex, host.ClipsDescendants, host.Interactable = 0, 0, true, false
+			FX.RoundCorner(host)
+			g = {host = host, rings = {}}
+			for i, d in ipairs({150, 92, 46}) do -- stacked discs approximate a radial falloff
+				local c = Util.Instance("Frame", host)
+				c.AnchorPoint = Vector2.new(0.5, 0.5)
+				c.Size = UDim2.fromOffset(d, d)
+				c.BackgroundColor3 = WHITE
+				c.BackgroundTransparency = 1
+				c.BorderSizePixel, c.Interactable = 0, false
+				Util.Instance("UICorner", c).CornerRadius = UDim.new(1, 0)
+				g.rings[i] = c
+			end
+			glassGlow[b] = g
+		end
+		local mp = input.UserInputType == Enum.UserInputType.Touch and Vector2.new(input.Position.X, input.Position.Y) or UserInputService:GetMouseLocation()
+		local rel = mp - g.host.AbsolutePosition
+		local pos = UDim2.fromOffset(math.clamp(rel.X, 0, g.host.AbsoluteSize.X), math.clamp(rel.Y, 0, g.host.AbsoluteSize.Y))
+		local k = FX.GlassK()
+		for i, c in ipairs(g.rings) do
+			c.Position = pos
+			tween(c, 0.12, Quad, EOut, {BackgroundTransparency = ({0.94, 0.91, 0.87})[i] + 0.04 * k})
+		end
+	end
+	function FX.GlassTouchEnd(b)
+		local g = glassGlow[b]
+		if not g then return end
+		for _, c in ipairs(g.rings) do tween(c, 0.45, Quint, EOut, {BackgroundTransparency = 1}) end
+	end
+
 	-- glossy bevel inside a stylized frame: top highlight, hairline rim light, soft bottom shade.
 	-- Sits behind the label (ZIndex 0). Returns the gloss + shade frames so callers can animate them.
 	function FX.Bevel(b)
@@ -1785,6 +1862,44 @@ Util.FX = (function()
 		local sg = Util.Instance("UIGradient", shade)
 		sg.Rotation = 90
 		sg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0)})
+		-- [liquid glass iOS 27] frosting / tint, refracted edge band and a lower lip where light gathers (strength follows Clarity)
+		local tint = Util.Instance("Frame", host)
+		tint.Size = UDim2.fromScale(1, 1)
+		tint.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+		tint.BackgroundTransparency = 1
+		tint.BorderSizePixel, tint.Interactable = 0, false
+		local edge = Util.Instance("Frame", host)
+		edge.AnchorPoint = Vector2.new(0.5, 0.5)
+		edge.Position = UDim2.fromScale(0.5, 0.5)
+		edge.Size = UDim2.new(1, -5, 1, -5)
+		edge.BackgroundTransparency = 1
+		edge.BorderSizePixel, edge.Interactable = 0, false
+		FX.RoundCorner(edge, -2)
+		local es = Util.Instance("UIStroke", edge)
+		es.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		es.Color, es.Thickness, es.Transparency = WHITE, 1.5, 1
+		local eg = Util.Instance("UIGradient", es)
+		eg.Rotation = 235
+		eg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.4, 1), NumberSequenceKeypoint.new(0.6, 1), NumberSequenceKeypoint.new(1, 0.15)})
+		local lip = Util.Instance("Frame", host)
+		lip.AnchorPoint = Vector2.new(0.5, 1)
+		lip.Position = UDim2.new(0.5, 0, 1, -1)
+		lip.Size = UDim2.new(1, -10, 0.3, 0)
+		lip.BackgroundColor3 = WHITE
+		lip.BackgroundTransparency = 1
+		lip.BorderSizePixel, lip.Interactable = 0, false
+		Util.Instance("UICorner", lip).CornerRadius = UDim.new(0.5, 0)
+		local lg = Util.Instance("UIGradient", lip)
+		lg.Rotation = 90
+		lg.Transparency = NumberSequence.new(1, 0.4)
+		glassHosts[host] = function(on, k)
+			local c = on and (1 - 0.55 * k) or 0
+			tint.BackgroundTransparency = on and (1 - 0.55 * k) or 1
+			es.Transparency = 1 - 0.85 * c
+			lip.BackgroundTransparency = 1 - c
+			rimS.Transparency = on and 0.15 * k or 0
+		end
+		glassHosts[host](FX.GlassOn(), FX.GlassK())
 		return gloss, shade
 	end
 
@@ -2093,12 +2208,14 @@ Util.FX = (function()
 			refresh(Quad, 0.07)
 			echoKnock()
 			ripple(b, input)
+			pcall(FX.GlassTouch, b, input)
 			FX.Ring(b, FX.GetColor and FX.GetColor() or WHITE, 52, 0.35, 2)
 			if input.UserInputType == Enum.UserInputType.Touch and not FX.Lite() then sheen() end
 		end)
 		b.InputEnded:Connect(function(input)
 			if not isPress(input) or not down then return end
 			down = false
+			pcall(FX.GlassTouchEnd, b)
 			echoSnap()
 			refresh(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.55) -- [v34] low end: plain quick release
 			FX.Click("release")
@@ -2160,6 +2277,7 @@ Util.FX = (function()
 	function FX.EnhanceSwitch(hit, sw, dot, lever)
 		if sw:GetAttribute("FXS") then return end
 		sw:SetAttribute("FXS", true)
+		sw.Size = UDim2.fromOffset(50, 25) -- [liquid glass] elongated pill track (set before the anchor shift below)
 		-- scale around the centre instead of the right edge
 		if sw.AnchorPoint == Vector2.new(1, 0.5) then
 			sw.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -2168,70 +2286,120 @@ Util.FX = (function()
 		local sc = Util.Instance("UIScale", sw)
 		local dsc = Util.Instance("UIScale", dot)
 
-		-- box: soft top shine; bead: round, shaded, with a glint
-		local shine = Util.Instance("Frame", sw)
-		shine.AnchorPoint = Vector2.new(0.5, 0)
-		shine.Position = UDim2.new(0.5, 0, 0, 2)
-		shine.Size = UDim2.new(1, -8, 0.4, 0)
-		shine.BackgroundColor3 = WHITE
-		shine.BackgroundTransparency = 0.82
-		shine.BorderSizePixel = 0
-		shine.ZIndex = 0
-		shine.Interactable = false
-		FX.RoundCorner(shine, -3)
-		local sgr = Util.Instance("UIGradient", shine)
-		sgr.Rotation = 90
-		sgr.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1)})
+		-- [liquid glass] monochrome pill track. The theme loop owns the frame's own colour / corners, so the fill is a child layer.
+		sw.BackgroundTransparency = 1
+		local BW, BH, PAD = 30, 21, 2
+		local xOff, xOn = PAD + BW / 2, 50 - PAD - BW / 2
+		local OFFC, ONC = Color3.fromRGB(40, 40, 44), Color3.fromRGB(94, 94, 100)
+		local C5 = Vector2.new(0.5, 0.5)
+		local glass = FX.GlassOn -- option: Customization > Liquid Glass (iOS 27)
+		local function pill()
+			for _, c in ipairs(sw:GetChildren()) do
+				if c:IsA("UICorner") and c.CornerRadius ~= UDim.new(0.5, 0) then c.CornerRadius = UDim.new(0.5, 0) end
+			end
+		end
+		pill()
+		for _, c in ipairs(sw:GetChildren()) do
+			if c:IsA("UICorner") then c:GetPropertyChangedSignal("CornerRadius"):Connect(pill) end
+		end
+		local function layer(parent, z, ap, pos, size, col, tr, round)
+			local f = Util.Instance("Frame", parent)
+			f.AnchorPoint, f.Position, f.Size = ap, pos, size
+			f.BackgroundColor3, f.BackgroundTransparency = col, tr
+			f.BorderSizePixel, f.ZIndex, f.Interactable = 0, z, false
+			Util.Instance("UICorner", f).CornerRadius = UDim.new(round, 0)
+			return f
+		end
+		local function fade(f, a, b)
+			local g = Util.Instance("UIGradient", f)
+			g.Rotation = 90
+			g.Transparency = NumberSequence.new(a, b)
+		end
+		local fill = layer(sw, 0, Vector2.zero, UDim2.fromScale(0, 0), UDim2.fromScale(1, 1), lever.Value and ONC or OFFC, 0.08, 0.5)
+		local fg = Util.Instance("UIGradient", fill) -- inset depth: darker along the top edge
+		fg.Rotation = 90
+		fg.Color = ColorSequence.new(Color3.fromRGB(160, 160, 160), Color3.new(1, 1, 1))
+		fade(layer(fill, 1, Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, 1), UDim2.new(1, -10, 0.42, 0), WHITE, 0.9, 0.5), 0, 1) -- top sheen
 
-		dot.Size = UDim2.fromOffset(15, 15)
+		-- thumb: transparent mover (theme colour can't tint it) built from glass layers
+		dot.AnchorPoint = C5
+		dot.BackgroundTransparency = 1
 		local dc = dot:FindFirstChildOfClass("UICorner")
 		if dc then dc.CornerRadius = UDim.new(0.5, 0) end
-		local bead = Util.Instance("UIGradient", dot)
-		bead.Rotation = 90
-		bead.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(190, 190, 190))
-		local glint = Util.Instance("Frame", dot)
-		glint.AnchorPoint = Vector2.new(0.5, 0.5)
-		glint.Position = UDim2.fromScale(0.36, 0.3)
-		glint.Size = UDim2.fromScale(0.42, 0.26)
-		glint.Rotation = -25
-		glint.BackgroundColor3 = WHITE
-		glint.BackgroundTransparency = 0.5
-		glint.BorderSizePixel = 0
-		glint.Interactable = false
-		Util.Instance("UICorner", glint).CornerRadius = UDim.new(1, 0)
+		local shd, halo
+		if not FX.Lite() then
+			shd = layer(dot, 1, C5, UDim2.new(0.5, 0, 0.5, 2), UDim2.new(1, -2, 1, 0), Color3.new(0, 0, 0), 0.72, 0.5) -- contact shadow
+			halo = layer(dot, 1, C5, UDim2.fromScale(0.5, 0.5), UDim2.new(1, 8, 1, 8), WHITE, 0.93, 0.5) -- diffused light
+		end
+		local body = layer(dot, 2, C5, UDim2.fromScale(0.5, 0.5), UDim2.fromScale(1, 1), WHITE, 0.02, 0.44)
+		local bg = Util.Instance("UIGradient", body)
+		bg.Rotation = 90
+		bg.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)), ColorSequenceKeypoint.new(0.5, Color3.fromRGB(240, 241, 244)), ColorSequenceKeypoint.new(1, Color3.fromRGB(206, 209, 215))})
+		local rim = Util.Instance("UIStroke", body) -- polished edge highlight
+		rim.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		rim.Color, rim.Thickness, rim.Transparency = WHITE, 1, 0.5
+		local rg = Util.Instance("UIGradient", rim)
+		rg.Rotation = 60
+		rg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.5, 0.8), NumberSequenceKeypoint.new(1, 0.2)})
+		local bevel = layer(body, 3, C5, UDim2.fromScale(0.5, 0.5), UDim2.new(1, -4, 1, -4), WHITE, 1, 0.5)
+		local bst = Util.Instance("UIStroke", bevel) -- [liquid glass] inner bevel: light catches the top-left / bottom-right of the thick glass edge
+		bst.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		bst.Color, bst.Thickness, bst.Transparency = WHITE, 1, 1
+		local bgr = Util.Instance("UIGradient", bst)
+		bgr.Rotation = 235
+		bgr.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.45, 1), NumberSequenceKeypoint.new(0.55, 1), NumberSequenceKeypoint.new(1, 0.1)})
+		local streak = layer(body, 3, C5, UDim2.fromScale(0.5, 0.5), UDim2.fromScale(0.16, 0.7), WHITE, 1, 0.5) -- reflection that slides across the glass as it moves
+		streak.Rotation = 18
+		local stg = Util.Instance("UIGradient", streak)
+		stg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, 0), NumberSequenceKeypoint.new(1, 1)})
+		fade(layer(body, 3, Vector2.new(0.5, 0), UDim2.new(0.5, 0, 0, 1), UDim2.new(1, -8, 0.4, 0), WHITE, 0, 0.5), 0.1, 1) -- top reflection
+		fade(layer(body, 3, Vector2.new(0.5, 1), UDim2.new(0.5, 0, 1, -1), UDim2.new(1, -10, 0.3, 0), WHITE, 0, 0.5), 1, 0.45) -- refracted lower lip
 
-		local token = 0
-		lever.Changed:Connect(function()
-			token = token + 1
-			local my = token
-			if not FX.Settings.Transitions then
-				dsc.Scale = 1
-				return
-			end
-			if lever.Value then
-				dot.Visible = true
-				FX.SpringTo(dsc, "Scale", 1, 260, 0.6, 0.15) -- [v175] spring bead
-				FX.Ring(sw, FX.GetColor and FX.GetColor() or WHITE, 38, 0.4, 2)
-				FX.Play("tick", 1.3)
-			else
-				-- the original handler hides the bead instantly; keep it visible while it shrinks away
-				task.defer(function()
-					if my == token then dot.Visible = true end
-				end)
-				FX.mtween(dsc, 0.18, Quad, EIn, {Scale = 0.01})
-				task.delay(0.2, function()
-					if my == token and not lever.Value then
-						dot.Visible = false
-						dsc.Scale = 1
-					end
-				end)
-			end
+		-- spring-driven thumb: p = 0 (off) .. 1 (on); the thumb stretches mid-travel and overshoots a hair
+		local pv = Util.Instance("NumberValue", sw)
+		local gv = Util.Instance("NumberValue", sw) -- [liquid glass] 0 = resting white thumb .. 1 = clear lens (while pressed / dragged)
+		local function apply()
+			local p, L, gl = pv.Value, gv.Value, glass()
+			local s = math.clamp(4 * p * (1 - p), 0, 1)
+			local w, h = BW + 7 * s + 6 * L, BH - 2 * s + 3 * L
+			local lo, hi = PAD + w / 2, 50 - PAD - w / 2
+			dot.Size = UDim2.fromOffset(w, h)
+			dot.Position = UDim2.new(0, lo + (hi - lo) * p, 0.5, 0)
+			fill.BackgroundColor3 = OFFC:Lerp(ONC, math.clamp(p, 0, 1))
+			local ck = FX.GlassK()
+			body.BackgroundTransparency = 0.02 + (0.45 + 0.4 * (1 - ck)) * L
+			rim.Transparency = 0.5 - 0.35 * L
+			if shd then shd.BackgroundTransparency = 0.72 + 0.18 * L end
+			if halo then halo.BackgroundTransparency = 0.93 - 0.07 * L end
+			bst.Transparency = gl and 0.7 - 0.45 * L or 1
+			streak.BackgroundTransparency = gl and 0.84 - 0.3 * L or 1
+			streak.Position = UDim2.fromScale(0.68 - 0.36 * math.clamp(p, 0, 1), 0.5)
+		end
+		pv.Changed:Connect(apply)
+		gv.Changed:Connect(apply)
+		glassHosts[sw] = apply
+		pv.Value = lever.Value and 1 or 0
+		apply()
+		dot.Visible = true
+		dot:GetPropertyChangedSignal("Visible"):Connect(function() -- the original handler hides the dot when off; the thumb always stays
+			if not dot.Visible then dot.Visible = true end
 		end)
 
-		local hov, dn = false, false
+		lever.Changed:Connect(function()
+			local on = lever.Value
+			FX.SpringTo(pv, "Value", on and 1 or 0, 210, 0.58)
+			if on and FX.Settings.Transitions then FX.Play("tick", 1.3) end
+		end)
+
+		local hov, dn, held = false, false, false
 		local function squish(style, time)
 			local k, z = liquidParams(style)
-			FX.SpringTo(sc, "Scale", dn and 0.88 or (hov and 1.08 or 1), k, z)
+			local down, gl = dn or held, glass()
+			FX.SpringTo(sc, "Scale", down and 0.97 or (hov and 1.04 or 1), k, z)
+			FX.SpringTo(dsc, "Scale", down and not gl and 1.14 or 1, k, z) -- thumb swells under the finger
+			FX.NoMB = true
+			FX.SpringTo(gv, "Value", down and gl and 1 or 0, 360, 0.7) -- [liquid glass] thumb turns into a clear lens while held
+			FX.NoMB = nil
 		end
 		hit.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
@@ -2252,6 +2420,40 @@ Util.FX = (function()
 			if not isPress(input) or not dn then return end
 			dn = false
 			squish(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.5)
+		end)
+
+		-- [liquid glass] drag: the thumb follows the pointer (mouse + touch), release settles on the nearer side
+		hit.InputBegan:Connect(function(input)
+			if not isPress(input) then return end
+			FX.Haptic(0.55, 0.045)
+			held = true
+			local x0, p0, moving, c1, c2 = input.Position.X, pv.Value, false, nil, nil
+			local side = p0 > 0.5
+			local travel = math.max(1, (50 - 2 * PAD - BW - (glass() and 6 or 0)) * sw.AbsoluteSize.X / 50)
+			c1 = UserInputService.InputChanged:Connect(function(i)
+				if i ~= input and i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+				if not moving then
+					if math.abs(i.Position.X - x0) < 4 then return end
+					moving = true
+					sw:SetAttribute("FXDrag", true)
+				end
+				local np = math.clamp(p0 + (i.Position.X - x0) / travel, -0.06, 1.06)
+				if (np > 0.5) ~= side then side = np > 0.5 FX.Haptic(0.4, 0.03) end -- detent when it crosses the middle
+				FX.NoMB = true
+				FX.SpringTo(pv, "Value", np, 900, 1)
+				FX.NoMB = nil
+			end)
+			c2 = UserInputService.InputEnded:Connect(function(i)
+				if i ~= input and not (input.UserInputType == Enum.UserInputType.MouseButton1 and i.UserInputType == input.UserInputType) then return end
+				c1:Disconnect()
+				c2:Disconnect()
+				dn, held = false, false
+				squish(Back, 0.3)
+				if not moving then return end
+				local on = pv.Value > 0.5
+				if lever.Value ~= on then lever.Value = on else FX.SpringTo(pv, "Value", on and 1 or 0, 210, 0.58) end
+				task.delay(0.25, function() sw:SetAttribute("FXDrag", nil) end) -- swallows the click the release would otherwise fire
+			end)
 		end)
 	end
 
@@ -2274,10 +2476,61 @@ Util.FX = (function()
 		glint.BorderSizePixel = 0
 		glint.Interactable = false
 		Util.Instance("UICorner", glint).CornerRadius = UDim.new(1, 0)
+		-- [v179] soft accent halo under the knob: blooms on hover, swells while dragged
+		local halo, hsc
+		local hp = knob.Parent
+		if hp and hp:IsA("GuiObject") then
+			halo = Util.Instance("Frame", hp)
+			halo.AnchorPoint = Vector2.new(0.5, 0.5)
+			halo.Position = knob.Position
+			halo.Size = UDim2.fromOffset(34, 34)
+			halo.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
+			halo.BackgroundTransparency = 1
+			halo.BorderSizePixel, halo.Interactable = 0, false
+			halo.ZIndex = math.max(0, knob.ZIndex - 1)
+			Util.Instance("UICorner", halo).CornerRadius = UDim.new(1, 0)
+			hsc = Util.Instance("UIScale", halo)
+			hsc.Scale = 0.4
+			knob:GetPropertyChangedSignal("Position"):Connect(function() halo.Position = knob.Position end)
+			knob.Destroying:Once(function() halo:Destroy() end)
+		end
+		-- [liquid glass iOS 27] the knob widens into a clear lens while it is held / dragged
+		local gv = Util.Instance("NumberValue", knob)
+		local edge = Util.Instance("Frame", knob)
+		edge.AnchorPoint = Vector2.new(0.5, 0.5)
+		edge.Position = UDim2.fromScale(0.5, 0.5)
+		edge.Size = UDim2.new(1, -4, 1, -4)
+		edge.BackgroundTransparency = 1
+		edge.BorderSizePixel, edge.Interactable = 0, false
+		Util.Instance("UICorner", edge).CornerRadius = UDim.new(1, 0)
+		local es = Util.Instance("UIStroke", edge)
+		es.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		es.Color, es.Thickness, es.Transparency = WHITE, 1, 1
+		local eg = Util.Instance("UIGradient", es)
+		eg.Rotation = 235
+		eg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.45, 1), NumberSequenceKeypoint.new(0.55, 1), NumberSequenceKeypoint.new(1, 0.1)})
+		local function lens()
+			local L, on, ck = gv.Value, FX.GlassOn(), FX.GlassK()
+			local c = on and (1 - 0.55 * ck) or 0
+			knob.BackgroundTransparency = 0.3 + (on and (0.25 + 0.3 * (1 - ck)) * L or 0)
+			knob.Size = UDim2.fromOffset(18 + (on and 10 * L or 0), 18)
+			es.Transparency = 1 - (0.35 + 0.5 * L) * c
+		end
+		gv.Changed:Connect(lens)
+		glassHosts[knob] = lens
+		lens()
 		local hov, dn = false, false
 		local function grow(style, time)
 			local k, z = liquidParams(style)
+			FX.NoMB = true
+			FX.SpringTo(gv, "Value", dn and FX.GlassOn() and 1 or 0, 360, 0.7)
+			FX.NoMB = nil
 			FX.SpringTo(sc, "Scale", dn and 1.28 or (hov and 1.14 or 1), k, z)
+			if halo and not FX.Lite() then
+				halo.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
+				FX.SpringTo(hsc, "Scale", dn and 1 or (hov and 0.72 or 0.4), 240, 0.7)
+				tween(halo, 0.25, Quint, EOut, {BackgroundTransparency = dn and 0.78 or (hov and 0.88 or 1)})
+			end
 		end
 		track.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
@@ -2312,12 +2565,24 @@ Util.FX = (function()
 		local stroke = box:FindFirstChildOfClass("UIStroke")
 		local gloss = FX.Bevel(box)
 		gloss.BackgroundTransparency = 0.92
+		-- [v179] accent underline sweeps out from the centre on focus
+		local line = Util.Instance("Frame", box)
+		line.AnchorPoint = Vector2.new(0.5, 1)
+		line.Position = UDim2.new(0.5, 0, 1, -1)
+		line.Size = UDim2.new(0, 0, 0, 2)
+		line.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
+		line.BorderSizePixel, line.Interactable = 0, false
+		line.ZIndex = box.ZIndex + 2
+		Util.Instance("UICorner", line).CornerRadius = UDim.new(1, 0)
 		tb.Focused:Connect(function()
 			if not FX.Settings.Transitions then return end
+			line.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
+			tween(line, 0.42, Quint, EOut, {Size = UDim2.new(1, -12, 0, 2)})
 			if stroke then FX.mtween(stroke, 0.3, Quint, EOut, {Thickness = math.max(2, FX.Cfg.UIBorder + 1)}) end
 			FX.mtween(gloss, 0.3, Quint, EOut, {BackgroundTransparency = 0.8})
 		end)
 		tb.FocusLost:Connect(function()
+			tween(line, 0.3, Quint, EIn, {Size = UDim2.new(0, 0, 0, 2)})
 			if stroke then FX.mtween(stroke, 0.36, Quint, EOut, {Thickness = FX.Cfg.UIBorder}) end -- UpdateGrads only re-syncs on change
 			FX.mtween(gloss, 0.36, Quint, EOut, {BackgroundTransparency = 0.92})
 		end)
@@ -2333,15 +2598,25 @@ Util.FX = (function()
 		hl.BackgroundTransparency = 1
 		hl.BorderSizePixel = 0
 		hl.Interactable = false
+		-- [v179] accent bar grows in on hover
+		local bar = Util.Instance("Frame", item)
+		bar.AnchorPoint = Vector2.new(0, 0.5)
+		bar.Position = UDim2.new(0, 1, 0.5, 0)
+		bar.Size = UDim2.fromOffset(2, 0)
+		bar.BorderSizePixel, bar.Interactable = 0, false
+		Util.Instance("UICorner", bar).CornerRadius = UDim.new(1, 0)
 		local hover = false
 		item.MouseEnter:Connect(function()
 			if not FX.Settings.Transitions then return end
 			hover = true
+			bar.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
+			tween(bar, 0.3, Back, EOut, {Size = UDim2.new(0, 2, 0.62, 0)})
 			FX.mtween(hl, 0.22, Quint, EOut, {BackgroundTransparency = 0.87})
 			FX.Play("tick", 1.2)
 		end)
 		item.MouseLeave:Connect(function()
 			hover = false
+			tween(bar, 0.2, Quad, EIn, {Size = UDim2.fromOffset(2, 0)})
 			FX.mtween(hl, 0.34, Quint, EOut, {BackgroundTransparency = 1})
 		end)
 		item.InputBegan:Connect(function(input)
@@ -2359,6 +2634,14 @@ Util.FX = (function()
 				if not list.Visible then
 					hover = false
 					hl.BackgroundTransparency = 1
+					bar.Size = UDim2.fromOffset(2, 0)
+				elseif FX.Settings.Transitions and not FX.Lite() then -- [v179] staggered light wash down the rows as the list opens
+					task.delay(math.min(item.LayoutOrder, 12) * 0.028, function()
+						if list.Visible and not hover then
+							hl.BackgroundTransparency = 0.7
+							tween(hl, 0.5, Quint, EOut, {BackgroundTransparency = 1})
+						end
+					end)
 				end
 			end)
 		end
@@ -35061,7 +35344,7 @@ end
 	centerBar.Visible = true
 	cmdAutofill.Visible = true
 	pcall(Util.UhAdmin.Fire, "open")
-	gui.tween(centerBar, "Sine", "Out", speed or 0.25, {Size = UDim2.new(0, 250, 1, 15)})
+	gui.tween(centerBar, "Back", "Out", speed or 0.4, {Size = UDim2.new(0, 250, 1, 15)})
 	gui.tween(leftFill, "Quad", "Out", speed or 0.3, {Position = UDim2.new(0, 0, 0.5, 0)})
 	gui.tween(rightFill, "Quad", "Out", speed or 0.3, {Position = UDim2.new(1, 0, 0.5, 0)})
 	if gui.searchCommands then gui.searchCommands() end
@@ -35069,7 +35352,7 @@ end
 
 gui.barDeselect = function(speed)
 	pcall(Util.UhAdmin.Fire, "close")
-	gui.tween(centerBar, "Sine", "Out", speed or 0.25, {Size = UDim2.new(0, 250, 0, 0)})
+	gui.tween(centerBar, "Quint", "In", speed or 0.22, {Size = UDim2.new(0, 250, 0, 0)})
 	gui.tween(leftFill, "Sine", "In", speed or 0.3, {Position = UDim2.new(-0.5, 100, 0.5, 0)})
 	gui.tween(rightFill, "Sine", "In", speed or 0.3, {Position = UDim2.new(1.5, -100, 0.5, 0)})
 	cmdAutofill.Visible = false
@@ -251812,6 +252095,11 @@ local function Stylize(obj, options)
 	Out.LineJoinMode = Enum.LineJoinMode.Round
 	Out.Thickness = Util.FX.Cfg.UIBorder
 	Out.Transparency = 0.7 -- [glass] hairline translucent rim
+	if not (Util.FX.IsLowEnd and Util.FX.IsLowEnd()) then -- [glass v2] specular rim: catches light top-left / bottom-right, fades between
+		local rg = Util.Instance("UIGradient", Out)
+		rg.Rotation = 38
+		rg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.32, 0.7), NumberSequenceKeypoint.new(0.68, 0.7), NumberSequenceKeypoint.new(1, 0.1)})
+	end
 	Out.Enabled = true
 	obj.BackgroundColor3 = Color3.new(0, 0, 0)
 	if not options.BgTr and obj.BackgroundTransparency < 0.3 then obj.BackgroundTransparency = 0.3 end -- [glass] translucent card
@@ -253529,6 +253817,7 @@ function UI.CreateSwitch(parent, text, value)
 	Lever.Changed:Connect(updatesw)
 	updatesw()
 	Button.Activated:Connect(function()
+		if Switch:GetAttribute("FXDrag") then return end -- [liquid glass] releasing a drag must not also toggle
 		Lever.Value = not Lever.Value
 	end)
 	pcall(Util.FX.EnhanceSwitch, Button, Switch, SwitchDot, Lever) -- [v40] bubbly toggle
@@ -260849,6 +261138,18 @@ do -- [custom] CUSTOMIZATION PAGE: 10 triangle + 10 intro + 10 notification + 5 
 			FX.SetCfg("UITrail", val)
 			pcall(Util.UIPlus.ApplyTrail)
 		end)
+		UI.CreateSwitch(Canvas, "Liquid Glass (iOS 27): buttons, sliders, toggles, fields", FX.Cfg.LiquidGlass).Changed:Connect(function(val)
+			FX.SetCfg("LiquidGlass", val)
+			pcall(FX.ApplyGlass)
+		end)
+		UI.CreateSlider(Canvas, "Glass clarity (left = clear, right = frosted / tinted)", FX.Cfg.GlassClarity, 0, 1, 0.05).Changed:Connect(function(val)
+			FX.SetCfg("GlassClarity", math.clamp(val, 0, 1))
+			pcall(FX.ApplyGlass)
+		end)
+		UI.CreateSwitch(Canvas, "Haptic Feedback (vibrate on phones)", FX.Cfg.Haptics).Changed:Connect(function(val)
+			FX.SetCfg("Haptics", val)
+			if val then pcall(FX.Haptic, 0.55, 0.045) end
+		end)
 
 		-- ═════ ROBLOX ICON + CHAT (on by default, follow the UI theme) ═════
 		section("ROBLOX ICON / TOP BAR")
@@ -267582,9 +267883,14 @@ do
 		end
 		-- REAL ownership only. ReceiveAge reads 0 for a sleeping server-owned part too, and a handle we do not own is moved on OUR screen only
 		-- (other players never see the limb). isnetworkowner is the executor's own check; without it ownership cannot be proven.
+		local ToolLimbRemote = game:GetService("ReplicatedStorage"):FindFirstChild("ToolLimbRequest")
+		local MyUserId = game:GetService("Players").LocalPlayer.UserId
 		local HasOwnerCheck = type(isnetworkowner) == "function"
 		local function Owns(handle)
 			if not handle.Parent then return false end
+			if ToolLimbRemote then
+				return handle:GetAttribute("ToolLimbOwner") == MyUserId and handle.ReceiveAge == 0
+			end
 			if HasOwnerCheck then
 				local ok, res = pcall(isnetworkowner, handle)
 				if ok and res ~= true then return false end
@@ -267804,9 +268110,13 @@ do
 						hum.BreakJointsOnDeath = true
 						hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 					end)
-					if replicatesignal then pcall(replicatesignal, hum.ServerBreakJoints) end
-					hum.Health = 0
-					pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+					if ToolLimbRemote then
+						ToolLimbRemote:FireServer("claim")
+					else
+						if replicatesignal then pcall(replicatesignal, hum.ServerBreakJoints) end
+						hum.Health = 0
+						pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+					end
 					-- (no local BreakJoints: it would hide whether the server really released the grips)
 					Status.ReanimState = "Corpse Claim: rescuing tools"
 					local deadline = os.clock() + 4
@@ -268019,6 +268329,7 @@ do
 			end
 		end
 		-- CLEANUP: stop parking, give the tools back and return the still-living real character to the reanimate character
+		if ToolLimbRemote then pcall(ToolLimbRemote.FireServer, ToolLimbRemote, "release") end
 		Stopped = true
 		CharConn:Disconnect()
 		if ParkConn then ParkConn:Disconnect() ParkConn = nil end
@@ -275132,7 +275443,16 @@ xpcall(function()
 		o.Parent = parent
 		return o
 	end
+	-- [glass v2] reduced motion: Transitions off / Low End UI = instant state changes; durations follow UI animation speed
+	local function calm()
+		return (FX.Settings and FX.Settings.Transitions == false) or (FX.IsLowEnd and FX.IsLowEnd()) or false
+	end
 	local function tw(o, t, props, style, dir)
+		if calm() then
+			for k, v in pairs(props) do pcall(function() o[k] = v end) end
+			return
+		end
+		t = t / math.max(0.2, (FX.Cfg and FX.Cfg.UIAnimSpeed) or 1)
 		local ok, tn = pcall(function()
 			return TweenService:Create(o, TweenInfo.new(t, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
 		end)
@@ -275146,6 +275466,12 @@ xpcall(function()
 	end
 	local function stroke(o, tr, col)
 		return new("UIStroke", {Color = col or W, Transparency = tr or 0.84, Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, o)
+	end
+	local function rim(st) -- [glass v2] specular edge on a hairline stroke
+		if not (FX.IsLowEnd and FX.IsLowEnd()) then
+			new("UIGradient", {Rotation = 38, Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.32, 0.68), NumberSequenceKeypoint.new(0.68, 0.68), NumberSequenceKeypoint.new(1, 0.08)})}, st)
+		end
+		return st
 	end
 	local function label(parent, text, size, color, font, xa, extra)
 		local l = new("TextLabel", {
@@ -275161,15 +275487,20 @@ xpcall(function()
 	local function note(t)
 		pcall(function() Util.UINotify(t) end)
 	end
-	local function feel(b, base, hover)
+	local function feel(b, base, hover, lift)
+		lift = lift or 1.025
+		local rest = UserInputService.TouchEnabled and 1 or lift
 		local sc = new("UIScale", {Scale = 1}, b)
-		b.MouseEnter:Connect(function() tw(b, 0.2, {BackgroundTransparency = hover}) end)
+		b.MouseEnter:Connect(function()
+			tw(b, 0.2, {BackgroundTransparency = hover})
+			tw(sc, 0.35, {Scale = lift}, Enum.EasingStyle.Back)
+		end)
 		b.MouseLeave:Connect(function()
 			tw(b, 0.25, {BackgroundTransparency = base})
-			tw(sc, 0.25, {Scale = 1})
+			tw(sc, 0.3, {Scale = 1})
 		end)
-		b.MouseButton1Down:Connect(function() tw(sc, 0.08, {Scale = 0.95}) end)
-		b.MouseButton1Up:Connect(function() tw(sc, 0.4, {Scale = 1}, Enum.EasingStyle.Back) end)
+		b.MouseButton1Down:Connect(function() tw(sc, 0.08, {Scale = 0.94}, Enum.EasingStyle.Quad) end)
+		b.MouseButton1Up:Connect(function() tw(sc, 0.5, {Scale = rest}, Enum.EasingStyle.Back) end)
 	end
 	local function glass(parent, pos, size, color, tr, r)
 		local f = new("Frame", {
@@ -275177,7 +275508,8 @@ xpcall(function()
 			Position = pos or UDim2.new(), Size = size or UDim2.new(1, 0, 1, 0),
 		}, parent)
 		corner(f, UDim.new(0, r or 16))
-		stroke(f, 0.84)
+		rim(stroke(f, 0.78))
+		if not calm() then new("UIGradient", {Rotation = 90, Color = ColorSequence.new(Color3.new(1, 1, 1), Color3.fromRGB(176, 176, 190))}, f) end
 		return f
 	end
 	local function tile(parent, pos, size, title, sub, tint, cb)
@@ -275186,7 +275518,7 @@ xpcall(function()
 			Position = pos, Size = size,
 		}, parent)
 		corner(b, UDim.new(0, 14))
-		stroke(b, 0.76, tint:Lerp(W, 0.45))
+		rim(stroke(b, 0.76, tint:Lerp(W, 0.45)))
 		local t1 = label(b, title, 13, W, BOLD, LEFT, {Position = UDim2.new(0, 10, 0.5, -15), Size = UDim2.new(1, -20, 0, 16)})
 		local t2 = label(b, sub or "", 10, C.text, MED, LEFT, {Position = UDim2.new(0, 10, 0.5, 2), Size = UDim2.new(1, -20, 0, 13), TextTransparency = 0.3})
 		feel(b, 0.5, 0.35)
@@ -275219,9 +275551,13 @@ xpcall(function()
 		end
 		return ch and (ch:FindFirstChild("HumanoidRootPart") or ch:FindFirstChild("Torso") or ch:FindFirstChild("UpperTorso"))
 	end
+	local rowReg = setmetatable({}, {__mode = "k"})
 	local function rowOf(page, h)
 		local r = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, h), LayoutOrder = #page:GetChildren()}, page)
-		local holder = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.new(0, 8, 0, 0), Size = UDim2.new(1, -16, 1, -6)}, r)
+		local holder = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 0), Size = UDim2.new(1, -16, 1, -6)}, r)
+		local reg = rowReg[page]
+		if not reg then reg = {} rowReg[page] = reg end
+		reg[#reg + 1] = holder
 		return holder, r
 	end
 
@@ -275254,19 +275590,51 @@ xpcall(function()
 		p.Interactable = false
 		p.Visible = true
 		MainPage.Interactable = false
-		local t = TweenService:Create(p, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.In), {Position = UDim2.new(0.5, 0, 0.5, 0)})
+		local goal = UDim2.new(0.5, 0, 0.5, 0)
+		if calm() then
+			p.Position = goal
+			p.Interactable = true
+			return
+		end
+		local t = TweenService:Create(p, TweenInfo.new(0.5, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {Position = goal})
 		t:Play()
 		t.Completed:Connect(function() p.Interactable = true end)
+		pcall(Nav.Stagger, p)
 	end
 	function Nav.Close(p)
 		p.Interactable = false
 		MainPage.Interactable = false
-		local t = TweenService:Create(p, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 360, 0.5, 0)})
-		t:Play()
-		t.Completed:Connect(function()
+		local away = UDim2.new(0.5, 360, 0.5, 0)
+		local function done()
 			MainPage.Interactable = true
 			p.Visible = false
-		end)
+		end
+		if calm() then
+			p.Position = away
+			done()
+			return
+		end
+		local t = TweenService:Create(p, TweenInfo.new(0.42, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {Position = away})
+		t:Play()
+		t.Completed:Connect(done)
+	end
+	function Nav.Stagger(page) -- cards rise + pop in one after another
+		if calm() then return end
+		local reg = rowReg[page]
+		if not reg then return end
+		for i, h in ipairs(reg) do
+			if i > 12 then break end
+			if h.Parent then
+				local sc = h:FindFirstChild("PopScale") or new("UIScale", {Name = "PopScale"}, h)
+				sc.Scale = 0.92
+				h.Position = UDim2.new(0.5, 0, 0, 20)
+				task.delay(0.045 * (i - 1), function()
+					if not h.Parent then return end
+					tw(sc, 0.55, {Scale = 1}, Enum.EasingStyle.Back)
+					tw(h, 0.5, {Position = UDim2.new(0.5, 0, 0, 0)})
+				end)
+			end
+		end
 	end
 	function Nav.CloseTop()
 		local p = Nav.TopPage()
@@ -275725,35 +276093,76 @@ xpcall(function()
 
 	----------------------------------------------------------------- pill dock
 	local dock = new("Frame", {
-		Name = "GlassDock", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -7), Size = UDim2.new(1, -20, 0, 38),
-		BackgroundColor3 = Color3.fromRGB(8, 8, 12), BackgroundTransparency = 0.3, BorderSizePixel = 0, ZIndex = 5,
+		Name = "GlassDock", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -3), Size = UDim2.new(1, -12, 0, 46),
+		BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 5,
 	}, UIMainWindow)
-	corner(dock, UDim.new(1, 0))
-	stroke(dock, 0.8)
-	new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center, VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, dock)
-	local dockBtns, activeKey = {}, nil
+	local pillF = new("Frame", {
+		Name = "Pill", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0), Size = UDim2.new(0, 0, 0, 40),
+		AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = Color3.fromRGB(8, 8, 12), BackgroundTransparency = 0.2, BorderSizePixel = 0, ZIndex = 5,
+	}, dock)
+	corner(pillF, UDim.new(1, 0))
+	local dockStroke = rim(stroke(pillF, 0.7))
+	new("UIPadding", {PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5)}, pillF)
+	new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center, VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder}, pillF)
+	local KEYS = {"Home", "Menu", "Players", "Music", "Cmds", "Settings"}
+	local ICON = {Home = "\u{25B2}", Menu = "\u{2630}", Players = "\u{263A}", Music = "\u{266A}", Cmds = "</>", Settings = "\u{2699}"}
+	local dockBtns, activeKey, parts = {}, nil, {}
 	local function setActive(key)
 		if key == activeKey then return end
 		activeKey = key
-		for name, b in pairs(dockBtns) do
+		for name, d in pairs(parts) do
 			local on = name == key
-			tw(b, 0.3, {BackgroundTransparency = on and 0.8 or 1, TextColor3 = on and W or C.mute})
+			tw(d.b, on and 0.5 or 0.32, {Size = UDim2.new(0, on and d.w or 40, 0, 30), BackgroundTransparency = on and 0.84 or 1}, on and Enum.EasingStyle.Back or Enum.EasingStyle.Quint)
+			tw(d.st, 0.3, {Transparency = on and 0.6 or 1})
+			tw(d.ico, 0.3, {TextColor3 = on and W or C.mute})
+			tw(d.lbl, on and 0.38 or 0.12, {TextTransparency = on and 0 or 1})
+			if on and not calm() then
+				d.isc.Scale = 1.4
+				tw(d.isc, 0.5, {Scale = 1}, Enum.EasingStyle.Back)
+			end
 		end
 	end
-	for i, key in ipairs({"Home", "Menu", "Players", "Music", "Cmds", "Settings"}) do
-		local b = new("TextButton", {Name = key, AutoButtonColor = false, Text = key, TextSize = 12, Font = MED, TextColor3 = C.mute, BackgroundColor3 = W, BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(0, 52, 0, 28), LayoutOrder = i, ZIndex = 6}, dock)
+	for i, key in ipairs(KEYS) do
+		local okW, tx = pcall(function() return TextService:GetTextSize(key, 12, BOLD, Vector2.new(200, 20)).X end)
+		local b = new("TextButton", {Name = key, AutoButtonColor = false, Text = "", BackgroundColor3 = W, BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, Size = UDim2.new(0, 40, 0, 30), LayoutOrder = i, ZIndex = 6}, pillF)
 		corner(b, UDim.new(1, 0))
+		local st = stroke(b, 1)
+		local ico = label(b, ICON[key], key == "Cmds" and 12 or 16, C.mute, BOLD, CENTER, {Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(0, 40, 1, 0), TextTruncate = Enum.TextTruncate.None, ZIndex = 7})
+		local isc = new("UIScale", {Scale = 1}, ico)
+		local lbl = label(b, key, 12, W, BOLD, LEFT, {Position = UDim2.new(0, 34, 0, 0), Size = UDim2.new(1, -38, 1, 0), TextTransparency = 1, TextTruncate = Enum.TextTruncate.None, ZIndex = 7})
 		local sc = new("UIScale", {Scale = 1}, b)
-		b.MouseButton1Down:Connect(function() tw(sc, 0.08, {Scale = 0.92}) end)
-		b.MouseButton1Up:Connect(function() tw(sc, 0.4, {Scale = 1}, Enum.EasingStyle.Back) end)
-		b.MouseLeave:Connect(function() tw(sc, 0.25, {Scale = 1}) end)
+		b.MouseEnter:Connect(function()
+			if activeKey ~= key then tw(ico, 0.2, {TextColor3 = C.text}) end
+			tw(sc, 0.3, {Scale = 1.08}, Enum.EasingStyle.Back)
+		end)
+		b.MouseLeave:Connect(function()
+			if activeKey ~= key then tw(ico, 0.25, {TextColor3 = C.mute}) end
+			tw(sc, 0.3, {Scale = 1})
+		end)
+		b.MouseButton1Down:Connect(function() tw(sc, 0.08, {Scale = 0.9}, Enum.EasingStyle.Quad) end)
+		b.MouseButton1Up:Connect(function() tw(sc, 0.5, {Scale = UserInputService.TouchEnabled and 1 or 1.08}, Enum.EasingStyle.Back) end)
 		b.Activated:Connect(function()
 			if CracktroFrame.Visible then return end
 			Nav.Go(key)
 		end)
 		dockBtns[key] = b
+		parts[key] = {b = b, st = st, ico = ico, isc = isc, lbl = lbl, sc = sc, w = 34 + math.ceil(okW and tx or #key * 7) + 12}
 	end
-	local function syncDock() dock.Visible = WindowContent.Visible end
+	local function popDock() -- dock rises from below, icons pop in one after another
+		if calm() then return end
+		pillF.Position = UDim2.new(0.5, 0, 0.5, 24)
+		tw(pillF, 0.55, {Position = UDim2.new(0.5, 0, 0.5, 0)}, Enum.EasingStyle.Back)
+		for i, key in ipairs(KEYS) do
+			local d = parts[key]
+			d.sc.Scale = 0.2
+			task.delay(0.04 * i, function() tw(d.sc, 0.45, {Scale = 1}, Enum.EasingStyle.Back) end)
+		end
+	end
+	local function syncDock()
+		local v = WindowContent.Visible
+		if v and not dock.Visible then pcall(popDock) end
+		dock.Visible = v
+	end
 	WindowContent:GetPropertyChangedSignal("Visible"):Connect(syncDock)
 	syncDock()
 
@@ -275799,7 +276208,16 @@ xpcall(function()
 	end
 	task.spawn(function()
 		while dock.Parent do
-			pcall(function() setActive(Nav.CurrentKey()) end)
+			pcall(function()
+				setActive(Nav.CurrentKey())
+				local ac = FX.GetColor and FX.GetColor()
+				if typeof(ac) == "Color3" then
+					local tint = ac:Lerp(W, 0.35)
+					dockStroke.Color = tint
+					local d = parts[activeKey]
+					if d then d.st.Color = tint end
+				end
+			end)
 			task.wait(0.2)
 		end
 	end)
