@@ -248,7 +248,7 @@ do -- [BLACKLIST] blacklisted players cannot use the script (list lives in black
 			for _, e in ipairs(data.entries) do
 				if tonumber(e.userId) == Player.UserId then
 					local by = tostring(e.by or ""):lower()
-					pcall(function() Player:Kick("BLACKLISTED by the " .. (by == "kingbaconnon19" and "owner" or by == "hellii129" and "co-owner" or "owner/co-owner")) end)
+					pcall(function() Player:Kick("BLACKLISTED by the " .. (by == "kingbaconnon19" and "owner" or by == "helloman1_23" and "co-owner" or "owner/co-owner")) end)
 					warn("[Blacklist] you are blacklisted from this script" .. (e.reason and e.reason ~= "" and (": " .. tostring(e.reason)) or ""))
 					return
 				end
@@ -263749,7 +263749,7 @@ return function(Env, UI)
 	-- tag = rank chip text, logo = rotating 3D triangle, color = accent override. An entry of {} = plain verified (check badge only).
 	local VERIFIED = {
 		kingbaconnon19 = {tag = "OWNER", logo = true, color = Color3.fromRGB(255, 190, 50)},
-		hellii129 = {tag = "CO-OWNER", color = Color3.fromRGB(170, 120, 255)},
+		helloman1_23 = {tag = "CO-OWNER", color = Color3.fromRGB(170, 120, 255)},
 		-- moderator whitelist (plain "Verified" banner, check badge only; they can kick / kill / deanimate misusing script users).
 		-- Whitelisted accounts are Verified straight away, no key needed. One per line, lower-case username:
 		-- more verified players are NOT listed here: they live in whitelist.json on GitHub (Env.Base .. "whitelist.json"), fetched at start + every 60s (see applyWhitelist below)
@@ -264167,7 +264167,7 @@ end
 -- A blacklisted client kicks itself: "BLACKLISTED by the owner / co-owner" (checked at startup + every few seconds by B.Watch)
 return function(Env)
 	local B = {List = {}}
-	local ROLE_BY_NAME = {kingbaconnon19 = "owner", hellii129 = "co-owner"}
+	local ROLE_BY_NAME = {kingbaconnon19 = "owner", helloman1_23 = "co-owner"}
 
 	function B.Fetch()
 		if B.Fresh and os.clock() - B.Fresh < 20 then return true end -- keep the list the backend just returned
