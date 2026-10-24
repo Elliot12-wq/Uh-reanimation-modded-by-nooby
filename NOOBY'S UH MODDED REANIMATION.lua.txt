@@ -255994,24 +255994,6 @@ do -- [v118] first-run tip card (tap to hide; remembered in SaveData.TipSeen)
 		end)
 	end
 end
--- [VERIFIED KEY] whitelisted usernames enter their one-time key here to become a verified player (Verified banner + moderator tools)
-pcall(function()
-	UI.CreateText(MainPage, "<b>VERIFIED KEY</b> <font color=\"#AAAAAA\">(whitelisted accounts only)</font>", 15, Enum.TextXAlignment.Center)
-	local vBox = UI.CreateTextbox(MainPage, "", SaveData.ModKey and "Key saved on this device - enter a new one to replace it" or "Enter your key (Nooby-...)", 14)
-	local vBusy = false
-	UI.CreateButton(MainPage, "Verify", 20).Activated:Connect(function()
-		if vBusy then return end
-		local g = (type(getgenv) == "function" and getgenv()) or _G
-		local api = g.UhBanner
-		if not (api and api.Verify) then Util.UINotify("Verification is not ready yet - the banner system is still loading") return end
-		vBusy = true
-		local ok, msg = api.Verify(vBox.Text)
-		vBusy = false
-		if ok then vBox.Text = "" end
-		Util.UINotify(ok and "Verified! Your banner now shows the Verified badge." or ("Not verified: " .. tostring(msg)))
-	end)
-	UI.CreateSeparator(MainPage)
-end)
 -- [v93 OWNER BROADCAST] compose panel exists only for "Kingbaconnon19"; every running copy polls the shared backend and shows each announcement in the notification UI
 if not pcall(function()
 	local OWNER = "Kingbaconnon19"
@@ -263376,12 +263358,12 @@ task.spawn(function()
 		local function FXcall(n) local f = Util.FX and Util.FX[n]; if f then return f() end end
 		local Env = {
 			Player = Player, Players = Players, RunService = RunService, HttpService = HttpService,
-			TweenService = cloneref(game:GetService("TweenService")), UserInputService = cloneref(game:GetService("UserInputService")), GuiService = cloneref(game:GetService("GuiService")), Request = request or http_request or (syn and syn.request), Backend = Backend, Base = Base, OwnerKey = Cfg.OwnerKey or SaveData.ModKey, BlacklistBackend = Cfg.BlacklistBackend,
+			TweenService = cloneref(game:GetService("TweenService")), UserInputService = cloneref(game:GetService("UserInputService")), GuiService = cloneref(game:GetService("GuiService")), Request = request or http_request or (syn and syn.request), Backend = Backend, Base = Base, OwnerKey = Cfg.OwnerKey, BlacklistBackend = Cfg.BlacklistBackend,
 			Room = tostring(game.PlaceId) .. "-" .. tostring(game.JobId), Token = HttpService:GenerateGUID(false),
 			GetColor = function() return FXcall("GetColor") end, GetBG = function() return FXcall("GetBG") end,
 			IsLowEnd = function() return FXcall("IsLowEnd") == true end,
 			GetLocalCharacter = function() return Reanimate.Character or Player.Character end,
-			ModKey = Cfg.ModKey or Cfg.OwnerKey or SaveData.ModKey, -- owner / co-owner: their OwnerKey doubles as the moderator key; others: normally set by the "VERIFIED KEY" box in the main UI (saved on this device)
+			ModKey = Cfg.ModKey or Cfg.OwnerKey, -- optional extra secret only: verified players / owner / co-owner need NO key (the backend recognises their userId from whitelist.json)
 			ModActions = { -- executed on THIS client only when a verified moderator's command arrives (see ModTools.lua)
 				Kill = function()
 					for _, c in ipairs({Player.Character, Reanimate.Character}) do
@@ -263769,7 +263751,7 @@ return function(Env, UI)
 		kingbaconnon19 = {tag = "OWNER", logo = true, color = Color3.fromRGB(255, 190, 50)},
 		hellii129 = {tag = "CO-OWNER", color = Color3.fromRGB(170, 120, 255)},
 		-- moderator whitelist (plain "Verified" banner, check badge only; they can kick / kill / deanimate misusing script users).
-		-- A whitelisted account only becomes Verified after it redeems a one-time key in the main UI ("VERIFIED KEY"). One per line, lower-case username:
+		-- Whitelisted accounts are Verified straight away, no key needed. One per line, lower-case username:
 		-- more verified players are NOT listed here: they live in whitelist.json on GitHub (Env.Base .. "whitelist.json"), fetched at start + every 60s (see applyWhitelist below)
 	}
 	local roleIds, resolved, nameIds = {}, {}, {}
@@ -263782,7 +263764,7 @@ return function(Env, UI)
 	for name, r in pairs(VERIFIED) do resolveName(name, r) end
 
 	-- Remote whitelist: whitelist.json on GitHub = {"entries": [{"username": "SomeName"}, {"userId": 123456}]}. Entries only ever become plain "Verified"
-	-- (check badge, still needs the one-time key): the file can never grant OWNER / CO-OWNER or any rank tag, and can't override the names hardcoded above.
+	-- (check badge + moderator tools, no key needed): the file can never grant OWNER / CO-OWNER or any rank tag, and can't override the names hardcoded above.
 	local remote = {names = {}, ids = {}} -- what the last successful fetch contributed
 	local function dropId(id) local r = roleIds[id]; if r and not r.tag then roleIds[id] = nil end end
 	local function applyWhitelist(entries)
@@ -263815,20 +263797,16 @@ return function(Env, UI)
 		local ok2, data = pcall(HS.JSONDecode, HS, body)
 		if ok2 and type(data) == "table" and type(data.entries) == "table" then pcall(applyWhitelist, data.entries) end
 	end
-	local confirmed = {} -- userIds the backend says have redeemed a verified key (set from each /banners poll)
-	local function rawRole(uid) -- whitelisted by username (protected from kill / kick / blacklist), key or not
+	local function rawRole(uid) -- whitelisted by username (protected from kill / kick / blacklist)
 		if roleIds[uid] then return roleIds[uid] end
 		local p = Players:GetPlayerByUserId(uid)
 		local n = p and p.Name:lower()
 		if n and VERIFIED[n] and not resolved[n] then return VERIFIED[n] end
 	end
-	local function roleOf(uid) -- OWNER / CO-OWNER always; plain "Verified" moderators only once their key is redeemed
-		local r = rawRole(uid)
-		if r and not r.tag and not confirmed[uid] then return nil end
-		return r
+	local function roleOf(uid) -- OWNER / CO-OWNER and plain "Verified" players: whitelisted = verified, no key
+		return rawRole(uid)
 	end
 	function R.IsWhitelisted(uid) return rawRole(uid) ~= nil end
-	function R.SetVerified(uid) confirmed[uid] = true end
 
 	R.RoleOf = roleOf
 	local function clean(s, n) return (tostring(s or ""):gsub("%c", "")):sub(1, n) end
@@ -263851,7 +263829,7 @@ return function(Env, UI)
 		if uid == Env.Player.UserId or rawRole(uid) then return nil end
 		local me = roleOf(Env.Player.UserId)
 		if not me then return nil end
-		local owner = me.tag == "OWNER" or me.tag == "CO-OWNER" -- owner / co-owner always SEE every button; a tap reports what is missing (key / module) via R.Block
+		local owner = me.tag == "OWNER" or me.tag == "CO-OWNER" -- owner / co-owner always SEE every button; a tap reports what is missing (module) via R.Block
 		local mod = owner or (R.CanModerate and R.CanModerate())
 		local bl = owner or (R.CanBlacklist and R.CanBlacklist())
 		local list = {}
@@ -263898,12 +263876,11 @@ return function(Env, UI)
 			local uid = type(d) == "table" and tonumber(d.userId)
 			if uid and not seen[uid] and (uid == Env.Player.UserId or Players:GetPlayerByUserId(uid)) then
 				seen[uid] = true
-				confirmed[uid] = d.verified == true
 				local o = sanitize(uid, d)
 				local e = R.Banners[uid]
 				if not e then
 					R.Banners[uid] = {UI = UI.new(o), Sig = sig(o), Role = o.role, ActKey = o.actKey}
-				elseif e.Role ~= o.role or e.ActKey ~= o.actKey then -- rank / moderation rights changed (username just resolved, key redeemed): rebuild
+				elseif e.Role ~= o.role or e.ActKey ~= o.actKey then -- rank / moderation rights changed (username just resolved / whitelist updated): rebuild
 					R.DisarmKick()
 					e.UI:Destroy(false); R.Banners[uid] = {UI = UI.new(o), Sig = sig(o), Role = o.role, ActKey = o.actKey}
 				elseif e.Sig ~= sig(o) then
@@ -264003,16 +263980,14 @@ return function(Env, UI)
 	end
 
 	-- inline buttons next to a banner (Kill / Deanimate / Kick / Ban). Permissions are re-checked at click time, so a stale button can never do more than the
-	-- viewer is allowed to: Kill / Deanimate / Kick go through ModTools.Send (the backend checks the moderator key again), Ban goes through the Yes/No
+	-- viewer is allowed to: Kill / Deanimate / Kick go through ModTools.Send (the backend checks the moderator list again), Ban goes through the Yes/No
 	-- blacklist dialog (owner / co-owner only; the blacklisted client kicks itself). Kick needs a second tap ("Sure?") so a stray tap can't remove someone.
-	function R.Block(key) -- nil when the button can run, else the reason it can't. Owner / co-owner need no key; verified moderators need the key they redeemed.
+	function R.Block(key) -- nil when the button can run, else the reason it can't. Nobody needs a key: owner / co-owner and verified moderators are recognised by userId.
 		if not Env.Request then return "executor has no request()" end
-		local r = roleOf(Env.Player.UserId)
 		if key == "ban" then
 			if not Env.Blacklist then return "Blacklist module failed to load" end
 		else
 			if not Env.Mod then return "ModTools module failed to load" end
-			if not (r and r.tag) and (not Env.ModKey or Env.ModKey == "") then return "no key yet: enter it once in the VERIFIED KEY box (saved on this device)" end
 		end
 	end
 	local kickArm -- {uid, expires} while a Kick button is waiting for its confirming tap
@@ -264114,37 +264089,16 @@ end
 ]==],
 			ModTools = [==[
 -- ModTools.lua | moderator actions (kill / deanimate / kick) relayed to OTHER SCRIPT USERS who misuse the script.
--- Who may send: verified moderators + owner / co-owner (their userId must hold a key in the backend's MOD_KEYS).
+-- Who may send: verified moderators (whitelist.json) + owner / co-owner. No key: the backend recognises their userId.
 -- Who can be hit: only players running this script, and never verified players / owner / co-owner. The target is always notified.
--- Env needs: Player, Players, HttpService, Request, Backend, Room, Token, ModKey (getgenv().UhBannerConfig.ModKey), ModActions {Kill, Deanimate, Kick(msg)}
+-- Env needs: Player, Players, HttpService, Request, Backend, Room, Token, ModActions {Kill, Deanimate, Kick(msg)}
 return function(Env, R)
 	local HS, Players = Env.HttpService, Env.Players
 	local M = {Running = false}
 	local ACTIONS = {kill = true, deanimate = true, kick = true}
 
 	function M.CanModerate()
-		if Env.Request == nil then return false end
-		local r = R.RoleOf(Env.Player.UserId)
-		if r and r.tag then return true end -- owner / co-owner: no key needed (the backend recognises their userId)
-		return Env.ModKey ~= nil and Env.ModKey ~= "" and r ~= nil
-	end
-
-	-- key box in the main UI: a whitelisted account redeems a one-time key; the first user to use a key locks it to their account.
-	-- returns ok, message, definitelyBad (true when the backend rejected the key itself)
-	function M.Redeem(key)
-		key = (tostring(key or ""):gsub("%s", ""))
-		if key == "" then return false, "enter your key first" end
-		if not R.IsWhitelisted(Env.Player.UserId) then return false, "this account is not on the verified whitelist" end
-		if not Env.Request then return false, "executor has no request()" end
-		local ok, res = pcall(Env.Request, {Url = Env.Backend .. "/verify", Method = "POST", Headers = {["Content-Type"] = "application/json"},
-			Body = HS:JSONEncode({userId = Env.Player.UserId, key = key})})
-		if not ok or type(res) ~= "table" then return false, "backend unreachable" end
-		if res.StatusCode == 403 then return false, "invalid key, or it was already used by someone else", true end
-		if res.StatusCode ~= 200 then return false, "HTTP " .. tostring(res.StatusCode) end
-		Env.ModKey = key
-		R.SetVerified(Env.Player.UserId) -- badge right away; the next banner poll confirms it for everyone
-		R.Poke()
-		return true
+		return Env.Request ~= nil and R.RoleOf(Env.Player.UserId) ~= nil -- owner / co-owner / verified players: no key (the backend recognises their userId)
 	end
 
 	function M.Send(target, action)
@@ -264439,14 +264393,6 @@ end
 		local setPill = UI.Toggle and UI.Toggle(not SaveData.BannerOff, apply)
 		apply(not SaveData.BannerOff)
 		function api.SetEnabled(on) apply(on); if setPill then setPill(on) end end
-		function api.Verify(key, quiet) -- "VERIFIED KEY" box: whitelisted accounts redeem a one-time key to become verified
-			if not Env.Mod then return false, "moderation module not loaded" end
-			local ok, msg, bad = Env.Mod.Redeem(key)
-			if ok then SaveData.ModKey = Env.ModKey; do local r = Receiver.RoleOf(Player.UserId); if r and r.tag and (Env.OwnerKey or "") == "" then Env.OwnerKey = Env.ModKey end end
-			elseif bad and quiet then SaveData.ModKey = nil; Env.ModKey = nil end -- saved key was revoked / taken
-			return ok, msg
-		end
-		if SaveData.ModKey and not LocalOnly then task.spawn(function() task.wait(3); pcall(api.Verify, SaveData.ModKey, true) end) end
 		if Receiver.CanBlacklist() then pcall(Env.Blacklist.ShowPill) end -- owner / co-owner: blacklist panel button (list + Unblacklist per player)
 		task.delay(4, function() if Receiver.CanBlacklist() then pcall(Env.Blacklist.ShowPill) end end) -- retry once the owner name has resolved (ShowPill ignores duplicates)
 		Receiver.Start(LocalOnly)
