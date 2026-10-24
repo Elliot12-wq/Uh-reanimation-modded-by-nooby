@@ -264161,7 +264161,7 @@ return function(Env, R)
 end
 ]==],
 			Blacklist = [==[
--- Blacklist.lua | loads blacklist.json from the repo; lets OWNER / CO-OWNER add + remove entries (Yes/No warning each time)
+-- Blacklist.lua | loads the blacklist from the backend (GET /blacklist, falls back to blacklist.json in the repo); lets OWNER / CO-OWNER add + remove entries (Yes/No warning each time)
 -- Usage (main script, after Env is built):  local BL = loadstring(game:HttpGet(Base .. "Blacklist.lua"))()(Env)
 -- Env needs: Player, Players, HttpService, Request, Base, Backend, OwnerKey (owner/co-owner only, from getgenv().UhBannerConfig.OwnerKey)
 -- A blacklisted client kicks itself: "BLACKLISTED by the owner / co-owner" (checked at startup + every few seconds by B.Watch)
@@ -264171,10 +264171,15 @@ return function(Env)
 
 	function B.Fetch()
 		if B.Fresh and os.clock() - B.Fresh < 20 then return true end -- keep the list the backend just returned
-		local ok, body = pcall(function() return game:HttpGet(Env.Base .. "blacklist.json?t=" .. os.time()) end)
-		if not ok then return false end
-		local ok2, data = pcall(Env.HttpService.JSONDecode, Env.HttpService, body)
-		if not ok2 or type(data) ~= "table" or type(data.entries) ~= "table" then return false end
+		local data
+		for _, url in ipairs({Env.Backend .. "/blacklist?t=" .. os.time(), Env.Base .. "blacklist.json?t=" .. os.time()}) do -- backend first (no GitHub token involved), repo file as fallback
+			local ok, body = pcall(function() return game:HttpGet(url) end)
+			if ok and type(body) == "string" then
+				local ok2, d = pcall(Env.HttpService.JSONDecode, Env.HttpService, body)
+				if ok2 and type(d) == "table" and type(d.entries) == "table" then data = d; break end
+			end
+		end
+		if not data then return false end
 		B.List = data.entries
 		return true
 	end
@@ -264230,7 +264235,7 @@ return function(Env)
 		local okJ, data = pcall(Env.HttpService.JSONDecode, Env.HttpService, type(res) == "table" and res.Body or "")
 		if not okJ or type(data) ~= "table" then data = nil end
 		if type(res) ~= "table" or res.StatusCode ~= 200 then return false, "HTTP " .. tostring(type(res) == "table" and res.StatusCode) .. ((data and data.error) and (": " .. tostring(data.error)) or "") end
-		if data and type(data.entries) == "table" then B.List = data.entries; B.Fresh = os.clock() else B.Fetch() end -- the backend returns the new list: use it (GitHub's copy can lag a few seconds)
+		if data and type(data.entries) == "table" then B.List = data.entries; B.Fresh = os.clock() else B.Fetch() end -- the backend returns the new list: use it
 		return true
 	end
 
