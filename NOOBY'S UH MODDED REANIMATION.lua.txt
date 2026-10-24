@@ -270157,10 +270157,10 @@ do
 		end
 		local tool = handle.Parent
 		if tool and tool:IsA("Tool") then pcall(function() tool:Activate() end) end
-		firetouchinterest(part, handle, 1)
 		firetouchinterest(part, handle, 0)
-		firetouchinterest(handle, part, 1)
+		firetouchinterest(part, handle, 1)
 		firetouchinterest(handle, part, 0)
+		firetouchinterest(handle, part, 1)
 	end
 
 	function NoobyKill.Burst(handle, char)
