@@ -238,6 +238,25 @@ local b_getfenv = getfenv
 
 local Player = Players.LocalPlayer
 
+do -- [BLACKLIST] blacklisted players cannot use the script (list lives in blacklist.json on GitHub)
+	local Cfg = (getgenv and getgenv().UhBannerConfig) or {}
+	local Base = Cfg.Base or "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/"
+	local okGet, body = pcall(function() return game:HttpGet(Base .. "blacklist.json?t=" .. os.time()) end)
+	if okGet then
+		local okJson, data = pcall(HttpService.JSONDecode, HttpService, body)
+		if okJson and type(data) == "table" and type(data.entries) == "table" then
+			for _, e in ipairs(data.entries) do
+				if tonumber(e.userId) == Player.UserId then
+					local by = tostring(e.by or ""):lower()
+					pcall(function() Player:Kick("BLACKLISTED by the " .. (by == "kingbaconnon19" and "owner" or by == "hellii129" and "co-owner" or "owner/co-owner")) end)
+					warn("[Blacklist] you are blacklisted from this script" .. (e.reason and e.reason ~= "" and (": " .. tostring(e.reason)) or ""))
+					return
+				end
+			end
+		end
+	end
+end
+
 if not game:IsLoaded() then
 	local notLoaded = Instance.new("Message")
 	xpcall(function()
@@ -255975,6 +255994,24 @@ do -- [v118] first-run tip card (tap to hide; remembered in SaveData.TipSeen)
 		end)
 	end
 end
+-- [VERIFIED KEY] whitelisted usernames enter their one-time key here to become a verified player (Verified banner + moderator tools)
+pcall(function()
+	UI.CreateText(MainPage, "<b>VERIFIED KEY</b> <font color=\"#AAAAAA\">(whitelisted accounts only)</font>", 15, Enum.TextXAlignment.Center)
+	local vBox = UI.CreateTextbox(MainPage, "", SaveData.ModKey and "Key saved on this device - enter a new one to replace it" or "Enter your key (Nooby-...)", 14)
+	local vBusy = false
+	UI.CreateButton(MainPage, "Verify", 20).Activated:Connect(function()
+		if vBusy then return end
+		local g = (type(getgenv) == "function" and getgenv()) or _G
+		local api = g.UhBanner
+		if not (api and api.Verify) then Util.UINotify("Verification is not ready yet - the banner system is still loading") return end
+		vBusy = true
+		local ok, msg = api.Verify(vBox.Text)
+		vBusy = false
+		if ok then vBox.Text = "" end
+		Util.UINotify(ok and "Verified! Your banner now shows the Verified badge." or ("Not verified: " .. tostring(msg)))
+	end)
+	UI.CreateSeparator(MainPage)
+end)
 -- [v93 OWNER BROADCAST] compose panel exists only for "Kingbaconnon19"; every running copy polls the shared backend and shows each announcement in the notification UI
 if not pcall(function()
 	local OWNER = "Kingbaconnon19"
@@ -263325,6 +263362,1057 @@ Reanimate.DestroyCharacter = function()
 	end
 end
 
+-- [BANNER v1] INSERT AFTER the end of `Reanimate.DestroyCharacter = function() ... end` (original line 263326).
+-- Modules load from GitHub. No backend URL set -> LOCAL-ONLY (just you). Backend URL set -> live sync with other users.
+task.spawn(function()
+	local genv = (getgenv and getgenv()) or _G
+	local Cfg = genv.UhBannerConfig or {}
+	local Base = Cfg.Base or "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/"
+	local Backend = tostring(Cfg.Backend or "https://uh-mod-visual-system.onrender.com"):gsub("/+$", "")
+	local LocalOnly = Backend:find("YOUR%-SUBDOMAIN") ~= nil
+	if LocalOnly then warn("[UhBanner] no backend set: LOCAL-ONLY mode (only you see your banner). Deploy worker.js (wrangler deploy) and set getgenv().UhBannerConfig = {Backend = '<worker url>'} for live sync.") end
+	if genv.UhBanner and genv.UhBanner.Stop then pcall(genv.UhBanner.Stop) end -- no duplicates on re-execute
+	local ok, err = pcall(function()
+		local function FXcall(n) local f = Util.FX and Util.FX[n]; if f then return f() end end
+		local Env = {
+			Player = Player, Players = Players, RunService = RunService, HttpService = HttpService,
+			TweenService = cloneref(game:GetService("TweenService")), UserInputService = cloneref(game:GetService("UserInputService")), GuiService = cloneref(game:GetService("GuiService")), Request = request or http_request or (syn and syn.request), Backend = Backend, Base = Base, OwnerKey = Cfg.OwnerKey or SaveData.ModKey, BlacklistBackend = Cfg.BlacklistBackend,
+			Room = tostring(game.PlaceId) .. "-" .. tostring(game.JobId), Token = HttpService:GenerateGUID(false),
+			GetColor = function() return FXcall("GetColor") end, GetBG = function() return FXcall("GetBG") end,
+			IsLowEnd = function() return FXcall("IsLowEnd") == true end,
+			GetLocalCharacter = function() return Reanimate.Character or Player.Character end,
+			ModKey = Cfg.ModKey or Cfg.OwnerKey or SaveData.ModKey, -- owner / co-owner: their OwnerKey doubles as the moderator key; others: normally set by the "VERIFIED KEY" box in the main UI (saved on this device)
+			ModActions = { -- executed on THIS client only when a verified moderator's command arrives (see ModTools.lua)
+				Kill = function()
+					for _, c in ipairs({Player.Character, Reanimate.Character}) do
+						local h = c and c:FindFirstChildOfClass("Humanoid")
+						if h then pcall(function() h.Health = 0 end) end
+					end
+				end,
+				Deanimate = function() pcall(Util.ModDeanimate) end,
+				Kick = function(msg) pcall(function() Player:Kick(msg) end) end,
+			},
+		}
+		-- [EMBEDDED MODULES] BannerUI + BannerReceiver (with the inline Kill / Deanimate / Kick / Ban buttons beside unverified players' banners) ship inside this script,
+		-- so the buttons work without updating the GitHub repo. Set getgenv().UhBannerConfig = {Embedded = false} to load them from Base instead (e.g. once the repo has the same files).
+		local EMBED = Cfg.Embedded == false and {} or {
+			BannerUI = [==[
+-- BannerUI.lua | animated character banner (BillboardGui) themed from the host UI colours
+return function(Env)
+	local TS, RS = Env.TweenService, Env.RunService
+	local UI, Active, conn = {}, {}, nil
+	local Banner = {}; Banner.__index = Banner
+	local HOST = "UhBannerHost"
+	local WHITE = Color3.new(1, 1, 1)
+
+	local function host()
+		if UI.Host and UI.Host.Parent then return UI.Host end
+		local p
+		pcall(function() p = (gethui and gethui()) or game:GetService("CoreGui") end)
+		p = p or Env.Player:WaitForChild("PlayerGui")
+		pcall(function() for _, v in ipairs(p:GetChildren()) do if v.Name == HOST then v:Destroy() end end end)
+		local f = Instance.new("Folder"); f.Name = HOST; f.Parent = p
+		UI.Host = f
+		return f
+	end
+
+	local function accent()
+		local ok, a = pcall(Env.GetColor)
+		return (ok and typeof(a) == "Color3") and a or Color3.fromRGB(95, 165, 255)
+	end
+	local function cardBG()
+		local ok, b = pcall(Env.GetBG)
+		if not ok or typeof(b) ~= "Color3" then b = Color3.fromRGB(14, 14, 20) end
+		local h, s, v = b:ToHSV()
+		return Color3.fromHSV(h, math.min(s, 0.55), math.min(v, 0.14))
+	end
+	local function sec(c) local h, s, v = c:ToHSV(); return Color3.fromHSV((h + 0.12) % 1, s, v) end
+	local function new(c, p, par)
+		local i = Instance.new(c)
+		for k, v in pairs(p) do i[k] = v end
+		i.Parent = par
+		return i
+	end
+	local function round(par, r) return new("UICorner", {CornerRadius = r}, par) end
+	local function fade(a, b, c) return NumberSequence.new({NumberSequenceKeypoint.new(0, a), NumberSequenceKeypoint.new(0.5, b), NumberSequenceKeypoint.new(1, c)}) end
+	local BLACK = Color3.new(0, 0, 0)
+	local LW, LH = 20, 16
+	-- white check mark drawn from two bars (no font glyph needed)
+	local function checkmark(par, z)
+		for _, b in ipairs({{2, 6, 6.5, 10.5, -45}, {2, 10, 11, 8.5, 45}}) do
+			new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(b[1], b[2]), Position = UDim2.fromOffset(b[3], b[4]), Rotation = b[5],
+				BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = z}, par)
+		end
+	end
+	-- pseudo-3D rotating triangle: two shaded facets sharing an apex that slides sideways
+	local function facet(par)
+		local c = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 4}, par)
+		return c, new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, ZIndex = 4}, c)
+	end
+	local function makeLogo(par)
+		local h = new("Frame", {Size = UDim2.fromOffset(LW, LH), BackgroundTransparency = 1, ZIndex = 4, LayoutOrder = 1}, par)
+		local L = {}
+		L.lc, L.lr = facet(h)
+		L.rc, L.rr = facet(h)
+		return L
+	end
+	local function logoStep(L, t, a)
+		local s = math.sin(t * 1.6)
+		local bx = LW / 2 + LW * 0.28 * s
+		local wr, T = LW - bx, LH * 3
+		local pl, pr = math.atan2(LH, bx), math.atan2(LH, wr)
+		L.lc.Size = UDim2.fromOffset(bx, LH)
+		L.lr.Rotation, L.lr.Size = -math.deg(pl), UDim2.fromOffset(math.sqrt(bx * bx + LH * LH) + 6, T)
+		L.lr.Position = UDim2.fromOffset(bx / 2 + T / 2 * math.sin(pl), LH / 2 + T / 2 * math.cos(pl))
+		L.lr.BackgroundColor3 = a:Lerp(WHITE, 0.3 + 0.25 * s)
+		L.rc.Position, L.rc.Size = UDim2.fromOffset(bx, 0), UDim2.fromOffset(wr, LH)
+		L.rr.Rotation, L.rr.Size = math.deg(pr), UDim2.fromOffset(math.sqrt(wr * wr + LH * LH) + 6, T)
+		L.rr.Position = UDim2.fromOffset(wr / 2 - T / 2 * math.sin(pr), LH / 2 + T / 2 * math.cos(pr))
+		L.rr.BackgroundColor3 = a:Lerp(BLACK, math.max(0.05, 0.3 - 0.22 * s))
+	end
+
+	-- inline moderation buttons beside the card (Kill / Deanimate / Kick / Ban). The receiver decides WHO gets which buttons (o.acts);
+	-- this file only draws them and hit-tests them. Layout: a 2-column grid of pills, two rows = about the height of the card.
+	-- Slot i (1-based): column (i-1) % ACOLS, row floor((i-1) / ACOLS). Up to 4 buttons fit beside the card.
+	local AW, AH, AG, AX, AY, ACOLS = 68, 28, 6, 10, 1, 2 -- pill width / height, gap, offset from the card's right edge, offset from the card's top, columns
+
+	local function step()
+		local now = os.clock()
+		local low = Env.IsLowEnd and Env.IsLowEnd() or false
+		if low then
+			if now - (UI.LastLow or 0) < 0.066 then return end
+			UI.LastLow = now
+		end
+		local a = accent()
+		local s2 = sec(a)
+		for b in pairs(Active) do b:_step(now, a, s2, low) end
+	end
+
+	function UI.new(o)
+		local role = o.role
+		local a = role and role.color or accent()
+		local bg = cardBG()
+		local W = (role and role.tag) and 316 or 250
+		local self = setmetatable({Opts = o, Seed = math.random() * 10, Alive = true, FX = {}, Spark = {}, LastBG = os.clock(), Role = role, RoleColor = role and role.color, W = W}, Banner)
+		-- inline action buttons: only ever on plain (unverified) banners; verified / owner / co-owner banners never get them
+		local acts = (not role and type(o.acts) == "table" and #o.acts > 0) and o.acts or nil
+		local extra = acts and 2 * (AX + math.min(#acts, ACOLS) * (AW + AG) + 4) or 0 -- the gui is centred on the card, so reserve the room on both sides
+		local gui = new("BillboardGui", {Name = "UhBanner_" .. tostring(o.userId), AlwaysOnTop = true, Size = UDim2.fromOffset(W + 10 + extra, 150),
+			StudsOffset = Vector3.new(0, 1.7, 0), MaxDistance = 150, LightInfluence = 0, ResetOnSpawn = false,
+			ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Enabled = false}, host())
+		local holder = new("Frame", {Name = "Holder", AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(W, 78), BackgroundTransparency = 1}, gui)
+		local scale = new("UIScale", {Scale = 0}, holder)
+		local glow = new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 32), Size = UDim2.new(1, 14, 0, 76),
+			BackgroundColor3 = a, BackgroundTransparency = 0.88, BorderSizePixel = 0, ZIndex = 0}, holder)
+		round(glow, UDim.new(0, 24))
+		-- triangular pointer: rotated square, upper half hidden behind the opaque card, lower half is the visible triangle
+		local pointer = new("Frame", {Name = "Pointer", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 64),
+			Size = UDim2.fromOffset(18, 18), Rotation = 45, BackgroundColor3 = a, BorderSizePixel = 0, ZIndex = 1}, holder)
+		round(pointer, UDim.new(0, 3))
+		local card = new("Frame", {Name = "Card", Size = UDim2.new(1, 0, 0, 64), BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 2, ClipsDescendants = true}, holder)
+		round(card, UDim.new(0, 14))
+		local cardGrad = new("UIGradient", {Rotation = 90, Color = ColorSequence.new(bg:Lerp(WHITE, 0.08), bg)}, card)
+		local stroke = new("UIStroke", {Thickness = 2, Color = WHITE, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, card)
+		local strokeGrad = new("UIGradient", {Color = ColorSequence.new(a, a)}, stroke)
+		local img = new("ImageLabel", {Position = UDim2.fromOffset(10, 10), Size = UDim2.fromOffset(44, 44), BackgroundColor3 = bg:Lerp(WHITE, 0.12),
+			BorderSizePixel = 0, Image = o.image, ScaleType = Enum.ScaleType.Crop, ZIndex = 3}, card)
+		round(img, UDim.new(1, 0))
+		new("UIStroke", {Thickness = 2, Color = a}, img)
+		local ring = new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(32, 32), Size = UDim2.fromOffset(44, 44),
+			BackgroundTransparency = 1, ZIndex = 3}, card)
+		round(ring, UDim.new(1, 0))
+		local ringStroke = new("UIStroke", {Thickness = 2, Color = a}, ring)
+		local title = new("TextLabel", {Position = UDim2.fromOffset(66, 11), Size = UDim2.new(1, (role and role.tag) and -178 or -78, 0, 22), BackgroundTransparency = 1, Text = o.title,
+			Font = Enum.Font.GothamBold, TextSize = 17, TextColor3 = WHITE:Lerp(a, 0.12), TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd, TextTransparency = 1, ZIndex = 3}, card)
+		local sub = new("TextLabel", {Position = UDim2.fromOffset(66, 34), Size = UDim2.new(1, -78, 0, 16), BackgroundTransparency = 1, Text = o.subtitle,
+			Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = a, TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd, TextTransparency = 1, ZIndex = 3}, card)
+		local bar = new("Frame", {Position = UDim2.new(0, 12, 1, -6), Size = UDim2.new(1, -24, 0, 2), BackgroundColor3 = a, BorderSizePixel = 0, ZIndex = 3}, card)
+		local barGrad = new("UIGradient", {Transparency = fade(1, 0, 1)}, bar)
+		local shine = new("Frame", {Position = UDim2.fromOffset(-70, -10), Size = UDim2.new(0, 46, 1, 20), Rotation = 18, BackgroundColor3 = WHITE,
+			BorderSizePixel = 0, ZIndex = 4}, card)
+		new("UIGradient", {Transparency = fade(1, 0.82, 1)}, shine)
+		if role then -- verified check on the avatar (+ rank chip for owners)
+			local vb = new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(49, 49), Size = UDim2.fromOffset(18, 18),
+				BackgroundColor3 = Color3.fromRGB(46, 140, 255), BorderSizePixel = 0, ZIndex = 6}, card)
+			round(vb, UDim.new(1, 0))
+			new("UIStroke", {Thickness = 2, Color = bg}, vb)
+			checkmark(vb, 7)
+			if role.tag then
+				local chip = new("Frame", {AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 10), Size = UDim2.fromOffset(0, 22),
+					AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = a, BackgroundTransparency = 0.82, BorderSizePixel = 0, ZIndex = 3}, card)
+				round(chip, UDim.new(0, 7))
+				new("UIStroke", {Thickness = 1.5, Color = a}, chip)
+				new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center,
+					SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 5)}, chip)
+				new("UIPadding", {PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 8)}, chip)
+				if role.logo then self.Logo = makeLogo(chip); logoStep(self.Logo, 0.4, a) end
+				new("TextLabel", {Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Text = role.tag,
+					Font = Enum.Font.GothamBlack, TextSize = 12, TextColor3 = a:Lerp(WHITE, 0.35), ZIndex = 4, LayoutOrder = 2}, chip)
+			end
+		end
+		if acts then -- moderator buttons beside the card (clicks are handled by the receiver via Banner:HitAction)
+			self.ActBtn = {}
+			for i, ac in ipairs(acts) do
+				local col, row = (i - 1) % ACOLS, math.floor((i - 1) / ACOLS)
+				local pill = new("Frame", {Name = "Act_" .. tostring(ac.key), Position = UDim2.new(1, AX + col * (AW + AG), 0, AY + row * (AH + AG)), Size = UDim2.fromOffset(AW, AH),
+					BackgroundColor3 = ac.color, BorderSizePixel = 0, ZIndex = 3}, holder)
+				round(pill, UDim.new(0, 9))
+				new("UIStroke", {Thickness = 1.5, Color = a}, pill)
+				local lbl = new("TextLabel", {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = tostring(ac.label), Font = Enum.Font.GothamBold,
+					TextSize = 12, TextColor3 = WHITE, ZIndex = 4}, pill)
+				self.ActBtn[ac.key] = {Frame = pill, Label = lbl, Color = ac.color, Text = tostring(ac.label), Col = col, Row = row}
+			end
+		end
+		for i = 1, 4 do
+			local s = new("Frame", {Size = UDim2.fromOffset(4, 4), BackgroundColor3 = a, BorderSizePixel = 0, ZIndex = 5}, holder)
+			round(s, UDim.new(1, 0))
+			self.Spark[i] = s
+			table.insert(self.FX, s)
+		end
+		table.insert(self.FX, ring); table.insert(self.FX, shine)
+		self.Gui, self.Holder, self.Scale, self.Glow, self.Pointer, self.Card, self.CardGrad = gui, holder, scale, glow, pointer, card, cardGrad
+		self.Stroke, self.StrokeGrad, self.Ring, self.RingStroke, self.Bar, self.BarGrad, self.Shine = stroke, strokeGrad, ring, ringStroke, bar, barGrad, shine
+		self.Title, self.Sub, self.Img = title, sub, img
+		Active[self] = true
+		if not conn then conn = RS.RenderStepped:Connect(step) end
+		return self
+	end
+
+	function Banner:SetAdornee(part)
+		if not self.Alive then return end
+		self.Gui.Adornee = part
+		self.Gui.Enabled = part ~= nil
+		if part and not self.Shown then
+			self.Shown = true
+			TS:Create(self.Scale, TweenInfo.new(0.55, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+			TS:Create(self.Title, TweenInfo.new(0.45), {TextTransparency = 0}):Play()
+			TS:Create(self.Sub, TweenInfo.new(0.45), {TextTransparency = 0}):Play()
+		elseif not part and self.Shown then -- respawn gap: re-pop when the new character appears
+			self.Shown = false
+			self.Scale.Scale = 0
+			self.Title.TextTransparency, self.Sub.TextTransparency = 1, 1
+		end
+	end
+
+	function Banner:Update(o)
+		self.Opts = o
+		self.Title.Text, self.Sub.Text, self.Img.Image = o.title, o.subtitle, o.image
+		if self.Shown then
+			TS:Create(self.Scale, TweenInfo.new(0.12), {Scale = 1.08}):Play()
+			task.delay(0.12, function()
+				if self.Alive then TS:Create(self.Scale, TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play() end
+			end)
+		end
+	end
+
+	function Banner:Destroy(animated)
+		if not self.Alive then return end
+		self.Alive = false
+		Active[self] = nil
+		if not next(Active) and conn then conn:Disconnect(); conn = nil end
+		local gui = self.Gui
+		if animated and gui.Enabled then
+			TS:Create(self.Scale, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Scale = 0}):Play()
+			task.delay(0.3, function() gui:Destroy() end)
+		else
+			gui:Destroy()
+		end
+	end
+
+	function Banner:Contains(p) -- p = point in viewport coordinates
+		local cam, part = workspace.CurrentCamera, self.Gui.Adornee
+		if not (self.Alive and self.Shown and cam and part and self.Gui.Enabled) then return false end
+		if (cam.CFrame.Position - part.Position).Magnitude > self.Gui.MaxDistance then return false end
+		local v, on = cam:WorldToViewportPoint(part.Position + cam.CFrame.UpVector * self.Gui.StudsOffset.Y)
+		if not on then return false end
+		local s = self.Scale.Scale
+		return math.abs(p.X - v.X) <= self.W / 2 * s and p.Y >= v.Y - 78 * s and p.Y <= v.Y - 14 * s
+	end
+
+	function Banner:HitAction(p) -- p = point in viewport coordinates; returns the key of the inline button under p (or nil)
+		if not self.ActBtn then return nil end
+		local cam, part = workspace.CurrentCamera, self.Gui.Adornee
+		if not (self.Alive and self.Shown and cam and part and self.Gui.Enabled) then return nil end
+		if (cam.CFrame.Position - part.Position).Magnitude > self.Gui.MaxDistance then return nil end
+		local v, on = cam:WorldToViewportPoint(part.Position + cam.CFrame.UpVector * self.Gui.StudsOffset.Y)
+		if not on then return nil end
+		local s = self.Scale.Scale
+		for key, b in pairs(self.ActBtn) do
+			-- holder is anchored bottom-centre on the gui centre (v) and is 78 tall: its right edge is v.X + W/2, its top is v.Y - 78
+			local x0 = v.X + (self.W / 2 + AX + b.Col * (AW + AG)) * s
+			local y0 = v.Y + (AY + b.Row * (AH + AG) - 78) * s
+			if p.X >= x0 - 3 and p.X <= x0 + (AW + 3) * s and p.Y >= y0 - 3 and p.Y <= y0 + (AH + 3) * s then return key end
+		end
+		return nil
+	end
+
+	function Banner:SetAction(key, text, color) -- re-label / recolour one inline button (e.g. "Sure?"); no args = back to normal
+		local b = self.ActBtn and self.ActBtn[key]
+		if not (self.Alive and b) then return end
+		b.Label.Text = text or b.Text
+		b.Frame.BackgroundColor3 = color or b.Color
+	end
+
+	function Banner:PulseAction(key) -- click feedback
+		local b = self.ActBtn and self.ActBtn[key]
+		if not (self.Alive and b) then return end
+		b.Frame.BackgroundTransparency = 0.55
+		TS:Create(b.Frame, TweenInfo.new(0.3), {BackgroundTransparency = 0}):Play()
+	end
+
+	function Banner:_step(now, a, s2, low)
+		if not self.Gui.Enabled then return end
+		local t = now + self.Seed
+		if self.RoleColor then a = self.RoleColor; s2 = sec(a) end
+		self.Holder.Position = UDim2.new(0.5, 0, 0.5, low and 0 or math.sin(t * 2.2) * 3)
+		self.Pointer.BackgroundColor3, self.Sub.TextColor3, self.Bar.BackgroundColor3 = a, a, a
+		self.Glow.BackgroundColor3, self.RingStroke.Color = a, a
+		self.StrokeGrad.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, a), ColorSequenceKeypoint.new(0.5, s2), ColorSequenceKeypoint.new(1, a)})
+		if now - self.LastBG > 2 then
+			self.LastBG = now
+			local bg = cardBG()
+			self.CardGrad.Color = ColorSequence.new(bg:Lerp(WHITE, 0.08), bg)
+		end
+		if low then
+			if not self.FXOff then self.FXOff = true; for _, f in ipairs(self.FX) do f.Visible = false end end
+			return
+		end
+		if self.FXOff then self.FXOff = false; for _, f in ipairs(self.FX) do f.Visible = true end end
+		self.StrokeGrad.Rotation = (now * 90) % 360
+		if self.Logo then logoStep(self.Logo, t, a) end
+		self.Glow.BackgroundTransparency = 0.86 + 0.05 * math.sin(t * 3)
+		local e = (t * 0.65) % 1
+		self.Ring.Size = UDim2.fromOffset(44 + 16 * e, 44 + 16 * e)
+		self.RingStroke.Transparency = 0.2 + 0.8 * e
+		self.Shine.Position = UDim2.fromOffset(-70 + ((t * 0.3) % 1) * (self.W + 80), -10)
+		self.BarGrad.Offset = Vector2.new(((t * 0.5) % 2) - 1, 0)
+		for i, s in ipairs(self.Spark) do
+			local p = (t * 0.35 + i / #self.Spark) % 1
+			s.Position = UDim2.fromOffset(24 + (i - 1) * ((self.W - 48) / 3) + math.sin(t * 2 + i) * 8, 4 - p * 30)
+			s.BackgroundTransparency = 0.15 + 0.85 * p
+			s.BackgroundColor3 = (i % 2 == 0) and a or s2
+		end
+	end
+
+	-- local-only on/off pill (draggable): hides every banner on THIS client; your own banner keeps broadcasting to everyone else
+	function UI.Toggle(enabled, onChange)
+		if not Env.UserInputService then return function() end end
+		local par = host().Parent
+		pcall(function() if UI.Ctl then UI.Ctl:Destroy() end end)
+		for _, c in ipairs(UI.CtlConns or {}) do c:Disconnect() end
+		UI.CtlConns = {}
+		local root
+		if par:IsA("ScreenGui") then root = new("Folder", {Name = HOST .. "Ctl"}, par)
+		else root = new("ScreenGui", {Name = HOST .. "Ctl", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 50, ZIndexBehavior = Enum.ZIndexBehavior.Sibling}, par) end
+		UI.Ctl = root
+		local btn = new("TextButton", {AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 8, 0.5, 0), Size = UDim2.fromOffset(118, 30),
+			AutoButtonColor = false, Text = "", BorderSizePixel = 0, ZIndex = 50}, root)
+		round(btn, UDim.new(1, 0))
+		local stroke = new("UIStroke", {Thickness = 1.5}, btn)
+		local dot = new("Frame", {AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 11, 0.5, 0), Size = UDim2.fromOffset(10, 10), BorderSizePixel = 0, ZIndex = 51}, btn)
+		round(dot, UDim.new(1, 0))
+		local lbl = new("TextLabel", {Position = UDim2.fromOffset(28, 0), Size = UDim2.new(1, -34, 1, 0), BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
+			TextSize = 12, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 51}, btn)
+		local function paint()
+			btn.BackgroundColor3 = cardBG()
+			stroke.Color = enabled and accent() or Color3.fromRGB(110, 110, 125)
+			dot.BackgroundColor3 = stroke.Color
+			lbl.Text = enabled and "Banners: ON" or "Banners: OFF"
+			lbl.TextTransparency = enabled and 0 or 0.35
+		end
+		paint()
+		local UIS, drag, start, orig, moved = Env.UserInputService
+		local function press(t) return t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch end
+		table.insert(UI.CtlConns, btn.InputBegan:Connect(function(i)
+			if press(i.UserInputType) then drag, start, orig, moved = true, i.Position, btn.Position, false end
+		end))
+		table.insert(UI.CtlConns, UIS.InputChanged:Connect(function(i)
+			if not drag or not (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then return end
+			local d = i.Position - start
+			if d.Magnitude > 6 then moved = true end
+			if moved then btn.Position = UDim2.new(orig.X.Scale, orig.X.Offset + d.X, orig.Y.Scale, orig.Y.Offset + d.Y) end
+		end))
+		table.insert(UI.CtlConns, UIS.InputEnded:Connect(function(i)
+			if drag and press(i.UserInputType) then
+				drag = false
+				if not moved then enabled = not enabled; paint(); onChange(enabled) end
+			end
+		end))
+		return function(v) enabled = v and true or false; paint() end
+	end
+
+	function UI.Cleanup()
+		pcall(function() if UI.Ctl then UI.Ctl:Destroy(); UI.Ctl = nil end end)
+		for _, c in ipairs(UI.CtlConns or {}) do c:Disconnect() end
+		UI.CtlConns = {}
+		for b in pairs(Active) do b:Destroy(false) end
+		if conn then conn:Disconnect(); conn = nil end
+		if UI.Host then pcall(function() UI.Host:Destroy() end); UI.Host = nil end
+	end
+
+	return UI
+end
+]==],
+			BannerReceiver = [==[
+-- BannerReceiver.lua | polls the backend, sanitises banner data, one banner per player, follows respawns
+return function(Env, UI)
+	local Players, RS, HS = Env.Players, Env.RunService, Env.HttpService
+	local R = {Banners = {}, Running = false, Kicked = false}
+	local conns, thumbs = {}, {}
+
+	-- Verified users, matched by userId (resolved once from the username; until then the REAL in-game name is used, never the sent payload).
+	-- tag = rank chip text, logo = rotating 3D triangle, color = accent override. An entry of {} = plain verified (check badge only).
+	local VERIFIED = {
+		kingbaconnon19 = {tag = "OWNER", logo = true, color = Color3.fromRGB(255, 190, 50)},
+		hellii129 = {tag = "CO-OWNER", color = Color3.fromRGB(170, 120, 255)},
+		-- moderator whitelist (plain "Verified" banner, check badge only; they can kick / kill / deanimate misusing script users).
+		-- A whitelisted account only becomes Verified after it redeems a one-time key in the main UI ("VERIFIED KEY"). One per line, lower-case username:
+		-- exampleusername = {},
+	}
+	local roleIds, resolved = {}, {}
+	for name, r in pairs(VERIFIED) do
+		task.spawn(function()
+			local ok, id = pcall(Players.GetUserIdFromNameAsync, Players, name)
+			if ok and id then roleIds[id] = r; resolved[name] = true end
+		end)
+	end
+	local confirmed = {} -- userIds the backend says have redeemed a verified key (set from each /banners poll)
+	local function rawRole(uid) -- whitelisted by username (protected from kill / kick / blacklist), key or not
+		if roleIds[uid] then return roleIds[uid] end
+		local p = Players:GetPlayerByUserId(uid)
+		local n = p and p.Name:lower()
+		if n and VERIFIED[n] and not resolved[n] then return VERIFIED[n] end
+	end
+	local function roleOf(uid) -- OWNER / CO-OWNER always; plain "Verified" moderators only once their key is redeemed
+		local r = rawRole(uid)
+		if r and not r.tag and not confirmed[uid] then return nil end
+		return r
+	end
+	function R.IsWhitelisted(uid) return rawRole(uid) ~= nil end
+	function R.SetVerified(uid) confirmed[uid] = true end
+
+	R.RoleOf = roleOf
+	local function clean(s, n) return (tostring(s or ""):gsub("%c", "")):sub(1, n) end
+	local function headshot(uid)
+		if thumbs[uid] == nil then
+			local ok, url = pcall(Players.GetUserThumbnailAsync, Players, uid, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+			thumbs[uid] = ok and url or ""
+		end
+		return thumbs[uid]
+	end
+	-- Inline moderation buttons drawn beside a banner (order = grid order in BannerUI). `mod` = verified moderators + owner / co-owner (kill / deanimate / kick,
+	-- relayed through ModTools); `ban` = owner / co-owner only (blacklist). Same rights as the tap-a-banner menu, just one tap closer.
+	local ACTS = {
+		{key = "kill", label = "Kill", color = Color3.fromRGB(214, 92, 48), mod = true},
+		{key = "deanimate", label = "Deanimate", color = Color3.fromRGB(96, 110, 210), mod = true},
+		{key = "kick", label = "Kick", color = Color3.fromRGB(196, 146, 38), mod = true},
+		{key = "ban", label = "Ban", color = Color3.fromRGB(190, 50, 60), ban = true},
+	}
+	local function actionsFor(uid) -- the buttons THIS viewer may use on that player's banner; nothing on yourself, and nothing on verified / owner / co-owner (they are immune)
+		if uid == Env.Player.UserId or rawRole(uid) then return nil end
+		local me = roleOf(Env.Player.UserId)
+		if not me then return nil end
+		local owner = me.tag == "OWNER" or me.tag == "CO-OWNER" -- owner / co-owner always SEE every button; a tap reports what is missing (key / module) via R.Block
+		local mod = owner or (R.CanModerate and R.CanModerate())
+		local bl = owner or (R.CanBlacklist and R.CanBlacklist())
+		local list = {}
+		for _, a in ipairs(ACTS) do
+			if (a.mod and mod) or (a.ban and bl) then list[#list + 1] = a end
+		end
+		if #list == 0 then return nil end
+		return list
+	end
+	local function sanitize(uid, d)
+		local img = tostring(d.image or "")
+		if img:match("^%d+$") then img = "rbxassetid://" .. img elseif not img:match("^rbxassetid://%d+$") then img = "" end
+		if img == "" then img = headshot(uid) end
+		local name = clean(d.name, 40)
+		local title = clean(d.title, 40)
+		local acts = actionsFor(uid)
+		local keys = {}
+		for _, a in ipairs(acts or {}) do keys[#keys + 1] = a.key end
+		return {userId = uid, title = title ~= "" and title or name, subtitle = clean(d.subtitle, 40), image = img, role = roleOf(uid),
+			acts = acts, actKey = table.concat(keys, ",")}
+	end
+	local function sig(o) return o.title .. "|" .. o.subtitle .. "|" .. o.image .. "|" .. (o.role and (o.role.tag or "v") or "") .. "|" .. o.actKey end
+
+	local function targetPart(uid)
+		local char
+		if uid == Env.Player.UserId then
+			char = Env.GetLocalCharacter() -- reanimated character when active, real one otherwise
+		else
+			local p = Players:GetPlayerByUserId(uid)
+			char = p and p.Character
+		end
+		if not char or not char.Parent then return nil end
+		local part = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+		if part and part:IsA("BasePart") and part.Parent then return part end
+	end
+	local function remove(uid)
+		local e = R.Banners[uid]
+		if e then R.Banners[uid] = nil; e.UI:Destroy(true) end
+	end
+
+	function R.Process(list)
+		local seen = {}
+		for _, d in ipairs(list) do
+			local uid = type(d) == "table" and tonumber(d.userId)
+			if uid and not seen[uid] and (uid == Env.Player.UserId or Players:GetPlayerByUserId(uid)) then
+				seen[uid] = true
+				confirmed[uid] = d.verified == true
+				local o = sanitize(uid, d)
+				local e = R.Banners[uid]
+				if not e then
+					R.Banners[uid] = {UI = UI.new(o), Sig = sig(o), Role = o.role, ActKey = o.actKey}
+				elseif e.Role ~= o.role or e.ActKey ~= o.actKey then -- rank / moderation rights changed (username just resolved, key redeemed): rebuild
+					R.DisarmKick()
+					e.UI:Destroy(false); R.Banners[uid] = {UI = UI.new(o), Sig = sig(o), Role = o.role, ActKey = o.actKey}
+				elseif e.Sig ~= sig(o) then
+					e.UI:Update(o); e.Sig = sig(o)
+				end
+			end
+		end
+		for uid in pairs(R.Banners) do if not seen[uid] then remove(uid) end end
+	end
+
+	function R.Fetch()
+		local ok, res = pcall(Env.Request, {Url = Env.Backend .. "/banners?room=" .. HS:UrlEncode(Env.Room), Method = "GET"})
+		if not ok or type(res) ~= "table" or res.StatusCode ~= 200 then return false end
+		local ok2, data = pcall(HS.JSONDecode, HS, res.Body)
+		if not ok2 or type(data) ~= "table" or type(data.banners) ~= "table" then return false end
+		return true, data.banners
+	end
+
+	function R.Poke() R.Kicked = true end
+
+	function R.SetHidden(v) -- local-only: hides/shows every banner on this client
+		R.Hidden = v and true or false
+		if not R.Hidden then R.Poke() end
+	end
+
+	function R.Teleport(uid) -- stand 4 studs in front of the player, facing them
+		if os.clock() - (R.LastTP or 0) < 0.6 then return end
+		local p = Players:GetPlayerByUserId(uid)
+		local tr = p and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+		local me = Env.GetLocalCharacter() -- reanimated character when active
+		if not (tr and me and me.Parent) then return end
+		R.LastTP = os.clock()
+		pcall(function()
+			local pos = tr.Position + tr.CFrame.LookVector * 4
+			me:PivotTo(CFrame.lookAt(pos, Vector3.new(tr.Position.X, pos.Y, tr.Position.Z)))
+			local r = me:FindFirstChild("HumanoidRootPart")
+			if r then r.AssemblyLinearVelocity = Vector3.zero end
+		end)
+		local e = R.Banners[uid]
+		if e then e.UI:Update(e.UI.Opts) end -- pulse feedback
+	end
+
+
+	-- owner / co-owner tools: clicking another script user's banner opens Teleport / Blacklist
+	local menu
+	function R.CloseMenu() if menu then menu:Destroy(); menu = nil end end
+	function R.CanBlacklist()
+		local r = roleOf(Env.Player.UserId)
+		return r and (r.tag == "OWNER" or r.tag == "CO-OWNER") and Env.Blacklist ~= nil
+	end
+	local function toast(msg, title)
+		pcall(function() game:GetService("StarterGui"):SetCore("SendNotification", {Title = title or "Blacklist", Text = msg, Duration = 4}) end)
+	end
+	function R.CanModerate() return Env.Mod ~= nil and Env.Mod.CanModerate() end -- verified moderators + owner / co-owner
+	function R.OnBannerClick(uid, pt)
+		local mod, bl = R.CanModerate(), R.CanBlacklist()
+		if not (mod or bl) or rawRole(uid) then return R.Teleport(uid) end -- whitelisted / verified / owner banners (and everyone without rights) just teleport
+		local p = Players:GetPlayerByUserId(uid)
+		if not p then return end
+		R.CloseMenu()
+		local items = {{"Teleport", Color3.fromRGB(60, 110, 200), function() R.Teleport(uid) end}}
+		if mod then -- moderators: kick / kill / deanimate only (relayed to script users, never to verified players)
+			for _, a in ipairs({{"Kill", "kill"}, {"Deanimate", "deanimate"}, {"Kick", "kick"}}) do
+				table.insert(items, {a[1], Color3.fromRGB(205, 125, 40), function()
+					task.spawn(function()
+						local ok, err = Env.Mod.Send(uid, a[2])
+						toast(ok and (a[1] .. ": " .. p.Name) or ("failed: " .. tostring(err)), "Moderator")
+					end)
+				end})
+			end
+		end
+		if bl then -- owner / co-owner only
+			table.insert(items, {"Blacklist", Color3.fromRGB(200, 60, 60), function()
+				Env.Blacklist.Confirm(uid, p.Name, function(ok, err)
+					toast(ok and (p.Name .. " blacklisted") or ("failed: " .. tostring(err)))
+				end)
+			end})
+		end
+		local H = 8 + #items * 34
+		local gui = Instance.new("ScreenGui")
+		gui.Name, gui.ResetOnSpawn, gui.DisplayOrder, gui.IgnoreGuiInset = "UhBannerMenu", false, 900, true
+		gui.Parent = Env.Player:WaitForChild("PlayerGui")
+		menu = gui
+		local f = Instance.new("Frame", gui)
+		f.Size, f.BackgroundColor3, f.BorderSizePixel = UDim2.fromOffset(150, H), Color3.fromRGB(24, 24, 30), 0
+		local cam = workspace.CurrentCamera
+		local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+		f.Position = UDim2.fromOffset(math.clamp(pt.X, 0, vp.X - 150), math.clamp(pt.Y, 0, vp.Y - H))
+		Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
+		for i, it in ipairs(items) do
+			local b = Instance.new("TextButton", f)
+			b.Size, b.Position, b.Text = UDim2.fromOffset(134, 28), UDim2.fromOffset(8, 8 + (i - 1) * 34), it[1]
+			b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize = it[2], Color3.new(1, 1, 1), Enum.Font.GothamBold, 14
+			Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+			b.Activated:Connect(function() R.CloseMenu(); it[3]() end)
+		end
+	end
+
+	-- inline buttons next to a banner (Kill / Deanimate / Kick / Ban). Permissions are re-checked at click time, so a stale button can never do more than the
+	-- viewer is allowed to: Kill / Deanimate / Kick go through ModTools.Send (the backend checks the moderator key again), Ban goes through the Yes/No
+	-- blacklist dialog (owner / co-owner only; the blacklisted client kicks itself). Kick needs a second tap ("Sure?") so a stray tap can't remove someone.
+	function R.Block(key) -- nil when the button can run, else the reason it can't. Owner / co-owner need no key; verified moderators need the key they redeemed.
+		if not Env.Request then return "executor has no request()" end
+		local r = roleOf(Env.Player.UserId)
+		if key == "ban" then
+			if not Env.Blacklist then return "Blacklist module failed to load" end
+		else
+			if not Env.Mod then return "ModTools module failed to load" end
+			if not (r and r.tag) and (not Env.ModKey or Env.ModKey == "") then return "no key yet: enter it once in the VERIFIED KEY box (saved on this device)" end
+		end
+	end
+	local kickArm -- {uid, expires} while a Kick button is waiting for its confirming tap
+	function R.DisarmKick()
+		local a = kickArm
+		kickArm = nil
+		local e = a and R.Banners[a.uid]
+		if e then e.UI:SetAction("kick") end
+	end
+	function R.OnAction(uid, key)
+		local p, e = Players:GetPlayerByUserId(uid), R.Banners[uid]
+		if not (p and e) then return end
+		local allowed
+		for _, a in ipairs(actionsFor(uid) or {}) do if a.key == key then allowed = a end end
+		if not allowed then return end
+		R.CloseMenu()
+		local why = R.Block(key)
+		if why then return toast(why, "Moderator") end
+		if key == "ban" then
+			e.UI:PulseAction(key)
+			return Env.Blacklist.Confirm(uid, p.Name, function(ok, err)
+				toast(ok and (p.Name .. " blacklisted") or ("failed: " .. tostring(err)))
+			end)
+		end
+		if key == "kick" and not (kickArm and kickArm.uid == uid and os.clock() < kickArm.expires) then -- first tap: arm the button, don't send anything yet
+			R.DisarmKick()
+			local arm = {uid = uid, expires = os.clock() + 2.5}
+			kickArm = arm
+			e.UI:SetAction("kick", "Sure?", Color3.fromRGB(190, 50, 60))
+			task.delay(2.6, function() if kickArm == arm then R.DisarmKick() end end)
+			return
+		end
+		if os.clock() - (R.LastAct or 0) < 1.6 then return toast("slow down a little", "Moderator") end -- the backend allows one command per ~1.5 s per moderator (an armed Kick stays armed)
+		if key == "kick" then R.DisarmKick() end -- second tap within 2.5 s: confirmed
+		R.LastAct = os.clock()
+		e.UI:PulseAction(key)
+		task.spawn(function()
+			local ok, err = Env.Mod.Send(uid, key)
+			toast(ok and (allowed.label .. ": " .. p.Name) or ("failed: " .. tostring(err)), "Moderator")
+		end)
+	end
+
+	function R.Start(localOnly)
+		if R.Running then return end
+		if not localOnly and not Env.Request then return warn("[UhBanner] executor has no request(); live sync unavailable") end
+		R.Running = true
+		table.insert(conns, RS.Heartbeat:Connect(function() -- re-anchor every frame: handles respawns / reanim start+stop
+			for uid, e in pairs(R.Banners) do
+				local part = not R.Hidden and targetPart(uid) or nil
+				if part ~= e.Part then e.Part = part; e.UI:SetAdornee(part) end
+			end
+		end))
+		table.insert(conns, Players.PlayerRemoving:Connect(function(p) remove(p.UserId) end))
+		if Env.UserInputService and Env.GuiService then -- tap/click another player's banner -> teleport in front of them
+			table.insert(conns, Env.UserInputService.InputBegan:Connect(function(i, gp)
+				local t = i.UserInputType
+				if gp or R.Hidden or (t ~= Enum.UserInputType.MouseButton1 and t ~= Enum.UserInputType.Touch) then return end
+				R.CloseMenu()
+				local pt = Vector2.new(i.Position.X, i.Position.Y) + Env.GuiService:GetGuiInset()
+				for uid, e in pairs(R.Banners) do
+					if uid ~= Env.Player.UserId then
+						local key = e.ActKey ~= "" and e.UI:HitAction(pt) -- inline moderation buttons beside the banner
+						if key then return R.OnAction(uid, key) end
+						if e.UI:Contains(pt) then return R.OnBannerClick(uid, pt) end
+					end
+				end
+			end))
+		end
+		if localOnly then return end
+		task.spawn(function()
+			local fails = 0
+			while R.Running do
+				local ok, list = R.Fetch()
+				if ok then fails = 0; pcall(R.Process, list) else fails += 1 end
+				local wait, waited = math.min(2 + fails * 2, 12), 0
+				while R.Running and waited < wait and not R.Kicked do task.wait(0.25); waited += 0.25 end
+				R.Kicked = false
+			end
+		end)
+	end
+
+	function R.Stop()
+		R.Running = false
+		R.CloseMenu()
+		for _, c in ipairs(conns) do c:Disconnect() end
+		conns = {}
+		for uid, e in pairs(R.Banners) do e.UI:Destroy(false); R.Banners[uid] = nil end
+	end
+
+	return R
+end
+]==],
+			ModTools = [==[
+-- ModTools.lua | moderator actions (kill / deanimate / kick) relayed to OTHER SCRIPT USERS who misuse the script.
+-- Who may send: verified moderators + owner / co-owner (their userId must hold a key in the backend's MOD_KEYS).
+-- Who can be hit: only players running this script, and never verified players / owner / co-owner. The target is always notified.
+-- Env needs: Player, Players, HttpService, Request, Backend, Room, Token, ModKey (getgenv().UhBannerConfig.ModKey), ModActions {Kill, Deanimate, Kick(msg)}
+return function(Env, R)
+	local HS, Players = Env.HttpService, Env.Players
+	local M = {Running = false}
+	local ACTIONS = {kill = true, deanimate = true, kick = true}
+
+	function M.CanModerate()
+		if Env.Request == nil then return false end
+		local r = R.RoleOf(Env.Player.UserId)
+		if r and r.tag then return true end -- owner / co-owner: no key needed (the backend recognises their userId)
+		return Env.ModKey ~= nil and Env.ModKey ~= "" and r ~= nil
+	end
+
+	-- key box in the main UI: a whitelisted account redeems a one-time key; the first user to use a key locks it to their account.
+	-- returns ok, message, definitelyBad (true when the backend rejected the key itself)
+	function M.Redeem(key)
+		key = (tostring(key or ""):gsub("%s", ""))
+		if key == "" then return false, "enter your key first" end
+		if not R.IsWhitelisted(Env.Player.UserId) then return false, "this account is not on the verified whitelist" end
+		if not Env.Request then return false, "executor has no request()" end
+		local ok, res = pcall(Env.Request, {Url = Env.Backend .. "/verify", Method = "POST", Headers = {["Content-Type"] = "application/json"},
+			Body = HS:JSONEncode({userId = Env.Player.UserId, key = key})})
+		if not ok or type(res) ~= "table" then return false, "backend unreachable" end
+		if res.StatusCode == 403 then return false, "invalid key, or it was already used by someone else", true end
+		if res.StatusCode ~= 200 then return false, "HTTP " .. tostring(res.StatusCode) end
+		Env.ModKey = key
+		R.SetVerified(Env.Player.UserId) -- badge right away; the next banner poll confirms it for everyone
+		R.Poke()
+		return true
+	end
+
+	function M.Send(target, action)
+		if not ACTIONS[action] then return false, "bad action" end
+		if not M.CanModerate() then return false, "moderators only" end
+		if R.IsWhitelisted(target) then return false, "verified players are immune" end
+		local ok, res = pcall(Env.Request, {Url = Env.Backend .. "/mod", Method = "POST", Headers = {["Content-Type"] = "application/json"},
+			Body = HS:JSONEncode({room = Env.Room, userId = Env.Player.UserId, key = Env.ModKey or "", target = target, action = action})})
+		if not ok then return false, tostring(res) end
+		if type(res) ~= "table" or res.StatusCode ~= 200 then return false, "HTTP " .. tostring(type(res) == "table" and res.StatusCode) end
+		return true
+	end
+
+	local function toast(msg)
+		pcall(function() game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Moderator", Text = msg, Duration = 6}) end)
+	end
+
+	local function handle(c)
+		if type(c) ~= "table" or not ACTIONS[c.action] then return end
+		local by = tonumber(c.by)
+		if not by or by == Env.Player.UserId or not R.RoleOf(by) then return end -- sender must be a verified moderator / owner / co-owner
+		if R.IsWhitelisted(Env.Player.UserId) then return end -- whitelisted / verified players, owner and co-owner are immune
+		local p = Players:GetPlayerByUserId(by)
+		local name = p and p.Name or "a moderator"
+		local A = Env.ModActions or {}
+		if c.action == "kick" then
+			toast("Kicked by moderator " .. name)
+			if A.Kick then A.Kick("Kicked by moderator " .. name .. " (script misuse)") end
+		elseif c.action == "kill" then
+			toast(name .. " used Kill on you (script misuse)")
+			if A.Kill then A.Kill() end
+		else
+			toast(name .. " used Deanimate on you (script misuse)")
+			if A.Deanimate then A.Deanimate() end
+		end
+	end
+
+	function M.Start()
+		if M.Running or not Env.Request then return end
+		M.Running = true
+		task.spawn(function()
+			local fails = 0
+			while M.Running do
+				local ok, res = pcall(Env.Request, {Url = Env.Backend .. "/commands?room=" .. HS:UrlEncode(Env.Room) .. "&userId=" .. Env.Player.UserId .. "&token=" .. HS:UrlEncode(Env.Token), Method = "GET"})
+				if ok and type(res) == "table" and res.StatusCode == 200 then
+					fails = 0
+					local ok2, data = pcall(HS.JSONDecode, HS, res.Body)
+					if ok2 and type(data) == "table" and type(data.commands) == "table" then
+						for _, c in ipairs(data.commands) do pcall(handle, c) end
+					end
+				else fails += 1 end
+				task.wait(math.min(2 + fails * 2, 12))
+			end
+		end)
+	end
+
+	function M.Stop() M.Running = false end
+
+	return M
+end
+]==],
+			Blacklist = [==[
+-- Blacklist.lua | loads blacklist.json from the repo; lets OWNER / CO-OWNER add + remove entries (Yes/No warning each time)
+-- Usage (main script, after Env is built):  local BL = loadstring(game:HttpGet(Base .. "Blacklist.lua"))()(Env)
+-- Env needs: Player, Players, HttpService, Request, Base, Backend, OwnerKey (owner/co-owner only, from getgenv().UhBannerConfig.OwnerKey)
+-- A blacklisted client kicks itself: "BLACKLISTED by the owner / co-owner" (checked at startup + every few seconds by B.Watch)
+return function(Env)
+	local B = {List = {}}
+	local ROLE_BY_NAME = {kingbaconnon19 = "owner", hellii129 = "co-owner"}
+
+	function B.Fetch()
+		if B.Fresh and os.clock() - B.Fresh < 20 then return true end -- keep the list the backend just returned
+		local ok, body = pcall(function() return game:HttpGet(Env.Base .. "blacklist.json?t=" .. os.time()) end)
+		if not ok then return false end
+		local ok2, data = pcall(Env.HttpService.JSONDecode, Env.HttpService, body)
+		if not ok2 or type(data) ~= "table" or type(data.entries) ~= "table" then return false end
+		B.List = data.entries
+		return true
+	end
+
+	function B.Is(userId)
+		for _, e in ipairs(B.List) do
+			if tonumber(e.userId) == userId then return true, e end
+		end
+		return false
+	end
+
+	function B.KickText(e)
+		local who = e and e.by and ROLE_BY_NAME[tostring(e.by):lower()] or "owner/co-owner"
+		return "BLACKLISTED by the " .. who
+	end
+
+	function B.Enforce() -- kicks the local player when listed
+		local hit, e = B.Is(Env.Player.UserId)
+		if hit then pcall(function() Env.Player:Kick(B.KickText(e)) end) end
+		return hit
+	end
+
+	-- call first thing on startup: returns true when the local player may NOT use the script
+	function B.CheckSelf()
+		B.Fetch()
+		local hit, e = B.Is(Env.Player.UserId)
+		if hit then warn("[Blacklist] you are blacklisted from this script" .. (e.reason and (": " .. tostring(e.reason)) or "")); B.Enforce() end
+		return hit
+	end
+
+	function B.Watch() -- live enforcement: blacklisted while already running -> kicked
+		if B.Watching then return end
+		B.Watching = true
+		task.spawn(function()
+			while B.Watching do
+				for _ = 1, 32 do if not B.Watching then return end task.wait(0.25) end
+				if B.Fetch() then B.Enforce() end
+			end
+		end)
+	end
+
+	local function post(path, extra)
+		if not Env.Request then return false, "executor has no request()" end
+		if not (Env.IsOwner and Env.IsOwner()) and (not Env.OwnerKey or Env.OwnerKey == "") then return false, "owner / co-owner only" end
+		local body = {key = Env.OwnerKey or "", by = Env.Player.Name, byId = Env.Player.UserId}
+		for k, v in pairs(extra) do body[k] = v end
+		local ok, res = pcall(Env.Request, {
+			Url = Env.Backend .. path, Method = "POST",
+			Headers = {["Content-Type"] = "application/json"},
+			Body = Env.HttpService:JSONEncode(body),
+		})
+		if not ok then return false, tostring(res) end
+		local okJ, data = pcall(Env.HttpService.JSONDecode, Env.HttpService, type(res) == "table" and res.Body or "")
+		if not okJ or type(data) ~= "table" then data = nil end
+		if type(res) ~= "table" or res.StatusCode ~= 200 then return false, "HTTP " .. tostring(type(res) == "table" and res.StatusCode) .. ((data and data.error) and (": " .. tostring(data.error)) or "") end
+		if data and type(data.entries) == "table" then B.List = data.entries; B.Fresh = os.clock() else B.Fetch() end -- the backend returns the new list: use it (GitHub's copy can lag a few seconds)
+		return true
+	end
+
+	function B.Add(userId, username, reason)
+		return post("/blacklist", {userId = userId, username = username, reason = reason or ""})
+	end
+
+	function B.Remove(userId) -- unblacklist (mistakes)
+		return post("/unblacklist", {userId = userId})
+	end
+
+	local function toast(msg)
+		pcall(function() game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Blacklist", Text = msg, Duration = 4}) end)
+	end
+
+	-- Yes/No warning dialog. cb runs only on "Yes".
+	local function dialog(text, cb)
+		local gui = Instance.new("ScreenGui")
+		gui.Name, gui.ResetOnSpawn, gui.DisplayOrder = "UhBlacklistConfirm", false, 1000
+		gui.Parent = Env.Player:WaitForChild("PlayerGui")
+		local f = Instance.new("Frame", gui)
+		f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(300, 150), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
+		f.BackgroundColor3, f.BorderSizePixel = Color3.fromRGB(24, 24, 30), 0
+		Instance.new("UICorner", f).CornerRadius = UDim.new(0, 10)
+		local t = Instance.new("TextLabel", f)
+		t.Size, t.Position, t.BackgroundTransparency = UDim2.new(1, -20, 0, 84), UDim2.fromOffset(10, 8), 1
+		t.TextWrapped, t.TextColor3, t.Font, t.TextSize = true, Color3.new(1, 1, 1), Enum.Font.GothamMedium, 14
+		t.Text = text
+		local function btn(txt, x, col, fn)
+			local b = Instance.new("TextButton", f)
+			b.Size, b.Position, b.Text = UDim2.fromOffset(130, 36), UDim2.fromOffset(x, 100), txt
+			b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize = col, Color3.new(1, 1, 1), Enum.Font.GothamBold, 15
+			Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+			b.Activated:Connect(function() gui:Destroy(); fn() end)
+		end
+		btn("Yes", 15, Color3.fromRGB(200, 60, 60), cb)
+		btn("No", 155, Color3.fromRGB(70, 70, 80), function() end)
+	end
+
+	-- onDone(ok, err) is called after the request finishes (not called on "No").
+	function B.Confirm(userId, username, onDone)
+		dialog(("WARNING\nBlacklist %s (@%s)?\nThey will be blocked from using this script and kicked from the game."):format(username, username), function()
+			task.spawn(function()
+				local ok, err = B.Add(userId, username)
+				if onDone then onDone(ok, err) end
+			end)
+		end)
+	end
+
+	function B.ConfirmRemove(userId, username, onDone)
+		dialog(("Unblacklist %s (@%s)?\nThey will be able to use this script again."):format(username, username), function()
+			task.spawn(function()
+				local ok, err = B.Remove(userId)
+				if onDone then onDone(ok, err) end
+			end)
+		end)
+	end
+
+	-- list of blacklisted players with an Unblacklist button each (owner / co-owner)
+	function B.ClosePanel() if B.Panel then B.Panel:Destroy(); B.Panel = nil end end
+	function B.OpenPanel()
+		B.ClosePanel()
+		task.spawn(function()
+			B.Fetch()
+			local gui = Instance.new("ScreenGui")
+			gui.Name, gui.ResetOnSpawn, gui.DisplayOrder = "UhBlacklistPanel", false, 999
+			gui.Parent = Env.Player:WaitForChild("PlayerGui")
+			B.Panel = gui
+			local f = Instance.new("Frame", gui)
+			f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(320, 300), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
+			f.BackgroundColor3, f.BorderSizePixel = Color3.fromRGB(24, 24, 30), 0
+			Instance.new("UICorner", f).CornerRadius = UDim.new(0, 10)
+			local t = Instance.new("TextLabel", f)
+			t.Size, t.Position, t.BackgroundTransparency = UDim2.new(1, -60, 0, 30), UDim2.fromOffset(12, 6), 1
+			t.Text, t.TextColor3, t.Font, t.TextSize, t.TextXAlignment = ("Blacklist (%d)"):format(#B.List), Color3.new(1, 1, 1), Enum.Font.GothamBold, 16, Enum.TextXAlignment.Left
+			local x = Instance.new("TextButton", f)
+			x.Size, x.Position, x.Text = UDim2.fromOffset(30, 26), UDim2.new(1, -40, 0, 8), "X"
+			x.BackgroundColor3, x.TextColor3, x.Font, x.TextSize = Color3.fromRGB(70, 70, 80), Color3.new(1, 1, 1), Enum.Font.GothamBold, 14
+			Instance.new("UICorner", x).CornerRadius = UDim.new(0, 6)
+			x.Activated:Connect(B.ClosePanel)
+			local sc = Instance.new("ScrollingFrame", f)
+			sc.Size, sc.Position, sc.BackgroundTransparency, sc.BorderSizePixel = UDim2.new(1, -20, 1, -50), UDim2.fromOffset(10, 40), 1, 0
+			sc.ScrollBarThickness, sc.CanvasSize, sc.AutomaticCanvasSize = 4, UDim2.new(), Enum.AutomaticSize.Y
+			local lay = Instance.new("UIListLayout", sc)
+			lay.Padding, lay.SortOrder = UDim.new(0, 6), Enum.SortOrder.LayoutOrder
+			if #B.List == 0 then
+				local e = Instance.new("TextLabel", sc)
+				e.Size, e.BackgroundTransparency, e.Text, e.TextColor3, e.Font, e.TextSize = UDim2.new(1, 0, 0, 30), 1, "Nobody is blacklisted", Color3.fromRGB(170, 170, 180), Enum.Font.Gotham, 14
+			end
+			for i, e in ipairs(B.List) do
+				local uid, name = tonumber(e.userId), tostring(e.username or e.userId)
+				local row = Instance.new("Frame", sc)
+				row.Size, row.BackgroundColor3, row.BorderSizePixel, row.LayoutOrder = UDim2.new(1, -6, 0, 38), Color3.fromRGB(34, 34, 42), 0, i
+				Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
+				local l = Instance.new("TextLabel", row)
+				l.Size, l.Position, l.BackgroundTransparency, l.Text = UDim2.new(1, -118, 1, 0), UDim2.fromOffset(10, 0), 1, name
+				l.TextColor3, l.Font, l.TextSize, l.TextXAlignment, l.TextTruncate = Color3.new(1, 1, 1), Enum.Font.GothamMedium, 13, Enum.TextXAlignment.Left, Enum.TextTruncate.AtEnd
+				local u = Instance.new("TextButton", row)
+				u.Size, u.Position, u.Text = UDim2.fromOffset(100, 26), UDim2.new(1, -106, 0.5, -13), "Unblacklist"
+				u.BackgroundColor3, u.TextColor3, u.Font, u.TextSize = Color3.fromRGB(60, 140, 90), Color3.new(1, 1, 1), Enum.Font.GothamBold, 12
+				Instance.new("UICorner", u).CornerRadius = UDim.new(0, 6)
+				u.Activated:Connect(function()
+					if not uid then return end
+					B.ConfirmRemove(uid, name, function(ok, err)
+						toast(ok and (name .. " unblacklisted") or ("failed: " .. tostring(err)))
+						if ok and B.Panel then B.OpenPanel() end
+					end)
+				end)
+			end
+		end)
+	end
+
+	-- small "Blacklist" button (owner / co-owner) that opens the panel
+	function B.ShowPill()
+		if B.PillGui then return end
+		local gui = Instance.new("ScreenGui")
+		gui.Name, gui.ResetOnSpawn, gui.DisplayOrder, gui.IgnoreGuiInset = "UhBlacklistCtl", false, 50, true
+		gui.Parent = Env.Player:WaitForChild("PlayerGui")
+		B.PillGui = gui
+		local b = Instance.new("TextButton", gui)
+		b.AnchorPoint, b.Position, b.Size, b.Text = Vector2.new(0, 0.5), UDim2.new(0, 8, 0.5, 38), UDim2.fromOffset(118, 30), "Blacklist (unban)"
+		b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize, b.BorderSizePixel = Color3.fromRGB(24, 24, 30), Color3.new(1, 1, 1), Enum.Font.GothamBold, 12, 0
+		Instance.new("UICorner", b).CornerRadius = UDim.new(1, 0)
+		local s = Instance.new("UIStroke", b)
+		s.Thickness, s.Color = 1.5, Color3.fromRGB(200, 60, 60)
+		b.Activated:Connect(B.OpenPanel)
+	end
+
+	function B.Stop()
+		B.Watching = false
+		B.ClosePanel()
+		if B.PillGui then B.PillGui:Destroy(); B.PillGui = nil end
+	end
+
+	return B
+end
+]==],
+		}
+		local function pull(n)
+			local src = EMBED[n]
+			if src then return loadstring(src, "=" .. n)() end
+			return loadstring(game:HttpGet(Base .. n .. ".lua"))()
+		end
+		do local okB, eB = pcall(function() Env.Blacklist = pull("Blacklist")(Env) end); if not okB then warn("[UhBanner] Blacklist module failed: " .. tostring(eB)) end end
+		pcall(function() Env.Blacklist.Watch() end)
+		local UI = pull("BannerUI")(Env)
+		local Sender = pull("BannerSender")(Env)
+		local Receiver = pull("BannerReceiver")(Env, UI)
+		Env.IsOwner = function() local r = Receiver.RoleOf(Player.UserId); return r ~= nil and r.tag ~= nil end -- owner / co-owner: no key needed
+		do local okM, eM = pcall(function() Env.Mod = pull("ModTools")(Env, Receiver) end); if not okM then warn("[UhBanner] ModTools module failed: " .. tostring(eM)) end end
+		local api = {Stop = function() if not LocalOnly then Sender.Clear(); Sender.Stop() end; Receiver.Stop(); UI.Cleanup(); pcall(function() Env.Blacklist.Stop() end); pcall(function() Env.Mod.Stop() end) end}
+		function api.Set(title, image, sub)
+			if LocalOnly then
+				Receiver.Process({{userId = Player.UserId, name = Player.Name, title = title, subtitle = sub or ("@" .. Player.Name), image = image}})
+			elseif Sender.Send(title, image, sub) then Receiver.Poke() end
+		end
+		genv.UhBanner = api
+		-- local-only banner switch (pill button + api.SetEnabled); saved in SaveData.BannerOff; never affects what other users see
+		local function apply(on) if Receiver.SetHidden then Receiver.SetHidden(not on) end; SaveData.BannerOff = (not on) or nil end
+		local setPill = UI.Toggle and UI.Toggle(not SaveData.BannerOff, apply)
+		apply(not SaveData.BannerOff)
+		function api.SetEnabled(on) apply(on); if setPill then setPill(on) end end
+		function api.Verify(key, quiet) -- "VERIFIED KEY" box: whitelisted accounts redeem a one-time key to become verified
+			if not Env.Mod then return false, "moderation module not loaded" end
+			local ok, msg, bad = Env.Mod.Redeem(key)
+			if ok then SaveData.ModKey = Env.ModKey; do local r = Receiver.RoleOf(Player.UserId); if r and r.tag and (Env.OwnerKey or "") == "" then Env.OwnerKey = Env.ModKey end end
+			elseif bad and quiet then SaveData.ModKey = nil; Env.ModKey = nil end -- saved key was revoked / taken
+			return ok, msg
+		end
+		if SaveData.ModKey and not LocalOnly then task.spawn(function() task.wait(3); pcall(api.Verify, SaveData.ModKey, true) end) end
+		if Receiver.CanBlacklist() then pcall(Env.Blacklist.ShowPill) end -- owner / co-owner: blacklist panel button (list + Unblacklist per player)
+		task.delay(4, function() if Receiver.CanBlacklist() then pcall(Env.Blacklist.ShowPill) end end) -- retry once the owner name has resolved (ShowPill ignores duplicates)
+		Receiver.Start(LocalOnly)
+		if not LocalOnly then Sender.Start(); pcall(function() Env.Mod.Start() end) end
+		api.Set(Cfg.Title or SaveData.BannerTitle or Player.DisplayName, Cfg.Image or SaveData.BannerImage or "")
+	end)
+	if not ok then warn("[UhBanner] " .. tostring(err)) end
+end)
+
 do
 	local AntiflingHumanoids = {}
 	local AntiflingBaseParts = {}
@@ -269518,6 +270606,20 @@ do
 		end
 		ReanimateStartButton.Interactable = true
 	end)
+	Util.ModDeanimate = function() -- same steps as the "* Deanimate *" button, triggered by a verified moderator
+		if not Reanimate.Current or not ReanimateStartButton.Interactable then return end
+		ReanimateStartButton.Interactable = false
+		ReanimateStartButtonText.Text = "Stopping..."
+		Reanimate.Stopping = true
+		repeat task.wait() until not Reanimate.Stopping
+		Reanimate.Current.Running = nil
+		Reanimate.Current = nil
+		HumanoidLASetHookState(false)
+		ReanimateText.Text = "Running: NONE"
+		task.wait(1)
+		ReanimateStartButtonText.Text = "* Reanimate *"
+		ReanimateStartButton.Interactable = true
+	end
 	UI.CreateButton(MainPage, "Show Reanimate Hitboxes", 15).Activated:Connect(function()
 		if not Reanimate.Character then return end
 		ReanimateShowHitboxes()
