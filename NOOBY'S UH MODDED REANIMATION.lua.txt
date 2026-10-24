@@ -263770,14 +263770,50 @@ return function(Env, UI)
 		hellii129 = {tag = "CO-OWNER", color = Color3.fromRGB(170, 120, 255)},
 		-- moderator whitelist (plain "Verified" banner, check badge only; they can kick / kill / deanimate misusing script users).
 		-- A whitelisted account only becomes Verified after it redeems a one-time key in the main UI ("VERIFIED KEY"). One per line, lower-case username:
-		-- exampleusername = {},
+		-- more verified players are NOT listed here: they live in whitelist.json on GitHub (Env.Base .. "whitelist.json"), fetched at start + every 60s (see applyWhitelist below)
 	}
-	local roleIds, resolved = {}, {}
-	for name, r in pairs(VERIFIED) do
+	local roleIds, resolved, nameIds = {}, {}, {}
+	local function resolveName(name, r)
 		task.spawn(function()
 			local ok, id = pcall(Players.GetUserIdFromNameAsync, Players, name)
-			if ok and id then roleIds[id] = r; resolved[name] = true end
+			if ok and id and VERIFIED[name] == r then roleIds[id] = r; resolved[name] = true; nameIds[name] = id end
 		end)
+	end
+	for name, r in pairs(VERIFIED) do resolveName(name, r) end
+
+	-- Remote whitelist: whitelist.json on GitHub = {"entries": [{"username": "SomeName"}, {"userId": 123456}]}. Entries only ever become plain "Verified"
+	-- (check badge, still needs the one-time key): the file can never grant OWNER / CO-OWNER or any rank tag, and can't override the names hardcoded above.
+	local remote = {names = {}, ids = {}} -- what the last successful fetch contributed
+	local function dropId(id) local r = roleIds[id]; if r and not r.tag then roleIds[id] = nil end end
+	local function applyWhitelist(entries)
+		local names, ids = {}, {}
+		for _, e in ipairs(entries) do
+			if type(e) == "table" then
+				local n = type(e.username) == "string" and e.username:lower() or nil
+				if n and #n >= 3 and #n <= 20 and n:match("^[%w_]+$") and (not VERIFIED[n] or remote.names[n]) then names[n] = true end
+				local id = math.floor(tonumber(e.userId) or 0)
+				if id > 0 and (not roleIds[id] or remote.ids[id]) then ids[id] = true end
+			end
+		end
+		for n in pairs(remote.names) do -- removed from the file -> no longer whitelisted
+			if not names[n] then
+				VERIFIED[n] = nil; resolved[n] = nil
+				if nameIds[n] then dropId(nameIds[n]); nameIds[n] = nil end
+			end
+		end
+		for id in pairs(remote.ids) do if not ids[id] then dropId(id) end end
+		for n in pairs(names) do
+			if not VERIFIED[n] then local r = {}; VERIFIED[n] = r; resolveName(n, r) end
+		end
+		for id in pairs(ids) do if not roleIds[id] then roleIds[id] = {} end end
+		remote.names, remote.ids = names, ids
+	end
+	local function fetchWhitelist()
+		if not Env.Base then return end
+		local ok, body = pcall(function() return game:HttpGet(Env.Base .. "whitelist.json?t=" .. os.time()) end)
+		if not ok or type(body) ~= "string" then return end
+		local ok2, data = pcall(HS.JSONDecode, HS, body)
+		if ok2 and type(data) == "table" and type(data.entries) == "table" then pcall(applyWhitelist, data.entries) end
 	end
 	local confirmed = {} -- userIds the backend says have redeemed a verified key (set from each /banners poll)
 	local function rawRole(uid) -- whitelisted by username (protected from kill / kick / blacklist), key or not
@@ -264023,6 +264059,13 @@ return function(Env, UI)
 		if R.Running then return end
 		if not localOnly and not Env.Request then return warn("[UhBanner] executor has no request(); live sync unavailable") end
 		R.Running = true
+		task.spawn(function() -- whitelist.json: read now, then every 60s so edits on GitHub apply without rejoining
+			while R.Running do
+				fetchWhitelist()
+				local waited = 0
+				while R.Running and waited < 60 do task.wait(1); waited += 1 end
+			end
+		end)
 		table.insert(conns, RS.Heartbeat:Connect(function() -- re-anchor every frame: handles respawns / reanim start+stop
 			for uid, e in pairs(R.Banners) do
 				local part = not R.Hidden and targetPart(uid) or nil
