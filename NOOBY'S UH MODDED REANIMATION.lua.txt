@@ -276875,7 +276875,10 @@ do -- [live] LIVE PLAYERS / MODERATION (Cloudflare Worker "Nooby-server-logger")
 		local LP = Players.LocalPlayer
 		local req = request or http_request or (syn and syn.request) or (http and http.request)
 		local BASE = "https://nooby-server-logger.elliptmal.workers.dev"
-		local IDLE, OPEN, BURST = 45, 10, 3
+		local IDLE, OPEN, BURST, MAXBACK = 20, 8, 3, 30 -- idle 45s was slower than a typical Worker presence TTL, so users dropped off and reappeared
+		local genv = (getgenv and getgenv()) or _G
+		local myToken = {}
+		genv.__UH_LIVE_TOKEN = myToken -- a re-executed script retires the old loop, so one client never sends duplicate heartbeats
 		local function trim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
 		local function notify(t) pcall(Util.UINotify, tostring(t)) end
 		local function alert(t) -- owner / co-owner alert: UI bar + native Roblox pop-up + a line in the chat (only you see it)
@@ -276898,9 +276901,11 @@ do -- [live] LIVE PLAYERS / MODERATION (Cloudflare Worker "Nooby-server-logger")
 			end)
 		end
 		local gameName = tostring(game.Name)
+		local gameReady = false
 		task.spawn(function()
 			local ok, info = pcall(function() return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId) end)
 			if ok and type(info) == "table" and info.Name then gameName = tostring(info.Name) end
+			gameReady = true
 		end)
 
 		Util.FCMark("live")
@@ -277041,7 +277046,7 @@ do -- [live] LIVE PLAYERS / MODERATION (Cloudflare Worker "Nooby-server-logger")
 		local act
 		local function render()
 			for _, c in ipairs(host:GetChildren()) do
-				if c:IsA("TextButton") then c:Destroy() end
+				if c:IsA("TextButton") or c.Name == "UHMoreLbl" then c:Destroy() end
 			end
 			local q = trim(searchBox.Text):lower()
 			local shown = 0
@@ -277051,7 +277056,19 @@ do -- [live] LIVE PLAYERS / MODERATION (Cloudflare Worker "Nooby-server-logger")
 				if gn == "" then gn = "Unknown game" end
 				if q == "" or uid:find(q, 1, true) or un:lower():find(q, 1, true) or dn:lower():find(q, 1, true) or gn:lower():find(q, 1, true) or jid:lower():find(q, 1, true) then
 					shown += 1
-					if shown > 60 then break end
+					if shown > 150 then
+						local ml = Util.Instance("TextLabel", host)
+						ml.Name = "UHMoreLbl"
+						ml.Size = UDim2.new(1, 0, 0, 24)
+						ml.BackgroundTransparency = 1
+						ml.Font = Enum.Font.Code
+						ml.TextSize = 11
+						ml.TextColor3 = Color3.new(1, 1, 1)
+						ml.LayoutOrder = shown
+						ml.Text = "More players online - use search to narrow the list"
+						pcall(RegisterTextLabel, ml)
+						break
+					end
 					local me = uid == tostring(LP.UserId)
 					local row = Util.Instance("TextButton", host)
 					local canMod = isMod() and not me
@@ -277172,23 +277189,55 @@ do -- [live] LIVE PLAYERS / MODERATION (Cloudflare Worker "Nooby-server-logger")
 			end
 		end
 
+		local lastGood = 0
+		local function dedupe(l) -- one row per user even if the Worker returns a rejoin twice
+			local out, idx = {}, {}
+			for _, e in ipairs(l) do
+				local k = tostring(e[1])
+				if idx[k] then
+					out[idx[k]] = e
+				else
+					out[#out + 1] = e
+					idx[k] = #out
+				end
+			end
+			return out
+		end
 		task.spawn(function()
-			while true do
+			local bootAt = os.clock()
+			while genv.__UH_LIVE_TOKEN == myToken do
 				task.wait(1)
-				pcall(function()
+				local okTick, errTick = pcall(function()
 					local open = pageOpen()
 					if open and not wasOpen then nextAt = 0 end
 					wasOpen = open
-					if os.clock() < nextAt then return end
-					local d, st = post("/sync", {u = LP.UserId, n = LP.Name, d = LP.DisplayName, p = game.PlaceId, j = game.JobId, g = gameName, v = ver, w = open and 1 or 0, a = acks})
+					local now = os.clock()
+					if now < nextAt then
+						if fails > 0 and lastGood > 0 then
+							status.Text = "Backend unreachable - list is " .. math.floor(now - lastGood) .. "s old (retrying)"
+						end
+						return
+					end
+					if not gameReady and now - bootAt < 4 then return end -- first heartbeat carries the real game name
+					local function sync()
+						return post("/sync", {u = LP.UserId, n = LP.Name, d = LP.DisplayName, p = game.PlaceId, j = game.JobId, g = gameName, v = ver, w = open and 1 or 0, a = acks})
+					end
+					local d, st = sync()
+					if (not d or st ~= 200) and type(req) == "function" then -- one quick retry: a single dropped request must not cost a whole interval
+						task.wait(1.5)
+						d, st = sync()
+					end
 					local base = (burstUntil > os.clock() and BURST) or (open and OPEN) or IDLE
 					if not d or st ~= 200 then
 						fails += 1
-						status.Text = "Backend unreachable (retrying)"
-						nextAt = os.clock() + math.min(300, base * 2 ^ math.min(fails, 4))
+						status.Text = (st == 429) and "Backend rate-limited (retrying)" or "Backend unreachable (retrying)"
+						local delay = (fails <= 2 and 4) or math.min(MAXBACK, base * 2 ^ math.min(fails - 2, 3))
+						if st == 429 then delay = math.max(delay, 20) end
+						nextAt = os.clock() + delay
 						return
 					end
 					fails, joined, acks = 0, true, {}
+					lastGood = os.clock()
 					if d.ban then pcall(function() LP:Kick("Banned by moderator") end) return end
 					if d.r ~= role then
 						role = d.r
@@ -277197,16 +277246,23 @@ do -- [live] LIVE PLAYERS / MODERATION (Cloudflare Worker "Nooby-server-logger")
 						render()
 					end
 					status.Text = "Connected"
-					countLbl.Text = "Active players: " .. tostring(d.c)
-					if d.l then cache, ver = d.l, d.v render() end
+					if type(d.l) == "table" then
+						cache, ver = dedupe(d.l), d.v or ver
+						render()
+					end
+					countLbl.Text = "Active players: " .. tostring(math.max(tonumber(d.c) or 0, #cache))
 					if type(d.m) == "table" then
 						presence("o", "Owner", d.m.o)
 						presence("c", "Co-owner", d.m.c)
 					end
 					for _, ev in ipairs(d.e or {}) do handle(ev) end
 					if d.e and #d.e > 0 then burstUntil = os.clock() + 15 end
-					nextAt = os.clock() + ((burstUntil > os.clock() and BURST) or (open and OPEN) or IDLE)
+					nextAt = os.clock() + ((burstUntil > os.clock() and BURST) or (open and OPEN) or IDLE) + math.random() * 1.5
 				end)
+				if not okTick then
+					nextAt = os.clock() + 5
+					warn("[live] sync tick failed: " .. tostring(errTick))
+				end
 			end
 		end)
 	end)
