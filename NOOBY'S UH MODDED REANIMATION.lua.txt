@@ -276780,6 +276780,350 @@ UI.CreateButton(MainPage, "Reload User Modules", 20).Activated:Connect(function(
 	end)
 	ForceModuleReload("SKIPHASH")
 end)
+do -- [live] LIVE PLAYERS / MODERATION (Cloudflare Worker "Nooby-server-logger"). One batched /sync per client = heartbeat + acks + list version -> count, list (only when changed), events, owner/co-owner presence. Kill/Deanimate/Kick only run on script users who poll the backend; the Worker authorizes every /act.
+	local okLive, errLive = pcall(function()
+		local Players = game:GetService("Players")
+		local TeleportService = game:GetService("TeleportService")
+		local LP = Players.LocalPlayer
+		local req = request or http_request or (syn and syn.request) or (http and http.request)
+		local BASE = "https://nooby-server-logger.elliptmal.workers.dev"
+		local IDLE, OPEN, BURST = 45, 10, 3
+		local function trim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
+		local function notify(t) pcall(Util.UINotify, tostring(t)) end
+		local function alert(t) -- owner / co-owner alert: UI bar + native Roblox pop-up + a line in the chat (only you see it)
+			t = tostring(t)
+			notify(t)
+			pcall(function()
+				game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Owner / Co-owner", Text = t, Duration = 8})
+			end)
+			pcall(function()
+				local TCS = game:GetService("TextChatService")
+				if TCS.ChatVersion == Enum.ChatVersion.TextChatService then
+					local chans = TCS:FindFirstChild("TextChannels")
+					local ch = chans and chans:FindFirstChild("RBXGeneral")
+					if ch then
+						ch:DisplaySystemMessage('<font color="#FFD700"><b>[Owner / Co-owner]</b></font> ' .. t)
+						return
+					end
+				end
+				game:GetService("StarterGui"):SetCore("ChatMakeSystemMessage", {Text = "[Owner / Co-owner] " .. t, Color = Color3.fromRGB(255, 215, 0), Font = Enum.Font.SourceSansBold, FontSize = Enum.FontSize.Size24})
+			end)
+		end
+		local gameName = tostring(game.Name)
+		task.spawn(function()
+			local ok, info = pcall(function() return game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId) end)
+			if ok and type(info) == "table" and info.Name then gameName = tostring(info.Name) end
+		end)
+
+		Util.FCMark("live")
+		UI.CreateSeparator(MainPage)
+		UI.CreateText(MainPage, "<b>LIVE PLAYERS</b>", 15, Enum.TextXAlignment.Center)
+		local status = UI.CreateText(MainPage, "Connecting...", 12, Enum.TextXAlignment.Left)
+		local nextAt = 0
+
+		UI.CreateText(MainPage, "<b>ACTIVE PLAYERS</b>", 15, Enum.TextXAlignment.Center)
+		local countLbl = UI.CreateText(MainPage, "Active players: -", 12, Enum.TextXAlignment.Left)
+		local searchBox = UI.CreateTextbox(MainPage, "", "Search name / game / server", 14)
+		local host = Util.Instance("Frame", MainPage) -- plain container: the page itself scrolls, so swipes are never trapped by a nested list
+		host.AnchorPoint = Vector2.new(0.5, 0)
+		host.Size = UDim2.new(1, 0, 0, 0)
+		host.AutomaticSize = Enum.AutomaticSize.Y
+		host.BackgroundTransparency = 1
+		host.LayoutOrder = #MainPage:GetChildren()
+		local hostLay = Util.Instance("UIListLayout", host)
+		hostLay.SortOrder = Enum.SortOrder.LayoutOrder
+		hostLay.HorizontalAlignment = Enum.HorizontalAlignment.Center
+		hostLay.Padding = UDim.new(0, 3)
+		local hostPad = Util.Instance("UIPadding", host)
+		hostPad.PaddingLeft = UDim.new(0, 5)
+		hostPad.PaddingRight = UDim.new(0, 5)
+
+		-- moderation controls: only visible once the backend confirms an Owner / Co-owner role
+		local modUI = {}
+		local targetBox = UI.CreateTextbox(MainPage, "", "Target (tap a player or type username / ID)", 14)
+		modUI[#modUI + 1] = targetBox
+		modUI[#modUI + 1] = UI.CreateText(MainPage, "<b>REMOTE MODERATION</b>", 15, Enum.TextXAlignment.Center)
+		local roleLbl = UI.CreateText(MainPage, "Role: none", 12, Enum.TextXAlignment.Left)
+		modUI[#modUI + 1] = roleLbl
+		local btns = {}
+		for _, a in ipairs({{"Kill", "kill"}, {"Deanimate", "deanimate"}, {"Kick", "kick"}, {"Ban", "ban"}, {"Unban", "unban"}}) do
+			btns[a[2]] = UI.CreateButton(MainPage, a[1], 20)
+			modUI[#modUI + 1] = btns[a[2]]
+		end
+		local function showMod(on)
+			for _, o in ipairs(modUI) do
+				local c = o
+				while c.Parent and not c.Parent:IsA("ScrollingFrame") do c = c.Parent end
+				if c:IsA("GuiObject") then c.Visible = on end
+			end
+		end
+		showMod(false)
+
+		local cache, ver, role, acks, seen, mstate = {}, -1, nil, {}, {}, {}
+		local burstUntil, wasOpen, fails, joined = 0, false, 0, false
+		local localMod = ({kingbaconnon19 = true, helloman1_23 = true})[LP.Name:lower()] == true -- cosmetic only: the Worker still authorizes every action
+		local function isMod() return role ~= nil or localMod end
+		showMod(isMod())
+
+		local function pageOpen()
+			local pg = host.Parent
+			return pg ~= nil and pg ~= MainPage and pg.Visible == true
+		end
+		local function post(path, body)
+			if type(req) ~= "function" then return nil, 0 end
+			local ok, res = pcall(req, {Url = BASE .. path, Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = HttpService:JSONEncode(body)})
+			if not ok or type(res) ~= "table" then return nil, 0 end
+			local ok2, d = pcall(HttpService.JSONDecode, HttpService, res.Body or "{}")
+			return ok2 and d or nil, res.StatusCode
+		end
+		local function resolve(q)
+			q = trim(q):lower()
+			if q == "" then return nil end
+			for _, e in ipairs(cache) do
+				if tostring(e[1]) == q or e[2]:lower() == q or e[3]:lower() == q then return e end
+			end
+			for _, e in ipairs(cache) do
+				if e[2]:lower():find(q, 1, true) == 1 or e[3]:lower():find(q, 1, true) == 1 then return e end
+			end
+		end
+
+		local function joinEntry(e)
+			local jid, pid = tostring(e[5]), tonumber(e[4])
+			if jid ~= "" and jid == game.JobId then -- same server: go to them instead of re-joining
+				local tp = Players:FindFirstChild(tostring(e[2]))
+				local tr = tp and tp.Character and tp.Character:FindFirstChild("HumanoidRootPart")
+				if not tr then notify("They are in your server but their character isn't loaded") return end
+				local cs, moved = {LP.Character}, false
+				pcall(function() cs[2] = Reanimate.Character end)
+				for _, c in ipairs(cs) do
+					local r = c and c:FindFirstChild("HumanoidRootPart")
+					if r then pcall(function() r.CFrame = tr.CFrame * CFrame.new(0, 0, 3) end) moved = true end
+				end
+				notify(moved and ("Teleported to " .. tostring(e[2])) or "Your character isn't loaded")
+				return
+			end
+			if not pid or jid == "" then notify("That player has no joinable server") return end
+			if pid ~= game.PlaceId then -- different game: copy the join link and open it in the browser so you can join manually
+				-- roblox.com/games/start launches the Roblox app straight into that exact server (jid = the server's JobId);
+				-- the id is passed as gameId (what the site's own Join button uses) and gameInstanceId (the documented deep-link name)
+				local link = "https://www.roblox.com/games/start?placeId=" .. pid .. "&gameId=" .. jid .. "&gameInstanceId=" .. jid
+				local copied = type(setclipboard) == "function" and pcall(setclipboard, link)
+				local opened = pcall(function() game:GetService("GuiService"):OpenBrowserWindow(link) end)
+				local gname = tostring(e[6] or "")
+				if gname == "" then gname = "another game" end
+				if copied and opened then
+					notify(tostring(e[2]) .. " is in " .. gname .. " - join link copied and opened in your browser")
+				elseif copied then
+					notify(tostring(e[2]) .. " is in " .. gname .. " - join link copied, paste it in your browser")
+				elseif opened then
+					notify(tostring(e[2]) .. " is in " .. gname .. " - opened in your browser")
+				else
+					notify(tostring(e[2]) .. " is in " .. gname .. " - couldn't copy / open, link: " .. link)
+				end
+				return
+			end
+			notify("Joining " .. tostring(e[2]) .. "...")
+			local done, launched, con, reason = false, false, nil, nil
+			local function final()
+				if done then return end
+				done = true
+				-- no link / clipboard: just tell the player why Roblox refused the join
+				notify("Failed to join " .. tostring(e[2]) .. (reason and (" - " .. reason) or " (server may be full, private or restricted)"))
+			end
+			local function viaLauncher() -- same fallback the script's own Server Hop uses
+				if launched then return end
+				launched = true
+				local ok = pcall(function()
+					local svc = game.ExperienceService or game:GetService("ExperienceService")
+					svc:LaunchExperience({placeId = pid, gameInstanceId = jid})
+				end)
+				if ok then task.delay(10, final) else final() end
+			end
+			con = TeleportService.TeleportInitFailed:Connect(function(plr, result, msg)
+				if plr ~= LP then return end
+				local name = typeof(result) == "EnumItem" and result.Name or tostring(result)
+				reason = name .. ((msg and msg ~= "") and (": " .. tostring(msg)) or "")
+				viaLauncher()
+			end)
+			task.delay(30, function() if con then con:Disconnect() end end)
+			local ok = pcall(function() TeleportService:TeleportToPlaceInstance(pid, jid, LP) end)
+			if not ok then viaLauncher() else task.delay(12, viaLauncher) end
+		end
+
+		local act
+		local function render()
+			for _, c in ipairs(host:GetChildren()) do
+				if c:IsA("TextButton") then c:Destroy() end
+			end
+			local q = trim(searchBox.Text):lower()
+			local shown = 0
+			for _, e in ipairs(cache) do
+				local uid, un, dn, pid, jid = tostring(e[1]), tostring(e[2]), tostring(e[3]), tostring(e[4]), tostring(e[5])
+				local gn = tostring(e[6] or "")
+				if gn == "" then gn = "Unknown game" end
+				if q == "" or uid:find(q, 1, true) or un:lower():find(q, 1, true) or dn:lower():find(q, 1, true) or gn:lower():find(q, 1, true) or jid:lower():find(q, 1, true) then
+					shown += 1
+					if shown > 60 then break end
+					local me = uid == tostring(LP.UserId)
+					local row = Util.Instance("TextButton", host)
+					local canMod = isMod() and not me
+					row.Size = UDim2.new(1, 0, 0, canMod and 92 or 58)
+					row.BackgroundColor3 = Color3.new(1, 1, 1)
+					row.BackgroundTransparency = 0.88
+					row.BorderSizePixel = 0
+					row.Text = ""
+					row.LayoutOrder = shown
+					local img = Util.Instance("ImageLabel", row)
+					img.Position = UDim2.new(0, 4, 0, 9)
+					img.Size = UDim2.new(0, 40, 0, 40)
+					img.BackgroundTransparency = 1
+					img.Image = "rbxthumb://type=AvatarHeadShot&id=" .. uid .. "&w=48&h=48"
+					local lbl = Util.Instance("TextLabel", row)
+					lbl.Position = UDim2.new(0, 50, 0, 0)
+					lbl.Size = UDim2.new(1, me and -54 or -112, 0, 58)
+					lbl.BackgroundTransparency = 1
+					lbl.Font = Enum.Font.Code
+					lbl.TextSize = 11
+					lbl.TextColor3 = Color3.new(1, 1, 1)
+					lbl.TextXAlignment = Enum.TextXAlignment.Left
+					lbl.TextWrapped = true
+					lbl.Text = dn .. " (@" .. un .. ")" .. (me and " - you" or "") .. "\n" .. gn .. "\nServer " .. jid
+					pcall(RegisterTextLabel, lbl)
+					row.Activated:Connect(function() targetBox.Text = un end)
+					if not me then
+						local jb = Util.Instance("TextButton", row)
+						jb.AnchorPoint = Vector2.new(1, 0.5)
+						jb.Position = UDim2.new(1, -4, 0, 29)
+						jb.Size = UDim2.new(0, 52, 0, 28)
+						jb.BackgroundColor3 = Color3.new(1, 1, 1)
+						jb.BackgroundTransparency = 0.7
+						jb.BorderSizePixel = 0
+						jb.Font = Enum.Font.Code
+						jb.TextSize = 14
+						jb.TextColor3 = Color3.new(1, 1, 1)
+						jb.Text = "Join"
+						pcall(RegisterTextLabel, jb)
+						jb.Activated:Connect(function() joinEntry(e) end)
+					end
+					if canMod then
+						for i, d in ipairs({{"Kill", "kill", Color3.fromRGB(200, 60, 60)}, {"Deanimate", "deanimate", Color3.fromRGB(96, 110, 210)}, {"Kick", "kick", Color3.fromRGB(220, 140, 40)}, {"Ban", "ban", Color3.fromRGB(150, 30, 60)}}) do
+							local mb = Util.Instance("TextButton", row)
+							mb.Size = UDim2.new(0.25, -6, 0, 26)
+							mb.Position = UDim2.new(0.25 * (i - 1), 4, 0, 62)
+							mb.BackgroundColor3 = d[3]
+							mb.BackgroundTransparency = 0.2
+							mb.BorderSizePixel = 0
+							mb.Font = Enum.Font.Code
+							mb.TextSize = 11
+							mb.TextColor3 = Color3.new(1, 1, 1)
+							mb.Text = d[1]
+							pcall(RegisterTextLabel, mb)
+							mb.Activated:Connect(function() act(d[2], e) end)
+						end
+					end
+				end
+			end
+		end
+		searchBox:GetPropertyChangedSignal("Text"):Connect(render)
+
+		local ERR = {denied = "Not authorized (is the Worker updated?)", offline = "Target is not online", protected = "Target is protected", uid = "Bad user", bad = "Bad request"}
+		local banArm, banFor = 0, nil
+		act = function(kind, entry)
+			if not isMod() then notify("Moderator access required") return end
+			local q = trim(targetBox.Text)
+			local e = entry or resolve(q)
+			local x = e and tostring(e[1]) or q:match("^%d+$")
+			if not x then notify("Pick a player from the list or type a numeric User ID") return end
+			if kind == "ban" and (banFor ~= x or os.clock() - banArm > 4) then
+				banArm = os.clock()
+				banFor = x
+				notify("Tap Ban again within 4s to confirm")
+				return
+			end
+			local d = post("/act", {u = LP.UserId, n = LP.Name, t = kind, x = x})
+			notify(d and d.ok and (kind .. " sent") or (d and ERR[d.err]) or "Request failed")
+			burstUntil = os.clock() + 30
+			nextAt = 0
+		end
+		for kind, b in pairs(btns) do
+			b.Activated:Connect(function() act(kind) end)
+		end
+
+		local function killSelf()
+			local cs = {LP.Character}
+			pcall(function() cs[2] = Reanimate.Character end)
+			for _, c in ipairs(cs) do
+				local h = c and c:FindFirstChildOfClass("Humanoid")
+				if h then pcall(function() h.Health = 0 end) end
+			end
+		end
+		local function handle(ev)
+			acks[#acks + 1] = ev.id
+			local key = tostring(ev.id) .. ":" .. tostring(ev.t)
+			if seen[key] then return end
+			seen[key] = true
+			local who = tostring(ev.f)
+			notify(who .. " used " .. tostring(ev.k) .. " on you")
+			if ev.k == "kill" then killSelf()
+			elseif ev.k == "deanimate" then pcall(Util.ModDeanimate)
+			elseif ev.k == "kick" then task.delay(1.5, function() pcall(function() LP:Kick("Removed by " .. tostring(ev.r) .. " (" .. who .. ")") end) end) end
+		end
+		local function presence(tag, label, m)
+			local s = 0
+			if m then s = (tostring(m[1]) == game.JobId) and 2 or 1 end
+			if m and tostring(m[2]):lower() == LP.Name:lower() then s = 0 end
+			local prev = mstate[tag]
+			mstate[tag] = s
+			if s > 0 and s ~= prev and not (prev == 2 and s == 1) then
+				local nm = tostring(m[2])
+				if s == 2 then
+					alert(label .. " " .. nm .. (prev == nil and " is in YOUR server" or " joined YOUR server"))
+				else
+					alert(label .. " " .. nm .. " is online (different server)")
+				end
+			end
+		end
+
+		task.spawn(function()
+			while true do
+				task.wait(1)
+				pcall(function()
+					local open = pageOpen()
+					if open and not wasOpen then nextAt = 0 end
+					wasOpen = open
+					if os.clock() < nextAt then return end
+					local d, st = post("/sync", {u = LP.UserId, n = LP.Name, d = LP.DisplayName, p = game.PlaceId, j = game.JobId, g = gameName, v = ver, w = open and 1 or 0, a = acks})
+					local base = (burstUntil > os.clock() and BURST) or (open and OPEN) or IDLE
+					if not d or st ~= 200 then
+						fails += 1
+						status.Text = "Backend unreachable (retrying)"
+						nextAt = os.clock() + math.min(300, base * 2 ^ math.min(fails, 4))
+						return
+					end
+					fails, joined, acks = 0, true, {}
+					if d.ban then pcall(function() LP:Kick("Banned by moderator") end) return end
+					if d.r ~= role then
+						role = d.r
+						roleLbl.Text = role and ("Role: " .. role) or "Role: none"
+						showMod(isMod())
+						render()
+					end
+					status.Text = "Connected"
+					countLbl.Text = "Active players: " .. tostring(d.c)
+					if d.l then cache, ver = d.l, d.v render() end
+					if type(d.m) == "table" then
+						presence("o", "Owner", d.m.o)
+						presence("c", "Co-owner", d.m.c)
+					end
+					for _, ev in ipairs(d.e or {}) do handle(ev) end
+					if d.e and #d.e > 0 then burstUntil = os.clock() + 15 end
+					nextAt = os.clock() + ((burstUntil > os.clock() and BURST) or (open and OPEN) or IDLE)
+				end)
+			end
+		end)
+	end)
+	if not okLive then warn("[live] Live Players failed to build: " .. tostring(errLive)) end
+end
 Util.FCMark("sec")
 UI.CreateSeparator(MainPage)
 UI.CreateText(MainPage, "<b>SECURITY</b>", 15, Enum.TextXAlignment.Center)
@@ -276853,6 +277197,7 @@ end)
 do -- [v36] FEATURE CENTER: groups the original main page controls (same instances, same callbacks) into categorised pages
 	local built, buildErr = pcall(function()
 		local CATS = {
+			{"live", "Live Players / Moderation", "Active Players, Join Player, Remote Moderation, Owner / Co-owner alerts"},
 			{"perf", "Performance / Graphics", "Anti Lag, Hide All Players, Low End UI Mode, blur, transitions, UI sounds, ambient FX"},
 			{"reanim", "Reanimation / Character", "Reanimator, hitboxes, character options, Fly, WalkSpeed, scale, internals"},
 			{"moves", "Movesets / Dances", "Movesets, Dances, Dance Keybinds"},
@@ -276926,6 +277271,7 @@ do -- [v36] FEATURE CENTER: groups the original main page controls (same instanc
 					MainPage.Visible = false
 					MainPage.Interactable = true
 				end
+				if below then below.Visible = false end
 				p.Interactable = true
 				busy = false
 			end)
@@ -276940,6 +277286,8 @@ do -- [v36] FEATURE CENTER: groups the original main page controls (same instanc
 			if not below then
 				MainPage.Visible = true
 				MainPage.Interactable = false
+			else
+				below.Visible = true
 			end
 			slide(p, 360, Enum.EasingDirection.Out, function()
 				table.remove(Stack)
@@ -276992,6 +277340,13 @@ do -- [v36] FEATURE CENTER: groups the original main page controls (same instanc
 		fcBtn.Activated:Connect(function()
 			if #Stack == 0 then openPage(Hub) end
 		end)
+		local liveBtn
+		if pages.live then
+			liveBtn = UI.CreateButton(MainPage, "Live Players &gt;", 20)
+			liveBtn.Activated:Connect(function()
+				if #Stack == 0 then openPage(pages.live) end
+			end)
+		end
 		for _, m in ipairs(moves) do
 			m[1].Parent = m[2]
 		end
@@ -277012,6 +277367,7 @@ do -- [v36] FEATURE CENTER: groups the original main page controls (same instanc
 
 		pcall(function()
 			local fcCont = fcBtn.Parent
+			local liveCont = liveBtn and liveBtn.Parent
 			local backLO
 			for _, k in ipairs(MainPage:GetChildren()) do
 				if k:IsA("GuiObject") and k ~= fcCont then
@@ -277024,11 +277380,12 @@ do -- [v36] FEATURE CENTER: groups the original main page controls (same instanc
 			end
 			if backLO then
 				for _, k in ipairs(MainPage:GetChildren()) do
-					if k:IsA("GuiObject") and k ~= fcCont and k.LayoutOrder > backLO then
-						k.LayoutOrder = k.LayoutOrder + 1
+					if k:IsA("GuiObject") and k ~= fcCont and k ~= liveCont and k.LayoutOrder > backLO then
+						k.LayoutOrder = k.LayoutOrder + (liveCont and 2 or 1)
 					end
 				end
-				fcCont.LayoutOrder = backLO + 1
+				if liveCont then liveCont.LayoutOrder = backLO + 1 end
+				fcCont.LayoutOrder = backLO + (liveCont and 2 or 1)
 			end
 		end)
 	end)
