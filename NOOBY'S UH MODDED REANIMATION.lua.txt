@@ -152,6 +152,50 @@ local ContextActionService = cloneref(game:GetService("ContextActionService"))
 
 local Util = {}
 
+-- [ROLES] owner / co-owner are NOT hardcoded any more: they live in roles.json in the uh-mod-visual-system GitHub repo
+--   {"entries": [{"username": "SomeName", "role": "owner"}, {"userId": 123456, "role": "co-owner"}]}
+-- Rank tags, the remote-moderation UI, the broadcast panel and the blacklist kick text all read Util.Roles.
+-- UI gating only: the backend still authorizes every moderation action on its own.
+Util.Roles = {Entries = {}, ByName = {}, ById = {}, LoadedAt = 0, Base = nil}
+Util.Roles.Fetch = function(base, force)
+	local R = Util.Roles
+	if base then R.Base = base end
+	if not R.Base then return false end
+	if not force and R.LoadedAt > 0 and os.clock() - R.LoadedAt < 20 then return true end
+	local okGet, body = pcall(function() return game:HttpGet(R.Base .. "roles.json?t=" .. os.time()) end)
+	if not okGet or type(body) ~= "string" then return false end
+	local okJson, data = pcall(HttpService.JSONDecode, HttpService, body)
+	if not (okJson and type(data) == "table" and type(data.entries) == "table") then return false end
+	local entries, byName, byId = {}, {}, {}
+	for _, e in ipairs(data.entries) do
+		if type(e) == "table" then
+			local role = tostring(e.role or ""):lower()
+			if role == "owner" or role == "co-owner" then
+				local name = type(e.username) == "string" and e.username or nil
+				if name and not (#name >= 3 and #name <= 20 and name:match("^[%w_]+$")) then name = nil end
+				local id = math.floor(tonumber(e.userId) or 0)
+				if name or id > 0 then
+					entries[#entries + 1] = {username = name, userId = id > 0 and id or nil, role = role}
+					if name then byName[name:lower()] = role end
+					if id > 0 then byId[id] = role end
+				end
+			end
+		end
+	end
+	R.Entries, R.ByName, R.ById, R.LoadedAt = entries, byName, byId, os.clock() -- a failed fetch keeps the last good list
+	return true
+end
+Util.Roles.Of = function(plr) -- "owner" / "co-owner" / nil for a Player instance
+	local R = Util.Roles
+	if not plr then return nil end
+	return R.ById[plr.UserId] or R.ByName[tostring(plr.Name):lower()]
+end
+Util.Roles.OwnerName = function() -- display name of the first listed owner (nil when roles.json has none)
+	for _, e in ipairs(Util.Roles.Entries) do
+		if e.role == "owner" and e.username then return e.username end
+	end
+end
+
 Util.RandomString = function(length)
 	length = length or math.random(32, 256)
 	local str = ""
@@ -241,6 +285,7 @@ local Player = Players.LocalPlayer
 do -- [BLACKLIST] blacklisted players cannot use the script (list lives in blacklist.json on GitHub)
 	local Cfg = (getgenv and getgenv().UhBannerConfig) or {}
 	local Base = Cfg.Base or "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/"
+	pcall(Util.Roles.Fetch, Base, true) -- roles.json (owner / co-owner) from the repo; only used for the kick text below
 	local okGet, body = pcall(function() return game:HttpGet(Base .. "blacklist.json?t=" .. os.time()) end)
 	if okGet then
 		local okJson, data = pcall(HttpService.JSONDecode, HttpService, body)
@@ -248,7 +293,8 @@ do -- [BLACKLIST] blacklisted players cannot use the script (list lives in black
 			for _, e in ipairs(data.entries) do
 				if tonumber(e.userId) == Player.UserId then
 					local by = tostring(e.by or ""):lower()
-					pcall(function() Player:Kick("BLACKLISTED by the " .. (by == "kingbaconnon19" and "owner" or by == "helloman1_23" and "co-owner" or "owner/co-owner")) end)
+					local who = Util.Roles.ById[math.floor(tonumber(e.byId) or 0)] or Util.Roles.ByName[by] or "owner/co-owner"
+					pcall(function() Player:Kick("BLACKLISTED by the " .. who) end)
 					warn("[Blacklist] you are blacklisted from this script" .. (e.reason and e.reason ~= "" and (": " .. tostring(e.reason)) or ""))
 					return
 				end
@@ -255994,9 +256040,9 @@ do -- [v118] first-run tip card (tap to hide; remembered in SaveData.TipSeen)
 		end)
 	end
 end
--- [v93 OWNER BROADCAST] compose panel exists only for "Kingbaconnon19"; every running copy polls the shared backend and shows each announcement in the notification UI
+-- [v93 OWNER BROADCAST] compose panel exists only for the owner listed in roles.json (GitHub repo); every running copy polls the shared backend and shows each announcement in the notification UI
 if not pcall(function()
-	local OWNER = "Kingbaconnon19"
+	pcall(Util.Roles.Fetch) -- retry when the early fetch failed (cached for 20s otherwise)
 	local BROADCAST_URL = "https://banner-system.elliptmal.workers.dev" -- Cloudflare Worker backend (worker.js: GET /poll + POST /send, no trailing slash); getgenv().UH_BROADCAST_URL overrides
 	local BASE = tostring((type(getgenv) == "function" and getgenv().UH_BROADCAST_URL) or BROADCAST_URL):gsub("/+$", "")
 	local function call(method, path, body, key)
@@ -256022,7 +256068,7 @@ if not pcall(function()
 								local id = tonumber(m.id)
 								if id and id > last and type(m.text) == "string" then
 									last = id
-									Util.UINotify(OWNER .. ": " .. clean(m.text), nil, true)
+									Util.UINotify((Util.Roles.OwnerName() or "Owner") .. ": " .. clean(m.text), nil, true)
 									task.wait(math.max(2, (Util.FX.Cfg.NotifDuration or 3) + 1))
 								end
 							end
@@ -256033,14 +256079,14 @@ if not pcall(function()
 			end
 		end)
 	end
-	if Player.Name == OWNER then
+	if Util.Roles.Of(Player) == "owner" then
 		local KEYFILE = "UhhhhhhReanim/owner_key.txt"
 		local saved = tostring((type(getgenv) == "function" and getgenv().UH_OWNER_KEY) or "")
 		if saved == "" then
 			local ok, v = pcall(function() return isfile(KEYFILE) and readfile(KEYFILE) or "" end)
 			saved = ok and tostring(v) or ""
 		end
-		UI.CreateText(MainPage, "<b>OWNER BROADCAST</b> <font color=\"#AAAAAA\">(" .. OWNER .. " only)</font>", 15, Enum.TextXAlignment.Center)
+		UI.CreateText(MainPage, "<b>OWNER BROADCAST</b> <font color=\"#AAAAAA\">(owner only)</font>", 15, Enum.TextXAlignment.Center)
 		local keyBox = UI.CreateTextbox(MainPage, saved, "Owner key (stored on this device only)", 14)
 		keyBox.FocusLost:Connect(function()
 			pcall(writefile, KEYFILE, (keyBox.Text:gsub("%s", "")))
@@ -256064,9 +256110,9 @@ if not pcall(function()
 			end
 		end)
 		local SERVER_JS = [==[
-// node broadcast_server.js   (env: OWNER_KEY = long random secret, PORT optional)
+// node broadcast_server.js   (env: OWNER_KEY = long random secret, OWNER_NAME = the owner's username as listed in roles.json, PORT optional)
 const http = require("http"), crypto = require("crypto");
-const OWNER = "Kingbaconnon19", KEY = process.env.OWNER_KEY || "";
+const OWNER = process.env.OWNER_NAME || "", KEY = process.env.OWNER_KEY || "";
 const h = s => crypto.createHash("sha256").update(String(s)).digest();
 let msgs = [], lastId = 0, lastSend = 0;
 http.createServer((req, res) => {
@@ -256082,7 +256128,7 @@ http.createServer((req, res) => {
     req.on("end", () => {
       let j; try { j = JSON.parse(b); } catch { return out(400, {}); }
       const tok = (req.headers.authorization || "").replace(/^Bearer /, "");
-      if (!KEY || !crypto.timingSafeEqual(h(tok), h(KEY)) || j.user !== OWNER) return out(403, {});
+      if (!KEY || !crypto.timingSafeEqual(h(tok), h(KEY)) || !OWNER || j.user !== OWNER) return out(403, {});
       const text = String(j.text || "").replace(/[\u0000-\u001f<>]/g, " ").trim().slice(0, 200);
       if (!text || Date.now() - lastSend < 2000) return out(400, {});
       lastSend = Date.now();
@@ -263358,7 +263404,7 @@ task.spawn(function()
 		local function FXcall(n) local f = Util.FX and Util.FX[n]; if f then return f() end end
 		local Env = {
 			Player = Player, Players = Players, RunService = RunService, HttpService = HttpService,
-			TweenService = cloneref(game:GetService("TweenService")), UserInputService = cloneref(game:GetService("UserInputService")), GuiService = cloneref(game:GetService("GuiService")), Request = request or http_request or (syn and syn.request), Backend = Backend, Base = Base, OwnerKey = Cfg.OwnerKey, BlacklistBackend = Cfg.BlacklistBackend,
+			TweenService = cloneref(game:GetService("TweenService")), UserInputService = cloneref(game:GetService("UserInputService")), GuiService = cloneref(game:GetService("GuiService")), Request = request or http_request or (syn and syn.request), Backend = Backend, Base = Base, Roles = Util.Roles, OwnerKey = Cfg.OwnerKey, BlacklistBackend = Cfg.BlacklistBackend,
 			Room = tostring(game.PlaceId) .. "-" .. tostring(game.JobId), Token = HttpService:GenerateGUID(false),
 			GetColor = function() return FXcall("GetColor") end, GetBG = function() return FXcall("GetBG") end,
 			IsLowEnd = function() return FXcall("IsLowEnd") == true end,
@@ -264029,8 +264075,7 @@ return function(Env, UI)
 	-- Verified users, matched by userId (resolved once from the username; until then the REAL in-game name is used, never the sent payload).
 	-- tag = rank chip text, logo = rotating 3D triangle, color = accent override. An entry of {} = plain verified (check badge only).
 	local VERIFIED = {
-		kingbaconnon19 = {tag = "OWNER", logo = true, color = Color3.fromRGB(255, 190, 50)},
-		helloman1_23 = {tag = "CO-OWNER", color = Color3.fromRGB(170, 120, 255)},
+		-- OWNER / CO-OWNER are not hardcoded: roles.json in the GitHub repo lists them (Env.Roles), applyRoles below adds them here
 		-- moderator whitelist (plain "Verified" banner, check badge only; they can kick / kill / deanimate misusing script users).
 		-- Whitelisted accounts are Verified straight away, no key needed. One per line, lower-case username:
 		-- more verified players are NOT listed here: they live in whitelist.json on GitHub (Env.Base .. "whitelist.json"), fetched at start + every 60s (see applyWhitelist below)
@@ -264044,6 +264089,44 @@ return function(Env, UI)
 	end
 	for name, r in pairs(VERIFIED) do resolveName(name, r) end
 
+	-- OWNER / CO-OWNER: identities come from roles.json (Env.Roles); only the look of each rank is defined here.
+	local ROLE_STYLE = {
+		["owner"] = {tag = "OWNER", logo = true, color = Color3.fromRGB(255, 190, 50)},
+		["co-owner"] = {tag = "CO-OWNER", color = Color3.fromRGB(170, 120, 255)},
+	}
+	local roleRemote = {names = {}, ids = {}} -- what the last roles.json contributed
+	local function applyRoles(entries)
+		local names, ids = {}, {}
+		for _, e in ipairs(entries or {}) do
+			local st = ROLE_STYLE[e.role]
+			if st then
+				if e.username then names[e.username:lower()] = st end
+				if e.userId then ids[e.userId] = st end
+			end
+		end
+		for n in pairs(roleRemote.names) do -- removed from the file (or rank changed) -> the old rank goes away
+			if names[n] ~= VERIFIED[n] then
+				VERIFIED[n] = nil; resolved[n] = nil
+				if nameIds[n] then roleIds[nameIds[n]] = nil; nameIds[n] = nil end
+			end
+		end
+		for id, st in pairs(roleRemote.ids) do
+			if ids[id] ~= st and roleIds[id] == st then roleIds[id] = nil end
+		end
+		for n, st in pairs(names) do
+			if VERIFIED[n] ~= st then VERIFIED[n] = st; resolved[n] = nil; resolveName(n, st) end
+		end
+		for id, st in pairs(ids) do roleIds[id] = st end
+		roleRemote.names, roleRemote.ids = names, ids
+	end
+	local function fetchRoles()
+		local RL = Env.Roles
+		if not RL then return end
+		pcall(RL.Fetch, Env.Base, true)
+		pcall(applyRoles, RL.Entries)
+	end
+	if Env.Roles then pcall(applyRoles, Env.Roles.Entries) end -- already fetched at startup: tags are there from the first frame
+
 	-- Remote whitelist: whitelist.json on GitHub = {"entries": [{"username": "SomeName"}, {"userId": 123456}]}. Entries only ever become plain "Verified"
 	-- (check badge + moderator tools, no key needed): the file can never grant OWNER / CO-OWNER or any rank tag, and can't override the names hardcoded above.
 	local remote = {names = {}, ids = {}} -- what the last successful fetch contributed
@@ -264053,13 +264136,13 @@ return function(Env, UI)
 		for _, e in ipairs(entries) do
 			if type(e) == "table" then
 				local n = type(e.username) == "string" and e.username:lower() or nil
-				if n and #n >= 3 and #n <= 20 and n:match("^[%w_]+$") and (not VERIFIED[n] or remote.names[n]) then names[n] = true end
+				if n and #n >= 3 and #n <= 20 and n:match("^[%w_]+$") and (not VERIFIED[n] or remote.names[n]) and not roleRemote.names[n] then names[n] = true end
 				local id = math.floor(tonumber(e.userId) or 0)
 				if id > 0 and (not roleIds[id] or remote.ids[id]) then ids[id] = true end
 			end
 		end
 		for n in pairs(remote.names) do -- removed from the file -> no longer whitelisted
-			if not names[n] then
+			if not names[n] and not roleRemote.names[n] then
 				VERIFIED[n] = nil; resolved[n] = nil
 				if nameIds[n] then dropId(nameIds[n]); nameIds[n] = nil end
 			end
@@ -264335,6 +264418,7 @@ return function(Env, UI)
 		R.Running = true
 		task.spawn(function() -- whitelist.json: read now, then every 60s so edits on GitHub apply without rejoining
 			while R.Running do
+				fetchRoles()
 				fetchWhitelist()
 				local waited = 0
 				while R.Running and waited < 60 do task.wait(1); waited += 1 end
@@ -264506,7 +264590,11 @@ end
 -- A blacklisted client kicks itself: "BLACKLISTED by the owner / co-owner" (checked at startup + every few seconds by B.Watch)
 return function(Env)
 	local B = {List = {}}
-	local ROLE_BY_NAME = {kingbaconnon19 = "owner", helloman1_23 = "co-owner"}
+	local function roleOfEntry(e) -- which rank blacklisted them: looked up in roles.json (Env.Roles), nothing hardcoded
+		local RL = Env.Roles
+		if not (RL and e) then return nil end
+		return RL.ById[math.floor(tonumber(e.byId) or 0)] or (e.by and RL.ByName[tostring(e.by):lower()]) or nil
+	end
 
 	function B.Fetch()
 		if B.Fresh and os.clock() - B.Fresh < 20 then return true end -- keep the list the backend just returned
@@ -264531,7 +264619,7 @@ return function(Env)
 	end
 
 	function B.KickText(e)
-		local who = e and e.by and ROLE_BY_NAME[tostring(e.by):lower()] or "owner/co-owner"
+		local who = roleOfEntry(e) or "owner/co-owner"
 		return "BLACKLISTED by the " .. who
 	end
 
@@ -276861,8 +276949,8 @@ do -- [live] LIVE PLAYERS / MODERATION (Cloudflare Worker "Nooby-server-logger")
 
 		local cache, ver, role, acks, seen, mstate = {}, -1, nil, {}, {}, {}
 		local burstUntil, wasOpen, fails, joined = 0, false, 0, false
-		local localMod = ({kingbaconnon19 = true, helloman1_23 = true})[LP.Name:lower()] == true -- cosmetic only: the Worker still authorizes every action
-		local function isMod() return role ~= nil or localMod end
+		local function localMod() return Util.Roles.Of(LP) ~= nil end -- roles.json (owner / co-owner) -- cosmetic only: the Worker still authorizes every action
+		local function isMod() return role ~= nil or localMod() end
 		showMod(isMod())
 
 		local function pageOpen()
