@@ -255997,7 +255997,7 @@ end
 -- [v93 OWNER BROADCAST] compose panel exists only for "Kingbaconnon19"; every running copy polls the shared backend and shows each announcement in the notification UI
 if not pcall(function()
 	local OWNER = "Kingbaconnon19"
-	local BROADCAST_URL = "https://nooby-reanimation.onrender.com" -- SET to your deployed backend, e.g. "https://your-app.onrender.com" (no trailing slash); getgenv().UH_BROADCAST_URL overrides
+	local BROADCAST_URL = "https://banner-system.elliptmal.workers.dev" -- Cloudflare Worker backend (worker.js: GET /poll + POST /send, no trailing slash); getgenv().UH_BROADCAST_URL overrides
 	local BASE = tostring((type(getgenv) == "function" and getgenv().UH_BROADCAST_URL) or BROADCAST_URL):gsub("/+$", "")
 	local function call(method, path, body, key)
 		local headers = {["Content-Type"] = "application/json"}
@@ -263350,7 +263350,7 @@ task.spawn(function()
 	local genv = (getgenv and getgenv()) or _G
 	local Cfg = genv.UhBannerConfig or {}
 	local Base = Cfg.Base or "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/"
-	local Backend = tostring(Cfg.Backend or "https://uh-mod-visual-system.onrender.com"):gsub("/+$", "")
+	local Backend = tostring(Cfg.Backend or "https://banner-system.elliptmal.workers.dev"):gsub("/+$", "")
 	local LocalOnly = Backend:find("YOUR%-SUBDOMAIN") ~= nil
 	if LocalOnly then warn("[UhBanner] no backend set: LOCAL-ONLY mode (only you see your banner). Deploy worker.js (wrangler deploy) and set getgenv().UhBannerConfig = {Backend = '<worker url>'} for live sync.") end
 	if genv.UhBanner and genv.UhBanner.Stop then pcall(genv.UhBanner.Stop) end -- no duplicates on re-execute
@@ -263363,7 +263363,29 @@ task.spawn(function()
 			GetColor = function() return FXcall("GetColor") end, GetBG = function() return FXcall("GetBG") end,
 			IsLowEnd = function() return FXcall("IsLowEnd") == true end,
 			GetLocalCharacter = function() return Reanimate.Character or Player.Character end,
+			NewTriangle = function(parent, o) -- the real 3D triangle engine (Util.FX.NewTriangle3D); o.Tint() recolours it per banner
+				local FX = Util.FX
+				if not (FX and FX.NewTriangle3D) then return nil end
+				local T = FX.NewTriangle3D(parent, o)
+				local tint, stepf = o and o.Tint, T and T.Step
+				if tint and stepf then
+					T.Step = function(self, dt, sd)
+						local c, orig = tint(), FX.TriColor
+						if typeof(c) == "Color3" then FX.TriColor = function() return c end end
+						local ok, err = pcall(stepf, self, dt, sd)
+						FX.TriColor = orig
+						if not ok then error(err, 0) end
+					end
+				end
+				return T
+			end,
 			ModKey = Cfg.ModKey or Cfg.OwnerKey, -- optional extra secret only: verified players / owner / co-owner need NO key (the backend recognises their userId from whitelist.json)
+			Notify = function(t) pcall(Util.UINotify, tostring(t)) end, -- Alt-Fling hooks (AltFling.lua)
+			MethodId = function() return Util.Fling.Method end,
+			MethodName = function() return Util.Fling.Names[Util.Fling.Method] or "unknown" end,
+			RunFling = function(p) if Util.AltRunFling then return Util.AltRunFling(p) end return false, "fling engine not ready" end,
+			GetServedUI = function() return Util.AltServedUI end,
+			Expose = function(api) Util.AltRemake = api end,
 			ModActions = { -- executed on THIS client only when a verified moderator's command arrives (see ModTools.lua)
 				Kill = function()
 					for _, c in ipairs({Player.Character, Reanimate.Character}) do
@@ -263379,13 +263401,13 @@ task.spawn(function()
 		-- so the buttons work without updating the GitHub repo. Set getgenv().UhBannerConfig = {Embedded = false} to load them from Base instead (e.g. once the repo has the same files).
 		local EMBED = Cfg.Embedded == false and {} or {
 			BannerUI = [==[
--- BannerUI.lua | animated character banner (BillboardGui) themed from the host UI colours
+-- BannerUI.lua | animated character banner (BillboardGui) themed from the host UI colours, per-user style, real 3D triangle beside the PFP
 return function(Env)
 	local TS, RS = Env.TweenService, Env.RunService
 	local UI, Active, conn = {}, {}, nil
 	local Banner = {}; Banner.__index = Banner
 	local HOST = "UhBannerHost"
-	local WHITE = Color3.new(1, 1, 1)
+	local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
 
 	local function host()
 		if UI.Host and UI.Host.Parent then return UI.Host end
@@ -263417,8 +263439,38 @@ return function(Env)
 	end
 	local function round(par, r) return new("UICorner", {CornerRadius = r}, par) end
 	local function fade(a, b, c) return NumberSequence.new({NumberSequenceKeypoint.new(0, a), NumberSequenceKeypoint.new(0.5, b), NumberSequenceKeypoint.new(1, c)}) end
-	local BLACK = Color3.new(0, 0, 0)
-	local LW, LH = 20, 16
+
+	-- ===== per-banner style (custom colours / gradient / border / effects). nil = follow the host UI theme =====
+	local DEF = {gr = 90, bw = 2, bs = 2, cr = 14, fx = 63}
+	local FXB = {glow = 1, shine = 2, spark = 4, ring = 8, depth = 16, float = 32}
+	local LOWHIDE = {shine = true, spark = true, ring = true}
+	local function hexc(s)
+		if type(s) ~= "string" then return nil end
+		local r, g, b = s:match("^#?(%x%x)(%x%x)(%x%x)$")
+		if not r then return nil end
+		return Color3.fromRGB(tonumber(r, 16), tonumber(g, 16), tonumber(b, 16))
+	end
+	local function tohex(c) return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5)) end
+	local function parseStyle(s)
+		s = type(s) == "table" and s or {}
+		local function n(k, lo, hi)
+			local v = tonumber(s[k])
+			if not v then return DEF[k] end
+			return math.clamp(math.floor(v + 0.5), lo, hi)
+		end
+		return {a = hexc(s.a), a2 = hexc(s.a2), b1 = hexc(s.b1), b2 = hexc(s.b2), gr = n("gr", 0, 360), bw = n("bw", 0, 4), bs = n("bs", 0, 2), cr = n("cr", 4, 24), fx = n("fx", 0, 63)}
+	end
+	local function bgPair(st)
+		local b1, b2 = st.b1, st.b2
+		if b1 or b2 then
+			b1 = b1 or b2
+			b2 = b2 or b1:Lerp(BLACK, 0.45)
+			return b1, b2
+		end
+		local bg = cardBG()
+		return bg:Lerp(WHITE, 0.08), bg
+	end
+
 	-- white check mark drawn from two bars (no font glyph needed)
 	local function checkmark(par, z)
 		for _, b in ipairs({{2, 6, 6.5, 10.5, -45}, {2, 10, 11, 8.5, 45}}) do
@@ -263426,13 +263478,15 @@ return function(Env)
 				BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = z}, par)
 		end
 	end
-	-- pseudo-3D rotating triangle: two shaded facets sharing an apex that slides sideways
+
+	-- fallback only (host script without Env.NewTriangle): pseudo-3D rotating triangle from two shaded facets
+	local LW, LH = 20, 16
 	local function facet(par)
-		local c = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 4}, par)
-		return c, new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, ZIndex = 4}, c)
+		local c = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 5}, par)
+		return c, new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), BorderSizePixel = 0, ZIndex = 5}, c)
 	end
 	local function makeLogo(par)
-		local h = new("Frame", {Size = UDim2.fromOffset(LW, LH), BackgroundTransparency = 1, ZIndex = 4, LayoutOrder = 1}, par)
+		local h = new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(LW, LH), BackgroundTransparency = 1, ZIndex = 5}, par)
 		local L = {}
 		L.lc, L.lr = facet(h)
 		L.rc, L.rr = facet(h)
@@ -263470,12 +263524,38 @@ return function(Env)
 		for b in pairs(Active) do b:_step(now, a, s2, low) end
 	end
 
+	-- show / hide effect groups according to the style flags (and Low End mode)
+	function Banner:_flags()
+		local fx, lo = self.St.fx, self.FXOff
+		for name, list in pairs(self.G) do
+			local on = bit32.band(fx, FXB[name]) ~= 0 and not (lo and LOWHIDE[name])
+			for _, f in ipairs(list) do f.Visible = on end
+		end
+	end
+
+	-- apply the static part of a style (corners, border, gradient angle, effect flags); colours are animated in _step
+	function Banner:Restyle(raw)
+		local st = parseStyle(raw)
+		self.St = st
+		self.CardC.CornerRadius = UDim.new(0, st.cr)
+		self.GlowC.CornerRadius = UDim.new(0, st.cr + 10)
+		self.ShadowC.CornerRadius = UDim.new(0, st.cr)
+		self.CardGrad.Rotation = st.gr
+		self.Stroke.Thickness = st.bw
+		self.Stroke.Enabled = st.bw > 0
+		self.StrokeGrad.Rotation = 45
+		self.LastBG = 0
+		self:_flags()
+	end
+
 	function UI.new(o)
 		local role = o.role
-		local a = role and role.color or accent()
-		local bg = cardBG()
-		local W = (role and role.tag) and 316 or 250
-		local self = setmetatable({Opts = o, Seed = math.random() * 10, Alive = true, FX = {}, Spark = {}, LastBG = os.clock(), Role = role, RoleColor = role and role.color, W = W}, Banner)
+		local st0 = parseStyle(o.style)
+		local a = role and role.color or st0.a or accent()
+		local c1, c2 = bgPair(st0)
+		local W = (role and role.tag) and 340 or 268
+		local self = setmetatable({Opts = o, Seed = math.random() * 10, Alive = true, Spark = {}, G = {glow = {}, shine = {}, spark = {}, ring = {}, depth = {}},
+			LastBG = os.clock(), Role = role, RoleColor = role and role.color, W = W, CurA = a, St = st0}, Banner)
 		-- inline action buttons: only ever on plain (unverified) banners; verified / owner / co-owner banners never get them
 		local acts = (not role and type(o.acts) == "table" and #o.acts > 0) and o.acts or nil
 		local extra = acts and 2 * (AX + math.min(#acts, ACOLS) * (AW + AG) + 4) or 0 -- the gui is centred on the card, so reserve the room on both sides
@@ -263487,17 +263567,27 @@ return function(Env)
 		local scale = new("UIScale", {Scale = 0}, holder)
 		local glow = new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 32), Size = UDim2.new(1, 14, 0, 76),
 			BackgroundColor3 = a, BackgroundTransparency = 0.88, BorderSizePixel = 0, ZIndex = 0}, holder)
-		round(glow, UDim.new(0, 24))
+		local glowC = round(glow, UDim.new(0, 24))
+		local shadow = new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 37), Size = UDim2.new(1, -6, 0, 64),
+			BackgroundColor3 = BLACK, BackgroundTransparency = 0.55, BorderSizePixel = 0, ZIndex = 0}, holder)
+		local shadowC = round(shadow, UDim.new(0, 14))
 		-- triangular pointer: rotated square, upper half hidden behind the opaque card, lower half is the visible triangle
 		local pointer = new("Frame", {Name = "Pointer", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0, 64),
 			Size = UDim2.fromOffset(18, 18), Rotation = 45, BackgroundColor3 = a, BorderSizePixel = 0, ZIndex = 1}, holder)
 		round(pointer, UDim.new(0, 3))
 		local card = new("Frame", {Name = "Card", Size = UDim2.new(1, 0, 0, 64), BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 2, ClipsDescendants = true}, holder)
-		round(card, UDim.new(0, 14))
-		local cardGrad = new("UIGradient", {Rotation = 90, Color = ColorSequence.new(bg:Lerp(WHITE, 0.08), bg)}, card)
+		local cardC = round(card, UDim.new(0, 14))
+		local cardGrad = new("UIGradient", {Rotation = st0.gr, Color = ColorSequence.new(c1, c2)}, card)
 		local stroke = new("UIStroke", {Thickness = 2, Color = WHITE, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, card)
 		local strokeGrad = new("UIGradient", {Color = ColorSequence.new(a, a)}, stroke)
-		local img = new("ImageLabel", {Position = UDim2.fromOffset(10, 10), Size = UDim2.fromOffset(44, 44), BackgroundColor3 = bg:Lerp(WHITE, 0.12),
+		-- depth / lighting: top sheen, bottom shade, 1px top highlight
+		local sheen = new("Frame", {Size = UDim2.new(1, 0, 0.55, 0), BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 2}, card)
+		new("UIGradient", {Rotation = 90, Transparency = NumberSequence.new(0.9, 1)}, sheen)
+		local shade = new("Frame", {AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.new(1, 0, 0.4, 0), BackgroundColor3 = BLACK, BorderSizePixel = 0, ZIndex = 2}, card)
+		new("UIGradient", {Rotation = 90, Transparency = NumberSequence.new(1, 0.78)}, shade)
+		local hi = new("Frame", {Position = UDim2.fromOffset(12, 1), Size = UDim2.new(1, -24, 0, 1), BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 3}, card)
+		new("UIGradient", {Transparency = fade(1, 0.5, 1)}, hi)
+		local img = new("ImageLabel", {Position = UDim2.fromOffset(10, 10), Size = UDim2.fromOffset(44, 44), BackgroundColor3 = c2:Lerp(WHITE, 0.12),
 			BorderSizePixel = 0, Image = o.image, ScaleType = Enum.ScaleType.Crop, ZIndex = 3}, card)
 		round(img, UDim.new(1, 0))
 		new("UIStroke", {Thickness = 2, Color = a}, img)
@@ -263505,34 +263595,48 @@ return function(Env)
 			BackgroundTransparency = 1, ZIndex = 3}, card)
 		round(ring, UDim.new(1, 0))
 		local ringStroke = new("UIStroke", {Thickness = 2, Color = a}, ring)
-		local title = new("TextLabel", {Position = UDim2.fromOffset(66, 11), Size = UDim2.new(1, (role and role.tag) and -178 or -78, 0, 22), BackgroundTransparency = 1, Text = o.title,
+		-- 3D triangle medallion right beside the PFP (real FX.NewTriangle3D viewport; pseudo-3D fallback only if the host has no engine hook)
+		local plate = new("Frame", {Position = UDim2.fromOffset(56, 15), Size = UDim2.fromOffset(34, 34), BackgroundColor3 = BLACK, BackgroundTransparency = 0.5, BorderSizePixel = 0, ZIndex = 3}, card)
+		round(plate, UDim.new(1, 0))
+		local big = role and role.logo
+		local plateStroke = new("UIStroke", {Thickness = big and 1.8 or 1.2, Color = a, Transparency = big and 0.15 or 0.45}, plate)
+		local slot = new("Frame", {Name = "Tri", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(big and 32 or 28, big and 32 or 28),
+			BackgroundTransparency = 1, ZIndex = 4}, plate)
+		if Env.NewTriangle then
+			local okT, T = pcall(Env.NewTriangle, slot, {ZIndex = 5, Halo = false, Dance = false,
+				Tint = function() return self.CurA end, IsVisible = function() return self.Alive and gui.Enabled end})
+			if okT and T then self.Tri = T end
+		end
+		if not self.Tri then self.Logo = makeLogo(slot); logoStep(self.Logo, 0.4, a) end
+		local rightPad = (role and role.tag) and 128 or 14
+		local title = new("TextLabel", {Position = UDim2.fromOffset(98, 11), Size = UDim2.new(1, -(98 + rightPad), 0, 22), BackgroundTransparency = 1, Text = o.title,
 			Font = Enum.Font.GothamBold, TextSize = 17, TextColor3 = WHITE:Lerp(a, 0.12), TextXAlignment = Enum.TextXAlignment.Left,
-			TextTruncate = Enum.TextTruncate.AtEnd, TextTransparency = 1, ZIndex = 3}, card)
-		local sub = new("TextLabel", {Position = UDim2.fromOffset(66, 34), Size = UDim2.new(1, -78, 0, 16), BackgroundTransparency = 1, Text = o.subtitle,
-			Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = a, TextXAlignment = Enum.TextXAlignment.Left,
-			TextTruncate = Enum.TextTruncate.AtEnd, TextTransparency = 1, ZIndex = 3}, card)
-		local bar = new("Frame", {Position = UDim2.new(0, 12, 1, -6), Size = UDim2.new(1, -24, 0, 2), BackgroundColor3 = a, BorderSizePixel = 0, ZIndex = 3}, card)
+			TextStrokeTransparency = 0.82, TextStrokeColor3 = BLACK, TextTruncate = Enum.TextTruncate.AtEnd, TextTransparency = 1, ZIndex = 4}, card)
+		local sub = new("TextLabel", {Position = UDim2.fromOffset(98, 34), Size = UDim2.new(1, -(98 + 14), 0, 16), BackgroundTransparency = 1, Text = o.subtitle,
+			Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = a, TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd, TextTransparency = 1, ZIndex = 4}, card)
+		local bar = new("Frame", {Position = UDim2.new(0, 12, 1, -6), Size = UDim2.new(1, -24, 0, 2), BackgroundColor3 = a, BorderSizePixel = 0, ZIndex = 4}, card)
+		round(bar, UDim.new(1, 0))
 		local barGrad = new("UIGradient", {Transparency = fade(1, 0, 1)}, bar)
 		local shine = new("Frame", {Position = UDim2.fromOffset(-70, -10), Size = UDim2.new(0, 46, 1, 20), Rotation = 18, BackgroundColor3 = WHITE,
-			BorderSizePixel = 0, ZIndex = 4}, card)
+			BorderSizePixel = 0, ZIndex = 6}, card)
 		new("UIGradient", {Transparency = fade(1, 0.82, 1)}, shine)
 		if role then -- verified check on the avatar (+ rank chip for owners)
 			local vb = new("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromOffset(49, 49), Size = UDim2.fromOffset(18, 18),
 				BackgroundColor3 = Color3.fromRGB(46, 140, 255), BorderSizePixel = 0, ZIndex = 6}, card)
 			round(vb, UDim.new(1, 0))
-			new("UIStroke", {Thickness = 2, Color = bg}, vb)
+			new("UIStroke", {Thickness = 2, Color = c2}, vb)
 			checkmark(vb, 7)
 			if role.tag then
 				local chip = new("Frame", {AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 10), Size = UDim2.fromOffset(0, 22),
-					AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = a, BackgroundTransparency = 0.82, BorderSizePixel = 0, ZIndex = 3}, card)
+					AutomaticSize = Enum.AutomaticSize.X, BackgroundColor3 = a, BackgroundTransparency = 0.82, BorderSizePixel = 0, ZIndex = 4}, card)
 				round(chip, UDim.new(0, 7))
 				new("UIStroke", {Thickness = 1.5, Color = a}, chip)
 				new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center,
 					SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 5)}, chip)
-				new("UIPadding", {PaddingLeft = UDim.new(0, 6), PaddingRight = UDim.new(0, 8)}, chip)
-				if role.logo then self.Logo = makeLogo(chip); logoStep(self.Logo, 0.4, a) end
+				new("UIPadding", {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8)}, chip)
 				new("TextLabel", {Size = UDim2.fromOffset(0, 22), AutomaticSize = Enum.AutomaticSize.X, BackgroundTransparency = 1, Text = role.tag,
-					Font = Enum.Font.GothamBlack, TextSize = 12, TextColor3 = a:Lerp(WHITE, 0.35), ZIndex = 4, LayoutOrder = 2}, chip)
+					Font = Enum.Font.GothamBlack, TextSize = 12, TextColor3 = a:Lerp(WHITE, 0.35), ZIndex = 5, LayoutOrder = 2}, chip)
 			end
 		end
 		if acts then -- moderator buttons beside the card (clicks are handled by the receiver via Banner:HitAction)
@@ -263552,12 +263656,15 @@ return function(Env)
 			local s = new("Frame", {Size = UDim2.fromOffset(4, 4), BackgroundColor3 = a, BorderSizePixel = 0, ZIndex = 5}, holder)
 			round(s, UDim.new(1, 0))
 			self.Spark[i] = s
-			table.insert(self.FX, s)
+			table.insert(self.G.spark, s)
 		end
-		table.insert(self.FX, ring); table.insert(self.FX, shine)
+		table.insert(self.G.glow, glow); table.insert(self.G.shine, shine); table.insert(self.G.ring, ring)
+		for _, f in ipairs({shadow, sheen, shade, hi}) do table.insert(self.G.depth, f) end
 		self.Gui, self.Holder, self.Scale, self.Glow, self.Pointer, self.Card, self.CardGrad = gui, holder, scale, glow, pointer, card, cardGrad
 		self.Stroke, self.StrokeGrad, self.Ring, self.RingStroke, self.Bar, self.BarGrad, self.Shine = stroke, strokeGrad, ring, ringStroke, bar, barGrad, shine
-		self.Title, self.Sub, self.Img = title, sub, img
+		self.Title, self.Sub, self.Img, self.Plate = title, sub, img, plateStroke
+		self.CardC, self.GlowC, self.ShadowC = cardC, glowC, shadowC
+		self:Restyle(o.style)
 		Active[self] = true
 		if not conn then conn = RS.RenderStepped:Connect(step) end
 		return self
@@ -263595,12 +263702,17 @@ return function(Env)
 		self.Alive = false
 		Active[self] = nil
 		if not next(Active) and conn then conn:Disconnect(); conn = nil end
-		local gui = self.Gui
+		local gui, tri = self.Gui, self.Tri
+		self.Tri = nil
+		local function kill()
+			if tri then pcall(tri.Destroy, tri) end -- stops the triangle's own render loop
+			gui:Destroy()
+		end
 		if animated and gui.Enabled then
 			TS:Create(self.Scale, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {Scale = 0}):Play()
-			task.delay(0.3, function() gui:Destroy() end)
+			task.delay(0.3, kill)
 		else
-			gui:Destroy()
+			kill()
 		end
 	end
 
@@ -263647,23 +263759,28 @@ return function(Env)
 
 	function Banner:_step(now, a, s2, low)
 		if not self.Gui.Enabled then return end
+		local st = self.St
 		local t = now + self.Seed
-		if self.RoleColor then a = self.RoleColor; s2 = sec(a) end
-		self.Holder.Position = UDim2.new(0.5, 0, 0.5, low and 0 or math.sin(t * 2.2) * 3)
+		if self.RoleColor then a = self.RoleColor; s2 = st.a2 or sec(a) -- owner / co-owner keep their rank colour
+		elseif st.a then a = st.a; s2 = st.a2 or sec(a)
+		elseif st.a2 then s2 = st.a2 end
+		self.CurA = a
+		self.Holder.Position = UDim2.new(0.5, 0, 0.5, (low or bit32.band(st.fx, FXB.float) == 0) and 0 or math.sin(t * 2.2) * 3)
 		self.Pointer.BackgroundColor3, self.Sub.TextColor3, self.Bar.BackgroundColor3 = a, a, a
-		self.Glow.BackgroundColor3, self.RingStroke.Color = a, a
-		self.StrokeGrad.Color = ColorSequence.new({ColorSequenceKeypoint.new(0, a), ColorSequenceKeypoint.new(0.5, s2), ColorSequenceKeypoint.new(1, a)})
+		self.Title.TextColor3 = WHITE:Lerp(a, 0.12)
+		self.Glow.BackgroundColor3, self.RingStroke.Color, self.Plate.Color = a, a, a
+		self.StrokeGrad.Color = (st.bs == 0) and ColorSequence.new(a, a) or ColorSequence.new({ColorSequenceKeypoint.new(0, a), ColorSequenceKeypoint.new(0.5, s2), ColorSequenceKeypoint.new(1, a)})
 		if now - self.LastBG > 2 then
 			self.LastBG = now
-			local bg = cardBG()
-			self.CardGrad.Color = ColorSequence.new(bg:Lerp(WHITE, 0.08), bg)
+			local c1, c2 = bgPair(st)
+			self.CardGrad.Color = ColorSequence.new(c1, c2)
 		end
 		if low then
-			if not self.FXOff then self.FXOff = true; for _, f in ipairs(self.FX) do f.Visible = false end end
+			if not self.FXOff then self.FXOff = true; self:_flags() end
 			return
 		end
-		if self.FXOff then self.FXOff = false; for _, f in ipairs(self.FX) do f.Visible = true end end
-		self.StrokeGrad.Rotation = (now * 90) % 360
+		if self.FXOff then self.FXOff = false; self:_flags() end
+		if st.bs == 2 then self.StrokeGrad.Rotation = (now * 90) % 360 end
 		if self.Logo then logoStep(self.Logo, t, a) end
 		self.Glow.BackgroundTransparency = 0.86 + 0.05 * math.sin(t * 3)
 		local e = (t * 0.65) % 1
@@ -263679,8 +263796,167 @@ return function(Env)
 		end
 	end
 
+	-- ===== banner style panel (opened from the "Banner Style" pill under the on/off pill) =====
+	local PRESETS = {
+		{"Aurora", "#5FA5FF", "#9B7BFF", "#1B2340", "#0C0F1C"}, {"Ember", "#FF7A3D", "#FFC14D", "#3A1A12", "#170A08"},
+		{"Mint", "#3DFFB0", "#3DC9FF", "#11302B", "#07161A"}, {"Sakura", "#FF7AB8", "#FFB3D9", "#3A1830", "#170A18"},
+		{"Gold", "#FFC83D", "#FF9A3D", "#33280F", "#17110A"}, {"Mono", "#E6E6EE", "#8A8A99", "#26262C", "#0E0E12"},
+		{"Sunset", "#FF5E7E", "#FFA24D", "#2E1430", "#140A1A"}, {"Void", "#9B6BFF", "#FF4DCF", "#1A0F2E", "#080510"},
+	}
+	local BSTYLE = {[0] = "Solid", [1] = "Gradient", [2] = "Animated"}
+	local EFFECTS = {{"Glow", 1}, {"Shine", 2}, {"Sparks", 4}, {"Ring", 8}, {"Depth", 16}, {"Float", 32}}
+	local FIELD = Color3.fromRGB(34, 34, 44)
+
+	local function customizer(root, btn, api) -- api = {get = function() -> style table | nil, set = function(styleTable | nil)}
+		local st, refreshers, order = {}, {}, 0
+		local function load()
+			for k in pairs(st) do st[k] = nil end
+			for k, v in pairs(api.get() or {}) do st[k] = v end
+			for k, v in pairs(DEF) do if st[k] == nil then st[k] = v end end
+		end
+		load()
+		local function commit() local out = {}; for k, v in pairs(st) do out[k] = v end; api.set(out) end
+		local function refreshAll() for _, f in ipairs(refreshers) do f() end end
+		local function z(c, p, par) p.ZIndex = 61; return new(c, p, par) end
+		local function nextOrder() order += 1; return order end
+
+		local sb = new("TextButton", {AnchorPoint = Vector2.new(0, 0.5), Size = UDim2.fromOffset(118, 26), AutoButtonColor = false, Text = "Banner Style",
+			Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = WHITE, BorderSizePixel = 0, ZIndex = 50}, root)
+		round(sb, UDim.new(1, 0))
+		local sbs = new("UIStroke", {Thickness = 1.5}, sb)
+		local panel = new("ScrollingFrame", {AnchorPoint = Vector2.new(0, 0.5), Size = UDim2.fromOffset(238, 340), BorderSizePixel = 0, ScrollBarThickness = 3,
+			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y, Visible = false, ZIndex = 60}, root)
+		round(panel, UDim.new(0, 12))
+		local pst = new("UIStroke", {Thickness = 1.5}, panel)
+		new("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, panel)
+		new("UIPadding", {PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10), PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10)}, panel)
+
+		local function paint()
+			local bg = cardBG()
+			panel.BackgroundColor3, sb.BackgroundColor3 = bg, bg
+			pst.Color, sbs.Color = accent(), accent()
+			panel.ScrollBarImageColor3 = accent()
+		end
+		local function sync()
+			local p = btn.Position
+			sb.Position = UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset + 36)
+			panel.Position = UDim2.new(p.X.Scale, p.X.Offset + 126, p.Y.Scale, p.Y.Offset + 18)
+		end
+		local function row(h) return z("Frame", {Size = UDim2.new(1, 0, 0, h), BackgroundTransparency = 1, BorderSizePixel = 0, LayoutOrder = nextOrder()}, panel) end
+		local function text(par, s, x, w, bold)
+			return z("TextLabel", {Position = UDim2.fromOffset(x, 0), Size = UDim2.new(0, w, 1, 0), BackgroundTransparency = 1, Text = s,
+				Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham, TextSize = 12, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left}, par)
+		end
+		local function mkbtn(par, s, props)
+			props.Text, props.AutoButtonColor, props.Font, props.TextSize, props.TextColor3, props.BorderSizePixel = s, false, Enum.Font.GothamBold, 12, WHITE, 0
+			props.BackgroundColor3 = props.BackgroundColor3 or FIELD
+			local b = z("TextButton", props, par)
+			round(b, UDim.new(0, 7))
+			return b
+		end
+
+		-- header
+		local hr = row(24)
+		text(hr, "Banner Style", 0, 120, true)
+		local reset = mkbtn(hr, "Reset", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(52, 22)})
+		reset.Activated:Connect(function() api.set(nil); load(); refreshAll() end)
+
+		-- theme presets
+		local pg = z("Frame", {Size = UDim2.new(1, 0, 0, 58), BackgroundTransparency = 1, BorderSizePixel = 0, LayoutOrder = nextOrder()}, panel)
+		new("UIGridLayout", {CellSize = UDim2.new(0.25, -5, 0, 26), CellPadding = UDim2.fromOffset(6, 6), SortOrder = Enum.SortOrder.LayoutOrder}, pg)
+		for i, p in ipairs(PRESETS) do
+			local b = mkbtn(pg, p[1], {BackgroundColor3 = WHITE, LayoutOrder = i, TextSize = 11})
+			b.TextStrokeTransparency = 0.45
+			new("UIGradient", {Color = ColorSequence.new(hexc(p[2]), hexc(p[3]))}, b)
+			b.Activated:Connect(function() st.a, st.a2, st.b1, st.b2 = p[2], p[3], p[4], p[5]; commit(); refreshAll() end)
+		end
+
+		-- colours (hex); empty = follow the host UI theme
+		local function colorField(title, key, fallback)
+			local r = row(26)
+			text(r, title, 0, 82)
+			local sw = z("Frame", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(22, 22), BorderSizePixel = 0}, r)
+			round(sw, UDim.new(0, 6))
+			new("UIStroke", {Thickness = 1, Color = WHITE, Transparency = 0.7}, sw)
+			local tb = z("TextBox", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -28, 0.5, 0), Size = UDim2.fromOffset(86, 24), Text = "", PlaceholderText = "theme",
+				PlaceholderColor3 = Color3.fromRGB(140, 140, 155), ClearTextOnFocus = false, Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = WHITE,
+				BackgroundColor3 = FIELD, BorderSizePixel = 0}, r)
+			round(tb, UDim.new(0, 6))
+			local function refresh()
+				local c = hexc(st[key])
+				tb.Text = c and tohex(c) or ""
+				sw.BackgroundColor3 = c or fallback()
+			end
+			tb.FocusLost:Connect(function()
+				local t = tb.Text:gsub("%s", "")
+				if t == "" then st[key] = nil; commit()
+				elseif hexc(t) then st[key] = tohex(hexc(t)); commit() end
+				refresh()
+			end)
+			table.insert(refreshers, refresh)
+			refresh()
+		end
+		colorField("Accent", "a", accent)
+		colorField("Accent 2", "a2", function() return st.a and sec(hexc(st.a)) or sec(accent()) end)
+		colorField("Background", "b1", function() return (bgPair({})) end)
+		colorField("Background 2", "b2", function() return select(2, bgPair({})) end)
+
+		-- steppers
+		local function stepper(title, key, lo, hi, stp, wrap, suffix)
+			local r = row(26)
+			text(r, title, 0, 100)
+			local val = z("TextLabel", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -28, 0.5, 0), Size = UDim2.fromOffset(44, 24), BackgroundTransparency = 1,
+				Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = WHITE}, r)
+			local function refresh() val.Text = tostring(st[key]) .. (suffix or "") end
+			local function bump(d)
+				local v = (st[key] or DEF[key]) + d * stp
+				if wrap then v = v % (hi + 0) elseif v < lo then v = lo elseif v > hi then v = hi end
+				st[key] = v
+				commit(); refresh()
+			end
+			mkbtn(r, "+", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(24, 24)}).Activated:Connect(function() bump(1) end)
+			mkbtn(r, "-", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -76, 0.5, 0), Size = UDim2.fromOffset(24, 24)}).Activated:Connect(function() bump(-1) end)
+			table.insert(refreshers, refresh)
+			refresh()
+		end
+		stepper("Gradient angle", "gr", 0, 360, 45, true, "°")
+		stepper("Border width", "bw", 0, 4, 1)
+		stepper("Corners", "cr", 4, 24, 2)
+
+		-- border mode
+		local bm = mkbtn(row(26), "", {Size = UDim2.new(1, 0, 1, 0)})
+		bm.Parent.Size = UDim2.new(1, 0, 0, 26)
+		bm.Activated:Connect(function() st.bs = (st.bs + 1) % 3; commit(); refreshAll() end)
+		table.insert(refreshers, function() bm.Text = "Border: " .. BSTYLE[st.bs] end)
+
+		-- effects
+		local eg = z("Frame", {Size = UDim2.new(1, 0, 0, 58), BackgroundTransparency = 1, BorderSizePixel = 0, LayoutOrder = nextOrder()}, panel)
+		new("UIGridLayout", {CellSize = UDim2.new(1 / 3, -4, 0, 26), CellPadding = UDim2.fromOffset(6, 6), SortOrder = Enum.SortOrder.LayoutOrder}, eg)
+		for i, e in ipairs(EFFECTS) do
+			local b = mkbtn(eg, e[1], {LayoutOrder = i})
+			b.Activated:Connect(function() st.fx = bit32.bxor(st.fx, e[2]); commit(); refreshAll() end)
+			table.insert(refreshers, function()
+				local on = bit32.band(st.fx, e[2]) ~= 0
+				b.BackgroundColor3 = on and accent() or FIELD
+				b.TextTransparency = on and 0 or 0.4
+			end)
+		end
+
+		sb.Activated:Connect(function()
+			panel.Visible = not panel.Visible
+			if panel.Visible then
+				local cam = workspace.CurrentCamera
+				panel.Size = UDim2.fromOffset(238, math.clamp((cam and cam.ViewportSize.Y or 600) - 80, 220, 380))
+				load(); paint(); sync(); refreshAll()
+			end
+		end)
+		paint(); sync(); refreshAll()
+		return sync
+	end
+
 	-- local-only on/off pill (draggable): hides every banner on THIS client; your own banner keeps broadcasting to everyone else
-	function UI.Toggle(enabled, onChange)
+	-- styleApi (optional) adds the "Banner Style" pill + panel: {get = function() -> style | nil, set = function(style | nil)}
+	function UI.Toggle(enabled, onChange, styleApi)
 		if not Env.UserInputService then return function() end end
 		local par = host().Parent
 		pcall(function() if UI.Ctl then UI.Ctl:Destroy() end end)
@@ -263706,6 +263982,11 @@ return function(Env)
 			lbl.TextTransparency = enabled and 0 or 0.35
 		end
 		paint()
+		local sync = function() end
+		if styleApi then
+			local ok, s = pcall(customizer, root, btn, styleApi)
+			if ok and s then sync = s else warn("[UhBanner] style panel failed: " .. tostring(s)) end
+		end
 		local UIS, drag, start, orig, moved = Env.UserInputService
 		local function press(t) return t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch end
 		table.insert(UI.CtlConns, btn.InputBegan:Connect(function(i)
@@ -263715,7 +263996,7 @@ return function(Env)
 			if not drag or not (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then return end
 			local d = i.Position - start
 			if d.Magnitude > 6 then moved = true end
-			if moved then btn.Position = UDim2.new(orig.X.Scale, orig.X.Offset + d.X, orig.Y.Scale, orig.Y.Offset + d.Y) end
+			if moved then btn.Position = UDim2.new(orig.X.Scale, orig.X.Offset + d.X, orig.Y.Scale, orig.Y.Offset + d.Y); sync() end
 		end))
 		table.insert(UI.CtlConns, UIS.InputEnded:Connect(function(i)
 			if drag and press(i.UserInputType) then
@@ -263810,6 +264091,15 @@ return function(Env, UI)
 
 	R.RoleOf = roleOf
 	local function clean(s, n) return (tostring(s or ""):gsub("%c", "")):sub(1, n) end
+	-- per-user banner style: only well-formed hex colours + clamped numbers ever reach the UI (never raw payload data)
+	local function hex(v) v = tostring(v or ""); return v:match("^#%x%x%x%x%x%x$") and v:upper() or nil end
+	local function num(v, lo, hi, d) v = tonumber(v); if not v then return d end; return math.clamp(math.floor(v + 0.5), lo, hi) end
+	local function cleanStyle(s)
+		if type(s) ~= "table" then return nil end
+		local st = {a = hex(s.a), a2 = hex(s.a2), b1 = hex(s.b1), b2 = hex(s.b2), gr = num(s.gr, 0, 360, 90), bw = num(s.bw, 0, 4, 2), bs = num(s.bs, 0, 2, 2), cr = num(s.cr, 4, 24, 14), fx = num(s.fx, 0, 63, 63)}
+		st.key = table.concat({st.a or "", st.a2 or "", st.b1 or "", st.b2 or "", st.gr, st.bw, st.bs, st.cr, st.fx}, ",")
+		return st
+	end
 	local function headshot(uid)
 		if thumbs[uid] == nil then
 			local ok, url = pcall(Players.GetUserThumbnailAsync, Players, uid, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
@@ -263849,7 +264139,7 @@ return function(Env, UI)
 		local keys = {}
 		for _, a in ipairs(acts or {}) do keys[#keys + 1] = a.key end
 		return {userId = uid, title = title ~= "" and title or name, subtitle = clean(d.subtitle, 40), image = img, role = roleOf(uid),
-			acts = acts, actKey = table.concat(keys, ",")}
+			acts = acts, actKey = table.concat(keys, ","), style = cleanStyle(d.style)}
 	end
 	local function sig(o) return o.title .. "|" .. o.subtitle .. "|" .. o.image .. "|" .. (o.role and (o.role.tag or "v") or "") .. "|" .. o.actKey end
 
@@ -263877,14 +264167,16 @@ return function(Env, UI)
 			if uid and not seen[uid] and (uid == Env.Player.UserId or Players:GetPlayerByUserId(uid)) then
 				seen[uid] = true
 				local o = sanitize(uid, d)
+				local sk = o.style and o.style.key or ""
 				local e = R.Banners[uid]
 				if not e then
-					R.Banners[uid] = {UI = UI.new(o), Sig = sig(o), Role = o.role, ActKey = o.actKey}
+					R.Banners[uid] = {UI = UI.new(o), Sig = sig(o), SKey = sk, Role = o.role, ActKey = o.actKey}
 				elseif e.Role ~= o.role or e.ActKey ~= o.actKey then -- rank / moderation rights changed (username just resolved / whitelist updated): rebuild
 					R.DisarmKick()
-					e.UI:Destroy(false); R.Banners[uid] = {UI = UI.new(o), Sig = sig(o), Role = o.role, ActKey = o.actKey}
-				elseif e.Sig ~= sig(o) then
-					e.UI:Update(o); e.Sig = sig(o)
+					e.UI:Destroy(false); R.Banners[uid] = {UI = UI.new(o), Sig = sig(o), SKey = sk, Role = o.role, ActKey = o.actKey}
+				else
+					if e.Sig ~= sig(o) then e.UI:Update(o); e.Sig = sig(o) end
+					if e.SKey ~= sk and not (uid == Env.Player.UserId and os.clock() < (R.StyleHold or 0)) then e.UI:Restyle(o.style); e.SKey = sk end
 				end
 			end
 		end
@@ -263900,6 +264192,13 @@ return function(Env, UI)
 	end
 
 	function R.Poke() R.Kicked = true end
+
+	function R.ApplyLocalStyle(raw) -- instant preview of YOUR style on your own banner (the backend poll then confirms it for everyone)
+		local st = cleanStyle(raw)
+		R.StyleHold = os.clock() + 3
+		local e = R.Banners[Env.Player.UserId]
+		if e then e.UI:Restyle(st); e.SKey = st and st.key or "" end
+	end
 
 	function R.SetHidden(v) -- local-only: hides/shows every banner on this client
 		R.Hidden = v and true or false
@@ -264085,6 +264384,46 @@ return function(Env, UI)
 	end
 
 	return R
+end
+]==],
+			BannerSender = [==[
+-- BannerSender.lua | publishes the local player's banner to the live-sync backend (+ keep-alive)
+return function(Env)
+	local S = {Payload = nil, Running = false}
+	local function post(path, body)
+		if not Env.Request then return false, "executor has no request()" end
+		body.room, body.userId, body.token = Env.Room, Env.Player.UserId, Env.Token
+		local ok, res = pcall(Env.Request, {Url = Env.Backend .. path, Method = "POST",
+			Headers = {["Content-Type"] = "application/json"}, Body = Env.HttpService:JSONEncode(body)})
+		if not ok then return false, tostring(res) end
+		if type(res) ~= "table" or res.StatusCode ~= 200 then return false, "HTTP " .. tostring(type(res) == "table" and res.StatusCode) end
+		return true
+	end
+	local function copy(t) local c = {}; for k, v in pairs(t) do c[k] = v end; return c end
+
+	function S.Send(title, image, subtitle)
+		S.Payload = {name = Env.Player.Name, title = tostring(title or ""), image = tostring(image or ""), subtitle = tostring(subtitle or ("@" .. Env.Player.Name)), style = S.Style}
+		local ok, err = post("/banner", copy(S.Payload))
+		if not ok then warn("[UhBanner] send failed: " .. tostring(err)) end
+		return ok, err
+	end
+	function S.SetStyle(st) -- banner style table (or nil = host theme); goes out with the next Send / keep-alive
+		S.Style = st
+		if S.Payload then S.Payload.style = st end
+	end
+	function S.Start() -- backend TTL is 75s; re-announce every 25s
+		if S.Running then return end
+		S.Running = true
+		task.spawn(function()
+			while S.Running do
+				for _ = 1, 100 do if not S.Running then return end task.wait(0.25) end
+				if S.Payload then post("/banner", copy(S.Payload)) end
+			end
+		end)
+	end
+	function S.Stop() S.Running = false end
+	function S.Clear() S.Payload = nil; post("/clear", {}) end
+	return S
 end
 ]==],
 			ModTools = [==[
@@ -264373,6 +264712,441 @@ return function(Env)
 	return B
 end
 ]==],
+			AltFling = [==[
+-- AltFling.lua | Alt-Fling remake: Served User requests + consent, Alt-Flinger console, relationship viewer
+-- Backend: POST /alt and GET /alt on the existing live-sync backend (server.js). Identity = the banner token (Env.Token), same check as /commands.
+-- Roles: the REQUESTER is the Alt Flinger (flings with its own current fling method); the TARGET is the Served User (clicks targets, gets the results back).
+-- Env needs: Player, Players, HttpService, Request, Backend, Room, Token, GetColor, Notify(msg), MethodId(), MethodName(), RunFling(player) -> ok, reason,
+--            GetServedUI() -> {Input, Request, View, Status} (main-tab controls), Expose(api)
+return function(Env)
+	local HS, Players, Me = Env.HttpService, Env.Players, Env.Player
+	local UIS = game:GetService("UserInputService")
+	local A = {Running = false, Rels = {}, Pending = {}, Out = {}, Log = {}}
+	local conns, C, V, P = {}, {}, {}, {Cards = {}}
+	local dirty = {log = true, view = true}
+	local WINDOW, MOVED, SPEED = 5, 60, 300 -- observation window (s), studs moved / studs per second that count as evidence of a fling
+	local COL = {CONFIRMED = "#46f08c", UNCONFIRMED = "#ffbe3c", FAILED = "#ff5a5a", PENDING = "#8a93a6", INFO = "#7aa2ff"}
+
+	local function new(c, p, par) local i = Instance.new(c); for k, v in pairs(p) do i[k] = v end; i.Parent = par; return i end
+	local function round(par, r) return new("UICorner", {CornerRadius = UDim.new(0, r or 6)}, par) end
+	local function accent()
+		local ok, c = pcall(Env.GetColor)
+		return (ok and typeof(c) == "Color3") and c or Color3.fromRGB(95, 165, 255)
+	end
+	local function stroke(par) return new("UIStroke", {Color = accent(), Thickness = 1.5}, par) end
+	local function esc(s) return (tostring(s):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")) end
+	local function stamp() return os.date("%H:%M:%S") end
+	local function notify(t) pcall(Env.Notify, t) end
+	local function setVis(o, v) if o then pcall(function() o.Visible = v end) end end
+	local function setText(o, t) if o then pcall(function() o.Text = t end) end end
+	local function methodName() local ok, n = pcall(Env.MethodName); return ok and tostring(n) or "unknown" end
+
+	-- ===== backend =====
+	local function call(method, path, body)
+		if not Env.Request then return false, "executor has no request()" end
+		local req = {Url = Env.Backend .. path, Method = method}
+		if body then
+			body.room, body.userId, body.token = Env.Room, Me.UserId, Env.Token
+			req.Headers, req.Body = {["Content-Type"] = "application/json"}, HS:JSONEncode(body)
+		end
+		local ok, res = pcall(Env.Request, req)
+		if not ok then return false, tostring(res) end
+		if type(res) ~= "table" then return false, "no response" end
+		local okD, data = pcall(HS.JSONDecode, HS, res.Body or "")
+		if res.StatusCode ~= 200 then
+			return false, (okD and type(data) == "table" and data.error) or ("HTTP " .. tostring(res.StatusCode)), res.StatusCode
+		end
+		return true, (okD and type(data) == "table") and data or {}
+	end
+	local function post(op, target, extra)
+		local body = extra or {}
+		body.op, body.target = op, tostring(target)
+		for _ = 1, 3 do
+			local ok, r, code = call("POST", "/alt", body)
+			if ok or code ~= 429 then return ok, r end
+			task.wait(0.5)
+		end
+		return false, "slow down"
+	end
+
+	-- ===== state helpers =====
+	local function asFlinger() local t = {}; for _, r in ipairs(A.Rels) do if r.flinger == Me.UserId then t[#t + 1] = r end end; return t end
+	local function asServed() local t = {}; for _, r in ipairs(A.Rels) do if r.served == Me.UserId then t[#t + 1] = r end end; return t end
+	local function names(list, key) local t = {}; for _, r in ipairs(list) do t[#t + 1] = r[key] end; return table.concat(t, ", ") end
+	local function find(name)
+		local low, best = name:lower(), nil
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p.Name:lower() == low then return p end
+			if not best and (p.DisplayName:lower() == low or p.Name:lower():sub(1, #low) == low) then best = p end
+		end
+		return best
+	end
+	local function findExact(name)
+		local low = tostring(name):lower()
+		for _, p in ipairs(Players:GetPlayers()) do if p.Name:lower() == low then return p end end
+	end
+
+	-- ===== log =====
+	local function addLog(e)
+		e.time = e.time or stamp()
+		A.Log[#A.Log + 1] = e
+		if #A.Log > 80 then table.remove(A.Log, 1) end
+		dirty.log = true
+		return e
+	end
+	local function lineOf(e)
+		if e.text then return ('<font color="#8a93a6">[%s]</font> <font color="%s">*</font> %s'):format(e.time, COL.INFO, esc(e.text)) end
+		return ('<font color="#8a93a6">[%s]</font> %s <font color="#8a93a6">|</font> %s <font color="#8a93a6">|</font> <font color="%s"><b>%s</b></font>%s'):format(
+			e.time, esc(e.victim), esc(e.method), COL[e.status] or COL.PENDING, e.status, e.detail and (" " .. esc(e.detail)) or "")
+	end
+
+	-- ===== ui =====
+	local function host()
+		if A.Gui and A.Gui.Parent then return A.Gui end
+		local parent
+		pcall(function() parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+		parent = parent or Me:WaitForChild("PlayerGui")
+		pcall(function() for _, v in ipairs(parent:GetChildren()) do if v.Name == "UhAltFlingHost" then v:Destroy() end end end)
+		A.Gui = new("ScreenGui", {Name = "UhAltFlingHost", ResetOnSpawn = false, DisplayOrder = 950, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling}, parent)
+		return A.Gui
+	end
+	local function button(par, text, size, pos, cb)
+		local b = new("TextButton", {Text = text, Size = size, Position = pos, BackgroundColor3 = Color3.fromRGB(24, 26, 34), TextColor3 = Color3.new(1, 1, 1),
+			Font = Enum.Font.Code, TextSize = 12, BorderSizePixel = 0}, par)
+		round(b, 5)
+		b.Activated:Connect(cb)
+		return b
+	end
+	local function drag(frame, handle)
+		local dragging, start, origin
+		conns[#conns + 1] = handle.InputBegan:Connect(function(i)
+			if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+				dragging, start, origin = true, i.Position, frame.Position
+			end
+		end)
+		conns[#conns + 1] = UIS.InputChanged:Connect(function(i)
+			if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+				local d = i.Position - start
+				frame.Position = UDim2.new(origin.X.Scale, origin.X.Offset + d.X, origin.Y.Scale, origin.Y.Offset + d.Y)
+			end
+		end)
+		conns[#conns + 1] = UIS.InputEnded:Connect(function(i)
+			if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
+		end)
+	end
+	local function panel(g, name, size, pos, anchor, title)
+		local f = new("Frame", {Name = name, Size = size, Position = pos, AnchorPoint = anchor or Vector2.zero, BackgroundColor3 = Color3.fromRGB(8, 9, 12),
+			BorderSizePixel = 0, Visible = false, Active = true}, g)
+		round(f, 8); stroke(f)
+		local head = new("Frame", {Size = UDim2.new(1, 0, 0, 26), BackgroundColor3 = Color3.fromRGB(16, 18, 24), BorderSizePixel = 0, Active = true}, f)
+		round(head, 8)
+		new("TextLabel", {BackgroundTransparency = 1, Size = UDim2.new(1, -40, 1, 0), Position = UDim2.fromOffset(8, 0), Text = title, Font = Enum.Font.Code,
+			TextSize = 12, TextColor3 = accent(), TextXAlignment = Enum.TextXAlignment.Left}, head)
+		drag(f, head)
+		return f, head
+	end
+	local function list(par, pos, size)
+		local s = new("ScrollingFrame", {Position = pos, Size = size, BackgroundColor3 = Color3.fromRGB(12, 13, 18), BorderSizePixel = 0, ScrollBarThickness = 3,
+			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y}, par)
+		round(s, 5)
+		new("UIListLayout", {Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder}, s)
+		return s
+	end
+
+	local function buildConsole()
+		if C.Frame and C.Frame.Parent then return end
+		C.Frame = panel(host(), "Console", UDim2.fromOffset(320, 250), UDim2.new(0, 14, 0.5, -125), nil, "ALT-FLINGER CONSOLE")
+		C.Info = new("TextLabel", {BackgroundTransparency = 1, Position = UDim2.fromOffset(8, 30), Size = UDim2.new(1, -16, 0, 46), RichText = true, Font = Enum.Font.Code,
+			TextSize = 12, TextColor3 = Color3.fromRGB(220, 224, 235), TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = ""}, C.Frame)
+		C.Scroll = list(C.Frame, UDim2.fromOffset(8, 80), UDim2.new(1, -16, 1, -116))
+		button(C.Frame, "Users", UDim2.fromOffset(96, 24), UDim2.new(0, 8, 1, -30), function() A.ToggleViewer() end)
+		button(C.Frame, "Clear log", UDim2.fromOffset(96, 24), UDim2.new(0, 112, 1, -30), function() table.clear(A.Log); dirty.log = true; A.Render() end)
+		button(C.Frame, "Stop", UDim2.fromOffset(96, 24), UDim2.new(0, 216, 1, -30), function()
+			for _, r in ipairs(asFlinger()) do
+				local ok, e = post("end", r.served)
+				if not ok then notify("Could not end " .. r.sname .. ": " .. tostring(e)) end
+			end
+			A.Poll()
+		end)
+	end
+	local function buildViewer()
+		if V.Frame and V.Frame.Parent then return end
+		local _, head
+		V.Frame, head = panel(host(), "Viewer", UDim2.fromOffset(300, 200), UDim2.new(0.5, 0, 0.5, 0), Vector2.new(0.5, 0.5), "ALT FLINGER FOR")
+		button(head, "X", UDim2.fromOffset(22, 18), UDim2.new(1, -26, 0, 4), function() V.Frame.Visible = false end)
+		V.List = list(V.Frame, UDim2.fromOffset(8, 32), UDim2.new(1, -16, 1, -40))
+	end
+	local function buildPrompt(r)
+		if not (P.List and P.List.Parent) then
+			P.List = new("Frame", {Name = "Prompts", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 64), Size = UDim2.fromOffset(320, 0),
+				AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1}, host())
+			new("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder}, P.List)
+		end
+		local card = new("Frame", {Size = UDim2.fromOffset(320, 88), BackgroundColor3 = Color3.fromRGB(8, 9, 12), BorderSizePixel = 0, LayoutOrder = r.ts or 0}, P.List)
+		round(card, 8); stroke(card)
+		new("TextLabel", {BackgroundTransparency = 1, Position = UDim2.fromOffset(10, 6), Size = UDim2.new(1, -20, 0, 44), RichText = true, TextWrapped = true, Font = Enum.Font.Code,
+			TextSize = 12, TextColor3 = Color3.fromRGB(220, 224, 235), TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+			Text = ("<b>%s</b> wants you as their Served User.\nThey would be your Alt Flinger."):format(esc(r.name))}, card)
+		button(card, "Accept", UDim2.new(0.5, -14, 0, 26), UDim2.new(0, 10, 1, -34), function() A.Respond(r.from, true) end)
+		button(card, "Decline", UDim2.new(0.5, -14, 0, 26), UDim2.new(0.5, 4, 1, -34), function() A.Respond(r.from, false) end)
+		P.Cards[r.from] = card
+	end
+
+	local function updateInfo()
+		if not (C.Frame and C.Frame.Visible) then return end
+		C.Info.Text = ('<font color="#8a93a6">status </font><font color="#46f08c"><b>ACTIVE</b></font>\n<font color="#8a93a6">method </font>%s\n<font color="#8a93a6">served </font>%s'):format(
+			esc(methodName()), esc(names(asFlinger(), "sname")))
+	end
+	local function renderLog()
+		if not dirty.log or not (C.Scroll and C.Scroll.Parent) then return end
+		dirty.log = false
+		for _, c in ipairs(C.Scroll:GetChildren()) do if c:IsA("TextLabel") then c:Destroy() end end
+		for i, e in ipairs(A.Log) do
+			new("TextLabel", {BackgroundTransparency = 1, Size = UDim2.new(1, -4, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextWrapped = true, RichText = true,
+				Font = Enum.Font.Code, TextSize = 11, TextColor3 = Color3.fromRGB(220, 224, 235), TextXAlignment = Enum.TextXAlignment.Left, Text = lineOf(e), LayoutOrder = i}, C.Scroll)
+		end
+		task.defer(function() if C.Scroll and C.Scroll.Parent then C.Scroll.CanvasPosition = Vector2.new(0, 1e6) end end)
+	end
+	local function renderViewer()
+		if not dirty.view or not (V.Frame and V.Frame.Parent and V.Frame.Visible) then return end
+		dirty.view = false
+		for _, c in ipairs(V.List:GetChildren()) do if not c:IsA("UIListLayout") then c:Destroy() end end
+		local f = asFlinger()
+		if #f == 0 then
+			new("TextLabel", {BackgroundTransparency = 1, Size = UDim2.new(1, -4, 0, 28), Text = "You are not an active Alt Flinger for anyone.", Font = Enum.Font.Code,
+				TextSize = 11, TextColor3 = Color3.fromRGB(138, 147, 166), TextWrapped = true}, V.List)
+		end
+		for i, r in ipairs(f) do
+			local row = new("Frame", {Size = UDim2.new(1, -4, 0, 28), BackgroundColor3 = Color3.fromRGB(16, 18, 24), BorderSizePixel = 0, LayoutOrder = i}, V.List)
+			round(row, 5)
+			new("TextLabel", {BackgroundTransparency = 1, Size = UDim2.new(1, -70, 1, 0), Position = UDim2.fromOffset(8, 0), Font = Enum.Font.Code, TextSize = 11,
+				TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+				Text = r.sname .. "  (since " .. os.date("%H:%M:%S", math.floor((r.ts or 0) / 1000)) .. ")"}, row)
+			button(row, "End", UDim2.fromOffset(52, 20), UDim2.new(1, -58, 0, 4), function()
+				local ok, e = post("end", r.served)
+				if not ok then notify("Could not end: " .. tostring(e)) end
+				A.Poll()
+			end)
+		end
+	end
+	local function syncMain()
+		local ui = Env.GetServedUI and Env.GetServedUI()
+		if not ui then return end
+		local f, s, txt = asFlinger(), asServed(), nil
+		if #f > 0 then txt = "Served User: ACTIVE for " .. names(f, "sname") .. " (console open)"
+		elseif #s > 0 then txt = "Served User: " .. names(s, "fname") .. " is your Alt Flinger"
+		elseif #A.Out > 0 then txt = "Served User: waiting for " .. A.Out[1].name .. " to answer"
+		else txt = "Served User: none" end
+		setText(ui.Status, txt)
+		setVis(ui.Input, #f == 0)
+		setVis(ui.Request, #f == 0)
+	end
+	function A.Render()
+		if #asFlinger() > 0 then
+			buildConsole()
+			C.Frame.Visible = true
+		elseif C.Frame then
+			C.Frame.Visible = false
+		end
+		updateInfo(); renderLog(); renderViewer(); syncMain()
+		local want = {}
+		for _, r in ipairs(A.Pending) do
+			want[r.from] = true
+			if not P.Cards[r.from] then
+				buildPrompt(r)
+				notify(r.name .. " wants you as their Served User - Accept or Decline")
+			end
+		end
+		for id, card in pairs(P.Cards) do if not want[id] then card:Destroy(); P.Cards[id] = nil end end
+	end
+
+	function A.ToggleViewer()
+		if not A.Running then notify("Alt-Fling needs the live-sync backend (not connected)"); return end
+		buildViewer()
+		V.Frame.Visible = not V.Frame.Visible
+		dirty.view = true
+		A.Render()
+		if V.Frame.Visible then task.spawn(A.Poll) end
+	end
+
+	-- ===== flinging (Alt Flinger side) =====
+	local function rootOf(p) local c = p.Character; return c and (c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart), c end
+	local function observe(target) -- only reports CONFIRMED on evidence this client actually saw; everything else is UNCONFIRMED
+		local r0, c0 = rootOf(target)
+		if not r0 then return "UNCONFIRMED", "target had no character to observe" end
+		local p0, t0 = r0.Position, os.clock()
+		while os.clock() - t0 < WINDOW do
+			task.wait(0.1)
+			if not target.Parent then return "UNCONFIRMED", "target left the server before a result could be observed" end
+			local r, c = rootOf(target)
+			if not r or c ~= c0 then return "UNCONFIRMED", "target respawned or died (cause not established)" end
+			local moved, speed = (r.Position - p0).Magnitude, r.AssemblyLinearVelocity.Magnitude
+			if moved >= MOVED then return "CONFIRMED", ("observed locally: moved %d studs"):format(math.floor(moved)) end
+			if speed >= SPEED then return "CONFIRMED", ("observed locally: %d studs/s"):format(math.floor(speed)) end
+		end
+		return "UNCONFIRMED", ("no displacement observed in %ds"):format(WINDOW)
+	end
+	local function report(ev, e)
+		local ok, err = post("result", ev.served, {cid = ev.cid, victim = ev.victim, method = e.method, result = e.status:lower(), detail = e.detail or ""})
+		if not ok then
+			e.detail = (e.detail or "") .. " (report to Served User failed: " .. tostring(err) .. ")"
+			dirty.log = true
+			A.Render()
+		end
+	end
+	function A.Execute(ev)
+		local e = addLog({victim = ev.victim, method = methodName(), status = "PENDING", detail = "command from " .. tostring(ev.sname)})
+		A.Render()
+		local function finish(status, detail)
+			e.status, e.detail = status, detail
+			dirty.log = true
+			A.Render()
+			report(ev, e)
+		end
+		local ok = false
+		for _, r in ipairs(asFlinger()) do if r.served == ev.served then ok = true end end
+		if not ok then return finish("FAILED", "no active relationship on the backend") end
+		local target = findExact(ev.victim)
+		if not target then return finish("FAILED", "target is not in this server") end
+		if target == Me then return finish("FAILED", "target is this account") end
+		if target.UserId == ev.served then return finish("FAILED", "target is the Served User") end
+		local okM, mid = pcall(Env.MethodId)
+		if okM and mid == 8 then return finish("FAILED", "current method is Alt-fling, which never flings (pick a real fling method)") end
+		local okR, r1, r2 = pcall(Env.RunFling, target)
+		if not okR then return finish("FAILED", tostring(r1):sub(1, 80)) end
+		if r1 == false then return finish("FAILED", tostring(r2 or "fling engine rejected the target (dead / already flinging / invalid)")) end
+		local status, detail = observe(target)
+		if status == "UNCONFIRMED" and r1 == nil then detail = detail .. "; engine returned no result" end
+		finish(status, detail)
+	end
+
+	-- ===== served side =====
+	function A.SendFling(target)
+		local r = asServed()[1]
+		if not r then return false end
+		if typeof(target) ~= "Instance" or not target:IsA("Player") then return false end
+		if os.clock() - (A.LastFling or 0) < 0.5 then return false end
+		A.LastFling = os.clock()
+		local ok, err = post("fling", r.flinger, {victim = target.Name, cid = tostring(math.random(100000, 999999))})
+		if not ok then notify("Alt-Fling NOT sent: " .. tostring(err)); return false end
+		notify("Fling command sent to " .. r.fname .. " for " .. target.Name .. " (result pending)")
+		return true
+	end
+
+	-- ===== requests / consent =====
+	function A.Request(name)
+		if not A.Running then
+			local m = "Alt-Fling needs the live-sync backend (not connected)"
+			notify(m)
+			return false, m
+		end
+		name = (tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+		local function fail(m) notify(m); return false, m end
+		if name == "" then return fail("Type a username first") end
+		local pl = find(name)
+		if not pl then return fail("No player matching '" .. name .. "' in this server") end
+		if pl == Me then return fail("You can't request yourself") end
+		local ok, err = post("request", pl.UserId)
+		if not ok then
+			if err == "target is not running the script" then err = pl.Name .. " is not running this script" end
+			return fail("Request not sent: " .. tostring(err))
+		end
+		notify("Request sent to " .. pl.Name .. " - waiting for them to answer")
+		A.Poll()
+		return true
+	end
+	function A.Respond(from, accept)
+		local ok, err = post("respond", from, {accept = accept and true or false})
+		local card = P.Cards[from]
+		if card then card:Destroy(); P.Cards[from] = nil end
+		if not ok then notify("Could not answer the request: " .. tostring(err)) end
+		A.Poll()
+		return ok, err
+	end
+
+	-- ===== polling =====
+	local function handle(ev, ended)
+		local t, me = ev.type, Me.UserId
+		if t == "accepted" then
+			if ev.flinger == me then
+				addLog({text = ev.sname .. " accepted - you are now their Alt Flinger"})
+				notify(ev.sname .. " accepted. You are now their Alt Flinger.")
+			elseif ev.served == me then
+				notify("You accepted " .. ev.fname .. ". They are now your Alt Flinger.")
+			end
+		elseif t == "declined" then
+			addLog({text = ev.name .. " declined your Served User request"})
+			notify(ev.name .. " declined your Served User request.")
+		elseif t == "ended" then
+			ended[ev.flinger .. ">" .. ev.served] = true
+			if ev.flinger == me then addLog({text = "relationship with " .. ev.sname .. " ended"}) end
+			notify("Alt-Fling relationship ended by " .. tostring(ev.name))
+		elseif t == "fling" then
+			task.spawn(A.Execute, ev)
+		elseif t == "result" then
+			notify(("%s: %s %s [%s]%s"):format(ev.fname, ev.victim, tostring(ev.result):upper(), ev.method, (ev.detail ~= "" and (" - " .. ev.detail) or "")))
+		end
+	end
+	local function apply(d)
+		local old = {}
+		for _, r in ipairs(A.Rels) do old[r.flinger .. ">" .. r.served] = r end
+		A.Rels, A.Pending, A.Out = d.rels or {}, d.pending or {}, d.out or {}
+		local sig = {}
+		for _, r in ipairs(A.Rels) do sig[#sig + 1] = r.flinger .. ">" .. r.served end
+		sig = table.concat(sig, ",")
+		if sig ~= A.Sig then A.Sig = sig; dirty.view = true end
+		local ended = {}
+		for _, ev in ipairs(d.events or {}) do
+			local ok, err = pcall(handle, ev, ended)
+			if not ok then warn("[AltFling] event failed: " .. tostring(err)) end
+		end
+		for _, r in ipairs(A.Rels) do old[r.flinger .. ">" .. r.served] = nil end
+		for k, r in pairs(old) do
+			if not ended[k] then -- gone from the backend without an ended event (other player left / backend restarted)
+				if r.flinger == Me.UserId then addLog({text = "relationship with " .. r.sname .. " is no longer active on the backend"}) end
+				notify("Alt-Fling relationship is no longer active on the backend")
+			end
+		end
+		A.Render()
+	end
+	function A.Poll()
+		local ok, d = call("GET", "/alt?room=" .. HS:UrlEncode(Env.Room) .. "&userId=" .. Me.UserId .. "&token=" .. HS:UrlEncode(Env.Token))
+		if not ok then return false, d end
+		apply(d)
+		return true
+	end
+	function A.Start()
+		if A.Running or not Env.Request then return end
+		A.Running = true
+		task.spawn(function()
+			local fails = 0
+			while A.Running do
+				local ok, res = pcall(A.Poll)
+				if ok and res then fails = 0 else fails += 1 end
+				local busy = #A.Rels > 0 or #A.Pending > 0 or #A.Out > 0 -- poll slowly while idle (saves backend requests)
+				task.wait(math.min((busy and 1.5 or 4) + fails * 1.5, 12))
+			end
+		end)
+		task.spawn(function() while A.Running do task.wait(0.5); pcall(updateInfo) end end)
+	end
+	function A.Stop()
+		A.Running = false
+		for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+		table.clear(conns)
+		if A.Gui then pcall(function() A.Gui:Destroy() end); A.Gui = nil end
+		C, V, P = {}, {}, {Cards = {}}
+		A.Rels, A.Pending, A.Out = {}, {}, {}
+		pcall(syncMain)
+		pcall(Env.Expose, nil)
+	end
+
+	Env.Expose({
+		Request = A.Request, SendFling = A.SendFling, ToggleViewer = A.ToggleViewer, Poll = A.Poll, Stop = A.Stop,
+		HasFlinger = function() return #asServed() > 0 end,
+	})
+	return A
+end
+]==],
 		}
 		local function pull(n)
 			local src = EMBED[n]
@@ -264386,22 +265160,35 @@ end
 		local Receiver = pull("BannerReceiver")(Env, UI)
 		Env.IsOwner = function() local r = Receiver.RoleOf(Player.UserId); return r ~= nil and r.tag ~= nil end -- owner / co-owner: no key needed
 		do local okM, eM = pcall(function() Env.Mod = pull("ModTools")(Env, Receiver) end); if not okM then warn("[UhBanner] ModTools module failed: " .. tostring(eM)) end end
-		local api = {Stop = function() if not LocalOnly then Sender.Clear(); Sender.Stop() end; Receiver.Stop(); UI.Cleanup(); pcall(function() Env.Blacklist.Stop() end); pcall(function() Env.Mod.Stop() end) end}
+		do local okA, eA = pcall(function() Env.Alt = pull("AltFling")(Env) end); if not okA then warn("[UhBanner] AltFling module failed: " .. tostring(eA)) end end
+		local api = {Stop = function() if not LocalOnly then Sender.Clear(); Sender.Stop() end; Receiver.Stop(); UI.Cleanup(); pcall(function() Env.Blacklist.Stop() end); pcall(function() Env.Mod.Stop() end); pcall(function() Env.Alt.Stop() end) end}
+		local cur, styleTok = {}, 0
 		function api.Set(title, image, sub)
+			cur = {title, image, sub}
 			if LocalOnly then
-				Receiver.Process({{userId = Player.UserId, name = Player.Name, title = title, subtitle = sub or ("@" .. Player.Name), image = image}})
+				Receiver.Process({{userId = Player.UserId, name = Player.Name, title = title, subtitle = sub or ("@" .. Player.Name), image = image, style = SaveData.BannerStyle}})
 			elseif Sender.Send(title, image, sub) then Receiver.Poke() end
+		end
+		function api.SetStyle(st) -- banner customization: applies to your own banner at once, then broadcasts (debounced) so every client sees it
+			SaveData.BannerStyle = st
+			if Receiver.ApplyLocalStyle then Receiver.ApplyLocalStyle(st) end
+			if Sender.SetStyle then Sender.SetStyle(st) end
+			styleTok += 1
+			local my = styleTok
+			task.delay(0.4, function() if my == styleTok and cur[1] ~= nil then api.Set(cur[1], cur[2], cur[3]) end end)
 		end
 		genv.UhBanner = api
 		-- local-only banner switch (pill button + api.SetEnabled); saved in SaveData.BannerOff; never affects what other users see
 		local function apply(on) if Receiver.SetHidden then Receiver.SetHidden(not on) end; SaveData.BannerOff = (not on) or nil end
-		local setPill = UI.Toggle and UI.Toggle(not SaveData.BannerOff, apply)
+		local styleApi = {get = function() return SaveData.BannerStyle end, set = function(st) api.SetStyle(st) end}
+		local setPill = UI.Toggle and UI.Toggle(not SaveData.BannerOff, apply, styleApi)
 		apply(not SaveData.BannerOff)
 		function api.SetEnabled(on) apply(on); if setPill then setPill(on) end end
 		if Receiver.CanBlacklist() then pcall(Env.Blacklist.ShowPill) end -- owner / co-owner: blacklist panel button (list + Unblacklist per player)
 		task.delay(4, function() if Receiver.CanBlacklist() then pcall(Env.Blacklist.ShowPill) end end) -- retry once the owner name has resolved (ShowPill ignores duplicates)
+		if Sender.SetStyle then Sender.SetStyle(SaveData.BannerStyle) end
 		Receiver.Start(LocalOnly)
-		if not LocalOnly then Sender.Start(); pcall(function() Env.Mod.Start() end) end
+		if not LocalOnly then Sender.Start(); pcall(function() Env.Mod.Start() end); pcall(function() Env.Alt.Start() end) end
 		api.Set(Cfg.Title or SaveData.BannerTitle or Player.DisplayName, Cfg.Image or SaveData.BannerImage or "")
 	end)
 	if not ok then warn("[UhBanner] " .. tostring(err)) end
@@ -269824,6 +270611,12 @@ local function ReanimateFling(target, duration)
 	end
 	return false
 end
+-- [alt-fling remake] what the Alt Flinger runs when its Served User sends a target: always the REAL fling engine (never the method-8 alt route)
+Util.AltRunFling = function(target)
+	local Reanimator = Reanimate.Current
+	if Reanimator and Reanimator.Fling then return Reanimator.Fling(target) end
+	return false, "no active reanimation"
+end
 -- SetCharacter thing, very empyrean-like system
 _G_Uhhhhhh.Fling = function(part)
 	if part and part.Parent then
@@ -271038,6 +271831,21 @@ do
 	UI.CreateButton(MainPage, "Alt-fling: resend command", 15).Activated:Connect(function()
 		if Util.Fling.Method == 8 and Util.AltFling then Util.AltFling.Send() end
 	end)
+	-- [alt-fling remake] Served User request (backend consent flow + console live in AltFling.lua)
+	do
+		local SU = {}
+		SU.Status = UI.CreateText(MainPage, "Served User: none", 10, Enum.TextXAlignment.Center)
+		SU.Input = UI.CreateTextbox(MainPage, "", "Username to request as your Served User", 14)
+		SU.Request = UI.CreateButton(MainPage, "Request Served User", 15)
+		SU.View = UI.CreateButton(MainPage, "View users I'm Alt Flinger for", 15)
+		SU.Request.Activated:Connect(function()
+			if Util.AltRemake then Util.AltRemake.Request(SU.Input.Text) else Util.UINotify("Alt-Fling: backend not connected") end
+		end)
+		SU.View.Activated:Connect(function()
+			if Util.AltRemake then Util.AltRemake.ToggleViewer() else Util.UINotify("Alt-Fling: backend not connected") end
+		end)
+		Util.AltServedUI = SU
+	end
 	UI.CreateSwitch(MainPage, "Click Fling", Reanimate.ClickFling).Changed:Connect(function(val)
 		Reanimate.ClickFling = val
 		SaveData.ClickFlingEnabled = val
@@ -272472,6 +273280,8 @@ do
 		if not AF.Enabled then return false end
 		if typeof(target) == "Instance" and not target:IsA("Player") then target = Players:GetPlayerFromCharacter(target) end
 		if typeof(target) ~= "Instance" or not target:IsA("Player") or target == Player or AF.Admins[target.UserId] then return false end
+		local RM = Util.AltRemake
+		if RM and RM.HasFlinger() then return RM.SendFling(target) end -- active Alt Flinger relationship: command goes through the backend
 		AF.Target = target
 		AF.Refresh()
 		return AF.Send()
