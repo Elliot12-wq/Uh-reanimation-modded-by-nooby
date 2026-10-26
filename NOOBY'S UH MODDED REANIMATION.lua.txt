@@ -176,70 +176,6 @@ for _, e in ipairs(Util.Roles.Entries) do
 if e.role == "owner" and e.username then return e.username end
 end
 end
--- SHA-256 + request proof (owner / co-owner / verified requests). The key itself never leaves the client: only a one-time proof does.
-Util.Sha256 = (function()
-local band, bor, bxor, bnot, rshift, lshift, rrot = bit32.band, bit32.bor, bit32.bxor, bit32.bnot, bit32.rshift, bit32.lshift, bit32.rrotate
-local M = 4294967296
-local K = {
-0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-}
-return function(msg)
-msg = tostring(msg)
-local len = #msg
-local bits = len * 8
-local hi, lo = math.floor(bits / M), bits % M
-msg = msg .. "\128" .. string.rep("\0", (55 - len) % 64) .. string.char(band(rshift(hi, 24), 255), band(rshift(hi, 16), 255), band(rshift(hi, 8), 255), band(hi, 255), band(rshift(lo, 24), 255), band(rshift(lo, 16), 255), band(rshift(lo, 8), 255), band(lo, 255))
-local H0, H1, H2, H3, H4, H5, H6, H7 = 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
-local w = {}
-for p = 1, #msg, 64 do
-for i = 0, 15 do
-local a, b, c, d = string.byte(msg, p + i * 4, p + i * 4 + 3)
-w[i] = bor(lshift(a, 24), lshift(b, 16), lshift(c, 8), d)
-end
-for i = 16, 63 do
-local x, y = w[i - 15], w[i - 2]
-local s0 = bxor(rrot(x, 7), rrot(x, 18), rshift(x, 3))
-local s1 = bxor(rrot(y, 17), rrot(y, 19), rshift(y, 10))
-w[i] = (w[i - 16] + s0 + w[i - 7] + s1) % M
-end
-local a, b, c, d, e, f, g, h = H0, H1, H2, H3, H4, H5, H6, H7
-for i = 0, 63 do
-local S1 = bxor(rrot(e, 6), rrot(e, 11), rrot(e, 25))
-local ch = bxor(band(e, f), band(bnot(e), g))
-local t1 = (h + S1 + ch + K[i + 1] + w[i]) % M
-local S0 = bxor(rrot(a, 2), rrot(a, 13), rrot(a, 22))
-local maj = bxor(band(a, b), band(a, c), band(b, c))
-local t2 = (S0 + maj) % M
-h, g, f, e, d, c, b, a = g, f, e, (d + t1) % M, c, b, a, (t1 + t2) % M
-end
-H0, H1, H2, H3 = (H0 + a) % M, (H1 + b) % M, (H2 + c) % M, (H3 + d) % M
-H4, H5, H6, H7 = (H4 + e) % M, (H5 + f) % M, (H6 + g) % M, (H7 + h) % M
-end
-return string.format("%08x%08x%08x%08x%08x%08x%08x%08x", H0, H1, H2, H3, H4, H5, H6, H7)
-end
-end)()
--- returns ts, nonce, proof (or nil when there is no key). proof = sha256(sha256(key) | userId | room | path | ts | nonce | bind); the backend stores only sha256(key)
-Util.Proof = function(secret, userId, room, path, bind)
-secret = tostring(secret or "")
-if secret == "" then return nil end
-if secret ~= Util.ProofSecret then Util.ProofSecret, Util.ProofHash = secret, Util.Sha256(secret) end
-local ts
-local okT, t = pcall(function() return workspace:GetServerTimeNow() end)
-ts = math.floor((okT and tonumber(t)) or os.time())
-local parts = {}
-for i = 1, 8 do parts[i] = string.format("%04x", math.random(0, 65535)) end
-local guid = HttpService:GenerateGUID(false):gsub("[^%x]", ""):lower()
-local nonce = (table.concat(parts) .. guid .. string.format("%x", math.floor(os.clock() * 1000000) % 4294967296)):sub(1, 96)
-local proof = Util.Sha256(table.concat({Util.ProofHash, tostring(userId), tostring(room), tostring(path), tostring(ts), nonce, tostring(bind or "")}, "|"))
-return ts, nonce, proof
-end
 Util.RandomString = function(length)
 length = length or math.random(32, 256)
 local str = ""
@@ -252533,13 +252469,8 @@ if not pcall(function()
 pcall(Util.Roles.Fetch)
 local BROADCAST_URL = "https://banner-system.elliptmal.workers.dev"
 local BASE = tostring((type(getgenv) == "function" and getgenv().UH_BROADCAST_URL) or BROADCAST_URL):gsub("/+$", "")
-local function call(method, path, body, key)
-local headers = {["Content-Type"] = "application/json"}
-if key then
-local ts, nonce, proof = Util.Proof(key, Player.UserId, "", path, body and body.text or "")
-if proof then headers["X-Uh-User"], headers["X-Uh-Ts"], headers["X-Uh-Nonce"], headers["X-Uh-Proof"] = tostring(Player.UserId), tostring(ts), nonce, proof end
-end
-return pcall(request, {Url = BASE .. path, Method = method, Headers = headers, Body = body and HttpService:JSONEncode(body) or nil})
+local function call(method, path, body)
+return pcall(request, {Url = BASE .. path, Method = method, Headers = {["Content-Type"] = "application/json"}, Body = body and HttpService:JSONEncode(body) or nil})
 end
 local function clean(s)
 return (tostring(s):gsub("[%c<>]", " "):sub(1, 200))
@@ -252571,28 +252502,16 @@ end
 end)
 end
 if Util.Roles.Of(Player) == "owner" then
-local KEYFILE = "UhhhhhhReanim/owner_key.txt"
-local saved = tostring((type(getgenv) == "function" and getgenv().UH_OWNER_KEY) or "")
-if saved == "" then
-local ok, v = pcall(function() return isfile(KEYFILE) and readfile(KEYFILE) or "" end)
-saved = ok and tostring(v) or ""
-end
 UI.CreateText(MainPage, "<b>OWNER BROADCAST</b> <font color=\"#AAAAAA\">(owner only)</font>", 15, Enum.TextXAlignment.Center)
-local keyBox = UI.CreateTextbox(MainPage, saved, "Owner key (stored on this device only)", 14)
-keyBox.FocusLost:Connect(function()
-pcall(writefile, KEYFILE, (keyBox.Text:gsub("%s", "")))
-end)
 local msgBox = UI.CreateTextbox(MainPage, "", "Announcement for all users (max 200 chars)", 14)
 local sending = false
 UI.CreateButton(MainPage, "Send announcement", 20).Activated:Connect(function()
 if sending then return end
 local text = (msgBox.Text:gsub("^%s+", ""):gsub("%s+$", ""))
-local key = (keyBox.Text:gsub("%s", ""))
 if text == "" then Util.UINotify("Type an announcement first") return end
 if BASE == "" or type(request) ~= "function" then Util.UINotify("Broadcast backend not configured - NOT sent") return end
-if key == "" then Util.UINotify("Enter the owner key first") return end
 sending = true
-local ok, res = call("POST", "/send", {user = Player.Name, text = text:sub(1, 200)}, key)
+local ok, res = call("POST", "/send", {user = Player.Name, userId = Player.UserId, text = text:sub(1, 200)})
 sending = false
 if ok and type(res) == "table" and res.StatusCode == 200 then
 msgBox.Text = ""
@@ -252601,34 +252520,44 @@ Util.UINotify("Not sent: " .. tostring(ok and type(res) == "table" and (res.Stat
 end
 end)
 local SERVER_JS = [==[
-// node broadcast_server.js   (env: OWNER_KEY_SHA256 = sha256 hex of the owner key, OWNER_NAME = the owner's username as listed in roles.json, PORT optional)
-const http = require("http"), crypto = require("crypto");
-const OWNER = process.env.OWNER_NAME || "", KEYHASH = String(process.env.OWNER_KEY_SHA256 || "").toLowerCase();
-const sha = s => crypto.createHash("sha256").update(String(s)).digest("hex");
-const seen = new Map();
-const proofOk = (req, path, bind) => {
-  const hd = n => String(req.headers[n] || ""), ts = hd("x-uh-ts"), nonce = hd("x-uh-nonce"), proof = hd("x-uh-proof"), uid = hd("x-uh-user");
-  if (!/^[0-9a-f]{64}$/.test(KEYHASH) || !/^\d{9,12}$/.test(ts) || !/^\d{1,16}$/.test(uid) || !/^[0-9a-f]{16,96}$/.test(nonce) || !/^[0-9a-f]{64}$/.test(proof)) return false;
-  if (Math.abs(Date.now() / 1000 - Number(ts)) > 120 || seen.has(nonce)) return false;
-  if (!crypto.timingSafeEqual(Buffer.from(sha([KEYHASH, uid, "", path, ts, nonce, bind].join("|"))), Buffer.from(proof))) return false;
-  seen.set(nonce, Date.now());
-  for (const [k, t] of seen) if (Date.now() - t > 300000) seen.delete(k);
-  return true;
+// node announcement_server.js   (env: PORT optional, ROLES_URL optional)
+// Global announcement backend. No key, no SHA-256, no token: the owner is read from roles.json on GitHub.
+const http = require("http");
+const ROLES_URL = process.env.ROLES_URL || "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/roles.json";
+let cache = { at: 0, owners: [] };
+const owners = async () => {
+  if (Date.now() - cache.at < 20000) return cache.owners;
+  cache.at = Date.now() - 15000;
+  try {
+    const r = await fetch(ROLES_URL + "?t=" + Date.now(), { headers: { "Cache-Control": "no-cache" } });
+    if (r.ok) {
+      const d = await r.json();
+      cache = { at: Date.now(), owners: (Array.isArray(d.entries) ? d.entries : [])
+        .filter(e => e && String(e.role || "").toLowerCase() === "owner")
+        .map(e => ({ name: typeof e.username === "string" ? e.username.toLowerCase() : "", id: Math.floor(Number(e.userId)) || 0 })) };
+    }
+  } catch {}
+  return cache.owners;
 };
 let msgs = [], lastId = 0, lastSend = 0;
 http.createServer((req, res) => {
   const u = new URL(req.url, "http://x");
-  const out = (c, o) => { res.writeHead(c, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
+  const out = (c, o) => { res.writeHead(c, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(o)); };
   if (req.method === "GET" && u.pathname === "/poll") {
     const a = u.searchParams.get("after");
     return out(200, { id: lastId, msgs: a === null ? [] : msgs.filter(m => m.id > Number(a)) });
   }
+  if (req.method === "GET" && u.pathname === "/owner") {
+    return owners().then(o => out(200, { owners: o.map(x => x.name).filter(Boolean) }));
+  }
   if (req.method === "POST" && u.pathname === "/send") {
     let b = "";
     req.on("data", d => { b += d; if (b.length > 4096) req.destroy(); });
-    req.on("end", () => {
+    req.on("end", async () => {
       let j; try { j = JSON.parse(b); } catch { return out(400, {}); }
-      if (!proofOk(req, "/send", String(j.text || "")) || !OWNER || j.user !== OWNER) return out(403, {});
+      const name = String(j.user || "").toLowerCase(), id = Math.floor(Number(j.userId)) || 0;
+      const ok = (await owners()).some(o => (o.name && o.name === name) || (o.id && o.id === id));
+      if (!ok) return out(403, {});
       const text = String(j.text || "").replace(/[\u0000-\u001f<>]/g, " ").trim().slice(0, 200);
       if (!text || Date.now() - lastSend < 2000) return out(400, {});
       lastSend = Date.now();
@@ -252642,10 +252571,10 @@ http.createServer((req, res) => {
   out(404, {});
 }).listen(process.env.PORT || 3000);
 ]==]
-UI.CreateButton(MainPage, "Export backend (broadcast_server.js)", 16).Activated:Connect(function()
+UI.CreateButton(MainPage, "Export backend (announcement_server.js)", 16).Activated:Connect(function()
 pcall(makefolder, "UhhhhhhReanim")
-local ok = pcall(writefile, "UhhhhhhReanim/broadcast_server.js", SERVER_JS)
-Util.UINotify(ok and "Saved UhhhhhhReanim/broadcast_server.js - run it on a Node host" or "Could not write the file", nil, true)
+local ok = pcall(writefile, "UhhhhhhReanim/announcement_server.js", SERVER_JS)
+Util.UINotify(ok and "Saved UhhhhhhReanim/announcement_server.js - run it on a Node host" or "Could not write the file", nil, true)
 end)
 UI.CreateSeparator(MainPage)
 end
@@ -259595,7 +259524,7 @@ local ok, err = pcall(function()
 local function FXcall(n) local f = Util.FX and Util.FX[n]; if f then return f() end end
 local Env = {
 Player = Player, Players = Players, RunService = RunService, HttpService = HttpService,
-TweenService = cloneref(game:GetService("TweenService")), UserInputService = cloneref(game:GetService("UserInputService")), GuiService = cloneref(game:GetService("GuiService")), Request = request or http_request or (syn and syn.request), Backend = Backend, Base = Base, Roles = Util.Roles, OwnerKey = Cfg.OwnerKey, BlacklistBackend = Cfg.BlacklistBackend,
+TweenService = cloneref(game:GetService("TweenService")), UserInputService = cloneref(game:GetService("UserInputService")), GuiService = cloneref(game:GetService("GuiService")), Request = request or http_request or (syn and syn.request), Backend = Backend, Base = Base, Roles = Util.Roles, BlacklistBackend = Cfg.BlacklistBackend,
 Room = tostring(game.PlaceId) .. "-" .. tostring(game.JobId), Token = HttpService:GenerateGUID(false),
 GetColor = function() return FXcall("GetColor") end, GetBG = function() return FXcall("GetBG") end,
 IsLowEnd = function() return FXcall("IsLowEnd") == true end,
@@ -259616,7 +259545,6 @@ end
 end
 return T
 end,
-ModKey = Cfg.ModKey or Cfg.OwnerKey,
 Notify = function(t) pcall(Util.UINotify, tostring(t)) end,
 MethodId = function() return Util.Fling.Method end,
 MethodName = function() return Util.Fling.Names[Util.Fling.Method] or "unknown" end,
@@ -259634,12 +259562,7 @@ Deanimate = function() pcall(Util.ModDeanimate) end,
 Kick = function(msg) pcall(function() Player:Kick(msg) end) end,
 },
 }
-Env.Sign = function(path, body, bind) -- adds ts / nonce / proof (never the key) when a key is configured; no key = plain user request
-local secret = (Env.OwnerKey ~= nil and tostring(Env.OwnerKey) ~= "" and Env.OwnerKey) or Env.ModKey
-local ts, nonce, proof = Util.Proof(secret, Env.Player.UserId, Env.Room, path, bind)
-if proof then body.ts, body.nonce, body.proof = ts, nonce, proof end
-return body
-end
+Env.Sign = function(path, body, bind) return body end -- no key, no SHA-256: the backend recognises the owner / co-owner / verified player by userId from roles.json on GitHub
 local EMBED = Cfg.Embedded == false and {} or {
 BannerUI = [==[
 -- BannerUI.lua | animated character banner (BillboardGui) themed from the host UI colours, per-user style, real 3D triangle beside the PFP
@@ -260708,7 +260631,7 @@ end
 ]==],
 ModTools = [==[
 -- ModTools.lua | moderator actions (kill / deanimate / kick) relayed to OTHER SCRIPT USERS who misuse the script.
--- Who may send: verified moderators (whitelist.json) + owner / co-owner. Every request carries a SHA-256 proof of the key (never the key); the backend checks it against its stored hash.
+-- Who may send: verified moderators (whitelist.json) + owner / co-owner, recognised by userId from roles.json on GitHub (no key).
 -- Who can be hit: only players running this script, and never verified players / owner / co-owner. The target is always notified.
 -- Env needs: Player, Players, HttpService, Request, Backend, Room, Token, ModActions {Kill, Deanimate, Kick(msg)}
 return function(Env, R)
@@ -260782,7 +260705,7 @@ end
 Blacklist = [==[
 -- Blacklist.lua | loads the blacklist from the backend (GET /blacklist, falls back to blacklist.json in the repo); lets OWNER / CO-OWNER add + remove entries (Yes/No warning each time)
 -- Usage (main script, after Env is built):  local BL = loadstring(game:HttpGet(Base .. "Blacklist.lua"))()(Env)
--- Env needs: Player, Players, HttpService, Request, Base, Backend, OwnerKey (owner/co-owner only, from getgenv().UhBannerConfig.OwnerKey)
+-- Env needs: Player, Players, HttpService, Request, Base, Backend (owner / co-owner recognised by userId from roles.json on GitHub, no key)
 -- A blacklisted client kicks itself: "BLACKLISTED by the owner / co-owner" (checked at startup + every few seconds by B.Watch)
 return function(Env)
 	local B = {List = {}}
@@ -260846,7 +260769,7 @@ return function(Env)
 
 	local function post(path, extra)
 		if not Env.Request then return false, "executor has no request()" end
-		if not (Env.IsOwner and Env.IsOwner()) and (not Env.OwnerKey or Env.OwnerKey == "") then return false, "owner / co-owner only" end
+		if not (Env.IsOwner and Env.IsOwner()) then return false, "owner / co-owner only" end
 		local body = {room = Env.Room, by = Env.Player.Name, byId = Env.Player.UserId}
 		for k, v in pairs(extra) do body[k] = v end
 		if Env.Sign then Env.Sign(path, body, tostring(extra.userId)) end
