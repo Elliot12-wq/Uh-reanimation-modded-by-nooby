@@ -252467,114 +252467,222 @@ end
 end
 if not pcall(function()
 pcall(Util.Roles.Fetch)
-local BROADCAST_URL = "https://banner-system.elliptmal.workers.dev"
+local BROADCAST_URL = "https://backend-announcement.elliptmal.workers.dev"
 local BASE = tostring((type(getgenv) == "function" and getgenv().UH_BROADCAST_URL) or BROADCAST_URL):gsub("/+$", "")
 local function call(method, path, body)
-return pcall(request, {Url = BASE .. path, Method = method, Headers = {["Content-Type"] = "application/json"}, Body = body and HttpService:JSONEncode(body) or nil})
+local fn = request or http_request or (syn and syn.request) or (http and http.request)
+if type(fn) ~= "function" then return false, "no request()" end
+return pcall(fn, {Url = BASE .. path, Method = method, Headers = {["Content-Type"] = "application/json"}, Body = body and HttpService:JSONEncode(body) or nil})
 end
 local function clean(s)
 return (tostring(s):gsub("[%c<>]", " "):sub(1, 200))
 end
-if BASE ~= "" and type(request) == "function" then
+local function annShow(text)
+local gui = Instance.new("ScreenGui")
+gui.Name = "UhAnnouncement"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 2147483647
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+local hui = type(gethiddengui) == "function" and select(2, pcall(gethiddengui)) or nil
+local parent = (typeof(hui) == "Instance" and hui) or game:GetService("CoreGui")
+if not pcall(function() gui.Parent = parent end) then
+gui.Parent = Player:WaitForChild("PlayerGui")
+end
+local TS = game:GetService("TweenService")
+local box = Instance.new("TextLabel")
+box.AnchorPoint = Vector2.new(0.5, 0)
+box.Position = UDim2.new(0.5, 0, 0, -120)
+box.Size = UDim2.new(0.9, 0, 0, 0)
+box.AutomaticSize = Enum.AutomaticSize.Y
+box.BackgroundColor3 = Color3.fromRGB(20, 20, 24)
+box.BackgroundTransparency = 0.1
+box.BorderSizePixel = 0
+box.Font = Enum.Font.GothamMedium
+box.TextSize = 16
+box.TextColor3 = Color3.new(1, 1, 1)
+box.TextWrapped = true
+box.RichText = false
+box.Text = text
+box.Parent = gui
+local lim = Instance.new("UISizeConstraint", box)
+lim.MaxSize = Vector2.new(460, math.huge)
+local pad = Instance.new("UIPadding", box)
+pad.PaddingTop, pad.PaddingBottom = UDim.new(0, 10), UDim.new(0, 10)
+pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 14), UDim.new(0, 14)
+Instance.new("UICorner", box).CornerRadius = UDim.new(0, 8)
+local st = Instance.new("UIStroke", box)
+st.Color = Color3.fromRGB(255, 200, 60)
+st.Thickness = 1.5
+TS:Create(box, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0, 24)}):Play()
+task.wait(math.clamp(#text * 0.06 + 4, 6, 14))
+TS:Create(box, TweenInfo.new(0.3), {Position = UDim2.new(0.5, 0, 0, -120), BackgroundTransparency = 1, TextTransparency = 1}):Play()
+TS:Create(st, TweenInfo.new(0.3), {Transparency = 1}):Play()
+task.wait(0.35)
+gui:Destroy()
+end
+local annQueue, annBusy = {}, false
+local function announce(text)
+if #annQueue >= 5 then table.remove(annQueue, 1) end
+annQueue[#annQueue + 1] = text
+if annBusy then return end
+annBusy = true
 task.spawn(function()
-local last
-while true do
-local ok, res = call("GET", last and ("/poll?after=" .. string.format("%d", last)) or "/poll")
-if ok and type(res) == "table" and res.StatusCode == 200 then
-local ok2, data = pcall(HttpService.JSONDecode, HttpService, res.Body)
-if ok2 and type(data) == "table" then
-if last == nil then
-last = tonumber(data.id) or 0
-else
-for _, m in ipairs(type(data.msgs) == "table" and data.msgs or {}) do
-local id = tonumber(m.id)
-if id and id > last and type(m.text) == "string" then
-last = id
-Util.UINotify((Util.Roles.OwnerName() or "Owner") .. ": " .. clean(m.text), nil, true)
-task.wait(math.max(2, (Util.FX.Cfg.NotifDuration or 3) + 1))
-end
-end
-end
-end
-end
-task.wait(4)
+while #annQueue > 0 do
+local t = table.remove(annQueue, 1)
+pcall(function()
+local msg = (Util.Roles.OwnerName() or "Owner") .. ": " .. t
+if not pcall(annShow, msg) then
+pcall(function()
+game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Announcement", Text = msg, Duration = 8})
+end)
 end
 end)
 end
+annBusy = false
+end)
+end
+if BASE ~= "" then
+task.spawn(function()
+local last, fails = nil, 0
+while true do
+local wait = 8
+local ok, res = call("GET", "/poll?t=" .. string.format("%.0f", os.clock() * 1000) .. (last and ("&after=" .. string.format("%.0f", last)) or ""))
+if ok and type(res) == "table" and res.StatusCode == 200 then
+fails = 0
+local ok2, data = pcall(HttpService.JSONDecode, HttpService, res.Body)
+if ok2 and type(data) == "table" then
+local now = tonumber(data.now) or (os.time() * 1000)
+if last == nil then
+last = tonumber(data.now) or tonumber(data.id) or 0
+else
+local list = type(data.msgs) == "table" and data.msgs or {}
+table.sort(list, function(a, b) return (tonumber(type(a) == "table" and a.id) or 0) < (tonumber(type(b) == "table" and b.id) or 0) end)
+for _, m in ipairs(list) do
+local id = type(m) == "table" and tonumber(m.id)
+if id and id > last and type(m.text) == "string" then
+last = id
+if id > now - 300000 then announce(clean(m.text)) end
+end
+end
+end
+end
+else
+fails = fails + 1
+wait = math.min(60, 8 + fails * 6)
+end
+task.wait(wait)
+end
+end)
+end
+if Util.Roles.LoadedAt == 0 then pcall(Util.Roles.Fetch, nil, true) end
 if Util.Roles.Of(Player) == "owner" then
 UI.CreateText(MainPage, "<b>OWNER BROADCAST</b> <font color=\"#AAAAAA\">(owner only)</font>", 15, Enum.TextXAlignment.Center)
 local msgBox = UI.CreateTextbox(MainPage, "", "Announcement for all users (max 200 chars)", 14)
 local sending = false
+local function sendErr(ok, res)
+if not ok or type(res) ~= "table" then return tostring(res) end
+local reason
+if type(res.Body) == "string" then
+local ok2, d = pcall(HttpService.JSONDecode, HttpService, res.Body)
+if ok2 and type(d) == "table" and type(d.error) == "string" then reason = d.error end
+end
+return tostring(res.StatusCode or res.StatusMessage) .. (reason and (" - " .. reason) or "")
+end
 UI.CreateButton(MainPage, "Send announcement", 20).Activated:Connect(function()
 if sending then return end
 local text = (msgBox.Text:gsub("^%s+", ""):gsub("%s+$", ""))
 if text == "" then Util.UINotify("Type an announcement first") return end
-if BASE == "" or type(request) ~= "function" then Util.UINotify("Broadcast backend not configured - NOT sent") return end
+if BASE == "" then Util.UINotify("Broadcast backend not configured - NOT sent") return end
 sending = true
-local ok, res = call("POST", "/send", {user = Player.Name, userId = Player.UserId, text = text:sub(1, 200)})
+local bkey = type(getgenv) == "function" and getgenv().UH_BROADCAST_KEY or nil
+local ok, res = call("POST", "/send", {user = Player.Name, userId = Player.UserId, text = text:sub(1, 200), key = bkey ~= nil and tostring(bkey) or nil})
 sending = false
 if ok and type(res) == "table" and res.StatusCode == 200 then
 msgBox.Text = ""
+Util.UINotify("Announcement sent")
 else
-Util.UINotify("Not sent: " .. tostring(ok and type(res) == "table" and (res.StatusCode or res.StatusMessage) or res))
+Util.UINotify("Not sent: " .. sendErr(ok, res))
 end
 end)
 local SERVER_JS = [==[
-// node announcement_server.js   (env: PORT optional, ROLES_URL optional)
-// Global announcement backend. No key, no SHA-256, no token: the owner is read from roles.json on GitHub.
-const http = require("http");
-const ROLES_URL = process.env.ROLES_URL || "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/roles.json";
-let cache = { at: 0, owners: [] };
-const owners = async () => {
-  if (Date.now() - cache.at < 20000) return cache.owners;
-  cache.at = Date.now() - 15000;
+// Cloudflare Worker: global announcement backend. The owner is read from roles.json on GitHub.
+// Deploy: Cloudflare > Workers > Create > name it "announcement" > paste this > Deploy. REQUIRED: Settings > Bindings > add a KV namespace binding named ANN, otherwise isolates do not share messages and other users miss announcements.
+// OPTIONAL (recommended): Settings > Variables and Secrets > add a secret named KEY. The owner then runs getgenv().UH_BROADCAST_KEY = "<same value>" before the script. Without KEY, anyone who knows an owner's name or id could post.
+const ROLES_URL = "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/roles.json";
+const H = { "Content-Type": "application/json", "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Allow-Methods": "GET,POST,OPTIONS" };
+const out = (c, o) => new Response(JSON.stringify(o), { status: c, headers: H });
+const err = (c, e) => out(c, { error: e });
+let mem = { id: 0, last: 0, msgs: [] }, own = { at: 0, list: [] }, kvAt = 0;
+async function owners() {
+  if (Date.now() - own.at < 20000) return own.list;
+  own.at = Date.now() - 15000;
   try {
-    const r = await fetch(ROLES_URL + "?t=" + Date.now(), { headers: { "Cache-Control": "no-cache" } });
+    const r = await fetch(ROLES_URL + "?t=" + Date.now(), { cf: { cacheTtl: 0 } });
     if (r.ok) {
       const d = await r.json();
-      cache = { at: Date.now(), owners: (Array.isArray(d.entries) ? d.entries : [])
+      own = { at: Date.now(), list: (Array.isArray(d.entries) ? d.entries : [])
         .filter(e => e && String(e.role || "").toLowerCase() === "owner")
         .map(e => ({ name: typeof e.username === "string" ? e.username.toLowerCase() : "", id: Math.floor(Number(e.userId)) || 0 })) };
     }
-  } catch {}
-  return cache.owners;
+  } catch (_) {}
+  return own.list;
+}
+const load = async (env, fresh) => {
+  if (env && env.ANN && (fresh || Date.now() - kvAt > 4000)) {
+    kvAt = Date.now();
+    try {
+      const v = await env.ANN.get("s", fresh ? { type: "json" } : { type: "json", cacheTtl: 30 });
+      if (v && Array.isArray(v.msgs)) {
+        const seen = new Set(mem.msgs.map(m => m.id));
+        mem = { id: Math.max(mem.id, v.id || 0), last: Math.max(mem.last, v.last || 0), msgs: mem.msgs.concat(v.msgs.filter(m => !seen.has(m.id))).sort((a, b) => a.id - b.id).slice(-50) };
+      }
+    } catch (_) {}
+  }
+  return mem;
 };
-let msgs = [], lastId = 0, lastSend = 0;
-http.createServer((req, res) => {
-  const u = new URL(req.url, "http://x");
-  const out = (c, o) => { res.writeHead(c, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }); res.end(JSON.stringify(o)); };
-  if (req.method === "GET" && u.pathname === "/poll") {
-    const a = u.searchParams.get("after");
-    return out(200, { id: lastId, msgs: a === null ? [] : msgs.filter(m => m.id > Number(a)) });
-  }
-  if (req.method === "GET" && u.pathname === "/owner") {
-    return owners().then(o => out(200, { owners: o.map(x => x.name).filter(Boolean) }));
-  }
-  if (req.method === "POST" && u.pathname === "/send") {
-    let b = "";
-    req.on("data", d => { b += d; if (b.length > 4096) req.destroy(); });
-    req.on("end", async () => {
-      let j; try { j = JSON.parse(b); } catch { return out(400, {}); }
+const save = async (env, s) => { mem = s; if (env && env.ANN) { try { await env.ANN.put("s", JSON.stringify(s)); kvAt = Date.now(); } catch (_) {} } };
+export default {
+  async fetch(req, env) {
+    if (req.method === "OPTIONS") return new Response(null, { headers: H });
+    const u = new URL(req.url);
+    if (req.method === "GET" && u.pathname === "/poll") {
+      const s = await load(env), a = u.searchParams.get("after"), n = Number(a);
+      return out(200, { id: s.id, now: Date.now(), msgs: a === null || !Number.isFinite(n) ? [] : s.msgs.filter(m => m.id > n) });
+    }
+    if (req.method === "GET" && u.pathname === "/owner") return out(200, { owners: (await owners()).map(o => o.name).filter(Boolean) });
+    if (req.method === "GET" && (u.pathname === "/" || u.pathname === "/health")) return out(200, { ok: true, kv: !!(env && env.ANN), key: !!(env && env.KEY) });
+    if (req.method === "POST" && u.pathname === "/send") {
+      let j; try { j = JSON.parse((await req.text()).slice(0, 4096)); } catch (_) { return err(400, "bad json"); }
+      if (!j || typeof j !== "object") return err(400, "bad json");
+      if (env && env.KEY && String(j.key || "") !== String(env.KEY)) return err(403, "bad or missing key (set getgenv().UH_BROADCAST_KEY)");
       const name = String(j.user || "").toLowerCase(), id = Math.floor(Number(j.userId)) || 0;
-      const ok = (await owners()).some(o => (o.name && o.name === name) || (o.id && o.id === id));
-      if (!ok) return out(403, {});
+      if (!(await owners()).some(o => (o.name && o.name === name) || (o.id && o.id === id))) return err(403, "not an owner in roles.json");
       const text = String(j.text || "").replace(/[\u0000-\u001f<>]/g, " ").trim().slice(0, 200);
-      if (!text || Date.now() - lastSend < 2000) return out(400, {});
-      lastSend = Date.now();
-      lastId = Math.max(Date.now(), lastId + 1);
-      msgs.push({ id: lastId, text });
-      msgs = msgs.slice(-50);
-      out(200, { id: lastId });
-    });
-    return;
+      if (!text) return err(400, "empty message");
+      const s = await load(env, true);
+      if (Date.now() - s.last < 2000) return err(429, "too fast, wait 2s");
+      s.last = Date.now();
+      s.id = Math.max(Date.now(), s.id + 1);
+      s.msgs.push({ id: s.id, text });
+      s.msgs = s.msgs.filter(m => m.id > Date.now() - 3600000).slice(-50);
+      await save(env, s);
+      return out(200, { id: s.id });
+    }
+    return err(404, "not found");
   }
-  out(404, {});
-}).listen(process.env.PORT || 3000);
+};
 ]==]
-UI.CreateButton(MainPage, "Export backend (announcement_server.js)", 16).Activated:Connect(function()
+UI.CreateButton(MainPage, "Copy backend (announcement_server.js)", 16).Activated:Connect(function()
+local copied = false
+local clip = setclipboard or toclipboard or set_clipboard
+if type(clip) == "function" and pcall(clip, SERVER_JS) then copied = true end
 pcall(makefolder, "UhhhhhhReanim")
-local ok = pcall(writefile, "UhhhhhhReanim/announcement_server.js", SERVER_JS)
-Util.UINotify(ok and "Saved UhhhhhhReanim/announcement_server.js - run it on a Node host" or "Could not write the file", nil, true)
+local saved
+for _, name in ipairs({"UhhhhhhReanim/announcement_server.js", "UhhhhhhReanim/announcement_server.js.txt", "UhhhhhhReanim/announcement_server.txt"}) do
+if pcall(writefile, name, SERVER_JS) then saved = name break end
+end
+Util.UINotify(copied and "announcement_server.js copied to clipboard" .. (saved and (" + saved " .. saved) or "") or (saved and ("Saved " .. saved) or "Could not copy or write the file"), nil, true)
 end)
 UI.CreateSeparator(MainPage)
 end
@@ -261507,19 +261615,22 @@ end
 end
 end
 end
+do
+local _shp, _pc, _zyx = sethiddenproperty, pcall, Enum.RotationOrder.ZYX
 Util.SetMotor6DTransform = function(motor, transform)
-local name = motor.Name
-motor.MaxVelocity = 9e9
-local _, _, angle = transform:ToEulerAngles(Enum.RotationOrder.ZYX)
+if motor.MaxVelocity ~= 9e9 then motor.MaxVelocity = 9e9 end
+local _, _, angle = transform:ToEulerAngles(_zyx)
 motor.DesiredAngle = angle
 motor:SetDesiredAngle(angle)
-local axis, angle = transform:ToAxisAngle()
-local newangle = axis * angle
-pcall(sethiddenproperty, motor, "ReplicateCurrentOffset6D", transform.Position)
-pcall(sethiddenproperty, motor, "ReplicateCurrentAngle6D", newangle)
+local axis, ang = transform:ToAxisAngle()
+if _shp then
+_pc(_shp, motor, "ReplicateCurrentOffset6D", transform.Position)
+_pc(_shp, motor, "ReplicateCurrentAngle6D", axis * ang)
+end
 end
 Util.SetMotor6DOffset = function(motor, offset)
 Util.SetMotor6DTransform(motor, motor.C0:Inverse() * offset * motor.C1)
+end
 end
 Util.ShowPartHitbox = function(part)
 local w = Instance.new("WireframeHandleAdornment")
@@ -262929,15 +263040,38 @@ end
 end
 Reanimate.CreateCharacter(InitCFrame)
 local lastrep = 0
+local LOPT = {
+info = setmetatable({}, {__mode = "k"}),
+lk = setmetatable({}, {__mode = "k"}),
+limbs = {Head = true, Torso = true, ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true},
+vz = Vector3.zero,
+refDirty = true,
+refAt = 0,
+}
+local function lookup(parent, key, isClass)
+local c = LOPT.lk[parent]
+if not c then c = {} LOPT.lk[parent] = c end
+local o = c[key]
+if not o or o.Parent ~= parent then
+if isClass then o = parent:FindFirstChildOfClass(key) else o = parent:FindFirstChild(key) end
+c[key] = o
+end
+return o
+end
 local function UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf)
 if not RootPart:IsGrounded() then
 if flingtarget then
 Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
+LOPT.refDirty = true
 else
 RootPart.CFrame = rootcf + Vector3.new(0, 0, math.random(0, 1) * 0.005)
 RootPart.Velocity, RootPart.RotVelocity = rootvel, Vector3.zero
+local _rn = os.clock()
+if LOPT.refDirty or _rn - LOPT.refAt > 0.5 then
+LOPT.refDirty, LOPT.refAt = false, _rn
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", nil)
+end
 end
 end
 local dorep = true
@@ -262995,9 +263129,9 @@ end
 local ReanimOkay = false
 local Character, Humanoid, RootPart = Player.Character, nil, nil
 if Character then
-Humanoid = Character:FindFirstChildOfClass("Humanoid")
+Humanoid = lookup(Character, "Humanoid", true)
 if Humanoid then
-Humanoid.AutoRotate = false
+if Humanoid.AutoRotate then Humanoid.AutoRotate = false end
 if Humanoid.WalkSpeed < 1 then
 Humanoid.WalkSpeed = 16
 end
@@ -263016,37 +263150,39 @@ local rootvel = Vector3.zero
 local ltm = Reanimate.LocalTransparencyModifier
 local ReanimCharacter = Reanimate.Character
 if ReanimCharacter then
-local RCHumanoid = ReanimCharacter:FindFirstChildOfClass("Humanoid")
-local RCRootPart = ReanimCharacter:FindFirstChild("HumanoidRootPart")
-local RCTorso = ReanimCharacter:FindFirstChild("Torso")
-if Camera then
+local RCHumanoid = lookup(ReanimCharacter, "Humanoid", true)
+local RCRootPart = lookup(ReanimCharacter, "HumanoidRootPart")
+local RCTorso = lookup(ReanimCharacter, "Torso")
+if Camera and Camera.CameraSubject ~= RCHumanoid then
 Camera.CameraSubject = RCHumanoid
 end
+local nowc, fpb, vz, infoT = os.clock(), Reanimate.FirstPersonBody and true or false, LOPT.vz, LOPT.info
 for _,v in BaseParts do
-v.CanCollide = false
-v.Velocity = Vector3.zero
-v.RotVelocity = Vector3.zero
-if not v:FindFirstAncestorWhichIsA("Tool") then
-local lltm = ltm
-if Reanimate.FirstPersonBody then
-lltm = 0
-if v.Name == "Head" then
-lltm = ltm
-else
+if v.CanCollide then v.CanCollide = false end
+if v.Velocity ~= vz then v.Velocity = vz end
+if v.RotVelocity ~= vz then v.RotVelocity = vz end
+local info = infoT[v]
+if not info or nowc - info.at > 1 or info.fpb ~= fpb then
+info = {at = nowc, fpb = fpb, tool = v:FindFirstAncestorWhichIsA("Tool") ~= nil, head = false}
+if fpb and v.Name ~= "Head" then
 local lol = v:FindFirstChild("AccessoryWeld")
-if lol and lol:IsA("Weld") and lol.Part1 and lol.Part1.Name == "Head" then
-lltm = ltm
+info.head = (lol and lol:IsA("Weld") and lol.Part1 and lol.Part1.Name == "Head") and true or false
+end
+infoT[v] = info
+end
+if not info.tool then
+local lltm = ltm
+if fpb and v.Name ~= "Head" and not info.head then
+lltm = 0
+end
+if v.LocalTransparencyModifier ~= lltm then v.LocalTransparencyModifier = lltm end
 end
 end
-end
-v.LocalTransparencyModifier = lltm
-end
-end
+local wantT = ReanimOkay and 1 or Reanimate.PlaceholderTransparency
+local limbSet = LOPT.limbs
 for _,v in ReanimCharacter:GetChildren() do
-if v:IsA("BasePart") then
-if table.find(LimbNames, v.Name) then
-v.Transparency = ReanimOkay and 1 or Reanimate.PlaceholderTransparency
-end
+if limbSet[v.Name] and v:IsA("BasePart") and v.Transparency ~= wantT then
+v.Transparency = wantT
 end
 end
 if Character and Humanoid and RootPart then
@@ -266563,23 +266699,53 @@ end
 end
 do
 local RS = SaveData.Reanimator
+do
+local poseCache = setmetatable({}, {__mode = "k"})
 function Reanimate.LimbPoseCFrame(map, v, RC, RootPart)
 local cf = CFrame.identity
-local p0, p1 = RC:FindFirstChild(map.RPart0), RC:FindFirstChild(map.RPart1)
-if map.RPart0 == "ROOT" then
+local e = poseCache[map]
+if not e or e.RC ~= RC then
+e = {RC = RC}
+poseCache[map] = e
+end
+local n0, n1 = map.RPart0, map.RPart1
+local p0, p1
+if n0 == "ROOT" then
 p0 = RootPart
+else
+p0 = e.p0
+if not p0 or p0.Parent ~= RC or p0.Name ~= n0 then
+p0 = RC:FindFirstChild(n0)
+e.p0 = p0
+end
+end
+p1 = e.p1
+if not p1 or p1.Parent ~= RC or p1.Name ~= n1 then
+p1 = RC:FindFirstChild(n1)
+e.p1 = p1
 end
 if p0 and p1 then
-if map.Type == 1 then
+local t = map.Type
+if t == 1 then
 cf = p0.CFrame:ToObjectSpace(p1.CFrame)
-elseif map.Type == 2 then
+elseif t == 2 then
 local offset = map.Offset or CFrame.identity
-local c0, c1 = CFrame.new(map.C0), CFrame.new(map.C1)
-local transform = offset * (p0.CFrame * c0):ToObjectSpace(p1.CFrame * c1) * offset:Inverse()
+if e.offSrc ~= offset then
+e.offSrc, e.offInv = offset, offset:Inverse()
+end
+local mc0, mc1 = map.C0, map.C1
+if e.c0Src ~= mc0 then
+e.c0Src, e.c0 = mc0, CFrame.new(mc0)
+end
+if e.c1Src ~= mc1 then
+e.c1Src, e.c1 = mc1, CFrame.new(mc1)
+end
+local transform = offset * (p0.CFrame * e.c0):ToObjectSpace(p1.CFrame * e.c1) * e.offInv
 cf = v.C0 * transform * v.C1:Inverse()
 end
 end
 return cf
+end
 end
 local NPC = {Name = "NPC", FlingEnabled = not not RS.NPCFling, FlingTargets = {}, _TempNotFling = {}, List = {}, ListSet = {}, ListCount = 0, Rebuilds = 0}
 Reanimate.NPCReanimator = NPC
@@ -266954,7 +267120,11 @@ local root = t.Root
 if not root:IsGrounded() then
 root.CFrame = rootcf + Vector3.new(0, 0, math.random(0, 1) * 0.005)
 root.Velocity, root.RotVelocity = rootvel, Vector3.zero
+local _rn = os.clock()
+if _rn - (t.RepRefAt or 0) > 0.5 then
+t.RepRefAt = _rn
 pcall(sethiddenproperty, root, "PhysicsRepRootRef", nil)
+end
 end
 local dorep = true
 if LimbReanimator.ReplicateFPS10 then
