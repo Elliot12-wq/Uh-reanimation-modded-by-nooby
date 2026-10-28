@@ -265107,8 +265107,11 @@ end
 local function AssetGetContentId(filename)
 local path = AssetGetPathFromFilename(filename)
 if not isfile(path) then return "" end
+local pc = Util.PreloadIds
+if pc and pc[filename] then return pc[filename] end
 local s, id = pcall(getcustomasset, path)
 if s and id then
+if pc then pc[filename] = id end
 return id
 end
 return ""
@@ -267818,8 +267821,46 @@ return string.format("MODULES READY  |  %d MOVESETS  |  %d DANCES", #MovementSty
 end
 return string.format("LOADING MODULES %d/%d  |  %d MOVESETS  |  %d DANCES", math.min(P.Done, P.Total), P.Total, #MovementStyles, #DanceableDances)
 end
+Util.PreloadModules = function(slow)
+local run = (Util.PreloadRun or 0) + 1
+Util.PreloadRun = run
+Util.PreloadIds = {}
+task.spawn(function()
+local queue, seen, fails = {MovementStyles[MovementStyleIndex]}, {}, 0
+for _, list in {MovementStyles, DanceableDances} do
+for _, m in list do queue[#queue + 1] = m end
+end
+for _, m in queue do
+if Util.PreloadRun ~= run then return end
+if not seen[m] and type(m.Assets) == "table" then
+seen[m] = true
+local ok = pcall(function()
+local ready, w = AssetEnsure(m.Assets), 0
+while not ready and w < 24 and Util.PreloadRun == run do
+task.wait(0.5)
+w += 1
+ready = AssetEnsure(m.Assets)
+end
+if not ready then error("assets unavailable", 0) end
+for _, entry in m.Assets do
+local name = type(entry) == "string" and string.split(entry, "@")[1]
+if name and name:sub(-5) ~= ".anim" and name:sub(-6) ~= ".anims" then
+AssetGetContentId(name)
+task.wait()
+end
+end
+end)
+fails = ok and 0 or fails + 1
+if fails >= 3 then return end
+task.wait(slow and 0.5 or 0.2)
+end
+end
+end)
+end
 local function DoModuleReload(force)
 IsUhhhhhhFullyLoaded = false
+Util.PreloadRun = (Util.PreloadRun or 0) + 1
+Util.PreloadIds = nil
 Util.ModuleProgress = {Done = 0, Total = 7}
 Util.StaleBuiltins = {}
 do
@@ -267886,7 +267927,7 @@ wasold = true
 SaveData.VanillaModuleCache = nil
 end
 local loadMode = tonumber(SaveData.ModuleLoadMode)
-if loadMode ~= 2 and loadMode ~= 3 and loadMode ~= 4 then loadMode = 1 end
+if loadMode ~= 2 and loadMode ~= 3 and loadMode ~= 4 and loadMode ~= 5 then loadMode = 1 end
 local SLOW_STEP_DELAY = 0.35
 local function SlowPause()
 if loadMode == 4 then
@@ -267909,7 +267950,7 @@ task.wait()
 sliceT = os.clock()
 end
 end
-InitLogsText.Add("\n[LOG] Module load mode: " .. ({"Default", "Splitted (2 at a time)", "Instant", "Slow (1 at a time, paced)"})[loadMode])
+InitLogsText.Add("\n[LOG] Module load mode: " .. ({"Default", "Splitted (2 at a time)", "Instant", "Slow (1 at a time, paced)", "Pre-load (assets cached ahead of time)"})[loadMode])
 if loadMode == 4 then
 InitLogsText.Add("\n[LOG] Slow mode: one module at a time with a short pause between each, this takes longer.")
 end
@@ -267946,7 +267987,7 @@ end
 end
 return
 end
-if loadMode == 1 then
+if loadMode == 1 or loadMode == 5 then
 for i, x in items do
 local okW, data = pcall(work, i, x)
 if not okW then
@@ -268378,6 +268419,7 @@ Util.UINotify("Init complete" .. (InitLogsText.HasError and " with errors" or ""
 if Util.ModuleProgress then Util.ModuleProgress.Done = Util.ModuleProgress.Total end
 Util.StaleBuiltins = {}
 IsUhhhhhhFullyLoaded = true
+if loadMode == 5 then pcall(Util.PreloadModules, lowTier) end
 if force == false then return end
 CurrentDance = nil
 if not Reanimate.Character then return end
@@ -268407,7 +268449,7 @@ UI.CreateSeparator(MainPage)
 UI.CreateText(MainPage, "<b>MODULES MANAGEMENT</b>", 15, Enum.TextXAlignment.Center)
 do
 SaveData.ModuleLoadMode = math.floor(tonumber(SaveData.ModuleLoadMode) or 1)
-if SaveData.ModuleLoadMode < 1 or SaveData.ModuleLoadMode > 4 then
+if SaveData.ModuleLoadMode < 1 or SaveData.ModuleLoadMode > 5 then
 SaveData.ModuleLoadMode = 1
 end
 local LoadModeInfo = {
@@ -268415,6 +268457,7 @@ local LoadModeInfo = {
 "Splitted: reads and loads 2 modules at a time. Lighter on weak devices.",
 "Instant: reads and loads all modules at once, the fastest way.",
 "Slow: reads and loads 1 module at a time with a short pause between each. Saves performance on weak devices, but loading takes longer.",
+"Pre-load: loads modules normally, then quietly downloads and caches every moveset and dance asset in the background so switching is instant.",
 }
 local LoadModeNote = "\n(applies on the next Reload Modules / restart)"
 local LoadModeText
@@ -268423,6 +268466,7 @@ UI.CreateDropdown(MainPage, "Module Loading", {
 "Splitted (2 at a time)",
 "Instant (all at once)",
 "Slow (1 at a time, saves performance)",
+"Pre-load (assets ahead of time)",
 }, SaveData.ModuleLoadMode).Changed:Connect(function(val)
 SaveData.ModuleLoadMode = val
 LoadModeText.Text = (LoadModeInfo[val] or LoadModeInfo[1]) .. LoadModeNote
