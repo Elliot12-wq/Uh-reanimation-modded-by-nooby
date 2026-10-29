@@ -208,6 +208,23 @@ end
 if not s:match("^%x%x%x%x%x%x$") then return nil end
 return Color3.fromRGB(tonumber(s:sub(1, 2), 16), tonumber(s:sub(3, 4), 16), tonumber(s:sub(5, 6), 16))
 end
+-- Official Discord invite for this script. Replace the placeholder below with the real invite link.
+Util.DISCORD_INVITE_URL = "https://discord.gg/NASNUKRBVM"
+Util.DiscordInvite = function()
+local url = Util.DISCORD_INVITE_URL
+if type(url) == "string" and (url:find("discord.gg/", 1, true) or url:find("discord.com/invite/", 1, true)) then return url end
+return nil
+end
+Util.OpenDiscord = function()
+local url = Util.DiscordInvite()
+if not url then
+Util.Notify("Discord invite is not configured yet (set DISCORD_INVITE_URL).")
+return false
+end
+local copied = type(setclipboard) == "function" and pcall(setclipboard, url)
+Util.Notify(copied and ("Discord invite copied: " .. url) or ("Discord invite: " .. url))
+return true
+end
 Util.Notify = function(text)
 local cfg = Util.FX and Util.FX.Cfg
 if cfg then
@@ -19474,6 +19491,26 @@ ZIndex = 23,
 }, chatLogs)
 uhTag(chatExample, "text")
 local commandsFrame, cmdContainer = makeWindow("Commands", "Commands")
+do
+local dcTop = commandsFrame:FindFirstChild("Topbar")
+if dcTop then
+local dcBtn = uhNew("TextButton", {
+Name = "JoinDiscord",
+AnchorPoint = Vector2.new(1, 0),
+Position = UDim2.new(1, -50, 0, 2),
+Size = UDim2.new(0, 74, 0, 21),
+BackgroundTransparency = 0.4,
+BorderSizePixel = 0,
+Font = Enum.Font.GothamBold,
+TextSize = 11,
+Text = "Join Discord",
+ZIndex = 22,
+}, dcTop)
+uhTag(dcBtn, "bg") uhTag(dcBtn, "text")
+uhNew("UICorner", {}, dcBtn)
+dcBtn.MouseButton1Click:Connect(function() pcall(Util.OpenDiscord) end)
+end
+end
 local commandsFilter = uhNew("TextBox", {
 Name = "Filter",
 Position = UDim2.new(0, 4, 0, 4),
@@ -19567,6 +19604,126 @@ end)
 end
 if not parented then
 sg.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
+end
+if not Util.UhAdmin.DiscordToastShown then
+Util.UhAdmin.DiscordToastShown = true
+local TS = game:GetService("TweenService")
+local dc = uhNew("Frame", {
+Name = "DiscordIsland",
+AnchorPoint = Vector2.new(0.5, 0),
+Position = UDim2.new(0.5, 0, 0, -60),
+Size = UDim2.new(0, 30, 0, 30),
+BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+BackgroundTransparency = 0,
+BorderSizePixel = 0,
+ClipsDescendants = true,
+Visible = false,
+ZIndex = 40,
+}, sg)
+local corner = uhNew("UICorner", {CornerRadius = UDim.new(0, 17)}, dc)
+uhTag(uhNew("UIStroke", {Thickness = 1.2, Transparency = 0.35, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, dc), "accent")
+local title = uhNew("TextLabel", {
+Name = "Title",
+Position = UDim2.new(0, 20, 0, 12),
+Size = UDim2.new(0, 270, 0, 34),
+BackgroundTransparency = 1,
+Font = Enum.Font.GothamBold,
+TextSize = 13,
+TextColor3 = Color3.new(1, 1, 1),
+TextTransparency = 1,
+TextWrapped = true,
+TextXAlignment = Enum.TextXAlignment.Left,
+TextYAlignment = Enum.TextYAlignment.Top,
+Text = "Join Botsl The Original Server Of This Script.",
+ZIndex = 41,
+}, dc)
+local sub = uhNew("TextLabel", {
+Name = "Sub",
+Position = UDim2.new(0, 20, 0, 48),
+Size = UDim2.new(0, 290, 0, 14),
+BackgroundTransparency = 1,
+Font = Enum.Font.Gotham,
+TextSize = 11,
+TextColor3 = Color3.fromRGB(190, 190, 195),
+TextTransparency = 1,
+TextXAlignment = Enum.TextXAlignment.Left,
+Text = "Updates, mods and good company.",
+ZIndex = 41,
+}, dc)
+local join = uhNew("TextButton", {
+Name = "Join",
+Position = UDim2.new(0, 20, 0, 68),
+Size = UDim2.new(0, 130, 0, 26),
+BackgroundColor3 = Color3.fromRGB(10, 132, 255),
+BackgroundTransparency = 1,
+BorderSizePixel = 0,
+AutoButtonColor = false,
+Font = Enum.Font.GothamBold,
+TextSize = 12,
+TextColor3 = Color3.new(1, 1, 1),
+TextTransparency = 1,
+Text = "Copy Invite",
+ZIndex = 41,
+}, dc)
+uhTag(join, "accent")
+uhNew("UICorner", {CornerRadius = UDim.new(0, 13)}, join)
+local x = uhNew("TextButton", {
+Name = "Close",
+Position = UDim2.new(0, 304, 0, 10),
+Size = UDim2.new(0, 22, 0, 22),
+BackgroundTransparency = 1,
+Font = Enum.Font.GothamBold,
+TextSize = 13,
+TextColor3 = Color3.new(1, 1, 1),
+TextTransparency = 1,
+Text = "X",
+ZIndex = 42,
+}, dc)
+local items = {
+{title, {TextTransparency = 0}, {TextTransparency = 1}},
+{sub, {TextTransparency = 0.1}, {TextTransparency = 1}},
+{join, {BackgroundTransparency = 0, TextTransparency = 0}, {BackgroundTransparency = 1, TextTransparency = 1}},
+{x, {TextTransparency = 0.3}, {TextTransparency = 1}},
+}
+local closed = false
+local function fade(show, t)
+local info = TweenInfo.new(t or 0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+for _, it in ipairs(items) do TS:Create(it[1], info, show and it[2] or it[3]):Play() end
+end
+local function dcHide()
+if closed or not dc.Parent then return end
+closed = true
+fade(false, 0.15)
+task.wait(0.12)
+TS:Create(dc, TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {Size = UDim2.new(0, 126, 0, 34)}):Play()
+TS:Create(corner, TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {CornerRadius = UDim.new(0, 17)}):Play()
+task.wait(0.5)
+TS:Create(dc, TweenInfo.new(0.35, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {Position = UDim2.new(0.5, 0, 0, -60), Size = UDim2.new(0, 30, 0, 30)}):Play()
+task.wait(0.4)
+dc:Destroy()
+end
+x.MouseButton1Click:Connect(dcHide)
+join.MouseButton1Click:Connect(function()
+local ok, res = pcall(Util.OpenDiscord)
+if ok and res and type(setclipboard) == "function" then join.Text = "Link copied!" end
+task.delay(1.2, dcHide)
+end)
+task.delay(2.5, function()
+if closed or not dc.Parent then return end
+local okc, cfg = pcall(function() return Util.FX.Cfg end)
+if okc and type(cfg) == "table" and cfg.NotifMode == 4 then dc:Destroy() return end
+dc.Visible = true
+TS:Create(dc, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0, 12), Size = UDim2.new(0, 126, 0, 34)}):Play()
+task.wait(0.55)
+if closed then return end
+TS:Create(dc, TweenInfo.new(0.7, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 330, 0, 106)}):Play()
+TS:Create(corner, TweenInfo.new(0.7, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {CornerRadius = UDim.new(0, 28)}):Play()
+task.wait(0.15)
+if closed then return end
+fade(true, 0.35)
+task.wait(12)
+dcHide()
+end)
 end
 Util.UhAdmin.UI = {
 ScreenGui = sg,
@@ -27799,7 +27956,10 @@ Duration = 5;
 });
 loadstring(game:HttpGet('https://github.com/DigitalityScripts/roblox-scripts/raw/main/hat%20resize'))()
 end)
-cmd.add({"discord"}, {"discord", "discord server link"}, function()
+cmd.add({"discord"}, {"discord", "Official Discord server invite link"}, function()
+Util.OpenDiscord()
+end)
+cmd.add({"nadiscord"}, {"nadiscord", "Nameless Admin discord server link"}, function()
 wait();
 Notify({
 Description = "discord.gg/mW442YxE4j";
@@ -263444,13 +263604,5044 @@ end
 end
 do
 SaveData.SelectedReanimator = SaveData.SelectedReanimator or 1
-if SaveData.SelectedReanimator == 5 then SaveData.SelectedReanimator = 4 elseif SaveData.SelectedReanimator > 4 then SaveData.SelectedReanimator = 1 end
+if not SaveData.ReanimSel8 then
+SaveData.ReanimSel8 = true
+if SaveData.SelectedReanimator == 5 then SaveData.SelectedReanimator = 4 end
+end
+if SaveData.SelectedReanimator > 7 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
 Util.FCMark("reanim")
+Reanimate.ExtMethods = (function()
+--[[ EXTERNAL REANIMATION METHODS: Krypton / Catware / Gelatek
+	Krypton, Catware and Gelatek run their ORIGINAL source code, embedded verbatim below (only tiny runtime glue is applied:
+	offline copies instead of their GitHub fetches, and one connection handle captured so it can be disconnected).
+	Each method uses its own fake character / camera / controls exactly like the original, is configured through the original
+	option tables, and is stopped + cleaned up when you Deanimate or select another method.
+	Credits & licences:
+	 - Krypton  (c) @xyzkade / @gelatekforever. GPL-3.0. https://github.com/KadeTheExploiter/Krypton
+	 - Catware  (c) StrokeThePea (Gelatek, ProductionTakeOne, Danix, MyWorld). GPL-3.0. https://github.com/StrokeThePea/CatwareReanimate
+	 - Gelatek  (c) Gelatek, "Frostware License": modification allowed, credit required. https://github.com/Gelatekussy/GelatekReanimate
+	 Embedded GPL-3.0 code: if you distribute this combined script, it must be distributed under GPL-3.0-compatible terms.
+]]
+local Players = game:GetService("Players")
+local Player = Players.LocalPlayer
+local genv = (getgenv and getgenv()) or _G
+local ER, M, SRC = {}, {}, {}
+
+SRC.Krypton = [=====[
+-- \\ Krypton Reanimate, Author: @xyzkade/@gelatekforever. https://github.com/KadeTheExploiter/Krypton/ //
+-- || 1.8, Let's experiment!
+-- // Eyelashes, Lipstick, Facemask, Crystal Gel, Deluxe Spa Package!~...
+
+local game = game
+local TableClear = table.clear
+local TaskWait = task.wait
+local TableInsert = table.insert
+local CFrameNew = CFrame.new
+local Vector3New = Vector3.new
+local Sine = math.sin
+local Cosine = math.cos
+local ClockTPOT = os.clock
+
+local Hats = {} 
+local ReanimateConfig = KryptonConfiguration or {}
+local DontStartYet = ReanimateConfig.DontStartYet -- Patchfix for private testing
+local FlingTable, ReturnOnDeath, RigName, WaitTime, RigScale, DestroyHeightOffset, RadiusOffset, FlingMethod, FlingVelocity, RefitCount
+local Flinging, OverlayFakeCharacter, NoBodyNearby, PermanentDeath, Reclaim, AntisleepPower, Refit, AntiVoiding, NoCollisions, SetPlayerChar, ToolFlinging, LimitHatsPerLimb, DisableCharacterScripts
+
+local GetPropertyChangedSignal = game.GetPropertyChangedSignal
+local FindFirstChildWhichIsA = game.FindFirstChildWhichIsA
+local FindFirstChildOfClass = game.FindFirstChildOfClass
+local GetDescendants = game.GetDescendants
+local FindFirstChild = game.FindFirstChild
+local IsDescendantOf = game.IsDescendantOf
+local WaitForChild = game.WaitForChild
+local GetChildren = game.GetChildren
+local Destroy = game.Destroy
+local Clone = game.Clone
+local Close = game.Close
+local IsA = game.IsA
+
+local ReverseSleep = Vector3.zero
+local FailsafeOffset = CFrame.new(1, 6, 1) 
+local FailsafeVelocity = Vector3New(0,120,30)
+local FlingVelocity = Vector3New(16000, 16000, 16000)
+local PreSimulationEvent = nil
+local ReclaimInstance = nil
+local LargestInstance = nil
+local FlingInstance = nil
+local PlayTrack = nil
+local StopTrack = nil
+local AdjustSpeed = nil
+local CurrentAnimation = nil
+local AnimationThread = nil
+
+local MaxInteger = 2147483646
+local SinedClock = 1
+local TotalHats = 0
+
+local BindableEvent = Instance.new("BindableEvent")
+local FallAnimation = Instance.new("Animation")
+
+local CamCustomType = Enum.CameraType.Custom
+local CameraLockType = Enum.MouseBehavior.LockCenter
+
+local Tables = {}
+local function CreateTable(Content: {any} | nil): {any}
+	local NewTable = Content or {}
+
+	table.insert(Tables, NewTable)
+
+	return NewTable
+end
+
+local identifyexecutor = identifyexecutor
+local replicatesignal = replicatesignal
+local setscriptable = setscriptable 
+
+local HatsWithDifferentAligns = CreateTable()
+local FlingableTargets = CreateTable()
+local TempSignals = CreateTable()
+local RBXSignals = CreateTable()
+local Blacklist = CreateTable()
+local HatsInUse = CreateTable()
+local JointsOffsets  = CreateTable()
+local Joints = CreateTable()
+
+local FrameTimes = {}
+local FrameData = {}
+
+local InsertService: InsertService = FindFirstChildOfClass(game, "InsertService")
+local Workspace: Workspace = FindFirstChildOfClass(game, "Workspace")
+local Players: Players = FindFirstChildOfClass(game, "Players")
+local RunService: RunService = FindFirstChildOfClass(game, "RunService")
+local StarterGui: StarterGui = FindFirstChildOfClass(game, "StarterGui")
+local UserInputService: UserInputService = FindFirstChildOfClass(game, "UserInputService")
+
+local SignalConnect = Close['Connect']
+local SignalWait = Close['Wait']
+local SignalOnce = Close['Once']
+local Disconnect = SignalOnce(Close, function() end)['Disconnect']
+
+local CanChangeSimRadius, _ = pcall(GetPropertyChangedSignal, Players.LocalPlayer, "SimulationRadius")
+local FallenPartsDestroyHeight = Workspace['FallenPartsDestroyHeight'] 
+local FallenPartsDestroyHeightOffset
+local Terrain = FindFirstChildOfClass(Workspace, "Terrain")
+
+local Camera = Workspace['CurrentCamera']
+local PreviousCameraCFrame = Camera['CFrame']
+local Player = Players['LocalPlayer']
+local GetNetworkPing = Player['GetNetworkPing']
+local Humanoid, Animator, RootPart, CFrameBackup
+
+-- // RunTime: Creating FakeRig
+
+local Character = Player['Character'] or SignalWait(Player['CharacterAdded'])
+
+if Character.Name ~= Player.Name then 
+	return 
+end
+
+local Descendants = CreateTable(GetDescendants(Character))
+
+local FakeRig, FakeHumanoid, FakeAnimator, FakeRoot, FakeRigChildren
+
+local QuickHumanoid = Instance.new("Humanoid")
+local QuickAnimator = Instance.new("Animator", QuickHumanoid)
+
+local SetStateEnabled = QuickHumanoid['SetStateEnabled']
+local ChangeState = QuickHumanoid['ChangeState']
+local LoadAnimation = QuickAnimator['LoadAnimation']
+local GetPlayingAnimationTracks = QuickAnimator['GetPlayingAnimationTracks']
+
+local Move = QuickHumanoid['Move']
+
+local SetCoreGuiEnabled = StarterGui['SetCoreGuiEnabled']
+local IsGrounded = Character.PrimaryPart['IsGrounded']
+local BreakJoints = Character['BreakJoints']
+local SetCore = StarterGui['SetCore']
+
+Destroy(QuickHumanoid)
+
+-- // RunTime: Functions
+
+-- // Instances
+
+local function SetDescendantProperties(Table: {}, Class: string, Property: string, Value: any, Check: boolean)
+	if not Check then
+		return
+	end
+
+	for _, Any in Table do
+		if IsA(Any, Class) then
+			Any[Property] = Value
+		end
+	end
+end
+
+local function WaitForInstance(Parent: Instance, Class: string, Name: string | nil, Cooldown: number | nil)
+	local CurTime = Cooldown or 0
+
+	while 1 > CurTime do
+		for _, Any in GetChildren(Parent) do
+			if IsA(Any, Class) and (not Name or Any.Name == Name) then
+				return Any
+			end
+		end
+
+		CurTime += TaskWait()
+	end
+end
+
+local function ExtractNumbers(String: string | number)
+	local ToString = tostring(String)
+	return string.match(ToString, "%d+")
+end
+
+local function GetFirstPart(Parent: Instance) : Part
+	return FindFirstChildOfClass(Parent, "Part") or WaitForChild(Parent, "Handle", 1)
+end
+
+local function GetFirstWeld(Parent: Instance) : Weld
+	return FindFirstChild(Parent, "AccessoryWeld") or FindFirstChildOfClass(Parent, "Weld")
+end
+
+local function DestroyWeld(Parent: Instance)
+	local Weld = GetFirstWeld(Parent)
+
+	if Weld then
+		Weld:Destroy()
+	end
+end
+
+-- // Accessories
+
+local function GetAccoutrementData(Accoutrement: Accoutrement)
+	local Handle = FindFirstChild(Accoutrement, "Handle")
+
+	if IsA(Handle, "MeshPart") then
+		return {Handle.MeshId, Handle.TextureID}
+	else
+		local Mesh = FindFirstChildOfClass(Handle, "SpecialMesh")
+
+		if Mesh then
+			return {Mesh.MeshId, Mesh.TextureId}
+		end
+	end
+end
+
+local function FindAccoutrement(Parent: Instance, Texture: string | number, Mesh: string | number, Name: string)
+	local InputMeshNumber = ExtractNumbers(Mesh)
+	local InputTextureNumber = ExtractNumbers(Texture)
+
+	for _, Accoutrement in GetChildren(Parent) do
+		if not (IsA(Accoutrement, "Accoutrement") and Accoutrement.Name == Name) then
+			continue
+		end
+
+		local AccounteremtData = GetAccoutrementData(Accoutrement)
+
+		if not AccounteremtData then
+			continue
+		end
+
+		local MeshNumber = ExtractNumbers(AccounteremtData[1])
+		local TextureNumber = ExtractNumbers(AccounteremtData[2])
+
+		if MeshNumber == InputMeshNumber and TextureNumber == InputTextureNumber then
+			return Accoutrement
+		end
+	end
+end
+
+local function RecreateAccoutrement(Accoutrement)
+	local FakeAccoutrement = Clone(Accoutrement)
+	local FakeHandle = GetFirstPart(FakeAccoutrement)
+	DestroyWeld(FakeHandle)
+
+	FakeHandle.Transparency = 1
+
+	local FakeAttachment = FindFirstChildOfClass(FakeHandle, "Attachment")
+	local RigAttachmentName = FakeAttachment and FakeAttachment.Name or ""
+	local RigAttachment = FindFirstChild(FakeRig, RigAttachmentName, true)
+
+	local FakeHandleWeld = Instance.new("Weld")
+
+	FakeHandleWeld.Name = "AccessoryWeld"
+	FakeHandleWeld.Part0 = FakeHandle
+	FakeHandleWeld.C0 = FakeAttachment.CFrame
+
+	if RigAttachment then
+		FakeHandleWeld.C1 = RigAttachment.CFrame
+		FakeHandleWeld.Part1 = RigAttachment.Parent
+	else
+		FakeHandleWeld.Part1 = FindFirstChild(FakeRig, "Head")
+	end
+
+	FakeHandleWeld.Parent = FakeHandle
+	FakeAccoutrement.Parent = FakeRig
+
+	return FakeAccoutrement
+end
+
+local function ProcessAccoutrement(Accoutrement: Accoutrement, Function)
+	if not Accoutrement or table.find(Blacklist, Accoutrement) then
+		return
+	end
+
+	TableInsert(Blacklist, Accoutrement)
+	TotalHats += 1
+
+	local Handle = GetFirstPart(Accoutrement)
+
+	if Handle and not HatsInUse[Handle] then
+		Function(Handle)
+	end
+end
+
+-- unused until celery fixes shp or setscriptable
+local function SetAccoutrementsState(Table: {Accoutrement}, State: any)
+	for _, Accoutrement in Table do
+		if IsA(Accoutrement, "Accoutrement") then
+			setscriptable(Accoutrement, "BackendAccoutrementState", true)
+			Accoutrement.BackendAccoutrementState = State
+		end		
+	end
+end
+
+local function FinalizeAccoutrements()
+	for _, Value in HatsWithDifferentAligns do
+		local AlignedAccessory = FindAccoutrement(Character, Value[1], Value[2], Value[3])
+
+		ProcessAccoutrement(AlignedAccessory, function(Handle)
+			local Part1 = Value[4]
+
+			if Part1 and Part1.Parent then
+				HatsInUse[Handle] = { Part1, Value[5] or CFrame.identity }
+			end
+		end)
+	end
+
+	for _, Any in GetChildren(FakeRig) do
+		if IsA(Any, "Accessory") then
+			Destroy(Any)
+		end
+
+		local Name = Any.Name
+		local Data = Hats[Name]
+
+		if Data then
+			for Index = 1, #Data do
+				local HatInfo = Data[Index]
+				
+				if not HatInfo then
+					return
+				end
+
+				local FoundAccoutrement = FindAccoutrement(
+					Character, HatInfo['Texture'], HatInfo['Mesh'], HatInfo['Name']
+				)
+				
+				ProcessAccoutrement(FoundAccoutrement, function(Handle)
+					HatsInUse[Handle] = {Any, HatInfo['Offset'] or CFrame.identity}
+				end)
+			end
+				
+			if LimitHatsPerLimb then
+				continue
+			end
+		end
+	end
+
+	for _, Accoutrement in GetChildren(Character) do
+		if IsA(Accoutrement, "Accoutrement") then
+			ProcessAccoutrement(Accoutrement, function(Handle)
+				local FakeAccessory = RecreateAccoutrement(Accoutrement)
+
+				HatsInUse[Handle] = { GetFirstPart(FakeAccessory), CFrame.identity }
+			end)
+		end
+	end
+end
+
+-- // Camera
+
+local function UpdateCameraCFrame()
+	PreviousCameraCFrame = Camera['CFrame']
+
+	SignalWait(RunService['PreRender'])
+	Camera.CFrame = PreviousCameraCFrame
+end
+
+local function ChangeCameraSubject()
+	Camera.CameraSubject = FakeHumanoid
+	UpdateCameraCFrame()
+end
+
+local function ShiftlockRootOffset()
+	if UserInputService.MouseBehavior == CameraLockType then	
+		local Position = FakeRoot['Position']
+		local CamLookVector = Camera.CFrame['LookVector'] --* 1
+
+		FakeRoot.CFrame = CFrame.lookAt(Position, Position + Vector3New(CamLookVector.X, 0, CamLookVector.Z))
+	end
+end
+
+-- // Flinging
+
+local function FlingModels()
+	for _, Model in FlingableTargets do
+		local PrimaryPart = Model['PrimaryPart']
+
+		if not PrimaryPart or not FlingInstance then
+			continue
+		end
+
+		for Tick = 1, 16 do
+			local LinearVelocity = PrimaryPart['AssemblyLinearVelocity']
+
+			FlingInstance.CFrame = CFrameNew(
+				PrimaryPart.Position + LinearVelocity * GetNetworkPing(Player) * 30
+			)
+
+			FlingInstance.AssemblyLinearVelocity = FlingVelocity
+
+			if LinearVelocity.Magnitude > 125 then
+				break
+			end
+		end
+	end
+
+	TableClear(FlingableTargets)
+end
+
+-- // Teleport
+
+local function ReplicateSignal(Any: Instance | RBXScriptSignal, Signal: string)
+	if not replicatesignal then
+		return
+	end
+
+	local _Signal = Any[Signal]
+
+	return replicatesignal(_Signal)
+end
+
+local function GetRandomRadius() : Vector3
+	return Vector3New(
+		math.random(-RadiusOffset, RadiusOffset), 0.5, math.random(-RadiusOffset, RadiusOffset)
+	)
+end
+
+local function GetRightOffset() : CFrame
+	local Offset = FakeRoot['Position'] + GetRandomRadius()
+	local AxisY = NoBodyNearby and FallenPartsDestroyHeightOffset - 0.25 or Offset.Y
+	return CFrameNew(Offset.X, AxisY, Offset.Z)
+end
+
+local function ArePlayersNearby(Offset: CFrame) : boolean
+	local Position = Offset.Position
+	local IsChecked -- Checks for multiple cases, duh?
+
+	for _, Part in Workspace:GetPartBoundsInRadius(Position, 10) do
+		local Model = Part.Parent
+
+		if FindFirstChildOfClass(Model, "Humanoid") then
+			if not (Model == Character and Model == FakeRig) then
+				IsChecked = true
+			end
+		end
+	end
+
+	return IsChecked
+end
+
+local function BringCharacter()
+	local ExtraOffset = CFrame.identity
+	local TeleportCFrame = GetRightOffset()
+	local Time = 0
+
+	if Flinging then
+		FlingModels()
+	end
+
+	while ArePlayersNearby(TeleportCFrame) do
+		TeleportCFrame = GetRightOffset() * ExtraOffset
+	end
+
+	if Animator and NoBodyNearby then
+		Workspace.FallenPartsDestroyHeight = 0/0
+		local Animate = WaitForInstance(Character, "LocalScript", "Animate", 0.16)
+		local IsR15 = Humanoid.RigType.Name == "R15"
+
+		if Animate then
+			Animate.Disabled = true
+		end
+
+		for _, Track in next, GetPlayingAnimationTracks(Animator) do
+			StopTrack(Track)
+		end
+
+		local AnimationId = IsR15 and "507767968" or "180436148" 
+		FallAnimation.AnimationId = "rbxassetid://"..AnimationId
+
+		if IsR15 then
+			ExtraOffset = CFrame.Angles(1145.92,0,0)
+			ChangeState(Humanoid, Enum.HumanoidStateType.Physics)
+		end
+
+		local Animation = LoadAnimation(Animator, FallAnimation)
+		Animation.Priority = 5
+
+		task.spawn(PlayTrack, Animation, 0, 1, 1)
+	end
+
+	while WaitTime > Time do
+		RootPart.AssemblyLinearVelocity = Vector3.zero
+		RootPart.CFrame = TeleportCFrame
+		Time += TaskWait()
+	end
+end
+
+local function SetHumanoidStates()
+	FakeRoot.AssemblyLinearVelocity = Vector3.zero
+	FakeRoot.AssemblyAngularVelocity = Vector3.zero
+
+	SetCore(StarterGui, "ResetButtonCallback", BindableEvent)
+	SetCoreGuiEnabled(StarterGui, Enum.CoreGuiType.Health, false)
+	SetStateEnabled(Humanoid, Enum.HumanoidStateType.Seated, false)
+	SetStateEnabled(Humanoid, Enum.HumanoidStateType.Dead, true)
+	BreakJoints(Character)
+	
+	if replicatesignal then
+		ReplicateSignal(Humanoid, "ServerBreakJoints")
+	else
+		ChangeState(Humanoid, Enum.HumanoidStateType.Dead)
+	end
+
+	Workspace.FallenPartsDestroyHeight = FallenPartsDestroyHeight
+end
+
+local function ApplyCharacter()
+	if not SetPlayerChar then
+		return
+	end
+
+	if NoBodyNearby then
+		repeat task.wait() until not FindFirstChild(Character, "HumanoidRootPart")
+	end
+
+	task.wait(WaitTime * 2)
+	Player.Character = FakeRig
+end
+
+-- // Ownership
+
+local function RefitRig()
+	TotalHats = 0
+	SetDescendantProperties(FakeRigChildren, "BasePart", "Transparency", 0.5, true)
+	SetDescendantProperties(FakeRigChildren, "BasePart", "BrickColor", BrickColor.new("Forest green"), true)
+	ReplicateSignal(Player, "ConnectDiedSignalBackend")
+end
+
+local function SetSimulationRadius(Value: number)
+	if CanChangeSimRadius then
+		Player.SimulationRadius = Value
+	end
+end
+
+local function CheckAge(Part: Instance): boolean
+	return Part and not IsGrounded(Part) and Part.ReceiveAge == 0
+end
+
+local function GetAdjustedAxis(Y: number): number
+	if Y > 27 then
+		return Y
+	end
+
+	return 27
+end
+
+local function GetCurrentPrimaryPart()
+	return Character.PrimaryPart or FindFirstChildWhichIsA(Character, "BasePart", true)
+end
+
+local function CreateSelectionBox(BasePart: BasePart): SelectionBox
+	local Selection = FindFirstChild(BasePart, "SelectionBox")
+	
+	return Selection or Instance.new("SelectionBox", BasePart)
+end
+
+local function ReclaimHandle(Handle)
+	if not Handle or not Reclaim then 
+		return 
+	end
+	
+	ReclaimInstance = Handle
+
+	local Selection = CreateSelectionBox(ReclaimInstance)
+	local Timeout = 0
+	local WaitTime = 0.5
+	
+	LargestInstance = GetCurrentPrimaryPart()
+
+	while WaitTime > Timeout do
+		Selection.Adornee = not CheckAge(ReclaimInstance) and ReclaimInstance or nil
+		
+		if not LargestInstance or not LargestInstance.Parent then
+			LargestInstance = GetCurrentPrimaryPart()
+		end
+
+		if CheckAge(ReclaimInstance) then
+			ReclaimInstance.AssemblyLinearVelocity = FailsafeVelocity
+			ReclaimInstance = nil
+			break
+		end
+
+		Timeout = TaskWait()
+	end
+end
+
+local function CalculateVelocity(Part0: BasePart, Part1: BasePart): Vector3
+	local BaseVelocity = Part1['AssemblyLinearVelocity']
+	local ScaledVelocity = BaseVelocity * Part0.Size['Magnitude']
+
+	local LookVector = Part1.CFrame['LookVector'] * BaseVelocity['Unit']
+	local LookVectorYAxis = GetAdjustedAxis(LookVector.Y + BaseVelocity.Y) + SinedClock
+
+	return Vector3New(
+		ScaledVelocity.X + LookVector.X,
+		LookVectorYAxis,
+		ScaledVelocity.Z + LookVector.Z
+	)
+end
+
+local function SetPhysicalProperties(Table: {[BasePart]: {BasePart | CFrame}}, ApplyVelocity: boolean)
+	for Handle, Data in Table do
+		local Part1, Offset = Data[1], Data[2]
+
+		if not Part1 then
+			return
+		end
+		
+		Handle.Massless = true
+
+		if ApplyVelocity then
+			Handle.AssemblyLinearVelocity = CalculateVelocity(Handle, Part1)
+			Handle.AssemblyAngularVelocity = Part1.AssemblyAngularVelocity
+		end
+
+		if not CheckAge(Handle) then
+			ReclaimHandle(Handle)
+		else
+			local ReclaimInstanceOffset = ReclaimInstance and ReclaimInstance.CFrame
+			local BaseCFrame
+
+			if not ReclaimInstance then
+				BaseCFrame = Part1.CFrame * Offset
+			elseif ReclaimInstance and Handle ~= LargestInstance then
+				BaseCFrame = LargestInstance.CFrame * FailsafeOffset 
+			elseif LargestInstance == Handle and ReclaimInstance and ReclaimInstanceOffset.Y > FallenPartsDestroyHeightOffset + 200 then
+				BaseCFrame = ReclaimInstanceOffset
+			end
+
+			Handle.CFrame = BaseCFrame + ReverseSleep
+		end
+	end
+end
+
+-- // Cancel
+
+local function StopAnimationThread()
+	if AnimationThread then
+		task.cancel(AnimationThread)
+	end
+	if CurrentAnimation then
+		Destroy(CurrentAnimation)
+	end
+	for Name, Joint in Joints do
+		Joint.Transform = JointsOffsets[Name]
+	end
+
+	table.clear(FrameTimes)
+	table.clear(FrameData)
+
+	if FakeRig then
+		local Animate = FindFirstChild(FakeRig, "Animate")
+
+		if Animate then
+			Animate.Enabled = ReanimateConfig.Animations
+		end
+	end
+end
+
+local function CancelScript()
+	if not IsDescendantOf(FakeRig, Workspace) or not FakeRoot then
+		return
+	end
+
+	local RootCFrame = FakeRoot.CFrame
+
+	ReplicateSignal(Player, "ConnectDiedSignalBackend")
+	ChangeState(FakeHumanoid, Enum.HumanoidStateType.Dead)
+	Disconnect(PreSimulationEvent)
+	SignalWait(Player.CharacterAdded)
+	StopAnimationThread()
+	Character = Player.Character
+
+ 	-- memory free up real fe bypass
+
+	for Key, Signal in RBXSignals do
+		Disconnect(Signal)
+		RBXSignals[Key] = nil
+	end
+
+	for _, Table in Tables do
+		TableClear(Table)
+	end
+	
+	Camera.CameraSubject = Character
+
+	SetCore(StarterGui, "ResetButtonCallback", true)
+	Destroy(FakeRig)
+	
+	FakeRig = nil
+	FakeHumanoid = nil
+	FakeRoot = nil
+	FakeRigChildren = nil
+
+	if ReturnOnDeath then
+		local Root = WaitForInstance(Character, "Part", "HumanoidRootPart")
+
+		if Root then
+			Root.CFrame = RootCFrame
+		end
+	end
+end
+
+-- // Runit
+
+local function OnParentChange()
+	if not IsDescendantOf(FakeRig, Workspace) then
+		CancelScript()
+	end
+end
+
+local function OnPreRender() 
+	ShiftlockRootOffset()
+	SetPhysicalProperties(HatsInUse, false)
+
+	if Camera then
+		if Camera.CameraSubject ~= FakeHumanoid then
+			ChangeCameraSubject()
+		end
+
+		if Camera.CameraType ~= CamCustomType then
+			Camera.CameraType = CamCustomType
+		end
+	end
+
+	if AntiVoiding and FakeRoot.Position.Y < FallenPartsDestroyHeightOffset then
+		FakeRoot.CFrame = CFrameBackup
+		FakeRoot.AssemblyLinearVelocity = Vector3.zero
+		FakeRoot.AssemblyAngularVelocity = Vector3.zero
+	end
+end
+
+local function OnPostSimulation()
+	SetPhysicalProperties(HatsInUse, true)
+	ShiftlockRootOffset()
+	
+	if FakeHumanoid and Humanoid then
+		FakeHumanoid.Jump = Humanoid.Jump
+		Move(FakeHumanoid, Humanoid.MoveDirection)
+	end
+
+	if Refit then
+		for Index, Accessory in Blacklist do
+			if not Accessory or Accessory and not Accessory.Parent then
+				table.remove(Blacklist, Index)
+			end
+		end
+	
+		if TotalHats > RefitCount and #Blacklist < TotalHats - RefitCount then
+			RefitRig()
+		end
+	end
+end
+
+local function OnPreSimulation()
+	SetDescendantProperties(Descendants, "BasePart", "CanCollide", false, true)
+	SetDescendantProperties(FakeRigChildren, "BasePart", "CanCollide", false, NoCollisions)
+	SetSimulationRadius(MaxInteger)
+
+	SinedClock = Sine(ClockTPOT())
+	ReverseSleep = Vector3New(0.005 * Sine(ClockTPOT() * 100), 0, 0.005 * Cosine(ClockTPOT() * 100)) * AntisleepPower
+end
+
+local function OnCharacterAdded(NewCharacter: Model)
+	UpdateCameraCFrame()
+
+	if NewCharacter == FakeRig then
+		return
+	end
+	
+	-- Clear few, not every.
+	TableClear(HatsInUse)
+	TableClear(Descendants)
+	TableClear(FakeRigChildren)
+	TableClear(Blacklist)
+
+	TotalHats = 0
+
+	Character = NewCharacter
+	Humanoid = WaitForInstance(Character, "Humanoid", nil)
+	RootPart = WaitForInstance(Character, "Part", "HumanoidRootPart")
+	Animator = WaitForInstance(Humanoid, "Animator", nil)
+	SetDescendantProperties(Descendants, "LocalScript", "Disabled", true, DisableCharacterScripts)
+
+	if not Humanoid and not RootPart then
+		error(not Humanoid and "Humanoid" or "HumanoidRootPart", "Not found inside Character.")
+	end
+
+	if PermanentDeath then
+		RootPart.CFrame = FakeRoot.CFrame * CFrameNew(0, 2 * RigScale, 0)
+		ReplicateSignal(Player, "ConnectDiedSignalBackend")
+		TaskWait(Players.RespawnTime + 0.15)
+	end
+
+	BringCharacter()
+	SetHumanoidStates()
+	UpdateCameraCFrame()
+	FinalizeAccoutrements()
+	ApplyCharacter()
+
+	FakeRigChildren = GetChildren(FakeRig)
+
+	SetDescendantProperties(FakeRigChildren, "BasePart", "Transparency", OverlayFakeCharacter and 0.5 or 1, true)
+	SetDescendantProperties(FakeRigChildren, "BasePart", "BrickColor", BrickColor.new("Black"), true)
+end
+
+
+local DefaultHats = {
+	["Right Arm"] = {
+		{Texture = "14255544465", Mesh = "14255522247", Name = "RARM", Offset = CFrame.Angles(0, 0, math.rad(90))},
+		{Texture = "4391374782", Mesh = "4324138105", Name = "MeshPartAccessory", Offset =  CFrame.new(0.05,0,0) * CFrame.Angles(math.rad(-90), 0, math.rad(90))},
+		{Texture = "4645402630", Mesh = "3030546036", Name = "International Fedora", Offset = CFrame.new(0.05,0,0) * CFrame.Angles(math.rad(90), 0, math.rad(-90))},
+		{Texture = "135650240593878", Mesh = "137702817952968", Name = "Accessory (RArmNoob)", Offset = CFrame.Angles(0, 0, math.rad(90))},
+		{Texture = "130809869695496", Mesh = "139733645770094", Name = "Accessory (RARM)", Offset = CFrame.Angles(0, 0, math.rad(90))},
+	},
+
+	["Left Arm"] = {
+		{Texture = "14255544465", Mesh = "14255522247", Name = "LARM", Offset = CFrame.Angles(0, 0, math.rad(90))},
+		{Texture = "4154474807", Mesh = "4154474745", Name = "MeshPartAccessory", Offset =  CFrame.new(-0.05,0,0) * CFrame.Angles(math.rad(90), 0, math.rad(-90))},
+		{Texture = "3650139425", Mesh = "3030546036", Name = "International Fedora", Offset = CFrame.new(-0.05,0,0) * CFrame.Angles(math.rad(-90), 0, math.rad(90))},
+		{Texture = "135650240593878", Mesh = "137702817952968", Name = "Accessory (LArmNoob)", Offset = CFrame.Angles(0, 0, math.rad(90))},
+		{Texture = "71060417496309", Mesh = "105141400603933", Name = "Accessory (LARM)", Offset = CFrame.Angles(0, 0, math.rad(90))},
+	},
+
+	["Right Leg"] = {
+		{Texture = "17374768001", Mesh = "17374767929", Name = "Accessory (RARM)", Offset = CFrame.Angles(0, 0, math.rad(90))},
+		{Texture = "3360974849", Mesh = "3030546036", Name = "InternationalFedora", Offset = CFrame.Angles(math.rad(90), 0, math.rad(-90))},
+		{Texture = "4622077774", Mesh = "3030546036", Name = "International Fedora", Offset = CFrame.Angles(math.rad(-90), 0, math.rad(90))},
+		{Texture = "3360978739", Mesh = "3030546036", Name = "InternationalFedora", Offset = CFrame.Angles(math.rad(-90), 0, math.rad(90))},
+		{Texture = "11159284657", Mesh = "11159370334", Name = "Unloaded head", Offset = CFrame.Angles(0, 0, math.rad(90))},
+        {Texture = "136752500636691", Mesh = "125405780718494", Name = "Accessory (RArm)", Offset = CFrame.Angles(0, 0, math.rad(90))},
+	},
+
+	["Left Leg"] = {
+		{Texture = "17374768001", Mesh = "17374767929", Name = "Accessory (LARM)", Offset = CFrame.Angles(0, 0, math.rad(90))},
+		{Texture = "3033903209", Mesh = "3030546036", Name = "InternationalFedora", Offset = CFrame.Angles(math.rad(90), 0, math.rad(90))},
+		{Texture = "3860099469", Mesh = "3030546036", Name = "InternationalFedora", Offset = CFrame.Angles(math.rad(-90), 0, math.rad(-90))},
+		{Texture = "3409604993", Mesh = "3030546036", Name = "InternationalFedora", Offset = CFrame.Angles(math.rad(-90), 0, math.rad(-90))},
+		{Texture = "11263219250", Mesh = "11263221350", Name = "MeshPartAccessory", Offset = CFrame.Angles(0, 0, math.rad(90))},
+	    {Texture = "136752500636691", Mesh = "125405780718494", Name = "Accessory (LArm)", Offset = CFrame.Angles(0, 0, math.rad(90))},
+    },
+
+	["Torso"] = {
+		{Texture = "13415110780", Mesh = "13421774668", Name = "MeshPartAccessory", Offset = CFrame.identity},
+		{Texture = "17617036903", Mesh = "17617036887", Name = "Accessory (1x1x1x1's Transparent Torso)", Offset = CFrame.identity},
+		{Texture = "125975972015302", Mesh = "126825022897778", Name = "Accessory (TorsoNoob)", Offset = CFrame.identity},
+		{Texture = "4819722776", Mesh = "4819720316", Name = "MeshPartAccessory", Offset = CFrame.Angles(0, 0, math.rad(-15))}
+	},
+}
+
+local function ValidateSetting(Name, Default, OtherTable)
+	local Table = OtherTable or ReanimateConfig
+	local Original = Table[Name]
+	return Original ~= nil and Original or Default
+end
+
+local function StartReanimate()
+	ReanimateConfig = KryptonConfiguration or {}
+	FlingTable = ReanimateConfig.Flinging or {}
+
+	RigName = ValidateSetting("RigName", "Evolution, it must've passed you by.")
+
+	WaitTime = ValidateSetting("WaitTime", 0.251)
+	RigScale = ValidateSetting("FakeRigScale", 1)
+	RefitCount = ValidateSetting("RefitHatCount", 2)
+	RadiusOffset = ValidateSetting("TeleportOffsetRadius", 21)
+	DestroyHeightOffset = ValidateSetting("DestroyHeightOffset", 100)
+
+	Refit = ValidateSetting("Refit", false)
+	AntiVoiding = ValidateSetting("AntiVoiding", false)
+	DontStartYet = ValidateSetting("DontStartYet", false)
+	NoBodyNearby = ValidateSetting("NoBodyNearby", false)
+	NoCollisions = ValidateSetting("NoCollisions", false) or Flinging
+	ToolFlinging = ValidateSetting("ToolFlinging", false)
+	SetPlayerChar = ValidateSetting("SetCharacter", false)
+	AntisleepPower = ValidateSetting("AntisleepPower", 1.025)
+	OverlayFakeCharacter = ValidateSetting("OverlayFakeCharacter", false)
+	ReturnOnDeath = ValidateSetting("ReturnOnDeath", false)
+	Flinging = ValidateSetting("Flinging", "false", FlingTable) 
+	FlingVelocity = ValidateSetting("Velocity", 8000, FlingTable)
+	LimitHatsPerLimb = ValidateSetting("LimitHatsPerLimb", false)
+	FlingMethod = ValidateSetting("MethodUsed", "Hat", FlingTable) 
+	DisableCharacterScripts = ValidateSetting("DisableCharacterScripts", false)
+	PermanentDeath = replicatesignal and ValidateSetting("PermanentDeath", false)
+	Reclaim = NoBodyNearby and PermanentDeath and ValidateSetting("Reclaim", false)
+
+	Hats = ValidateSetting("Hats", {})
+	
+	FallenPartsDestroyHeightOffset = FallenPartsDestroyHeight + DestroyHeightOffset or 100
+	Character = Player['Character'] or SignalWait(Player['CharacterAdded'])
+
+	if not PermanentDeath and ReanimateConfig.Refit then
+		Refit = nil
+	end
+	
+	if not NoBodyNearby and FlingMethod == ("Hat" or "HatTouch") then
+		Flinging = nil
+	end
+	
+	if Character.Name ~= Player.Name then 
+		return 
+	end
+
+	if not Hats[1] or ReanimateConfig.AccessoryFallbackDefaults then
+		local Types = { Name = "string", Texture = "string", Mesh = "string", Offset = "CFrame" }
+
+		for Name, Data in DefaultHats do
+			local HatsData = Hats[Name]
+			local Flagged = nil
+
+			if HatsData and typeof(HatsData) == "table" then
+				for _, Hat in HatsData do
+					for Key, Type in Types do
+						if typeof(Hat[Key]) ~= Type then
+							Flagged = true
+							break
+						end
+					end
+				end
+			else
+				Flagged = true
+			end
+
+			if Flagged then
+				Hats[Name] = table.clone(Data)
+			end
+		end
+	end
+
+	Descendants = CreateTable(GetDescendants(Character))
+	FakeRig = Players:CreateHumanoidModelFromDescription(Instance.new("HumanoidDescription"), Enum.HumanoidRigType.R6)
+
+	FakeHumanoid = FindFirstChildOfClass(FakeRig, "Humanoid")
+	FakeAnimator = FindFirstChildOfClass(FakeHumanoid, "Animator")
+	FakeRoot = FindFirstChild(FakeRig, "HumanoidRootPart")
+	FakeRigChildren = CreateTable(GetChildren(FakeRig))
+
+	Humanoid = WaitForInstance(Character, "Humanoid", nil)
+	RootPart = WaitForInstance(Character, "Part", "HumanoidRootPart")
+	Animator = WaitForInstance(Humanoid, "Animator", nil)
+
+	CFrameBackup = RootPart.CFrame
+	FakeRig.Parent = Terrain
+	FakeRoot.CFrame = CFrameBackup
+	Player.ReplicationFocus = FakeRoot
+
+	FakeRigChildren = GetChildren(FakeRig)
+	PreSimulationEvent = SignalConnect(RunService["PreSimulation"], OnPreSimulation) -- need to define ts
+	TableInsert(RBXSignals, SignalConnect(GetPropertyChangedSignal(FakeRig, "Parent"), OnParentChange))
+	TableInsert(RBXSignals, SignalConnect(GetPropertyChangedSignal(Camera, "CameraSubject"), ChangeCameraSubject))
+	TableInsert(RBXSignals, SignalConnect(Player["CharacterAdded"], OnCharacterAdded))
+	TableInsert(RBXSignals, SignalConnect(RunService["PostSimulation"], OnPostSimulation))
+	TableInsert(RBXSignals, SignalConnect(RunService["PreRender"], OnPreRender))
+	TableInsert(RBXSignals, SignalConnect(BindableEvent["Event"], CancelScript))
+	TableInsert(RBXSignals, PreSimulationEvent)
+
+	for _, Track in next, GetPlayingAnimationTracks(Animator) do
+		StopTrack = Track['Stop']
+		PlayTrack = Track['Play']
+		AdjustSpeed = Track['AdjustSpeed']
+		break
+	end
+
+	if WaitTime < 0.16 then
+		WaitTime = 0
+	end
+
+	if RigName then
+		FakeRig.Name = RigName	
+	end
+
+	if RigScale then
+		FakeRoot.CFrame = FakeRoot.CFrame * CFrameNew(0, 2 * RigScale, 0)
+		FakeRig:ScaleTo(RigScale)
+	end
+
+	for _, Any in GetDescendants(FakeRig) do
+		if IsA(Any, "Motor6D") then
+			local Name = Any.Part1.Name
+
+			JointsOffsets[Name] = Any.Transform
+			Joints[Name] = Any
+		end
+	end
+
+	if ReanimateConfig.Animations then
+		local Animate = Instance.new("LocalScript")
+		Animate.Name = "Animate"
+		Animate.Parent = FakeRig
+
+		local function AddAnimation(ID)
+			local Animation = Instance.new("Animation")
+			Animation.AnimationId = ID
+			return Animation
+		end
+
+		local AnimationsToggled = true
+		local JumpAnimTime = 0
+
+		local Current = {
+			Speed = 0,
+			Animation = "",
+			Instance = nil,
+			AnimTrack = nil,
+			KeyframeHandler = nil,
+		}
+
+		local AnimationTable = {
+			Idle = AddAnimation("http://www.roblox.com/asset/?id=180435571"),
+			Walk = AddAnimation("http://www.roblox.com/asset/?id=180426354"),
+			Run = AddAnimation("Run.xml"),
+			Jump = AddAnimation("http://www.roblox.com/asset/?id=125750702"),
+			Fall = AddAnimation("http://www.roblox.com/asset/?id=180436148"),
+			Climb = AddAnimation("http://www.roblox.com/asset/?id=180436334"),
+			Sit = AddAnimation("http://www.roblox.com/asset/?id=178130996"),
+
+			dance1 = AddAnimation("http://www.roblox.com/asset/?id=182435998"),
+			dance2 = AddAnimation("http://www.roblox.com/asset/?id=182436842"),
+			dance3 = AddAnimation("http://www.roblox.com/asset/?id=182436935"),
+			wave = AddAnimation("http://www.roblox.com/asset/?id=128777973"),
+			point = AddAnimation("http://www.roblox.com/asset/?dan=128853357"),
+			laugh = AddAnimation("http://www.roblox.com/asset/?id=129423131"),
+			cheer = AddAnimation("http://www.roblox.com/asset/?id=129423030"),
+		}
+
+		local function PlayAnimation(AnimName, TransitionTime, Looped)
+			local Anim = AnimationTable[AnimName]
+
+			if Anim == Current.Instance then
+				return
+			end
+
+			if Current.AnimTrack then
+				StopTrack(Current.AnimTrack, TransitionTime)
+				Destroy(Current.AnimTrack)
+			end
+
+			if Current.KeyframeHandler then
+				Disconnect(Current.KeyframeHandler)
+			end
+
+			Current.Speed = 1.0
+			Current.AnimTrack = LoadAnimation(FakeAnimator, Anim)
+			Current.AnimTrack.Priority = Enum.AnimationPriority.Core
+			PlayTrack(Current.AnimTrack, TransitionTime)
+
+			Current.Animation = AnimName
+			Current.Instance = Anim
+
+			Current.KeyframeHandler = SignalConnect(Current.AnimTrack.KeyframeReached, function(FrameName)
+				if AnimationsToggled then
+					if Looped then
+						PlayAnimation(AnimName, 0.1, true)
+	
+					elseif FrameName == "End" and AnimationTable[Current.Animation] then
+						PlayAnimation("Idle", 0.1)
+					end
+				end
+			end)
+		end
+
+		local function SetAnimationSpeed(Speed)
+			Current.Speed = Speed
+			AdjustSpeed(Current.AnimTrack, Speed)
+		end
+
+		local EventHandlers = {
+			Running = function(Speed)
+				if Speed > 0.01 then
+					PlayAnimation("Walk", 0.1)
+					SetAnimationSpeed(Speed / 14.5)
+				else
+					PlayAnimation("Idle", 0.1)
+				end
+			end,
+
+			Jumping = function()
+				PlayAnimation("Jump", 0.1)
+				JumpAnimTime = 0.3
+			end,
+
+			Climbing = function(Speed)
+				PlayAnimation("Climb", 0.1)
+				SetAnimationSpeed(Speed / 12.0)
+			end,
+
+			FreeFalling = function()
+				if JumpAnimTime <= 0 then
+					PlayAnimation("Fall", 0.3)
+				end
+			end,
+		}
+
+		for EventName, Handler in EventHandlers do
+			SignalConnect(FakeHumanoid[EventName], function(...)
+				if AnimationsToggled then
+					Handler(...)
+				end
+			end)
+		end
+
+		table.insert(RBXSignals, SignalConnect(Player.Chatted, function(Message)
+			local Context = Message and string.gsub(Message, "/e ", "")
+
+			if AnimationsToggled and AnimationTable[Context] then
+				PlayAnimation(Context, 0.1, true)
+			end
+		end))
+
+		table.insert(RBXSignals, SignalConnect(RunService.PostSimulation, function(DeltaTime)
+			AnimationsToggled = Animate and Animate.Parent and Animate.Enabled
+			JumpAnimTime = math.max(0, JumpAnimTime - DeltaTime)
+		end))
+	end
+
+	if PermanentDeath then
+		SetDescendantProperties(FakeRigChildren, "BasePart", "Transparency", 0.5, true)
+		ReplicateSignal(Player, "ConnectDiedSignalBackend")
+		TaskWait(Players.RespawnTime + 0.15)
+	end
+
+	BringCharacter()
+	SetDescendantProperties(FakeRigChildren, "Decal", "Transparency", OverlayFakeCharacter and 0.5 or 1, true)
+	SetDescendantProperties(FakeRigChildren, "BasePart", "Transparency", OverlayFakeCharacter and 0.5 or 1, true)
+	SetHumanoidStates()
+	FinalizeAccoutrements()
+	ApplyCharacter()
+end
+
+if not DontStartYet then
+	StartReanimate()
+end 
+
+return {
+	GetCharacter = function() -- Returns FakeRig Model, needed for scripts.
+		return FakeRig
+	end,
+
+	GetHumanoid = function() -- Returns GetHumanoid
+		return FakeHumanoid
+	end,
+
+	GetRootPart = function() -- Returns HumanoidRootPart
+		return FakeRoot
+	end,
+
+	GetJoints = function()
+		return Joints
+	end,
+
+	GetHatInformation = function(Hat) -- Returns HumanoidRootPart
+		local HatInfo = GetAccoutrementData(Hat)
+		HatInfo.Name = Hat.Name
+
+		return HatInfo
+	end,
+
+	GetRealCharacter = function() -- Returns RealRig Model, needed for scripts.
+		repeat
+			task.wait()
+		until Player.Character
+
+		return Player.Character
+	end,
+
+	SetHatAlign = function(HatInformation, Part1, Offset) -- Aligns Hat.
+		assert(typeof(HatInformation) == "table", "HatInformation is not an table.")
+		assert(Part1 and Part1:IsA("BasePart"), "Part1 is not a part.")
+		assert(typeof(Offset) == "CFrame", "Offset is not a part.")
+
+		local TextureId = HatInformation.TextureId
+		local MeshId = HatInformation.MeshId
+		local Name = HatInformation.Name
+
+		local Accessory = nil
+		local Timeout = 3
+		local Current = 0
+
+		while not Accessory and Timeout > Current do
+			Accessory = FindAccoutrement(Player.Character, TextureId, MeshId, Name)
+
+			Current += task.wait()
+		end
+
+		if not Accessory then
+			error("Accessory has not been found in Character.")
+		end
+
+		local Handle = GetFirstPart(Accessory)
+
+		if Handle then
+			local Dictionary = table.find(HatsInUse, Handle)
+			table.remove(HatsInUse, Dictionary)
+
+			table.insert(HatsWithDifferentAligns, { TextureId, MeshId, Name, Part1, Offset })
+			HatsInUse[Handle] = { Part1, Offset }
+		end
+	end,
+
+	DisconnectHatAlign = function(HatInformation) -- Disconnects hat
+		assert(typeof(HatInformation) == "table", "HatInformation is not an table.")
+
+		local Accessory = nil
+		local Timeout = 3
+		local Current = 0
+
+		local TextureId = HatInformation.TextureId
+		local MeshId = HatInformation.MeshId
+		local Name = HatInformation.Name
+
+		while not Accessory and Timeout > Current do
+			Accessory = FindAccoutrement(Player.Character, TextureId, MeshId, Name)
+
+			Current += task.wait()
+		end		
+
+		if not Accessory then
+			error("Accessory has not been found in Character.")
+		end
+
+		for Table, Value in HatsWithDifferentAligns do
+			local UsedAccessory = FindAccoutrement(Character, Value[1], Value[2], Value[3])
+
+			if UsedAccessory and UsedAccessory == Accessory then
+				local UsedHandle = GetFirstPart(UsedAccessory)
+
+				local Dictionary = table.find(HatsInUse, UsedHandle)
+				table.remove(HatsInUse, Dictionary)
+
+				local Dictionary2 = table.find(HatsWithDifferentAligns, Table) -- seems ugly but idc
+				table.remove(HatsWithDifferentAligns, Dictionary2)
+
+				if UsedHandle then
+					local FakeAccessory = RecreateAccoutrement(UsedAccessory)
+
+					if FakeAccessory then
+						HatsInUse[UsedHandle] = { GetFirstPart(FakeAccessory), CFrame.identity }
+					end
+				end
+			end
+		end
+	end,
+
+	SWait = task.wait, -- Stepped Wait
+
+	SetAnimationState = function(Status) -- Stops Animations
+		local Animate = FindFirstChild(FakeRig, "Animate")
+
+		if Animate then
+			Animate.Enabled = Status
+		end
+
+		if Status and FakeAnimator then
+			for _, Track in GetPlayingAnimationTracks(FakeAnimator) do
+				Track:Stop()
+			end
+		end
+	end,
+
+	GetLoadLibrary = function()
+		return loadstring(game:HttpGet("https://raw.githubusercontent.com/KadeTheExploiter/Uncategorized-Scripts/main/LoadLib.lua"))()
+	end,
+
+	CallFling = function(Model)
+		assert(IsA(Model, "Model"), "Not a Model.")
+
+		if Model ~= Character and Model ~= FakeRig then
+			table.insert(FlingableTargets, Model)
+		end
+	end,
+
+	CreateTempSignal = function(Signal)
+		table.insert(TempSignals, Signal)
+	end,
+
+	DisconnectTempSignals = function()
+		for _, Signal in TempSignals do
+			Signal:Disconnect()
+		end
+	end,
+
+	GetWeld = function(Object)
+		assert(typeof(Object) == "Instance", "Argument is not an instance.")
+
+		if IsA(Object, "Accessory") then
+			local Part = GetFirstPart(Object)
+
+			if Part then
+				return GetFirstWeld(Part)
+			end
+		elseif IsA(Object, "BasePart") then
+			return GetFirstWeld(Object)
+		end
+	end,
+
+	AnimationPlayer = {
+		Start = function(AnimationID: number)
+			if not FakeRig then return end
+
+			StopAnimationThread()
+			
+			local Animate = FindFirstChild(FakeRig, "Animate")
+
+			if Animate then
+				Animate.Disabled = true
+			end
+	
+			if FakeAnimator then
+				for _, Track in GetPlayingAnimationTracks(FakeAnimator) do
+					Track:Stop()
+				end
+			end
+
+			local Success, AnimationModel =  pcall(InsertService.LoadLocalAsset, InsertService, "rbxassetid://" .. tostring(AnimationID))
+
+			if not Success then
+				warn("Failed to load animation.")
+				return
+			end
+
+			CurrentAnimation = AnimationModel
+			CurrentAnimation.Name = "Animation"
+			CurrentAnimation.Parent = FakeRig
+
+			for _, Frame in GetChildren(CurrentAnimation) do
+				table.insert(FrameTimes, Frame.Time)
+				FrameData[Frame.Time] = {}
+
+				for _, Part in Frame:GetDescendants() do
+					table.insert(FrameData[Frame.Time], Part)
+				end
+			end
+
+			AnimationThread = task.spawn(function()
+				while true do
+					for i, Time in FrameTimes do
+						if not IsDescendantOf(FakeRig, Workspace) then
+							table.clear(FrameTimes)
+							table.clear(FrameData)
+
+							break
+						end
+
+						local FrameParts = FrameData[Time]
+
+						for _, KeyFramePart in FrameParts do
+							local Joint = Joints[KeyFramePart.Name]
+							if Joint then
+								Joint.Transform = KeyFramePart.CFrame
+							end
+						end
+
+						local Next = FrameTimes[i + 1]
+						if Next then
+							local Delay = Next - Time
+							task.wait(Delay / 1.75)
+						end
+					end
+
+					task.wait()
+				end
+			end)
+		end,
+
+		Stop = StopAnimationThread
+	},
+
+	StartReanimate = StartReanimate,
+	InstantRefit = RefitRig,
+	StopReanimate = CancelScript,
+	Version = "1.8-Beta",
+}
+]=====]
+SRC.Catware = [=====[
+
+--[[
+	When Forking/Modifying the reanimate please credit the me!
+	We would appreciate it since this reanimate took me 8+ hours to code!
+]]
+local Global = (getgenv and getgenv()) or _G
+if not Global.Options then Global.Options = {
+		["Jitteryness"] = Vector3.new(30.5, 0, 0), -- Velocity
+		["Jitterless"] = true, -- Very Small Jitter, Smaller Delay
+		["Type"] = "Raw", -- Raw (Simple), Fling, Bullet, Godmode
+		["InstantBullet"] = {
+			["Bool"] = true, -- Enables it
+			["SmartLock"] = true, -- Locks Fling on Head; Disables Bullet Dragging.
+		},
+		["R6Method"] = "CFrame", -- Align,AlignMax Or CFrame
+		["R15Method"] = "CFrame", -- Align,AlignMax Or CFrame
+		["BonusProperties"] = true, -- Net, and other stuff.
+		["RigAnimations"] = true, -- Enables Default Animate
+		["LoadLibrary"] = false, -- Loads LoadLibrary for scripts that still use it.
+		["Logging"] = true -- Enables logging (prints debug information in console)
+} end
+local Options = Global.Options
+
+local Vector3_101 = Vector3.new(1,0,1)
+local netless_Y = Global.Options.Jitteryness
+local function getNetlessVelocity(realPartVelocity) --edit this if you have a better netless method
+    local unit = realPartVelocity.Unit
+    if (unit.Y > 0.9) or (unit.Y < -0.9) then
+        return realPartVelocity * (25.1 / realPartVelocity.Y)
+    end
+    realPartVelocity *= Vector3_101
+    local mag = realPartVelocity.Magnitude
+    if (mag > 1) and (mag < 100) then
+        realPartVelocity = unit * Vector3_101 * 100
+    end
+    return realPartVelocity + netless_Y
+end
+
+local function Align(Part0, Part1, Position, Orientation)
+	local AlignPosition = Instance.new("AlignPosition")
+	AlignPosition.Parent = Part0
+	AlignPosition.MaxForce = 13e9
+	AlignPosition.Responsiveness = 200
+	AlignPosition.Name = "CatwareAP1"
+
+	local AlignOrientation = Instance.new("AlignOrientation")
+	AlignOrientation.Parent = Part0
+	AlignOrientation.MaxTorque = 13e9
+	AlignOrientation.Responsiveness = 200
+	AlignOrientation.Name = "CatwareAO"
+
+	local Attachment1 = Instance.new("Attachment")
+	Attachment1.Parent = Part0
+	Attachment1.Position = Position or Vector3.new(0,0,0)
+	Attachment1.Orientation = Orientation or Vector3.new(0,0,0)
+	Attachment1.Name = "CatwareAtt1"
+
+	local Attachment2 = Instance.new("Attachment")
+	Attachment2.Parent = Part1
+	Attachment2.Name = "CatwareAtt2"
+
+	AlignPosition.Attachment0 = Attachment1
+	AlignPosition.Attachment1 = Attachment2
+
+	local AlignPosition2 = Instance.new("AlignPosition")
+	AlignPosition2.Parent = Part0
+	AlignPosition2.Name = "CatwareAP2"
+
+	if Options.R6Method == "AlignMax" or Options.R15Method == "AlignMax" then
+		AlignPosition2.RigidityEnabled = true
+	else
+		AlignPosition2.RigidityEnabled = false
+		AlignPosition2.MaxForce = 13e5
+		AlignPosition2.Responsiveness = 200
+	end
+
+	AlignPosition2.Attachment0 = Attachment1
+	AlignPosition2.Attachment1 = Attachment2
+	AlignOrientation.Attachment0 = Attachment1
+	AlignOrientation.Attachment1 = Attachment2
+end
+
+local function ConsoleLog(Text)
+	if Options.Logging == true then
+		warn("[Catware Reanimation] "..Text)
+	end
+end
+
+local Storage = game:GetService("ReplicatedStorage")
+
+if not Storage:FindFirstChild("CatwarePreloadData") then
+	local Folder = Instance.new("Folder", Storage)
+	Folder.Name = "CatwarePreloadData"
+
+	local AudioNo = Instance.new("Sound", Folder)
+	AudioNo.Name = "False"
+	AudioNo.SoundId = "rbxassetid://1843027392"
+	AudioNo:Stop()
+
+	local AudioYes = Instance.new("Sound", Folder)
+	AudioYes.Name = "True"
+	AudioYes.SoundId = "rbxassetid://12221967"
+	AudioYes:Stop()
+
+	local R6FakeRig = game:GetObjects("rbxassetid://8440552086")[1]
+	R6FakeRig.Name = "R6FakeRig"
+	R6FakeRig.Parent = Folder
+
+	task.wait(0.1)
+
+	if syn then
+		ConsoleLog("Synapse Found! Waiting 2 Additional Seconds")
+		task.wait(2)
+	end
+
+	ConsoleLog("Preloaded R6 Dummy (game.ReplicatedStorage.R6FakeRig)")
+end
+
+local NetApi = loadstring(game:HttpGetAsync("https://raw.githubusercontent.com/StrokeThePea/CatwareReanimate/main/src/API.lua"))()
+local Assets = Storage:FindFirstChild("CatwarePreloadData")
+
+local function Notification(HappyOrNo, First, Second)
+	task.spawn(function()
+		if HappyOrNo == true then
+			Assets.True:Play()
+		elseif HappyOrNo == false then
+			Assets.False:Play()
+		end
+	end)
+
+	game:GetService("StarterGui"):SetCore("SendNotification", {
+		Title = First,
+		Text = Second,
+	})
+end
+
+if workspace:FindFirstChild("CatwareReanim") then
+	Notification(false, "Catware Reanimate", "Already Reanimated. Reset to Unreanimate.")
+	return
+end
+
+local UserInput = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local Player = Players.LocalPlayer
+local FlingPart
+local HiddenProps = sethiddenproperty or set_hidden_property or sethiddenprop or setscriptable and function(loc,prop,val) if not loc then return true end local succ,f = pcall(function() local a = loc[prop] end) if not succ then setscriptable(loc,prop,true) end loc[prop] = val end or function() return nil end
+local SimRadius = setsimulationradius or set_simulation_radius or HiddenProps() and function(val) HiddenProps(Player,"SimulationRadius",val) end or function() end
+local Loops = {}
+
+if Options.BonusProperties == true then
+	pcall(function()
+        NetApi.Properties()
+	end)
+end
+
+local Character = workspace[Player.Name]
+
+Global.OriginalCharacter = Character
+Character.Archivable = true
+Character.Animate.Disabled = true
+
+local Humanoid = Character:FindFirstChildWhichIsA("Humanoid")
+local HumanoidTracks = Humanoid:GetPlayingAnimationTracks()
+local Mouse = game.Players.LocalPlayer:GetMouse()
+local CharacterG = Character:GetChildren()
+local CharacterD = Character:GetDescendants()
+--local Humanoid = Character:FindFirstChildWhichIsA("Humanoid")
+if Options.Type == "SemiBot" and Humanoid.RigType == Enum.HumanoidRigType.R15 then
+	Options.Type = "Raw"
+end
+
+if Options.Type == "Raw" then
+	FlingPart = nil
+elseif Options.Type == "Fling" then
+
+elseif Options.Type == "SemiBot" then
+	FlingPart = Character:FindFirstChild("Torso")
+elseif Options.Type == "Bullet" then
+	FlingPart = Character:FindFirstChild("Left Leg") or Character:FindFirstChild("LeftUpperArm")
+elseif Options.Type == "Godmode" then
+	if Humanoid.RigType == Enum.HumanoidRigType.R6 then
+		FlingPart = Character:FindFirstChild("HumanoidRootPart")
+	elseif Humanoid.RigType == Enum.HumanoidRigType.R15 then
+		FlingPart = Character:FindFirstChild("LeftUpperArm") 
+	end
+end
+Global.FlingBullet = FlingPart
+pcall(function()
+	Character:FindFirstChild("Local Ragdoll"):Destroy()
+	Character:FindFirstChild("State Handler"):Destroy()
+	Character:FindFirstChild("Controls"):Destroy()
+	Character:FindFirstChild("FirstPerson"):Destroy()
+	Character:FindFirstChild("FakeAdmin"):Destroy()
+
+	for Index, RagdollStuff in pairs(CharacterD) do
+		if RagdollStuff:IsA("BallSocketConstraint") or RagdollStuff:IsA("HingeConstraint") then
+			RagdollStuff:Destroy()
+		end
+	end
+end)
+
+local FakeHats = Instance.new("Folder", Character)
+FakeHats.Name = "HatsSave"
+
+for Index, Accessory in pairs(CharacterG) do
+	if Accessory:IsA("Accessory") then
+		local NewAccessories = Accessory:Clone()
+		NewAccessories.Parent = FakeHats
+		NewAccessories.Handle.Transparency = 1
+	end
+end
+
+local Clone = Assets:FindFirstChild("R6FakeRig"):Clone()
+Clone.Name = "CatwareReanim"
+Clone.Parent = workspace
+Clone.HumanoidRootPart.CFrame = Character.HumanoidRootPart.CFrame
+
+local CloneHumanoid = Clone:FindFirstChildOfClass("Humanoid")
+local CloneG = Clone:GetChildren()
+local CloneD = Clone:GetDescendants()
+
+CloneHumanoid.BreakJointsOnDeath = false
+
+for Index, Part in pairs(CloneD) do
+	if Part:IsA("BasePart") or Part:IsA("Decal") then
+		Part.Transparency = 1
+	end
+end
+
+Global.ReanimationClone = Clone
+
+if Humanoid.RigType == Enum.HumanoidRigType.R6 and Options.Type ~= "Godmode" then
+	Character.HumanoidRootPart:Destroy()
+end
+
+local BP = nil
+local Hat1,Hat2 = nil,nil
+
+if Options.Type == "SemiBot" then
+	Hat1 = Character:FindFirstChild("Pal Hair").Handle
+	Hat1:ClearAllChildren()
+	Hat2 = Character:FindFirstChild("Robloxclassicred").Handle
+	Hat2:ClearAllChildren()
+end
+
+if Options.Type == "Bullet" or Options.Type == "Godmode" or Options.Type == "SemiBot" then
+	Global.Disconnect = false
+	
+	task.spawn(function() 
+		if Options.Type == "Bullet" or Options.Type == "SemiBot" then 
+			task.wait(1)
+		elseif Options.Type == "Godmode" then
+			task.wait(6)
+		end
+		
+		if Options.InstantBullet.Bool == true then
+			Global.Disconnect = true
+			Humanoid:ChangeState(16)
+			FlingPart.Transparency = 1
+			if Options.Type ~= "SemiBot" then
+				FlingPart:ClearAllChildren()
+			else
+				FlingPart.CatwareAP1:Destroy()
+				FlingPart.CatwareAP2:Destroy()
+				FlingPart.CatwareAO:Destroy()
+			end
+			local HighLight = Instance.new("SelectionBox")
+			HighLight.Adornee = FlingPart
+			HighLight.Parent = FlingPart 
+			HighLight.LineThickness = 0.05
+
+			BP = Instance.new("BodyPosition")
+			local Thrust = Instance.new("BodyThrust")
+			BP.MaxForce = Vector3.new(math.huge,math.huge,math.huge)
+			BP.P = 22500
+			BP.D = 125
+			BP.Position = FlingPart.Position
+			BP.Parent = FlingPart
+			Thrust.Force = Vector3.new(130,130,130)
+
+			if Options.Type == "Godmode" then
+				Thrust.Force = Vector3.new(150,150,150)
+			end
+			if Options.Type == "SemiBot" then
+				BP.P = 31000
+				BP.D = 210
+				Thrust.Force = Vector3.new(0,0,0)
+			end
+			Thrust.Parent = FlingPart
+			local OnHold = false
+
+			table.insert(Loops, Mouse.Button1Down:Connect(function()
+				OnHold = true
+			end))
+
+			table.insert(Loops, Mouse.Button1Up:Connect(function()
+				OnHold = false
+			end))
+
+			table.insert(Loops, RunService.Heartbeat:Connect(function()
+				
+				pcall(function()
+				if Options.Type == "SemiBot" then
+					FlingPart.RotVelocity = Vector3.new(1500,1500,1500)
+				end
+				if Options.InstantBullet.SmartLock == false then
+					if OnHold then
+						if Mouse.Target ~= nil then
+							BP.Position = Mouse.Hit.p
+							Thrust.Location = Mouse.Hit.p
+						end
+					else
+						BP.Position = Clone.Head.Position + Vector3.new(0,-10,0)
+						Thrust.Location = Clone.Head.Position + Vector3.new(0,-10,0)
+					end
+				else -- HEREEE
+
+					if OnHold then
+						if game.Players:GetPlayerFromCharacter(Mouse.Target.Parent) then
+							if Mouse.Target.Parent.Name ~= Players.LocalPlayer.Name then
+								if Mouse.Target ~= nil then
+									Thrust.Location = Mouse.Target.Parent:FindFirstChild("Head").CFrame.p + Vector3.new(0,-2,0)
+									BP.Position = Mouse.Target.Parent:FindFirstChild("Head").CFrame.p + Vector3.new(0,-2,0)
+								end
+							end
+						elseif game.Players:GetPlayerFromCharacter(Mouse.Target.Parent.Parent) then
+							if Mouse.Target.Parent.Parent.Name ~= Players.LocalPlayer.Name then
+								if Mouse.Target ~= nil then
+									Thrust.Location = Mouse.Target.Parent.Parent:FindFirstChild("Head").CFrame.p + Vector3.new(0,-2,0)
+									BP.Position = Mouse.Target.Parent.Parent:FindFirstChild("Head").CFrame.p + Vector3.new(0,-2,0)
+								end
+							end
+						end
+					else
+						BP.Position = Clone.Head.Position + Vector3.new(0,-10,0)
+						Thrust.Location = Clone.Head.Position + Vector3.new(0,-10,0)
+					end -- end the smart flign thing
+				end -- end of the onhold statement
+			end)
+			
+			end)) -- end of the loop
+
+		end	-- end of the instantbullet stastment
+	end)
+
+	if Humanoid.RigType == Enum.HumanoidRigType.R6 and Options.R6Method ~= "CFrame" and Options.Type == "Bullet" then
+		if Character:FindFirstChild("Pal Hair") then
+			Character:FindFirstChild("Pal Hair").Handle:ClearAllChildren()
+			Align(Character:FindFirstChild("Pal Hair").Handle, Clone:FindFirstChild("Left Leg"), Vector3.new(0,0,0), Vector3.new(90,0,0))
+		else
+			ConsoleLog("Pal Hair Not Found! (Bullet)")
+		end
+	end
+	if Humanoid.RigType == Enum.HumanoidRigType.R15 and Options.R15Method ~= "CFrame" then
+		if Character:FindFirstChild("SniperShoulderL") then
+			Character:FindFirstChild("SniperShoulderL").Handle:ClearAllChildren()
+			Align(Character:FindFirstChild("SniperShoulderL").Handle, Clone:FindFirstChild("Left Arm"), Vector3.new(0,-0.5,0), Vector3.new(0,0,0))
+		else
+			ConsoleLog("Left Sniper Shoulder Not Found! (Bullet)")
+		end
+	end
+end
+
+table.insert(Loops, UserInput.JumpRequest:Connect(function()
+	CloneHumanoid.Jump = true
+	CloneHumanoid.Sit = false
+end))
+
+table.insert(Loops, RunService.Stepped:Connect(function()
+	for Index, Part in pairs(CharacterD) do
+		if Part.Parent and Part:IsA("BasePart") then
+			Part.CanCollide = false
+			Part.CanQuery = false
+			Part.RootPriority = 127
+		end
+	end
+
+	for Index, Part in pairs(CloneD) do
+		if Part.Parent and Part:IsA("BasePart") then
+			Part.CanCollide = false
+		end
+	end
+
+	CloneHumanoid:Move(Humanoid.MoveDirection, false)
+	if Options.BonusProperties == true then
+		NetApi.Net()
+	end
+	for Index, Track in pairs(HumanoidTracks) do
+		Track:Stop()
+	end
+end))
+
+
+
+for Index, Motor6D in pairs(CharacterD) do
+	if Motor6D:IsA("Motor6D") and Motor6D.Name ~= "Neck" then
+		Motor6D:Destroy()
+	end
+end
+
+local function ReCreateAccessoryWelds(Accessory)
+	if not Accessory:IsA("Accessory") then return end
+
+	local Handle = Accessory:FindFirstChild("Handle")
+	pcall(function() Handle:FindFirstChild("AccessoryWeld"):Destroy() end)
+
+	local NewWeld = Instance.new("Weld")
+	NewWeld.Parent = Accessory.Handle
+	NewWeld.Name = "AccessoryWeld"
+	NewWeld.Part0 = Handle
+
+	local Attachment = Handle:FindFirstChildOfClass("Attachment")
+
+	if Attachment then
+		NewWeld.C0 = Attachment.CFrame
+		NewWeld.C1 = Clone:FindFirstChild(tostring(Attachment), true).CFrame
+		NewWeld.Part1 = Clone:FindFirstChild(tostring(Attachment), true).Parent
+	else
+		NewWeld.Part1 = Clone:FindFirstChild("Head")
+		NewWeld.C1 = CFrame.new(0,Clone:FindFirstChild("Head").Size.Y / 2,0) * Accessory.AttachmentPoint:Inverse()
+	end
+
+	Handle.CFrame = NewWeld.Part1.CFrame * NewWeld.C1 * NewWeld.C0:Inverse()
+end
+
+
+for Index, Part in pairs(CharacterD) do
+	if Part:IsA("BasePart") then
+		-- Network(Part)
+	end
+
+	if Part:IsA("Accessory") then
+		local NewAccessories = Part:Clone()
+		NewAccessories.Parent = Clone
+		NewAccessories.Handle.Transparency = 1
+
+		ReCreateAccessoryWelds(NewAccessories)
+		Part.Handle:BreakJoints()
+	end
+end
+
+Character.Parent = Clone
+
+table.insert(Loops, RunService.Heartbeat:Connect(function()
+	for Index, Part in pairs(CharacterD) do
+		if Part:IsA("BasePart") then
+			if Part and Part.Parent then
+                if Options.Type == "Fling" and FlingPart and Part.Name ~= FlingPart.Name then
+                    if Options.Jitterless == true then
+						Part.Velocity = getNetlessVelocity(Options.Jitteryness or Vector3.new(28.5,0,0))
+                    else
+                    Part.Velocity = Options.Jitteryness or Vector3.new(28.5,0,0) + Clone:FindFirstChild("Torso").CFrame.LookVector * 10
+				end
+                elseif Options.Type ~= "Fling" then
+                	if Options.Jitterless == true then
+						Part.Velocity = getNetlessVelocity(Options.Jitteryness or Vector3.new(28.5,0,0))
+                    else
+                    Part.Velocity = Options.Jitteryness or Vector3.new(28.5,0,0) + Clone:FindFirstChild("Torso").CFrame.LookVector * 10
+					end
+				end
+			end
+		elseif Part:IsA("Accessory") then
+			if Part and Part:FindFirstChild("Handle") and Part.Parent then
+				if Options.R6Method == "CFrame" or Options.R15Method == "CFrame" then
+					local Handle = Part:FindFirstChild("Handle")
+					pcall(function()
+						if Handle then
+							if Options.Type == "Bullet" and Part.Name ~= "Pal Hair" and Humanoid.RigType == Enum.HumanoidRigType.R6  then
+								Handle.CFrame = Clone:FindFirstChild(Handle.Parent.Name).Handle.CFrame
+							elseif Options.Type == "Bullet" or Options.Type == "Godmode" and Part.Name ~= "SniperShoulderL" and Humanoid.RigType == Enum.HumanoidRigType.R15 then
+								Handle.CFrame = Clone:FindFirstChild(Handle.Parent.Name).Handle.CFrame
+							elseif Options.Type == "SemiBot" and Part.Name ~= Hat1.Parent.Name and Part.Name ~= Hat2.Parent.Name then
+								Handle.CFrame = Clone:FindFirstChild(Handle.Parent.Name).Handle.CFrame
+							elseif Options.Type ~= "Bullet" then
+								Handle.CFrame = Clone:FindFirstChild(Handle.Parent.Name).Handle.CFrame
+							end
+						end
+					end)
+				end
+			end
+		end
+	end
+
+	if Humanoid.RigType == Enum.HumanoidRigType.R6 and Options.R6Method ~= "CFrame" then
+		if Options.Type == "Fling" then
+			Character:FindFirstChild("Torso").CFrame = Clone:FindFirstChild("Torso").CFrame
+
+			if FlingPart then
+				FlingPart.Velocity = Vector3.new(1200,1200,1200)
+			end
+		end
+	elseif Humanoid.RigType == Enum.HumanoidRigType.R15 then
+		Character:FindFirstChild("UpperTorso").CFrame = Clone:FindFirstChild("Torso").CFrame * CFrame.new(0,0.19,0)
+		Character:FindFirstChild("HumanoidRootPart").CFrame = Character:FindFirstChild("UpperTorso").CFrame * CFrame.new(0,-0.02,0)		
+		if FlingPart then
+			FlingPart.Velocity = Vector3.new(100,100,100)
+			FlingPart.RotVelocity = Vector3.new(1000,1000,1000)
+		end
+	end
+
+	pcall(function()
+		if Humanoid.RigType == Enum.HumanoidRigType.R6 and Options.R6Method == "CFrame" then
+			if Options.Type ~= "SemiBot" then
+				Character:FindFirstChild("Torso").CFrame = Clone:FindFirstChild("Torso").CFrame
+			else
+				Hat1.CFrame = Clone:FindFirstChild("Torso").CFrame * CFrame.new(0,0.5,0) * CFrame.Angles(0,math.rad(90),0)
+				Hat2.CFrame = Clone:FindFirstChild("Torso").CFrame * CFrame.new(0,-0.5,0) * CFrame.Angles(0,math.rad(90),0)
+			end
+			if Options.Type == "Godmode" then
+					if Global.Disconnect == false then
+						Character:FindFirstChild("HumanoidRootPart").CFrame = Clone:FindFirstChild("HumanoidRootPart").CFrame
+					end
+				Character:FindFirstChild("Head").CFrame = Clone:FindFirstChild("Head").CFrame
+			end
+
+			if Options.Type == "Bullet" then -- bullet check
+				if Character:FindFirstChild("Pal Hair") then -- hat detect
+					Character:FindFirstChild("Pal Hair").Handle.CFrame = Clone:FindFirstChild("Left Leg").CFrame * CFrame.Angles(math.rad(90),0,0)
+				end
+
+				if Global.Disconnect == false then -- disconnectio
+					Character:FindFirstChild("Left Leg").CFrame = Clone:FindFirstChild("Left Leg").CFrame
+				end
+			else -- if no bullet then 
+				Character:FindFirstChild("Left Leg").CFrame = Clone:FindFirstChild("Left Leg").CFrame
+			end
+
+			Character:FindFirstChild("Left Arm").CFrame = Clone:FindFirstChild("Left Arm").CFrame
+			Character:FindFirstChild("Right Arm").CFrame = Clone:FindFirstChild("Right Arm").CFrame
+			Character:FindFirstChild("Right Leg").CFrame = Clone:FindFirstChild("Right Leg").CFrame
+		elseif Humanoid.RigType == Enum.HumanoidRigType.R15 and Options.R15Method == "CFrame" then
+			Character:FindFirstChild("LowerTorso").CFrame = Clone:FindFirstChild("Torso").CFrame * CFrame.new(0,-0.8,0)
+
+			if Options.Type == "Godmode" then
+				Character:FindFirstChild("Head").CFrame = Clone:FindFirstChild("Head").CFrame
+			end
+
+			if Options.Type == "Bullet" or Options.Type == "Godmode" then
+					if Character:FindFirstChild("SniperShoulderL") then
+						Character:FindFirstChild("SniperShoulderL").Handle.CFrame = Clone:FindFirstChild("Left Arm").CFrame * CFrame.new(0,0.5,0)
+					end
+
+					if Global.Disconnect == false then
+						Character:FindFirstChild("LeftUpperArm").CFrame = Clone:FindFirstChild("Left Arm").CFrame * CFrame.new(0,0.4,0)
+					end
+			else
+				Character:FindFirstChild("LeftUpperArm").CFrame = Clone:FindFirstChild("Left Arm").CFrame * CFrame.new(0,0.4,0)
+			end
+
+			Character:FindFirstChild("LeftLowerArm").CFrame = Clone:FindFirstChild("Left Arm").CFrame * CFrame.new(0,-0.18,0)
+			Character:FindFirstChild("LeftHand").CFrame = Clone:FindFirstChild("Left Arm").CFrame * CFrame.new(0,-0.82,0)
+
+			Character:FindFirstChild("RightUpperArm").CFrame = Clone:FindFirstChild("Right Arm").CFrame * CFrame.new(0,0.4,0)
+			Character:FindFirstChild("RightLowerArm").CFrame = Clone:FindFirstChild("Right Arm").CFrame * CFrame.new(0,-0.18,0)
+			Character:FindFirstChild("RightHand").CFrame = Clone:FindFirstChild("Right Arm").CFrame * CFrame.new(0,-0.82,0)
+
+			Character:FindFirstChild("LeftUpperLeg").CFrame = Clone:FindFirstChild("Left Leg").CFrame * CFrame.new(0,0.59,0)
+			Character:FindFirstChild("LeftLowerLeg").CFrame = Clone:FindFirstChild("Left Leg").CFrame * CFrame.new(0,-0.16,0)
+			Character:FindFirstChild("LeftFoot").CFrame = Clone:FindFirstChild("Left Leg").CFrame * CFrame.new(0,-0.85,0)
+
+			Character:FindFirstChild("RightUpperLeg").CFrame = Clone:FindFirstChild("Right Leg").CFrame * CFrame.new(0,0.59,0)
+			Character:FindFirstChild("RightLowerLeg").CFrame = Clone:FindFirstChild("Right Leg").CFrame * CFrame.new(0,-0.16,0)
+			Character:FindFirstChild("RightFoot").CFrame = Clone:FindFirstChild("Right Leg").CFrame * CFrame.new(0,-0.85,0)
+		end
+	end)
+end))
+
+ConsoleLog("Applied Velocity: "..tostring(Options.Jitteryness))
+ConsoleLog("Jitterless Set to: "..tostring(Options.Jitterless))
+if Options.Type == "SemiBot" then
+	Align(Character:FindFirstChild("Torso"), Clone:FindFirstChild("Torso"))
+end
+if Humanoid.RigType == Enum.HumanoidRigType.R6 and Options.R6Method ~= "CFrame" then
+	if Options.Type == "Godmode" then
+		Align(Character:FindFirstChild("Head"),Clone:FindFirstChild("Head"))
+		Align(Character:FindFirstChild("HumanoidRootPart"),Clone:FindFirstChild("HumanoidRootPart"))
+	end
+	if Options.Type == "SemiBot" then
+		task.spawn(function()
+		wait(0.55)
+		Hat1:ClearAllChildren()
+		Hat2:ClearAllChildren()
+		Align(Hat1, Clone:FindFirstChild("Torso"), Vector3.new(0, -0.5, 0),Vector3.new(0,90,0))
+		Align(Hat2, Clone:FindFirstChild("Torso"), Vector3.new(0, 0.5, 0),Vector3.new(0,90,0))
+		end)
+	end
+	Align(Character:FindFirstChild("Torso"), Clone:FindFirstChild("Torso"))
+	Align(Character:FindFirstChild("Right Arm"), Clone:FindFirstChild("Right Arm"))
+	Align(Character:FindFirstChild("Left Arm"), Clone:FindFirstChild("Left Arm"))
+	Align(Character:FindFirstChild("Right Leg"), Clone:FindFirstChild("Right Leg"))
+	Align(Character:FindFirstChild("Left Leg"), Clone:FindFirstChild("Left Leg"))
+elseif Humanoid.RigType == Enum.HumanoidRigType.R15 and Options.R15Method ~= "CFrame" then
+	Character:FindFirstChild("HumanoidRootPart").Anchored = true
+
+	if Options.Type == "Godmode" then
+		Align(Character:FindFirstChild("Head"),Clone:FindFirstChild("Head"))
+	end
+
+	Align(Character:FindFirstChild("LowerTorso"),Clone:FindFirstChild("Torso"),Vector3.new(0,0.8,0))
+	Align(Character:FindFirstChild("RightUpperArm"),Clone:FindFirstChild("Right Arm"),Vector3.new(0,-0.4,0))
+	Align(Character:FindFirstChild("RightLowerArm"),Clone:FindFirstChild("Right Arm"),Vector3.new(0,0.2-0.015,0))
+	Align(Character:FindFirstChild("RightHand"),Clone:FindFirstChild("Right Arm"),Vector3.new(0,0.85,0))
+
+	Align(Character:FindFirstChild("LeftUpperArm"),Clone:FindFirstChild("Left Arm"),Vector3.new(0,-0.4,0))
+	Align(Character:FindFirstChild("LeftLowerArm"),Clone:FindFirstChild("Left Arm"),Vector3.new(0,0.2-0.015,0))
+	Align(Character:FindFirstChild("LeftHand"),Clone:FindFirstChild("Left Arm"),Vector3.new(0,0.85,0))
+
+	Align(Character:FindFirstChild("RightUpperLeg"),Clone:FindFirstChild("Right Leg"),Vector3.new(0,-0.5,0))
+	Align(Character:FindFirstChild("RightLowerLeg"),Clone:FindFirstChild("Right Leg"),Vector3.new(0,0.2,0))
+	Align(Character:FindFirstChild("RightFoot"),Clone:FindFirstChild("Right Leg"),Vector3.new(0,0.85,0))
+
+	Align(Character:FindFirstChild("LeftUpperLeg"),Clone:FindFirstChild("Left Leg"),Vector3.new(0,-0.5,0))
+	Align(Character:FindFirstChild("LeftLowerLeg"),Clone:FindFirstChild("Left Leg"),Vector3.new(0,0.2,0))
+	Align(Character:FindFirstChild("LeftFoot"),Clone:FindFirstChild("Left Leg"),Vector3.new(0,0.85,0))
+
+	task.wait()
+	Character:FindFirstChild("HumanoidRootPart").Anchored = false
+end
+
+if Options.R6Method ~= "CFrame" then
+	for Index, Accessory in pairs(CharacterG) do
+		if Accessory:IsA("Accessory") then
+			Align(Accessory.Handle, Clone[Accessory.Name].Handle)
+		end
+	end
+end
+
+if workspace:FindFirstChildOfClass("Camera") then
+	workspace:FindFirstChildOfClass("Camera").CameraSubject = CloneHumanoid
+end
+
+game.Players.LocalPlayer.Character = Clone
+
+if Options.Type ~= "Godmode" then
+	table.insert(Loops, Humanoid.Died:Connect(function()
+		Character.Parent = workspace
+
+		for Index, Loop in pairs(Loops) do
+			Loop:Disconnect()
+		end
+
+		Global.OriginalCharacter = nil
+		Global.ReanimationClone = nil
+		Global.Disconnect = nil
+		Clone:Destroy()
+		Players.LocalPlayer.Character = workspace[Players.LocalPlayer.Name]	
+		Humanoid:ChangeState(15)
+		if workspace:FindFirstChildOfClass("Camera") then
+			workspace:FindFirstChildOfClass("Camera").CameraSubject = Humanoid
+		end
+	end))
+else
+	task.spawn(function()
+		game:GetService("StarterGui"):SetCore("ResetButtonCallback", false)
+		task.wait(Players.RespawnTime + game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue() / 750)
+
+		local Neck = Character:FindFirstChild("Neck",true)
+
+		if Neck then
+			Neck.Parent = nil
+		end
+
+		game:GetService("StarterGui"):SetCore("ResetButtonCallback", true)
+
+		local Bind = Instance.new("BindableEvent")
+		Bind.Parent = Character
+
+		task.wait(0.15)
+
+		Bind.Event:Connect(function()
+			Character.Parent = workspace
+
+			for Index, Loop in pairs(Loops) do
+				Loop:Disconnect()
+			end
+
+			Global.OriginalCharacter = nil
+			Global.ReanimationClone = nil
+			Global.Disconnect = nil
+			Global.FlingBullet = nil
+			Clone:Destroy()
+			Players.LocalPlayer.Character = workspace[Players.LocalPlayer.Name]
+
+			if workspace:FindFirstChildOfClass("Camera") then
+				workspace:FindFirstChildOfClass("Camera").CameraSubject = Humanoid
+			end
+
+			game:GetService("StarterGui"):SetCore("ResetButtonCallback", true)
+		end)
+
+		game:GetService("StarterGui"):SetCore("ResetButtonCallback", Bind)
+	end)
+end
+
+table.insert(Loops, Players.LocalPlayer.CharacterAdded:Connect(function()
+	for Index, Loop in pairs(Loops) do
+		Loop:Disconnect()
+	end
+
+	Global.OriginalCharacter = nil
+	Global.ReanimationClone = nil
+	Global.Disconnect = nil
+	Global.FlingBullet = nil
+	Clone:Destroy()
+end))
+
+ConsoleLog("Everything is loaded!")
+
+Notification(true, "Catware Reanimate", "Loaded! Credits: Gelatek, ProductionTakeOne, Danix, MyWorld")
+warn("Made By: Gelatek, ProductionTakeOne, Danix, MyWorld [Version 1.4]")
+
+if Options.LoadLibrary == true then
+	loadstring(game:HttpGetAsync("https://raw.githubusercontent.com/StrokeThePea/CatwareReanimate/main/src/LoadLibrary.lua"))()
+end
+if Options.RigAnimations == true then
+	loadstring(game:HttpGetAsync("https://raw.githubusercontent.com/StrokeThePea/CatwareReanimate/main/src/Animations.lua"))()
+end
+]=====]
+SRC.CatwareAPI = [=====[
+if syn then 
+	return
+end
+local HiddenProps = sethiddenproperty or set_hidden_property or sethiddenprop or setscriptable and function(loc,prop,val) if not loc then return true end local succ,f = pcall(function() local a = loc[prop] end) if not succ then setscriptable(loc,prop,true) end loc[prop] = val end or function() return nil end
+local SimRadius = setsimulationradius or set_simulation_radius or HiddenProps() and function(val) HiddenProps(Player,"SimulationRadius",val) end or function() end
+local RunService = game:GetService("RunService")
+local API = {}
+local Players = game.Players
+local CharacterDescendants = game.Players.LocalPlayer.Character:GetDescendants()
+function API.Properties()
+    settings().Physics.AllowSleep = false
+    settings().Physics.ForceCSGv2 = false
+    settings().Physics.DisableCSGv2 = true
+    settings().Physics.UseCSGv2 = false
+    settings().Rendering.EagerBulkExecution = true
+    settings().Physics.ThrottleAdjustTime = math.huge
+    settings().Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Disabled
+    HiddenProps(workspace, "HumanoidOnlySetCollisionsOnStateChange", Enum.HumanoidOnlySetCollisionsOnStateChange.Disabled)
+    HiddenProps(workspace, "InterpolationThrottling", Enum.InterpolationThrottlingMode.Disabled)
+    Players.LocalPlayer.ReplicationFocus = workspace
+end
+
+function API.Net()
+	HiddenProps(Players.LocalPlayer, "MaximumSimulationRadius", 1000)
+	HiddenProps(Players.LocalPlayer, "SimulationRadius", 1000)
+	SimRadius(1000)
+	for Index,Part in pairs(CharacterDescendants) do
+			if Part:IsA("BasePart") then
+			HiddenProps(Part, "NetworkIsSleeping", false)
+			Part.CustomPhysicalProperties = PhysicalProperties.new(0,0,0,0,0)
+			HiddenProps(Part, "NetworkOwnershipRule", Enum.NetworkOwnership.Manual)
+		end
+	end
+end
+
+return API
+]=====]
+SRC.CatwareAnimations = [=====[
+
+local Figure = getgenv().ReanimationClone
+local Torso = Figure:WaitForChild("Torso")
+local RightShoulder = Torso:WaitForChild("Right Shoulder")
+local LeftShoulder = Torso:WaitForChild("Left Shoulder")
+local RightHip = Torso:WaitForChild("Right Hip")
+local LeftHip = Torso:WaitForChild("Left Hip")
+local Neck = Torso:WaitForChild("Neck")
+local Humanoid = Figure:WaitForChild("Humanoid")
+local pose = "Standing"
+
+local currentAnim = ""
+local currentAnimInstance = nil
+local currentAnimTrack = nil
+local currentAnimKeyframeHandler = nil
+local currentAnimSpeed = 1.0
+local animTable = {}
+local animNames = { 
+	idle = 	{	
+				{ id = "http://www.roblox.com/asset/?id=180435571", weight = 9 },
+				{ id = "http://www.roblox.com/asset/?id=180435792", weight = 1 }
+			},
+	walk = 	{ 	
+				{ id = "http://www.roblox.com/asset/?id=180426354", weight = 10 } 
+			}, 
+	run = 	{
+				{ id = "run.xml", weight = 10 } 
+			}, 
+	jump = 	{
+				{ id = "http://www.roblox.com/asset/?id=125750702", weight = 10 } 
+			}, 
+	fall = 	{
+				{ id = "http://www.roblox.com/asset/?id=180436148", weight = 10 } 
+			}, 
+	climb = {
+				{ id = "http://www.roblox.com/asset/?id=180436334", weight = 10 } 
+			}, 
+	sit = 	{
+				{ id = "http://www.roblox.com/asset/?id=178130996", weight = 10 } 
+			},	
+	toolnone = {
+				{ id = "http://www.roblox.com/asset/?id=182393478", weight = 10 } 
+			},
+	toolslash = {
+				{ id = "http://www.roblox.com/asset/?id=129967390", weight = 10 } 
+--				{ id = "slash.xml", weight = 10 } 
+			},
+	toollunge = {
+				{ id = "http://www.roblox.com/asset/?id=129967478", weight = 10 } 
+			},
+	wave = {
+				{ id = "http://www.roblox.com/asset/?id=128777973", weight = 10 } 
+			},
+	point = {
+				{ id = "http://www.roblox.com/asset/?id=128853357", weight = 10 } 
+			},
+	dance1 = {
+				{ id = "http://www.roblox.com/asset/?id=182435998", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491037", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491065", weight = 10 } 
+			},
+	dance2 = {
+				{ id = "http://www.roblox.com/asset/?id=182436842", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491248", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491277", weight = 10 } 
+			},
+	dance3 = {
+				{ id = "http://www.roblox.com/asset/?id=182436935", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491368", weight = 10 }, 
+				{ id = "http://www.roblox.com/asset/?id=182491423", weight = 10 } 
+			},
+	laugh = {
+				{ id = "http://www.roblox.com/asset/?id=129423131", weight = 10 } 
+			},
+	cheer = {
+				{ id = "http://www.roblox.com/asset/?id=129423030", weight = 10 } 
+			},
+}
+local dances = {"dance1", "dance2", "dance3"}
+
+-- Existance in this list signifies that it is an emote, the value indicates if it is a looping emote
+local emoteNames = { wave = false, point = false, dance1 = true, dance2 = true, dance3 = true, laugh = false, cheer = false}
+
+function configureAnimationSet(name, fileList)
+	if (animTable[name] ~= nil) then
+		for _, connection in pairs(animTable[name].connections) do
+			connection:disconnect()
+		end
+	end
+	animTable[name] = {}
+	animTable[name].count = 0
+	animTable[name].totalWeight = 0	
+	animTable[name].connections = {}
+
+	-- check for config values
+	local config = script:FindFirstChild(name)
+	if (config ~= nil) then
+--		print("Loading anims " .. name)
+		table.insert(animTable[name].connections, config.ChildAdded:connect(function(child) configureAnimationSet(name, fileList) end))
+		table.insert(animTable[name].connections, config.ChildRemoved:connect(function(child) configureAnimationSet(name, fileList) end))
+		local idx = 1
+		for _, childPart in pairs(config:GetChildren()) do
+			if (childPart:IsA("Animation")) then
+				table.insert(animTable[name].connections, childPart.Changed:connect(function(property) configureAnimationSet(name, fileList) end))
+				animTable[name][idx] = {}
+				animTable[name][idx].anim = childPart
+				local weightObject = childPart:FindFirstChild("Weight")
+				if (weightObject == nil) then
+					animTable[name][idx].weight = 1
+				else
+					animTable[name][idx].weight = weightObject.Value
+				end
+				animTable[name].count = animTable[name].count + 1
+				animTable[name].totalWeight = animTable[name].totalWeight + animTable[name][idx].weight
+	--			print(name .. " [" .. idx .. "] " .. animTable[name][idx].anim.AnimationId .. " (" .. animTable[name][idx].weight .. ")")
+				idx = idx + 1
+			end
+		end
+	end
+
+	-- fallback to defaults
+	if (animTable[name].count <= 0) then
+		for idx, anim in pairs(fileList) do
+			animTable[name][idx] = {}
+			animTable[name][idx].anim = Instance.new("Animation")
+			animTable[name][idx].anim.Name = name
+			animTable[name][idx].anim.AnimationId = anim.id
+			animTable[name][idx].weight = anim.weight
+			animTable[name].count = animTable[name].count + 1
+			animTable[name].totalWeight = animTable[name].totalWeight + anim.weight
+--			print(name .. " [" .. idx .. "] " .. anim.id .. " (" .. anim.weight .. ")")
+		end
+	end
+end
+
+-- Setup animation objects
+function scriptChildModified(child)
+	local fileList = animNames[child.Name]
+	if (fileList ~= nil) then
+		configureAnimationSet(child.Name, fileList)
+	end	
+end
+
+script.ChildAdded:connect(scriptChildModified)
+script.ChildRemoved:connect(scriptChildModified)
+
+
+for name, fileList in pairs(animNames) do 
+	configureAnimationSet(name, fileList)
+end	
+
+-- ANIMATION
+
+-- declarations
+local toolAnim = "None"
+local toolAnimTime = 0
+
+local jumpAnimTime = 0
+local jumpAnimDuration = 0.3
+
+local toolTransitionTime = 0.1
+local fallTransitionTime = 0.3
+local jumpMaxLimbVelocity = 0.75
+
+-- functions
+
+function stopAllAnimations()
+	local oldAnim = currentAnim
+
+	-- return to idle if finishing an emote
+	if (emoteNames[oldAnim] ~= nil and emoteNames[oldAnim] == false) then
+		oldAnim = "idle"
+	end
+
+	currentAnim = ""
+	currentAnimInstance = nil
+	if (currentAnimKeyframeHandler ~= nil) then
+		currentAnimKeyframeHandler:disconnect()
+	end
+
+	if (currentAnimTrack ~= nil) then
+		currentAnimTrack:Stop()
+		currentAnimTrack:Destroy()
+		currentAnimTrack = nil
+	end
+	return oldAnim
+end
+
+function setAnimationSpeed(speed)
+	if speed ~= currentAnimSpeed then
+		currentAnimSpeed = speed
+		currentAnimTrack:AdjustSpeed(currentAnimSpeed)
+	end
+end
+
+function keyFrameReachedFunc(frameName)
+	if (frameName == "End") then
+
+		local repeatAnim = currentAnim
+		-- return to idle if finishing an emote
+		if (emoteNames[repeatAnim] ~= nil and emoteNames[repeatAnim] == false) then
+			repeatAnim = "idle"
+		end
+		
+		local animSpeed = currentAnimSpeed
+		playAnimation(repeatAnim, 0.0, Humanoid)
+		setAnimationSpeed(animSpeed)
+	end
+end
+
+-- Preload animations
+function playAnimation(animName, transitionTime, humanoid) 
+	pcall(function()
+		
+	local roll = math.random(1, animTable[animName].totalWeight) 
+	local origRoll = roll
+	local idx = 1
+	while (roll > animTable[animName][idx].weight) do
+		roll = roll - animTable[animName][idx].weight
+		idx = idx + 1
+	end
+--		print(animName .. " " .. idx .. " [" .. origRoll .. "]")
+	local anim = animTable[animName][idx].anim
+
+	-- switch animation		
+	if (anim ~= currentAnimInstance) then
+		
+		if (currentAnimTrack ~= nil) then
+			currentAnimTrack:Stop(transitionTime)
+			currentAnimTrack:Destroy()
+		end
+
+		currentAnimSpeed = 1.0
+	
+		-- load it to the humanoid; get AnimationTrack
+		currentAnimTrack = humanoid:LoadAnimation(anim)
+		currentAnimTrack.Priority = Enum.AnimationPriority.Core
+		 
+		-- play the animation
+		currentAnimTrack:Play(transitionTime)
+		currentAnim = animName
+		currentAnimInstance = anim
+
+		-- set up keyframe name triggers
+		if (currentAnimKeyframeHandler ~= nil) then
+			currentAnimKeyframeHandler:disconnect()
+		end
+		currentAnimKeyframeHandler = currentAnimTrack.KeyframeReached:connect(keyFrameReachedFunc)
+		
+	end
+end)
+end
+
+-------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------
+
+local toolAnimName = ""
+local toolAnimTrack = nil
+local toolAnimInstance = nil
+local currentToolAnimKeyframeHandler = nil
+
+function toolKeyFrameReachedFunc(frameName)
+	if (frameName == "End") then
+--		print("Keyframe : ".. frameName)	
+		playToolAnimation(toolAnimName, 0.0, Humanoid)
+	end
+end
+
+function playToolAnimation(animName, transitionTime, humanoid, priority)	 
+	local roll = math.random(1, animTable[animName].totalWeight)
+	local origRoll = roll
+	local idx = 1
+	while (roll > animTable[animName][idx].weight) do
+		roll = roll - animTable[animName][idx].weight
+		idx = idx + 1
+	end
+	--	print(animName .. " * " .. idx .. " [" .. origRoll .. "]")
+	local anim = animTable[animName][idx].anim
+
+	if (toolAnimInstance ~= anim) then
+		if (toolAnimTrack ~= nil) then
+			toolAnimTrack:Stop()
+			toolAnimTrack:Destroy()
+			transitionTime = 0
+		end
+
+		-- load it to the humanoid; get AnimationTrack
+		toolAnimTrack = humanoid:LoadAnimation(anim)
+		if priority then
+			toolAnimTrack.Priority = priority
+		end
+
+		-- play the animation
+		toolAnimTrack:Play(transitionTime)
+		toolAnimName = animName
+		toolAnimInstance = anim
+
+		currentToolAnimKeyframeHandler = toolAnimTrack.KeyframeReached:connect(toolKeyFrameReachedFunc)
+	end
+end
+
+function stopToolAnimations()
+	local oldAnim = toolAnimName
+
+	if (currentToolAnimKeyframeHandler ~= nil) then
+		currentToolAnimKeyframeHandler:disconnect()
+	end
+
+	toolAnimName = ""
+	toolAnimInstance = nil
+
+	if (toolAnimTrack ~= nil) then
+		toolAnimTrack:Stop()
+		toolAnimTrack:Destroy()
+		toolAnimTrack = nil
+	end
+
+	return oldAnim
+end
+
+-------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------------------
+
+
+function onRunning(speed)
+	pcall(function()
+		if speed > 0.01 then
+			playAnimation("walk", 0.1, Humanoid)
+
+			if currentAnimInstance and currentAnimInstance.AnimationId == "http://www.roblox.com/asset/?id=180426354" then
+				setAnimationSpeed(speed / 14.5)
+			end
+
+			pose = "Running"
+		else
+			if emoteNames[currentAnim] == nil then
+				playAnimation("idle", 0.1, Humanoid)
+				pose = "Standing"
+			end
+		end
+	end)
+end
+
+function onDied()
+	pose = "Dead"
+end
+
+function onJumping()
+	playAnimation("jump", 0.1, Humanoid)
+	jumpAnimTime = jumpAnimDuration
+	pose = "Jumping"
+end
+
+function onClimbing(speed)
+	playAnimation("climb", 0.1, Humanoid)
+	setAnimationSpeed(speed / 12.0)
+	pose = "Climbing"
+end
+
+function onGettingUp()
+	pose = "GettingUp"
+end
+
+function onFreeFall()
+	if (jumpAnimTime <= 0) then
+		playAnimation("fall", fallTransitionTime, Humanoid)
+	end
+	pose = "FreeFall"
+end
+
+function onFallingDown()
+	pose = "FallingDown"
+end
+
+function onSeated()
+	pose = "Seated"
+end
+
+function onPlatformStanding()
+	pose = "PlatformStanding"
+end
+
+function onSwimming(speed)
+	if speed > 0 then
+		pose = "Running"
+	else
+		pose = "Standing"
+	end
+end
+
+function getTool()	
+	for _, kid in ipairs(Figure:GetChildren()) do
+		if kid.className == "Tool" then return kid end
+	end
+
+	return nil
+end
+
+function getToolAnim(tool)
+	for _, c in ipairs(tool:GetChildren()) do
+		if c.Name == "toolanim" and c.className == "StringValue" then
+			return c
+		end
+	end
+	return nil
+end
+
+function animateTool()	
+	if (toolAnim == "None") then
+		playToolAnimation("toolnone", toolTransitionTime, Humanoid, Enum.AnimationPriority.Idle)
+		return
+	end
+
+	if (toolAnim == "Slash") then
+		playToolAnimation("toolslash", 0, Humanoid, Enum.AnimationPriority.Action)
+		return
+	end
+
+	if (toolAnim == "Lunge") then
+		playToolAnimation("toollunge", 0, Humanoid, Enum.AnimationPriority.Action)
+		return
+	end
+end
+
+function moveSit()
+	RightShoulder.MaxVelocity = 0.15
+	LeftShoulder.MaxVelocity = 0.15
+	RightShoulder:SetDesiredAngle(3.14 /2)
+	LeftShoulder:SetDesiredAngle(-3.14 /2)
+	RightHip:SetDesiredAngle(3.14 /2)
+	LeftHip:SetDesiredAngle(-3.14 /2)
+end
+
+local lastTick = 0
+
+function move(time)
+	local amplitude = 1
+	local frequency = 1
+  	local deltaTime = time - lastTick
+  	lastTick = time
+
+	local climbFudge = 0
+	local setAngles = false
+
+  	if (jumpAnimTime > 0) then
+  		jumpAnimTime = jumpAnimTime - deltaTime
+  	end
+
+	if (pose == "FreeFall" and jumpAnimTime <= 0) then
+		playAnimation("fall", fallTransitionTime, Humanoid)
+	elseif (pose == "Seated") then
+		playAnimation("sit", 0.5, Humanoid)
+		return
+	elseif (pose == "Running") then
+		playAnimation("walk", 0.1, Humanoid)
+	elseif (pose == "Dead" or pose == "GettingUp" or pose == "FallingDown" or pose == "Seated" or pose == "PlatformStanding") then
+--		print("Wha " .. pose)
+		stopAllAnimations()
+		amplitude = 0.1
+		frequency = 1
+		setAngles = true
+	end
+
+	if (setAngles) then
+		local desiredAngle = amplitude * math.sin(time * frequency)
+
+		RightShoulder:SetDesiredAngle(desiredAngle + climbFudge)
+		LeftShoulder:SetDesiredAngle(desiredAngle - climbFudge)
+		RightHip:SetDesiredAngle(-desiredAngle)
+		LeftHip:SetDesiredAngle(-desiredAngle)
+	end
+
+	-- Tool Animation handling
+	local tool = getTool()
+	if tool and tool:FindFirstChild("Handle") then
+		local animStringValueObject = getToolAnim(tool)
+
+		if animStringValueObject then
+			toolAnim = animStringValueObject.Value
+			-- message recieved, delete StringValue
+			animStringValueObject.Parent = nil
+			toolAnimTime = time + .3
+		end
+
+		if time > toolAnimTime then
+			toolAnimTime = 0
+			toolAnim = "None"
+		end
+
+		animateTool()		
+	else
+		stopToolAnimations()
+		toolAnim = "None"
+		toolAnimInstance = nil
+		toolAnimTime = 0
+	end
+end
+
+-- connect events
+Humanoid.Died:connect(onDied)
+Humanoid.Running:connect(onRunning)
+Humanoid.Jumping:connect(onJumping)
+Humanoid.Climbing:connect(onClimbing)
+Humanoid.GettingUp:connect(onGettingUp)
+Humanoid.FreeFalling:connect(onFreeFall)
+Humanoid.FallingDown:connect(onFallingDown)
+Humanoid.Seated:connect(onSeated)
+Humanoid.PlatformStanding:connect(onPlatformStanding)
+Humanoid.Swimming:connect(onSwimming)
+
+-- setup emote chat hook
+game:GetService("Players").LocalPlayer.Chatted:connect(function(msg)
+	local emote = ""
+
+	if msg == "/e dance" then
+		emote = dances[math.random(1, #dances)]
+	elseif (string.sub(msg, 1, 3) == "/e ") then
+		emote = string.sub(msg, 4)
+	elseif (string.sub(msg, 1, 7) == "/emote ") then
+		emote = string.sub(msg, 8)
+	end
+	
+	if (pose == "Standing" and emoteNames[emote] ~= nil) then
+		playAnimation(emote, 0.1, Humanoid)
+	end
+end)
+
+local events = {}
+local dead = false
+
+table.insert(events, game:GetService("Players").LocalPlayer.CharacterAdded:Connect(function()
+	dead = true
+
+	for i,v in pairs(events) do
+		v:Disconnect()
+	end
+end))
+
+playAnimation("idle", 0.1, Humanoid)
+pose = "Standing"
+
+table.insert(events, game:GetService("RunService").Stepped:Connect(function()
+	if dead == true then
+		return
+	end
+
+	local _, time = wait(0.1)
+	move(time)
+end))
+]=====]
+SRC.LoadLibrary = [=====[
+function LoadLibrary(a)
+local t = {}
+ 
+local string = string
+local math = math
+local table = table
+local error = error
+local tonumber = tonumber
+local tostring = tostring
+local type = type
+local setmetatable = setmetatable
+local pairs = pairs
+local ipairs = ipairs
+local assert = assert
+
+local StringBuilder = {
+    buffer = {}
+}
+ 
+function StringBuilder:New()
+    local o = {}
+    setmetatable(o, self)
+    self.__index = self
+    o.buffer = {}
+    return o
+end
+ 
+function StringBuilder:Append(s)
+    self.buffer[#self.buffer+1] = s
+end
+ 
+function StringBuilder:ToString()
+    return table.concat(self.buffer)
+end
+ 
+local JsonWriter = {
+    backslashes = {
+        ['\b'] = "\\b",
+        ['\t'] = "\\t",
+        ['\n'] = "\\n",
+        ['\f'] = "\\f",
+        ['\r'] = "\\r",
+        ['"'] = "\\\"",
+        ['\\'] = "\\\\",
+        ['/'] = "\\/"
+    }
+}
+ 
+function JsonWriter:New()
+    local o = {}
+    o.writer = StringBuilder:New()
+    setmetatable(o, self)
+    self.__index = self
+    return o
+end
+ 
+function JsonWriter:Append(s)
+    self.writer:Append(s)
+end
+ 
+function JsonWriter:ToString()
+    return self.writer:ToString()
+end
+ 
+function JsonWriter:Write(o)
+    local t = type(o)
+
+    if t == "nil" then
+        self:WriteNil()
+    elseif t == "boolean" then
+        self:WriteString(o)
+    elseif t == "number" then
+        self:WriteString(o)
+    elseif t == "string" then
+        self:ParseString(o)
+    elseif t == "table" then
+        self:WriteTable(o)
+    elseif t == "function" then
+        self:WriteFunction(o)
+    elseif t == "thread" then
+        self:WriteError(o)
+    elseif t == "userdata" then
+        self:WriteError(o)
+    end
+end
+ 
+function JsonWriter:WriteNil()
+    self:Append("null")
+end
+ 
+function JsonWriter:WriteString(o)
+    self:Append(tostring(o))
+end
+ 
+function JsonWriter:ParseString(s)
+    self:Append('"')
+
+    self:Append(string.gsub(s, "[%z%c\\\"/]", function(n)
+        local c = self.backslashes[n]
+
+        if c then return c end
+        return string.format("\\u%.4X", string.byte(n))
+    end))
+
+    self:Append('"')
+end
+ 
+function JsonWriter:IsArray(t)
+    local count = 0
+    local isindex = function(k)
+        if type(k) == "number" and k > 0 then
+            if math.floor(k) == k then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    for k,v in pairs(t) do
+        if not isindex(k) then
+            return false, '{', '}'
+        else
+            count = math.max(count, k)
+        end
+    end
+
+    return true, '[', ']', count
+end
+ 
+function JsonWriter:WriteTable(t)
+    local ba, st, et, n = self:IsArray(t)
+    self:Append(st)
+
+    if ba then
+        for i = 1, n do
+            self:Write(t[i])
+
+            if i < n then
+                self:Append(',')
+            end
+        end
+    else
+        local first = true;
+
+        for k, v in pairs(t) do
+            if not first then
+                self:Append(',')
+            end
+
+            first = false;
+
+            self:ParseString(k)
+            self:Append(':')
+            self:Write(v)
+        end
+    end
+
+    self:Append(et)
+end
+ 
+function JsonWriter:WriteError(o)
+    error(string.format("Encoding of %s unsupported", tostring(o)))
+end
+
+function JsonWriter:WriteFunction(o)
+    if o == Null then
+        self:WriteNil()
+    else
+        self:WriteError(o)
+    end
+end
+ 
+local StringReader = {
+    s = "",
+    i = 0
+}
+ 
+function StringReader:New(s)
+    local o = {}
+    setmetatable(o, self)
+    self.__index = self
+    o.s = s or o.s
+    return o
+end
+ 
+function StringReader:Peek()
+    local i = self.i + 1
+
+    if i <= #self.s then
+        return string.sub(self.s, i, i)
+    end
+
+    return nil
+end
+ 
+function StringReader:Next()
+    self.i = self.i + 1
+
+    if self.i <= #self.s then
+        return string.sub(self.s, self.i, self.i)
+    end
+
+    return nil
+end
+ 
+function StringReader:All()
+    return self.s
+end
+ 
+local JsonReader = {
+    escapes = {
+        ['t'] = '\t',
+        ['n'] = '\n',
+        ['f'] = '\f',
+        ['r'] = '\r',
+        ['b'] = '\b',
+    }
+}
+ 
+function JsonReader:New(s)
+    local o = {}
+    o.reader = StringReader:New(s)
+    setmetatable(o, self)
+    self.__index = self
+    return o;
+end
+ 
+function JsonReader:Read()
+    self:SkipWhiteSpace()
+    local peek = self:Peek()
+
+    if peek == nil then
+        error(string.format("Nil string: '%s'", self:All()))
+    elseif peek == '{' then
+        return self:ReadObject()
+    elseif peek == '[' then
+        return self:ReadArray()
+    elseif peek == '"' then
+        return self:ReadString()
+    elseif string.find(peek, "[%+%-%d]") then
+        return self:ReadNumber()
+    elseif peek == 't' then
+        return self:ReadTrue()
+    elseif peek == 'f' then
+        return self:ReadFalse()
+    elseif peek == 'n' then
+        return self:ReadNull()
+    elseif peek == '/' then
+        self:ReadComment()
+        return self:Read()
+    else
+        return nil
+    end
+end
+ 
+function JsonReader:ReadTrue()
+    self:TestReservedWord{'t', 'r', 'u', 'e'}
+    return true
+end
+ 
+function JsonReader:ReadFalse()
+    self:TestReservedWord{'f', 'a', 'l', 's', 'e'}
+    return false
+end
+ 
+function JsonReader:ReadNull()
+    self:TestReservedWord{'n', 'u', 'l', 'l'}
+    return nil
+end
+ 
+function JsonReader:TestReservedWord(t)
+    for i, v in ipairs(t) do
+        if self:Next() ~= v then
+            error(string.format("Error reading '%s': %s", table.concat(t), self:All()))
+        end
+    end
+end
+ 
+function JsonReader:ReadNumber()
+    local result = self:Next()
+    local peek = self:Peek()
+
+    while peek ~= nil and string.find(peek, "[%+%-%d%.eE]") do
+        result = result .. self:Next()
+        peek = self:Peek()
+    end
+
+    result = tonumber(result)
+
+    if result == nil then
+        error(string.format("Invalid number: '%s'", result))
+    else
+        return result
+    end
+end
+ 
+function JsonReader:ReadString()
+    local result = ""
+    assert(self:Next() == '"')
+
+    while self:Peek() ~= '"' do
+        local ch = self:Next()
+
+        if ch == '\\' then
+            ch = self:Next()
+
+            if self.escapes[ch] then
+                ch = self.escapes[ch]
+            end
+        end
+
+        result = result .. ch
+    end
+
+    assert(self:Next() == '"')
+
+    local fromunicode = function(m)
+        return string.char(tonumber(m, 16))
+    end
+
+    return string.gsub(result, "u%x%x(%x%x)", fromunicode)
+end
+ 
+function JsonReader:ReadComment()
+    assert(self:Next() == '/')
+    local second = self:Next()
+
+    if second == '/' then
+        self:ReadSingleLineComment()
+    elseif second == '*' then
+        self:ReadBlockComment()
+    else
+        error(string.format("Invalid comment: %s", self:All()))
+    end
+end
+ 
+function JsonReader:ReadBlockComment()
+    local done = false
+
+    while not done do
+        local ch = self:Next()
+
+        if ch == '*' and self:Peek() == '/' then
+            done = true
+        end
+
+        if not done and ch == '/' and self:Peek() == "*" then
+            error(string.format("Invalid comment: %s, '/*' illegal.", self:All()))
+        end
+    end
+
+    self:Next()
+end
+ 
+function JsonReader:ReadSingleLineComment()
+    local ch = self:Next()
+
+    while ch ~= '\r' and ch ~= '\n' do
+        ch = self:Next()
+    end
+end
+ 
+function JsonReader:ReadArray()
+    local result = {}
+    assert(self:Next() == '[')
+
+    local done = false
+
+    if self:Peek() == ']' then
+        done = true;
+    end
+
+    while not done do
+        local item = self:Read()
+        result[#result+1] = item
+        self:SkipWhiteSpace()
+
+        if self:Peek() == ']' then
+            done = true
+        end
+
+        if not done then
+            local ch = self:Next()
+
+            if ch ~= ',' then
+                error(string.format("Invalid array: '%s' due to: '%s'", self:All(), ch))
+            end
+        end
+    end
+
+    assert(']' == self:Next())
+    return result
+end
+ 
+function JsonReader:ReadObject()
+    local result = {}
+    assert(self:Next() == '{')
+
+    local done = false
+
+    if self:Peek() == '}' then
+        done = true
+    end
+
+    while not done do
+        local key = self:Read()
+
+        if type(key) ~= "string" then
+            error(string.format("Invalid non-string object key: %s", key))
+        end
+
+        self:SkipWhiteSpace()
+        local ch = self:Next()
+
+        if ch ~= ':' then
+            error(string.format("Invalid object: '%s' due to: '%s'", self:All(), ch))
+        end
+
+        self:SkipWhiteSpace()
+
+        local val = self:Read()
+        result[key] = val
+
+        self:SkipWhiteSpace()
+
+        if self:Peek() == '}' then
+            done = true
+        end
+
+        if not done then
+            ch = self:Next()
+
+            if ch ~= ',' then
+                error(string.format("Invalid array: '%s' near: '%s'", self:All(), ch))
+            end
+        end
+    end
+
+    assert(self:Next() == "}")
+    return result
+end
+ 
+function JsonReader:SkipWhiteSpace()
+    local p = self:Peek()
+
+    while p ~= nil and string.find(p, "[%s/]") do
+        if p == '/' then
+            self:ReadComment()
+        else
+            self:Next()
+        end
+
+        p = self:Peek()
+    end
+end
+ 
+function JsonReader:Peek()
+    return self.reader:Peek()
+end
+ 
+function JsonReader:Next()
+    return self.reader:Next()
+end
+ 
+function JsonReader:All()
+    return self.reader:All()
+end
+ 
+function Encode(o)
+    local writer = JsonWriter:New()
+    writer:Write(o)
+    return writer:ToString()
+end
+ 
+function Decode(s)
+    local reader = JsonReader:New(s)
+    return reader:Read()
+end
+ 
+function Null()
+    return Null
+end
+
+t.DecodeJSON = function(jsonString)
+pcall(function() warn("RbxUtility.DecodeJSON is deprecated, please use Game:GetService('HttpService'):JSONDecode() instead.") end)
+
+if type(jsonString) == "string" then
+    return Decode(jsonString)
+end
+
+print("RbxUtil.DecodeJSON expects string argument!")
+return nil
+
+end
+ 
+t.EncodeJSON = function(jsonTable)
+    pcall(function() warn("RbxUtility.EncodeJSON is deprecated, please use Game:GetService('HttpService'):JSONEncode() instead.") end)
+    return Encode(jsonTable)
+end
+ 
+t.MakeWedge = function(x, y, z, defaultmaterial)
+    return game:GetService("Terrain"):AutoWedgeCell(x, y, z)
+end
+ 
+t.SelectTerrainRegion = function(regionToSelect, color, selectEmptyCells, selectionParent)
+    local terrain = game:GetService("Workspace"):FindFirstChild("Terrain")
+    if not terrain then return end
+ 
+    assert(regionToSelect)
+    assert(color)
+     
+    if not type(regionToSelect) == "Region3" then
+        error("regionToSelect (first arg), should be of type Region3, but is type", type(regionToSelect))
+    end
+
+    if not type(color) == "BrickColor" then
+        error("color (second arg), should be of type BrickColor, but is type", type(color))
+    end
+ 
+    local GetCell = terrain.GetCell
+    local WorldToCellPreferSolid = terrain.WorldToCellPreferSolid
+    local CellCenterToWorld = terrain.CellCenterToWorld
+    local emptyMaterial = Enum.CellMaterial.Empty
+     
+    local selectionContainer = Instance.new("Model")
+    selectionContainer.Name = "SelectionContainer"
+    selectionContainer.Archivable = false
+
+    if selectionParent then
+        selectionContainer.Parent = selectionParent
+    else
+        selectionContainer.Parent = game:GetService("Workspace")
+    end
+ 
+    local updateSelection = nil -- function we return to allow user to update selection
+    local currentKeepAliveTag = nil -- a tag that determines whether adorns should be destroyed
+    local aliveCounter = 0 -- helper for currentKeepAliveTag
+    local lastRegion = nil -- used to stop updates that do nothing
+    local adornments = {} -- contains all adornments
+    local reusableAdorns = {}
+     
+    local selectionPart = Instance.new("Part")
+    selectionPart.Name = "SelectionPart"
+    selectionPart.Transparency = 1
+    selectionPart.Anchored = true
+    selectionPart.Locked = true
+    selectionPart.CanCollide = false
+    selectionPart.Size = Vector3.new(4.2, 4.2, 4.2)
+ 
+    local selectionBox = Instance.new("SelectionBox")
+     
+    -- srs translation from region3 to region3int16
+    local function Region3ToRegion3int16(region3)
+        local theLowVec = region3.CFrame.p - (region3.Size/2) + Vector3.new(2, 2, 2)
+        local lowCell = WorldToCellPreferSolid(terrain,theLowVec)
+         
+        local theHighVec = region3.CFrame.p + (region3.Size/2) - Vector3.new(2, 2, 2)
+        local highCell = WorldToCellPreferSolid(terrain, theHighVec)
+         
+        local highIntVec = Vector3int16.new(highCell.x, highCell.y, highCell.z)
+        local lowIntVec = Vector3int16.new(lowCell.x, lowCell.y, lowCell.z)
+         
+        return Region3int16.new(lowIntVec, highIntVec)
+    end
+ 
+    -- helper function that creates the basis for a selection box
+    function createAdornment(theColor)
+        local selectionPartClone = nil
+        local selectionBoxClone = nil
+         
+        if #reusableAdorns > 0 then
+            selectionPartClone = reusableAdorns[1]["part"]
+            selectionBoxClone = reusableAdorns[1]["box"]
+            table.remove(reusableAdorns,1)
+             
+            selectionBoxClone.Visible = true
+        else
+            selectionPartClone = selectionPart:Clone()
+            selectionPartClone.Archivable = false
+             
+            selectionBoxClone = selectionBox:Clone()
+            selectionBoxClone.Archivable = false
+             
+            selectionBoxClone.Adornee = selectionPartClone
+            selectionBoxClone.Parent = selectionContainer
+             
+            selectionBoxClone.Adornee = selectionPartClone
+             
+            selectionBoxClone.Parent = selectionContainer
+        end
+     
+        if theColor then
+            selectionBoxClone.Color = theColor
+        end
+ 
+        return selectionPartClone, selectionBoxClone
+    end
+ 
+    -- iterates through all current adornments and deletes any that don't have latest tag
+    function cleanUpAdornments()
+        for cellPos, adornTable in pairs(adornments) do
+            if adornTable.KeepAlive ~= currentKeepAliveTag then -- old news, we should get rid of this
+                adornTable.SelectionBox.Visible = false
+                table.insert(reusableAdorns, {part = adornTable.SelectionPart, box = adornTable.SelectionBox})
+                adornments[cellPos] = nil
+            end
+        end
+    end
+ 
+    -- helper function to update tag
+    function incrementAliveCounter()
+        aliveCounter = aliveCounter + 1
+
+        if aliveCounter > 1000000 then
+            aliveCounter = 0
+        end
+
+        return aliveCounter
+    end
+ 
+    -- finds full cells in region and adorns each cell with a box, with the argument color
+    function adornFullCellsInRegion(region, color)
+        local regionBegin = region.CFrame.p - (region.Size/2) + Vector3.new(2, 2, 2)
+        local regionEnd = region.CFrame.p + (region.Size/2) - Vector3.new(2, 2, 2)
+         
+        local cellPosBegin = WorldToCellPreferSolid(terrain, regionBegin)
+        local cellPosEnd = WorldToCellPreferSolid(terrain, regionEnd)
+     
+        currentKeepAliveTag = incrementAliveCounter()
+
+        for y = cellPosBegin.y, cellPosEnd.y do
+            for z = cellPosBegin.z, cellPosEnd.z do
+                for x = cellPosBegin.x, cellPosEnd.x do
+                    local cellMaterial = GetCell(terrain, x, y, z)
+
+                    if cellMaterial ~= emptyMaterial then
+                        local cframePos = CellCenterToWorld(terrain, x, y, z)
+                        local cellPos = Vector3int16.new(x,y,z)
+
+                        local updated = false
+
+                        for cellPosAdorn, adornTable in pairs(adornments) do
+                            if cellPosAdorn == cellPos then
+                                adornTable.KeepAlive = currentKeepAliveTag
+
+                            if color then
+                                adornTable.SelectionBox.Color = color
+                            end
+
+                            updated = true
+                            break
+                        end
+                    end
+     
+                    if not updated then
+                        local selectionPart, selectionBox = createAdornment(color)
+
+                        selectionPart.Size = Vector3.new(4, 4, 4)
+                        selectionPart.CFrame = CFrame.new(cframePos)
+
+                        local adornTable = {SelectionPart = selectionPart, SelectionBox = selectionBox, KeepAlive = currentKeepAliveTag}
+                        adornments[cellPos] = adornTable
+                    end
+                end
+            end
+        end
+    end
+
+cleanUpAdornments()
+end
+ 
+------------------------------------- setup code ------------------------------
+lastRegion = regionToSelect
+ 
+if selectEmptyCells then -- use one big selection to represent the area selected
+    local selectionPart, selectionBox = createAdornment(color)
+     
+    selectionPart.Size = regionToSelect.Size
+    selectionPart.CFrame = regionToSelect.CFrame
+     
+    adornments.SelectionPart = selectionPart
+    adornments.SelectionBox = selectionBox
+ 
+    updateSelection = function (newRegion, color)
+        if newRegion and newRegion ~= lastRegion then
+            lastRegion = newRegion
+            selectionPart.Size = newRegion.Size
+            selectionPart.CFrame = newRegion.CFrame
+        end
+
+        if color then
+            selectionBox.Color = color
+        end
+    end
+else -- use individual cell adorns to represent the area selected
+    adornFullCellsInRegion(regionToSelect, color)
+    updateSelection = function (newRegion, color)
+        if newRegion and newRegion ~= lastRegion then
+            lastRegion = newRegion
+            adornFullCellsInRegion(newRegion, color)
+        end
+    end
+end
+ 
+local destroyFunc = function()
+    updateSelection = nil
+    if selectionContainer then selectionContainer:Destroy() end
+        adornments = nil
+    end
+    return updateSelection, destroyFunc
+end
+ 
+function t.CreateSignal()
+    local this = {}
+
+    local mBindableEvent = Instance.new('BindableEvent')
+    local mAllCns = {} --all connection objects returned by mBindableEvent::connect
+
+    --main functions
+
+    function this:connect(func)
+        if self ~= this then error("connect must be called with `:`, not `.`", 2) end
+        if type(func) ~= 'function' then
+            error("Argument #1 of connect must be a function, got a "..type(func), 2)
+        end
+
+        local cn = mBindableEvent.Event:Connect(func)
+        mAllCns[cn] = true
+
+        local pubCn = {}
+
+        function pubCn:disconnect()
+            cn:Disconnect()
+            mAllCns[cn] = nil
+        end
+
+        pubCn.Disconnect = pubCn.disconnect
+        return pubCn
+    end
+ 
+    function this:disconnect()
+        if self ~= this then error("disconnect must be called with `:`, not `.`", 2) end
+
+        for cn, _ in pairs(mAllCns) do
+            cn:Disconnect()
+            mAllCns[cn] = nil
+        end
+    end
+
+    function this:wait()
+        if self ~= this then error("wait must be called with `:`, not `.`", 2) end
+        return mBindableEvent.Event:Wait()
+    end
+
+    function this:fire(...)
+        if self ~= this then error("fire must be called with `:`, not `.`", 2) end
+        mBindableEvent:Fire(...)
+    end
+
+    this.Connect = this.connect
+    this.Disconnect = this.disconnect
+    this.Wait = this.wait
+    this.Fire = this.fire
+
+    return this
+end
+
+local function Create_PrivImpl(objectType)
+    if type(objectType) ~= 'string' then
+        error("Argument of Create must be a string", 2)
+    end
+
+    return function(dat)
+        -- default to nothing, to handle the no argument given case
+        dat = dat or {}
+ 
+        -- make the object to mutate
+        local obj = Instance.new(objectType)
+        local parent = nil
+ 
+        -- stored constructor function to be called after other initialization
+        local ctor = nil
+ 
+        for k, v in pairs(dat) do
+            -- add property
+            if type(k) == 'string' then
+                if k == 'Parent' then
+                    parent = v
+                else
+                    obj[k] = v
+                end
+            -- add child
+            elseif type(k) == 'number' then
+                if type(v) ~= 'userdata' then
+                    error("Bad entry in Create body: Numeric keys must be paired with children, got a: "..type(v), 2)
+                end
+
+                v.Parent = obj
+            -- event connect
+            elseif type(k) == 'table' and k.__eventname then
+                if type(v) ~= 'function' then
+                    error("Bad entry in Create body: Key `[Create.E\'"..k.__eventname.."\']` must have a function value\
+                        got: "..tostring(v), 2)
+                end
+
+                obj[k.__eventname]:connect(v)
+                -- define constructor function
+            elseif k == t.Create then
+                if type(v) ~= 'function' then
+                    error("Bad entry in Create body: Key `[Create]` should be paired with a constructor function, \
+                        got: "..tostring(v), 2)
+                elseif ctor then
+                    -- ctor already exists, only one allowed
+                    error("Bad entry in Create body: Only one constructor function is allowed", 2)
+                end
+
+                ctor = v
+            else
+                error("Bad entry ("..tostring(k).." => "..tostring(v)..") in Create body", 2)
+            end
+        end
+
+        -- apply constructor function if it exists
+        if ctor then
+            ctor(obj)
+        end
+
+        if parent then
+            obj.Parent = parent
+        end
+
+    -- return the completed object
+        return obj
+    end
+end
+ 
+-- now, create the functor:
+t.Create = setmetatable({}, {__call = function(tb, ...) return Create_PrivImpl(...) end})
+ 
+
+t.Create.E = function(eventName)
+    return {__eventname = eventName}
+end
+ 
+t.Help =
+function(funcNameOrFunc)
+--input argument can be a string or a function. Should return a description (of arguments and expected side effects)
+if funcNameOrFunc == "DecodeJSON" or funcNameOrFunc == t.DecodeJSON then
+return "Function DecodeJSON. " ..
+"Arguments: (string). " ..
+"Side effect: returns a table with all parsed JSON values"
+end
+if funcNameOrFunc == "EncodeJSON" or funcNameOrFunc == t.EncodeJSON then
+return "Function EncodeJSON. " ..
+"Arguments: (table). " ..
+"Side effect: returns a string composed of argument table in JSON data format"
+end
+if funcNameOrFunc == "MakeWedge" or funcNameOrFunc == t.MakeWedge then
+return "Function MakeWedge. " ..
+"Arguments: (x, y, z, [default material]). " ..
+"Description: Makes a wedge at location x, y, z. Sets cell x, y, z to default material if "..
+"parameter is provided, if not sets cell x, y, z to be whatever material it previously was. "..
+"Returns true if made a wedge, false if the cell remains a block "
+end
+if funcNameOrFunc == "SelectTerrainRegion" or funcNameOrFunc == t.SelectTerrainRegion then
+return "Function SelectTerrainRegion. " ..
+"Arguments: (regionToSelect, color, selectEmptyCells, selectionParent). " ..
+"Description: Selects all terrain via a series of selection boxes within the regionToSelect " ..
+"(this should be a region3 value). The selection box color is detemined by the color argument " ..
+"(should be a brickcolor value). SelectionParent is the parent that the selection model gets placed to (optional)." ..
+"SelectEmptyCells is bool, when true will select all cells in the " ..
+"region, otherwise we only select non-empty cells. Returns a function that can update the selection," ..
+"arguments to said function are a new region3 to select, and the adornment color (color arg is optional). " ..
+"Also returns a second function that takes no arguments and destroys the selection"
+end
+if funcNameOrFunc == "CreateSignal" or funcNameOrFunc == t.CreateSignal then
+return "Function CreateSignal. "..
+"Arguments: None. "..
+"Returns: The newly created Signal object. This object is identical to the RBXScriptSignal class "..
+"used for events in Objects, but is a Lua-side object so it can be used to create custom events in"..
+"Lua code. "..
+"Methods of the Signal object: :connect, :wait, :fire, :disconnect. "..
+"For more info you can pass the method name to the Help function, or view the wiki page "..
+"for this library. EG: Help('Signal:connect')."
+end
+if funcNameOrFunc == "Signal:connect" then
+return "Method Signal:connect. "..
+"Arguments: (function handler). "..
+"Return: A connection object which can be used to disconnect the connection to this handler. "..
+"Description: Connectes a handler function to this Signal, so that when |fire| is called the "..
+"handler function will be called with the arguments passed to |fire|."
+end
+if funcNameOrFunc == "Signal:wait" then
+return "Method Signal:wait. "..
+"Arguments: None. "..
+"Returns: The arguments passed to the next call to |fire|. "..
+"Description: This call does not return until the next call to |fire| is made, at which point it "..
+"will return the values which were passed as arguments to that |fire| call."
+end
+if funcNameOrFunc == "Signal:fire" then
+return "Method Signal:fire. "..
+"Arguments: Any number of arguments of any type. "..
+"Returns: None. "..
+"Description: This call will invoke any connected handler functions, and notify any waiting code "..
+"attached to this Signal to continue, with the arguments passed to this function. Note: The calls "..
+"to handlers are made asynchronously, so this call will return immediately regardless of how long "..
+"it takes the connected handler functions to complete."
+end
+if funcNameOrFunc == "Signal:disconnect" then
+return "Method Signal:disconnect. "..
+"Arguments: None. "..
+"Returns: None. "..
+"Description: This call disconnects all handlers attacched to this function, note however, it "..
+"does NOT make waiting code continue, as is the behavior of normal Roblox events. This method "..
+"can also be called on the connection object which is returned from Signal:connect to only "..
+"disconnect a single handler, as opposed to this method, which will disconnect all handlers."
+end
+if funcNameOrFunc == "Create" then
+return "Function Create. "..
+"Arguments: A table containing information about how to construct a collection of objects. "..
+"Returns: The constructed objects. "..
+"Descrition: Create is a very powerfull function, whose description is too long to fit here, and "..
+"is best described via example, please see the wiki page for a description of how to use it."
+end
+end
+ 
+--------------------------------------------Documentation Ends----------------------------------------------------------
+ 
+return t
+end
+]=====]
+SRC.Gelatek = [=====[
+
+local Global = (getgenv and getgenv()) or shared
+-- [[ Services ]] --
+local Speed = tick()
+local Players = game:FindFirstChildOfClass("Players")
+local UserInputService = game:FindFirstChildOfClass("UserInputService")
+local TestService = game:FindFirstChildOfClass("TestService")
+local RunService = game:FindFirstChildOfClass("RunService")
+local StarterGui = game:FindFirstChildOfClass("StarterGui")
+local CoreGui = game:FindFirstChildOfClass("CoreGui")
+local Player = Players.LocalPlayer
+local HubMode = Global.HubMode or false
+
+-- [[ Variables ]] --
+local Events = {}
+local BodyVels = {}
+local Root_Offset = 0.02
+local Velocity = Vector3.new(0,0,-25.8)
+local SpawnPoint = workspace:FindFirstChildOfClass("SpawnLocation",true) and workspace:FindFirstChildOfClass("SpawnLocation",true) or CFrame.new(0,20,0)
+
+-- [[ Functions ]] --
+local setfflag = setfflag or function(flag,bool) game:DefineFastFlag(flag,bool) end
+local isnetworkowner = isnetworkowner or function(Part) return Part.ReceiveAge == 0 end
+local sethiddenproperty = sethiddenproperty or set_hidden_property or function() end 
+	
+-- [[ Checking Settings ]] --
+local Config = Global.GelatekReanimateConfig or {}
+Global.TableOfEvents = {}
+
+--[[ Ownership ]] --
+local DisableTweaks = Config.DisableTweaks or false -- Disables Net-Boosting Tweaks
+local DynamicalVelocity = Config.DynamicalVelocity or false -- Enables Dynamical/Movement Velocity
+
+-- [[ Details ]] --
+local DetailedCredits = Config.DetailedCredits or false -- Detailed Credits lol
+
+-- [[ Rig Settings ]] --
+local AreAnimationsDisabled = Config.AnimationsDisabled or false -- Disable Anims
+local IsPermaDeath = Config.PermanentDeath or false -- Permanent Death
+
+-- [[ R15 Stuff ]] --
+local R15ToR6 = Config.R15ToR6 or false -- Convert R15 To R6
+
+-- [[ Align Reanimate ]] --
+local AlignReanimate = Config.AlignReanimate or false -- Align Reanimate
+local MaxAlignReanimate = Config.FullForceAlign or false -- Maximazes Align Position Force by making another one, might be less stable but no longer wacky
+
+-- [[ Optimizer ]] --
+local OptimizeGame = Config.OptimizeGame or false -- Runs Game Optimizer.
+if OptimizeGame == true and (not TestService:FindFirstChild("Check")) then
+	loadstring(game:HttpGetAsync("https://raw.githubusercontent.com/L8X/GameOptimizer/main/src.lua", true))()
+	local Part = Instance.new("Part")
+	Part.Name = "Check"
+	Part.Parent = TestService
+end
+local FasterHeartbeat = Config.FasterHeartbeat or false
+-- Uses Newer Runservices, which makes artifical event x2 times faster than heartbeat, can affect fps. 
+
+-- [[ Extra ]] --
+local DontBreakHairWelds = Config.DontBreakHairWelds or false -- Keeps Hair to head (Non Perma Only)
+local IsLoadLibraryEnabled = Config.LoadLibrary or false -- LoadLibrary
+local TeleportBackWhenVoided = Config.TeleportBackWhenVoided or false -- Teleports back to surface whenever you fall into void
+local IsHeadless = Config.Headless or false -- Headless Only On Permanent Death
+local OldVelocityMethod = Config.OldVelocityMethod or false -- Self Explainatory
+
+-- [[ Flinging Methods ]] --
+local IsTorsoFling = Config.TorsoFling or false -- Torso/Collision Fling
+local IsBulletEnabled = Config.BulletEnabled or false -- Enable Bullet
+local BulletConfig = Config.BulletConfig or {}
+local BulletAfterReanim = BulletConfig.RunAfterReanimate or false -- Run After Reanimate
+local LockBulletOnTorso = BulletConfig.LockBulletOnTorso or false -- Lock Bullet On Torso
+if IsTorsoFling == true and IsBulletEnabled == true then
+	IsTorsoFling = false
+end
+
+task.spawn(function()
+-- [[ Custom Functions ]] --
+local CFrameAlign = function(Part0, Part1, Position, Angle)
+	local CFrame_Position = Position or CFrame.new()
+	local CFrame_Angle = Angle or CFrame.Angles(0,0,0)
+	if isnetworkowner(Part0) == true then
+		Part0.CFrame = Part1.CFrame * CFrame_Position * CFrame_Angle
+		if Part0:FindFirstChild("OwnershipCheck") then
+			Part0:FindFirstChild("OwnershipCheck").Transparency = 1
+		end
+	elseif isnetworkowner(Part0) == false then
+		if Part0:FindFirstChild("OwnershipCheck") then
+			Part0:FindFirstChild("OwnershipCheck").Transparency = 0
+		end
+	end
+end
+local Align = function(Part0, Part1, Position, Orientation)
+	local AlignPosition = Instance.new("AlignPosition"); do
+		AlignPosition.MaxForce = 66666666666
+		AlignPosition.RigidityEnabled = true
+		AlignPosition.Responsiveness = 200
+		AlignPosition.Name = "AlignPosition_1"
+		AlignPosition.Parent = Part0
+	end
+
+	local AlignOrientation = Instance.new("AlignOrientation"); do
+		AlignOrientation.MaxTorque = 9e9 -- Better To Decrease this to avoid weird movement on R15.
+		AlignOrientation.Responsiveness = 200
+		AlignOrientation.Name = "AlignOrientation"
+		AlignOrientation.Parent = Part0
+	end
+
+	local Attachment1 = Instance.new("Attachment"); do
+		Attachment1.Position = Position or Vector3.new(0,0,0)
+		Attachment1.Orientation = Orientation or Vector3.new(0,0,0)
+		Attachment1.Name = "Attachment_1"
+		Attachment1.Parent = Part0
+	end
+
+	local Attachment2 = Instance.new("Attachment"); do
+		Attachment2.Name = "GelatekATT2"
+		Attachment2.Parent = Part1
+	end
+
+	AlignPosition.Attachment0 = Attachment1
+	AlignPosition.Attachment1 = Attachment2
+	AlignOrientation.Attachment0 = Attachment1
+	AlignOrientation.Attachment1 = Attachment2
+
+	if MaxAlignReanimate == true then
+		task.spawn(function()
+			repeat task.wait() until isnetworkowner(Part0) == true
+			task.wait(0.05) -- Avoiding Bugs
+			local AlignPosition2 = Instance.new("AlignPosition"); do
+				AlignPosition2.Name = "GelatekAP2"
+				AlignPosition2.RigidityEnabled = true
+				AlignPosition2.Parent = Part0
+			end
+			AlignPosition2.Attachment0 = Attachment1
+			AlignPosition2.Attachment1 = Attachment2
+		end)
+	end
+end
+local Notification = function(Title, Text, Duration)
+	StarterGui:SetCore("SendNotification", {
+		Title = Title or "Unknown",
+		Text = Text or "Unknown",
+		Duration = Duration or 3
+	})
+end
+local ReCreateWelds = function(Model, Accessory) 
+	-- [[ Inspiration from DevForum Post made by admin. ]] --
+	local Handle = Accessory:FindFirstChild("Handle")
+	pcall(function() Handle:FindFirstChildOfClass("Weld"):Destroy() end)
+	local NewWeld = Instance.new("Weld")
+	NewWeld.Name = "AccessoryWeld"
+	NewWeld.Part0 = Handle
+	local Attachment = Handle:FindFirstChildOfClass("Attachment")
+	if Attachment then
+		NewWeld.C0 = Attachment.CFrame
+		NewWeld.C1 = Model:FindFirstChild(tostring(Attachment), true).CFrame
+		NewWeld.Part1 = Model:FindFirstChild(tostring(Attachment), true).Parent
+	else
+		NewWeld.Part1 = Model:FindFirstChild("Head")
+		NewWeld.C1 = CFrame.new(0,Model:FindFirstChild("Head").Size.Y / 2,0) * Accessory.AttachmentPoint:Inverse()
+	end
+	Handle.CFrame = NewWeld.Part1.CFrame * NewWeld.C1 * NewWeld.C0:Inverse()
+	NewWeld.Parent = Accessory.Handle
+end
+
+local ArtificalEvent; do
+	-- [[ Artifical Event; original by 4eyedfool; "Borrowing" From One.]] --
+	local EventList = {"PreRender","PreAnimation","PreSimulation","PostSimulation"}
+	if FasterHeartbeat == false then
+		EventList = {"PostSimulation"}
+	end
+	if not ArtificalEvent then
+		local BindEvent = Instance.new("BindableEvent")
+		local Tick = tick()
+		for _,RunEvent in pairs(EventList) do
+			table.insert(Events, RunService[RunEvent]:Connect(function()
+				Tick = tick()
+				BindEvent:Fire(tick()-Tick)
+			end))
+		end 
+		ArtificalEvent = BindEvent.Event
+	end
+end
+local R6Animate = function()
+    local a=game.Players.LocalPlayer.Character;local b=a:WaitForChild("Torso")local c=b:WaitForChild("Right Shoulder")local d=b:WaitForChild("Left Shoulder")local e=b:WaitForChild("Right Hip")local f=b:WaitForChild("Left Hip")local g=b:WaitForChild("Neck")local h=a:WaitForChild("Humanoid")local i="Standing"local j=""local k=nil;local l=nil;local m=nil;local n=1.0;local o={}local p={idle={{id="http://www.roblox.com/asset/?id=180435571",weight=9},{id="http://www.roblox.com/asset/?id=180435792",weight=1}},walk={{id="http://www.roblox.com/asset/?id=180426354",weight=10}},run={{id="run.xml",weight=10}},jump={{id="http://www.roblox.com/asset/?id=125750702",weight=10}},fall={{id="http://www.roblox.com/asset/?id=180436148",weight=10}},climb={{id="http://www.roblox.com/asset/?id=180436334",weight=10}},sit={{id="http://www.roblox.com/asset/?id=178130996",weight=10}},toolnone={{id="http://www.roblox.com/asset/?id=182393478",weight=10}},toolslash={{id="http://www.roblox.com/asset/?id=129967390",weight=10}},toollunge={{id="http://www.roblox.com/asset/?id=129967478",weight=10}},wave={{id="http://www.roblox.com/asset/?id=128777973",weight=10}},point={{id="http://www.roblox.com/asset/?id=128853357",weight=10}},dance1={{id="http://www.roblox.com/asset/?id=182435998",weight=10},{id="http://www.roblox.com/asset/?id=182491037",weight=10},{id="http://www.roblox.com/asset/?id=182491065",weight=10}},dance2={{id="http://www.roblox.com/asset/?id=182436842",weight=10},{id="http://www.roblox.com/asset/?id=182491248",weight=10},{id="http://www.roblox.com/asset/?id=182491277",weight=10}},dance3={{id="http://www.roblox.com/asset/?id=182436935",weight=10},{id="http://www.roblox.com/asset/?id=182491368",weight=10},{id="http://www.roblox.com/asset/?id=182491423",weight=10}},laugh={{id="http://www.roblox.com/asset/?id=129423131",weight=10}},cheer={{id="http://www.roblox.com/asset/?id=129423030",weight=10}}}local q={"dance1","dance2","dance3"}local r={wave=false,point=false,dance1=true,dance2=true,dance3=true,laugh=false,cheer=false}function configureAnimationSet(s,t)if o[s]~=nil then for u,v in pairs(o[s].connections)do v:disconnect()end end;o[s]={}o[s].count=0;o[s].totalWeight=0;o[s].connections={}local w=script:FindFirstChild(s)if w~=nil then table.insert(o[s].connections,w.ChildAdded:connect(function(x)configureAnimationSet(s,t)end))table.insert(o[s].connections,w.ChildRemoved:connect(function(x)configureAnimationSet(s,t)end))local y=1;for u,z in pairs(w:GetChildren())do if z:IsA("Animation")then table.insert(o[s].connections,z.Changed:connect(function(A)configureAnimationSet(s,t)end))o[s][y]={}o[s][y].anim=z;local B=z:FindFirstChild("Weight")if B==nil then o[s][y].weight=1 else o[s][y].weight=B.Value end;o[s].count=o[s].count+1;o[s].totalWeight=o[s].totalWeight+o[s][y].weight;y=y+1 end end end;if o[s].count<=0 then for y,C in pairs(t)do o[s][y]={}o[s][y].anim=Instance.new("Animation")o[s][y].anim.Name=s;o[s][y].anim.AnimationId=C.id;o[s][y].weight=C.weight;o[s].count=o[s].count+1;o[s].totalWeight=o[s].totalWeight+C.weight end end end;function scriptChildModified(x)local t=p[x.Name]if t~=nil then configureAnimationSet(x.Name,t)end end;script.ChildAdded:connect(scriptChildModified)script.ChildRemoved:connect(scriptChildModified)for s,t in pairs(p)do configureAnimationSet(s,t)end;local D="None"local E=0;local F=0;local G=0.3;local H=0.1;local I=0.3;local J=0.75;function stopAllAnimations()local K=j;if r[K]~=nil and r[K]==false then K="idle"end;j=""k=nil;if m~=nil then m:disconnect()end;if l~=nil then l:Stop()l:Destroy()l=nil end;return K end;function setAnimationSpeed(L)if L~=n then n=L;l:AdjustSpeed(n)end end;function keyFrameReachedFunc(M)if M=="End"then local N=j;if r[N]~=nil and r[N]==false then N="idle"end;local O=n;playAnimation(N,0.0,h)setAnimationSpeed(O)end end;function playAnimation(P,Q,R)pcall(function()local S=math.random(1,o[P].totalWeight)local T=S;local y=1;while S>o[P][y].weight do S=S-o[P][y].weight;y=y+1 end;local C=o[P][y].anim;if C~=k then if l~=nil then l:Stop(Q)l:Destroy()end;n=1.0;l=R:LoadAnimation(C)l.Priority=Enum.AnimationPriority.Core;l:Play(Q)j=P;k=C;if m~=nil then m:disconnect()end;m=l.KeyframeReached:connect(keyFrameReachedFunc)end end)end;local U=""local V=nil;local W=nil;local X=nil;function toolKeyFrameReachedFunc(M)if M=="End"then playToolAnimation(U,0.0,h)end end;function playToolAnimation(P,Q,R,Y)local S=math.random(1,o[P].totalWeight)local T=S;local y=1;while S>o[P][y].weight do S=S-o[P][y].weight;y=y+1 end;local C=o[P][y].anim;if W~=C then if V~=nil then V:Stop()V:Destroy()Q=0 end;V=R:LoadAnimation(C)if Y then V.Priority=Y end;V:Play(Q)U=P;W=C;X=V.KeyframeReached:connect(toolKeyFrameReachedFunc)end end;function stopToolAnimations()local K=U;if X~=nil then X:disconnect()end;U=""W=nil;if V~=nil then V:Stop()V:Destroy()V=nil end;return K end;function onRunning(L)pcall(function()if L>0.01 then playAnimation("walk",0.1,h)if k and k.AnimationId=="http://www.roblox.com/asset/?id=180426354"then setAnimationSpeed(L/14.5)end;i="Running"else if r[j]==nil then playAnimation("idle",0.1,h)i="Standing"end end end)end;function onDied()i="Dead"end;function onJumping()playAnimation("jump",0.1,h)F=G;i="Jumping"end;function onClimbing(L)playAnimation("climb",0.1,h)setAnimationSpeed(L/12.0)i="Climbing"end;function onGettingUp()i="GettingUp"end;function onFreeFall()if F<=0 then playAnimation("fall",I,h)end;i="FreeFall"end;function onFallingDown()i="FallingDown"end;function onSeated()i="Seated"end;function onPlatformStanding()i="PlatformStanding"end;function onSwimming(L)if L>0 then i="Running"else i="Standing"end end;function getTool()for u,Z in ipairs(a:GetChildren())do if Z.className=="Tool"then return Z end end;return nil end;function getToolAnim(_)for u,a0 in ipairs(_:GetChildren())do if a0.Name=="toolanim"and a0.className=="StringValue"then return a0 end end;return nil end;function animateTool()if D=="None"then playToolAnimation("toolnone",H,h,Enum.AnimationPriority.Idle)return end;if D=="Slash"then playToolAnimation("toolslash",0,h,Enum.AnimationPriority.Action)return end;if D=="Lunge"then playToolAnimation("toollunge",0,h,Enum.AnimationPriority.Action)return end end;function moveSit()c.MaxVelocity=0.15;d.MaxVelocity=0.15;c:SetDesiredAngle(3.14/2)d:SetDesiredAngle(-3.14/2)e:SetDesiredAngle(3.14/2)f:SetDesiredAngle(-3.14/2)end;local a1=0;function move(a2)local a3=1;local a4=1;local a5=a2-a1;a1=a2;local a6=0;local a7=false;if F>0 then F=F-a5 end;if i=="FreeFall"and F<=0 then playAnimation("fall",I,h)elseif i=="Seated"then playAnimation("sit",0.5,h)return elseif i=="Running"then playAnimation("walk",0.1,h)elseif i=="Dead"or i=="GettingUp"or i=="FallingDown"or i=="Seated"or i=="PlatformStanding"then stopAllAnimations()a3=0.1;a4=1;a7=true end;if a7 then local a8=a3*math.sin(a2*a4)c:SetDesiredAngle(a8+a6)d:SetDesiredAngle(a8-a6)e:SetDesiredAngle(-a8)f:SetDesiredAngle(-a8)end;local _=getTool()if _ and _:FindFirstChild("Handle")then local a9=getToolAnim(_)if a9 then D=a9.Value;a9.Parent=nil;E=a2+.3 end;if a2>E then E=0;D="None"end;animateTool()else stopToolAnimations()D="None"W=nil;E=0 end end;table.insert(Events,h.Died:connect(onDied))table.insert(Events,h.Running:connect(onRunning))table.insert(Events,h.Jumping:connect(onJumping))table.insert(Events,h.Climbing:connect(onClimbing))table.insert(Events,h.GettingUp:connect(onGettingUp))table.insert(Events,h.FreeFalling:connect(onFreeFall))table.insert(Events,h.FallingDown:connect(onFallingDown))table.insert(Events,h.Seated:connect(onSeated))table.insert(Events,h.PlatformStanding:connect(onPlatformStanding))table.insert(Events,h.Swimming:connect(onSwimming))game:GetService("Players").LocalPlayer.Chatted:connect(function(aa)local ab=""if aa=="/e dance"then ab=q[math.random(1,#q)]elseif string.sub(aa,1,3)=="/e "then ab=string.sub(aa,4)elseif string.sub(aa,1,7)=="/emote "then ab=string.sub(aa,8)end;if i=="Standing"and r[ab]~=nil then playAnimation(ab,0.1,h)end end)playAnimation("idle",0.1,h)i="Standing"table.insert(Events,game:GetService("RunService").Stepped:Connect(function()local u,a2=wait(0.1)move(a2)end))
+end
+do -- [[ Checking ]] --
+	if not game:IsLoaded() then
+		game.Loaded:Wait()
+	end
+	if Player.Character.Name == "GelatekReanimate" then
+		Notification("Error!", "Reanimate Is Already Running!", 3)
+		return nil
+	end
+	if Player.Character:FindFirstChildWhichIsA("Humanoid").Health == 0 then
+		Notification("Error!", "You are currently dead, wait until you will respawn.", 3)
+		return nil
+	end
+	if not TestService:FindFirstChild("GelatekReanimateData") then
+		local Folder = Instance.new("Folder")
+		Folder.Name = "GelatekReanimateData"
+		local FakeRig = Instance.new("Model"); do
+			local Limbs = {}
+			local Attachments = {}
+			local function CreateJoint(Name,Part0,Part1,C0,C1)
+				local Joint = Instance.new("Motor6D")
+				Joint.Name = Name
+				Joint.Part0 = Part0
+				Joint.Part1 = Part1
+				Joint.C0 = C0
+				Joint.C1 = C1
+				Joint.Parent = Part0
+			end
+
+			for i = 0,18 do
+				local Attachment = Instance.new("Attachment")
+				Attachment.Axis = Vector3.new(1,0,0)
+				Attachment.SecondaryAxis = Vector3.new(0,1,0)
+				table.insert(Attachments, Attachment)
+			end
+			for i = 0,3 do
+				local Limb = Instance.new("Part")
+				Limb.Size = Vector3.new(1, 2, 1)
+				Limb.BottomSurface = Enum.SurfaceType.Smooth
+				Limb.FormFactor = Enum.FormFactor.Symmetric
+				Limb.Locked = true
+				Limb.CanCollide = false
+				Limb.Parent = FakeRig
+				table.insert(Limbs, Limb)
+			end
+
+			Limbs[1].Name = "Right Arm"
+			Limbs[2].Name = "Left Arm"
+			Limbs[3].Name = "Right Leg"
+			Limbs[4].Name = "Left Leg"
+
+			local Head = Instance.new("Part"); do
+				Head.Size = Vector3.new(2,1,1)
+				Head.TopSurface = Enum.SurfaceType.Smooth
+				Head.FormFactor = Enum.FormFactor.Symmetric
+				Head.Locked = true
+				Head.CanCollide = false
+				Head.Name = "Head"
+				Head.Parent = FakeRig
+			end
+			local Torso = Instance.new("Part"); do
+				Torso.Size = Vector3.new(2, 2, 1)
+				Torso.BottomSurface = Enum.SurfaceType.Smooth
+				Torso.FormFactor = Enum.FormFactor.Symmetric
+				Torso.Locked = true
+				Torso.CanCollide = false
+				Torso.Name = "Torso"
+				Torso.Parent = FakeRig
+			end
+			local Root = Torso:Clone(); do
+				Root.Transparency = 1
+				Root.Name = "HumanoidRootPart"
+				Root.Parent = FakeRig
+			end
+
+			CreateJoint("Neck", Torso, Head, CFrame.new(0, 1, 0, -1, 0, 0, 0, 0, 1, 0, 1, -0), CFrame.new(0, -0.5, 0, -1, 0, 0, 0, 0, 1, 0, 1, -0))
+			CreateJoint("RootJoint", Root, Torso, CFrame.new(0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 1, -0), CFrame.new(0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 1, -0))
+			CreateJoint("Right Shoulder", Torso, Limbs[1], CFrame.new(1, 0.5, 0, 0, 0, 1, 0, 1, -0, -1, 0, 0), CFrame.new(-0.5, 0.5, 0, 0, 0, 1, 0, 1, -0, -1, 0, 0))
+			CreateJoint("Left Shoulder", Torso, Limbs[2], CFrame.new(-1, 0.5, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0), CFrame.new(0.5, 0.5, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0))
+			CreateJoint("Right Hip", Torso, Limbs[3], CFrame.new(1, -1, 0, 0, 0, 1, 0, 1, -0, -1, 0, 0), CFrame.new(0.5, 1, 0, 0, 0, 1, 0, 1, -0, -1, 0, 0))
+			CreateJoint("Left Hip", Torso, Limbs[4], CFrame.new(-1, -1, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0), CFrame.new(-0.5, 1, 0, 0, 0, -1, 0, 1, 0, 1, 0, 0))
+
+			local Humanoid = Instance.new("Humanoid"); do
+				Humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+				Humanoid.Parent = FakeRig
+			end
+			local Animator = Instance.new("Animator"); do
+				Animator.Parent = Humanoid
+			end
+			local HumanoidDescription = Instance.new("HumanoidDescription"); do
+				HumanoidDescription.Parent = Humanoid
+			end
+			local HeadMesh = Instance.new("SpecialMesh") do
+				HeadMesh.Scale = Vector3.new(1.25, 1.25, 1.25)
+				HeadMesh.Parent = Head
+			end
+			local Face = Instance.new("Decal"); do
+				Face.Name = "face"
+				Face.Texture = "http://www.roblox.com/asset/?id=158044781"
+				Face.Parent = Head
+			end
+			local Animate = Instance.new("LocalScript"); do
+				Animate.Name = "Animate" -- Later
+				Animate.Parent = FakeRig
+			end
+			local Health = Instance.new("Script"); do -- not neccessary to fill
+				Health.Name = "Health"
+				Health.Parent = FakeRig
+			end
+			FakeRig.Name = "Rig"
+			FakeRig.PrimaryPart = Root
+			FakeRig.Parent = Folder
+			-- Attachments (Oh Boy..)
+			Attachments[1].Name = "FaceCenterAttachment"
+			Attachments[1].Position = Vector3.new(0, 0, 0)
+			
+			Attachments[2].Name = "FaceFrontAttachment"
+			Attachments[2].Position = Vector3.new(0, 0, -0.6)
+			
+			Attachments[3].Name = "HairAttachment"	
+			Attachments[3].Position = Vector3.new(0, 0.6, 0)
+			
+			Attachments[4].Name = "HatAttachment"
+			Attachments[4].Position = Vector3.new(0, 0.6, 0)
+			
+			Attachments[5].Name = "RootAttachment"
+			Attachments[5].Position = Vector3.new(0, 0, 0)
+			
+			Attachments[6].Name = "RightGripAttachment"
+			Attachments[6].Position = Vector3.new(0, -1, 0)
+			
+			Attachments[7].Name = "RightShoulderAttachment"
+			Attachments[7].Position = Vector3.new(0, 1, 0)
+			
+			Attachments[8].Name = "LeftGripAttachment"
+			Attachments[8].Position = Vector3.new(0, -1, 0)
+			
+			Attachments[9].Name = "LeftShoulderAttachment"
+			Attachments[9].Position = Vector3.new(0, 1, 0)
+			
+			Attachments[10].Name = "RightFootAttachment"
+			Attachments[10].Position = Vector3.new(0, -1, 0)
+			
+			Attachments[11].Name = "LeftFootAttachment"
+			Attachments[11].Position = Vector3.new(0, -1, 0)
+			
+			Attachments[12].Name = "BodyBackAttachment"
+			Attachments[12].Position = Vector3.new(0, 0, 0.5)
+			
+			Attachments[13].Name = "BodyFrontAttachment"
+			Attachments[13].Position = Vector3.new(0, 0, -0.5)
+			
+			Attachments[14].Name = "LeftCollarAttachment"
+			Attachments[14].Position = Vector3.new(-1, 1, 0)
+			
+			Attachments[15].Name = "NeckAttachment"
+			Attachments[15].Position = Vector3.new(0, 1, 0)
+			
+			Attachments[16].Name = "RightCollarAttachment"
+			Attachments[16].Position = Vector3.new(1, 1, 0)
+			
+			Attachments[17].Name = "WaistBackAttachment"
+			Attachments[17].Position = Vector3.new(0, -1, 0.5)
+			
+			Attachments[18].Name = "WaistCenterAttachment"
+			Attachments[18].Position = Vector3.new(0, -1, 0)
+			
+			Attachments[19].Name = "WaistFrontAttachment"
+			Attachments[19].Position = Vector3.new(0, -1, -0.5)
+	
+
+			Attachments[1].Parent = Head
+			Attachments[2].Parent = Head
+			Attachments[3].Parent = Head
+			Attachments[4].Parent = Head
+
+			Attachments[5].Parent = Root
+
+			Attachments[6].Parent = Limbs[1]
+			Attachments[7].Parent = Limbs[1]
+
+			Attachments[8].Parent = Limbs[2]
+			Attachments[9].Parent = Limbs[2]
+
+			Attachments[10].Parent = Limbs[3]
+
+			Attachments[11].Parent = Limbs[4]
+
+			for i = 0,7 do
+				Attachments[12 + i].Parent = Torso
+			end
+		end
+		local R6FakeHat = Instance.new("Accessory"); do
+			R6FakeHat.Name = "R6FakeHat"
+			local Handle = Instance.new("Part")
+			Handle.Name = "Handle"
+			Handle.Transparency = 0.5
+			Handle.Size = Vector3.new(2,1,1)
+			Handle.Parent = R6FakeHat
+		end
+		local R15FakeHat = Instance.new("Accessory"); do
+			R15FakeHat.Name = "R15FakeHat"
+			local Handle = Instance.new("Part")
+			Handle.Name = "Handle"
+			Handle.Size = Vector3.new(1,1,1)
+			Handle.Transparency = 0.5
+			Handle.Color = Color3.fromRGB(163, 162, 165)
+			local SpecialMesh = Instance.new("SpecialMesh")
+			SpecialMesh.MeshId = "rbxassetid://5972856435"
+			SpecialMesh.Parent = Handle
+			Handle.Parent = R15FakeHat
+		end
+		R15FakeHat.Parent = Folder
+		R6FakeHat.Parent = Folder
+		FakeRig.Parent = Folder
+		Folder.Parent = TestService
+	end
+end
+Global.PartDisconnected = false
+-- [[ Start ]] --
+local Character = Player["Character"] or Player.CharacterAdded:Wait()
+local Humanoid = Character:FindFirstChildWhichIsA("Humanoid")
+local RootPart = Character:WaitForChild("HumanoidRootPart")
+local CharacterDescendants = Character:GetDescendants()
+local CharacterChildren = Character:GetChildren()
+local CameraCFrame = workspace.CurrentCamera.CFrame
+local FakeHats = Instance.new("Folder"); do
+	FakeHats.Name = "FakeHats"
+	FakeHats.Parent = Character
+end
+local RigType = Humanoid.RigType.Name
+Global.RealChar = Character
+Character.Archivable = true
+if Character:FindFirstChild("Animate") then -- [[ Disable Animations ]] --
+	Character:FindFirstChild("Animate").Disabled = true
+	for _, Track in next, Humanoid:GetPlayingAnimationTracks() do
+		Track:Stop();
+	end
+end
+if IsTorsoFling == false then
+	Humanoid:ChangeState("Physics")
+end
+do -- [[ Tweaks ]] --
+	if DisableTweaks == false then
+		Player.ReplicationFocus = workspace
+		settings()["Physics"].PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Disabled
+		settings()["Physics"].AllowSleep = false
+		settings()["Physics"].ForceCSGv2 = false
+		settings()["Physics"].DisableCSGv2 = true
+		settings()["Physics"].UseCSGv2 = false
+		sethiddenproperty(workspace, "PhysicsSteppingMethod", Enum.PhysicsSteppingMethod.Fixed)
+		sethiddenproperty(workspace, "InterpolationThrottling", Enum.InterpolationThrottlingMode.Disabled)
+	end
+end
+
+local FakeRig; do -- [[ Rig Maker ]] --
+	if RigType == "R6" or (RigType == "R15" and R15ToR6 == true) then
+		FakeRig = TestService.GelatekReanimateData:FindFirstChild("Rig"):Clone()
+		FakeRig.Name = "GelatekReanimate"
+		for Index, Misc in ipairs(FakeRig:GetDescendants()) do
+			if Misc:IsA("BasePart") or Misc:IsA("Decal") then
+				Misc.Transparency = 1
+			end
+		end
+		FakeRig.Parent = workspace
+	else
+		FakeRig = Character:Clone() 
+		FakeRig.Name = "GelatekReanimate"
+		for Index, Misc in ipairs(FakeRig:GetDescendants()) do
+			if Misc:IsA("BasePart") or Misc:IsA("Decal") then
+				Misc.Transparency = 1
+			elseif Misc:IsA("Accessory") then
+				Misc:Destroy()
+			end
+		end
+		FakeRig:FindFirstChildWhichIsA("Humanoid").DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+		FakeRig.Parent = workspace
+	end
+	FakeRig.HumanoidRootPart.CFrame = RootPart.CFrame
+end
+local FakeHum = FakeRig:FindFirstChildOfClass("Humanoid")
+Character.Parent = FakeRig
+do --[[ Rename Hats (By Mizt) / AccessoryWeld Recreation (Fix Offsets) ]] --
+	local HatsNames = {}
+	for Index, Accessory in ipairs(CharacterDescendants) do
+		if Accessory:IsA("Accessory") then
+			if HatsNames[Accessory.Name] then
+				if HatsNames[Accessory.Name] == "Unknown" then
+					HatsNames[Accessory.Name] = {}
+				end
+				table.insert(HatsNames[Accessory.Name], Accessory)
+			else
+				HatsNames[Accessory.Name] = "Unknown"
+			end	
+		end
+	end
+	for Index, Tables in ipairs(HatsNames) do
+		if type(Tables) == "table" then
+			local Number = 1
+			for Index2, Names in ipairs(Tables) do
+				Names.Name = Names.Name .. Number
+				Number = Number + 1
+			end
+		end
+	end
+	table.clear(HatsNames)
+	---------------------------------------------------
+	for _, v in pairs(Character:GetChildren()) do
+		if v:IsA("Accessory") then
+			local FakeHats1 = v:Clone()
+			FakeHats1.Handle.Transparency = 1
+			ReCreateWelds(FakeRig, FakeHats1)
+			FakeHats1.Parent = FakeRig
+		end
+	end
+end
+local FakeRigDescendants = FakeRig:GetDescendants()
+
+-- Bullet System
+local BulletHatInfo
+local BulletPartInfo
+local CollideFlingPart
+local ExtraThing	
+if not workspace:FindFirstChild("GELATEKOWNERSHIP") then
+	local Network = Instance.new("LocalScript")
+	Network.Name = "GELATEKOWNERSHIP"
+	Network.Parent = workspace
+	game:GetService("RunService").Stepped:Connect(function()
+		sethiddenproperty(Player, "MaximumSimulationRadius", 10000000*2)
+		sethiddenproperty(Player, "SimulationRadius", 10000000*2)
+	end)
+end
+do --[[ Bullet/TorsoFling Checking ]]--
+	if IsBulletEnabled == true and RigType == "R6" and IsPermaDeath == false then
+		if not Character:FindFirstChild("Robloxclassicred") then -- [[ Hat Check ]] -- 
+			local FakeHat = TestService:FindFirstChild("GelatekReanimateData"):FindFirstChild("R6FakeHat"):Clone()
+			FakeHat.Parent = Character
+			BulletHatInfo = {FakeHat, FakeRig:FindFirstChild("Left Arm"), CFrame.Angles(0,0,math.rad(90)), CFrame.new(), Vector3.new(), Vector3.new(0, 0, 90)}
+		else
+			BulletHatInfo = {Character:FindFirstChild("Robloxclassicred"), FakeRig:FindFirstChild("Left Arm"), CFrame.Angles(0,0,math.rad(90)), Vector3.new(), Vector3.new()}
+		end
+		BulletPartInfo = {Character:FindFirstChild("Left Arm"), FakeRig:FindFirstChild("Left Arm")}
+	elseif IsBulletEnabled == true and RigType == "R6" and IsPermaDeath == true then
+		BulletPartInfo = {Character:FindFirstChild("HumanoidRootPart"), FakeRig:FindFirstChild("HumanoidRootPart"), CFrame.new(), Vector3.new(), Vector3.new(), "yes"}
+	elseif IsBulletEnabled == true and RigType == "R15" then
+		local funnyoffseto = {0, 0}
+		if R15ToR6 == true then
+			funnyoffseto = {0.5, -0.5}
+		end
+		if not Character:FindFirstChild("SniperShoulderL") then -- [[ Hat Check ]] -- 
+			local FakeHat = TestService:FindFirstChild("GelatekReanimateData"):FindFirstChild("R15FakeHat"):Clone()
+			FakeHat.Parent = Character
+			BulletHatInfo = {FakeHat, FakeRig:FindFirstChild("Left Arm") or FakeRig:FindFirstChild("LeftUpperArm"), CFrame.new(0, funnyoffseto[1], 0), Vector3.new(0, funnyoffseto[2], 0), Vector3.new()}
+		else
+			BulletHatInfo = {Character:FindFirstChild("SniperShoulderL"), FakeRig:FindFirstChild("Left Arm") or FakeRig:FindFirstChild("LeftUpperArm"), CFrame.new(0, funnyoffseto[1], 0), Vector3.new(0, funnyoffseto[2], 0), Vector3.new()}
+		end
+		if R15ToR6 == true then
+			BulletPartInfo = {Character:FindFirstChild("LeftUpperArm"), FakeRig:FindFirstChild("Left Arm") or FakeRig:FindFirstChild("LeftUpperArm"), CFrame.new(0, 0.4085, 0), Vector3.new(0, -0.4085, 0), Vector3.new()}	
+		else
+			BulletPartInfo = {Character:FindFirstChild("LeftUpperArm"), FakeRig:FindFirstChild("Left Arm") or FakeRig:FindFirstChild("LeftUpperArm"), CFrame.new(0, 0, 0), Vector3.new(0, -0, 0), Vector3.new()}	
+		end
+	end
+	if IsTorsoFling == true then
+		CollideFlingPart = Character:FindFirstChild("Torso") or Character:FindFirstChild("UpperTorso")
+		local Highlight = Instance.new("SelectionBox")
+		Highlight.Adornee = CollideFlingPart
+		Highlight.Name = "BulletHightlight"
+		Highlight.Parent = CollideFlingPart 
+		task.spawn(function()
+			task.wait(1)
+			if CollideFlingPart:FindFirstChild("AntiRotation") then
+				CollideFlingPart:FindFirstChild("AntiRotation")
+			end
+		end)
+		if RigType == "R6" then
+			CollideFlingInfo = {CollideFlingPart, FakeRig:FindFirstChild("Torso"), CFrame.new()}
+		elseif RigType == "R15" and R15ToR6 == true then
+			CollideFlingInfo = {CollideFlingPart, FakeRig:FindFirstChild("Torso"), CFrame.new(0, 0.194, 0)}
+		elseif RigType == "R15" and R15ToR6 == false then
+			CollideFlingInfo = {CollideFlingPart, FakeRig:FindFirstChild("UpperTorso"), CFrame.new()}
+		end
+	else
+		CollideFlingInfo = nil
+		CollideFlingPart = nil
+	end
+	if BulletPartInfo then
+		local Highlight = Instance.new("SelectionBox")
+		Highlight.Adornee = BulletPartInfo[1]
+		Highlight.Name = "BulletHightlight"
+		Highlight.LineThickness = 0.05
+		if BulletPartInfo[1].Name == "HumanoidRootPart" then
+			Highlight.Transparency = 0.75
+		end
+		BulletPartInfo[1].Name = 'Bullet'
+		BulletPartInfo[1].Transparency = 0.5
+		Highlight.Parent = BulletPartInfo[1]
+	end
+end
+
+Character:MoveTo(FakeRig.HumanoidRootPart.Position)
+
+local Offsets --[[ Offsets For R15 ]] --
+if RigType == "R15" then
+	Offsets = {
+		["UpperTorso"] = {FakeRig:FindFirstChild("Torso"), CFrame.new(0, 0.194, 0), Vector3.new(0, -0.194, 0)},
+		["LowerTorso"] = {FakeRig:FindFirstChild("Torso"), CFrame.new(0, -0.79, 0), Vector3.new(0, 0.79, 0)},
+
+		["RightUpperArm"] = {FakeRig:FindFirstChild("Right Arm"), CFrame.new(0, 0.4085, 0), Vector3.new(0, -0.4085, 0)},
+		["RightLowerArm"] = {FakeRig:FindFirstChild("Right Arm"), CFrame.new(0, -0.184, 0), Vector3.new(0, 0.184, 0)},
+		["RightHand"] = {FakeRig:FindFirstChild("Right Arm"), CFrame.new(0, -0.83, 0), Vector3.new(0, 0.83, 0)},
+
+		["LeftUpperArm"] = {FakeRig:FindFirstChild("Left Arm"), CFrame.new(0, 0.4085, 0), Vector3.new(0, -0.4085, 0)},
+		["LeftLowerArm"] = {FakeRig:FindFirstChild("Left Arm"), CFrame.new(0, -0.184, 0), Vector3.new(0, 0.184, 0)},
+		["LeftHand"] = {FakeRig:FindFirstChild("Left Arm"), CFrame.new(0, -0.83, 0), Vector3.new(0, 0.83, 0)},
+
+		["RightUpperLeg"] = {FakeRig:FindFirstChild("Right Leg"), CFrame.new(0, 0.575, 0), Vector3.new(0, -0.575, 0)},
+		["RightLowerLeg"] = {FakeRig:FindFirstChild("Right Leg"), CFrame.new(0, -0.199, 0), Vector3.new(0, 0.199, 0)},
+		["RightFoot"] = {FakeRig:FindFirstChild("Right Leg"), CFrame.new(0, -0.849, 0), Vector3.new(0, 0.849, 0)},
+
+		["LeftUpperLeg"] = {FakeRig:FindFirstChild("Left Leg"), CFrame.new(0, 0.575, 0), Vector3.new(0, -0.575, 0)},
+		["LeftLowerLeg"] = {FakeRig:FindFirstChild("Left Leg"), CFrame.new(0, -0.199, 0), Vector3.new(0, 0.199, 0)},
+		["LeftFoot"] = {FakeRig:FindFirstChild("Left Leg"), CFrame.new(0, -0.849, 0), Vector3.new(0, 0.849, 0)}
+	}
+elseif RigType == "R6" then
+	Offsets = {
+		["Torso"] = {FakeRig:FindFirstChild("Torso"), CFrame.new()},
+		["Right Arm"] = {FakeRig:FindFirstChild("Right Arm"), CFrame.new()},
+		["Left Arm"] = {FakeRig:FindFirstChild("Left Arm"), CFrame.new()},
+		["Right Leg"] = {FakeRig:FindFirstChild("Right Leg"), CFrame.new()},
+		["Left Leg"] = {FakeRig:FindFirstChild("Left Leg"), CFrame.new()},
+	}
+end
+if IsPermaDeath == true then
+	task.spawn(function()
+		FakeHum.BreakJointsOnDeath = false
+		game:GetService("StarterGui"):SetCore("ResetButtonCallback", false)
+		task.wait(Players.RespawnTime + game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue() / 750)
+		local Head = Character:FindFirstChild("Head"); Head:BreakJoints() 
+		if IsHeadless == false then
+			Offsets["Head"] = {FakeRig:FindFirstChild("Head"), CFrame.new()}
+		else
+			Character:FindFirstChild("Head"):Destroy()
+		end
+		if IsHeadless == false and AlignReanimate == true then
+			Align(Character:FindFirstChild("Head"), FakeRig:FindFirstChild("Head"))	
+		end
+		game:GetService("StarterGui"):SetCore("ResetButtonCallback", true)
+		warn("Godmoded in: " .. string.sub(tostring(tick()-Speed),1,string.find(tostring(tick()-Speed),".")+5))
+	end)
+end
+-- fakehats for stop script for my hub
+for _, v in pairs(Character:GetChildren()) do
+	if v:IsA("Accessory") then
+		local FakeHats1 = v:Clone()
+		FakeHats1.Handle.Transparency = 1
+		ReCreateWelds(FakeRig, FakeHats1)
+		FakeHats1.Parent = FakeHats
+	end
+end
+
+do -- [[ Boosting Tweaks/Claims ]] --
+	for _, v in pairs(CharacterDescendants) do
+		if v:IsA("BasePart") then
+			v:ApplyAngularImpulse(Vector3.new())
+			v:ApplyImpulse(Velocity)
+			v.RootPriority = 127
+			if HubMode == false then
+				v.CustomPhysicalProperties = PhysicalProperties.new(0,0,0,0,0)	
+				v.Massless = true
+			end
+			if AlignReanimate == false then -- causes weird ass movement
+				local ABV = Instance.new("BodyAngularVelocity")
+				ABV.P = 1/0
+				ABV.MaxTorque = Vector3.new(1/0,1/0,1/0)
+				ABV.AngularVelocity = Vector3.new(0,0,0)
+				ABV.Name = "AntiRotation"
+				ABV.Parent = v
+				local BV = Instance.new("BodyVelocity")
+				BV.P = 1/0
+				BV.MaxForce = Vector3.new(1/0,1/0,1/0)
+				BV.Velocity = Vector3.new(0,0,0)
+				BV.Name = "Stabilition"
+				BV.Parent = v
+				table.insert(BodyVels, BV)
+			end
+			local HG = Instance.new("SelectionBox")
+			HG.Adornee = v
+			HG.Name = "OwnershipCheck"
+			HG.LineThickness = 0.4
+			HG.Transparency = 1
+			HG.Color3 = Color3.fromRGB(125,240,125)
+			HG.Parent = v
+		end
+	end
+	coroutine.wrap(function() --// Delayless Method; Used for root Y cframing.
+		while task.wait(0.05) do
+			Root_Offset = Root_Offset * -1
+		end
+	end)()
+end
+table.insert(Events, RunService.PreSimulation:Connect(function()
+	for _, v in pairs(CharacterDescendants) do -- [[ Main Things ]] --
+		if v:IsA("BasePart") then
+			if v and v.Parent then
+				v.CanCollide = false
+				v.CanQuery = false
+				v.CanTouch = false
+			end
+		end
+	end
+	for _, v in pairs(FakeRigDescendants) do
+		if v:IsA("BasePart") then
+			if v and v.Parent then
+				v.CanCollide = false
+			end
+		end
+	end
+end))
+
+local function Death()
+	Global.Stopped = true
+	Character.Parent = workspace
+	Player.Character = workspace:FindFirstChild(Character.Name)
+	Humanoid:ChangeState(15)
+	if FakeRig then FakeRig:Destroy() end
+	for i,v in pairs(Events) do
+		v:Disconnect()
+	end
+	for i,v in pairs(Global.TableOfEvents) do
+		v:Disconnect()
+	end
+	if FakeRig then FakeRig:Destroy() end
+	FakeRig = nil
+	task.wait(0.15)
+	if game:FindFirstChildOfClass("TestService"):FindFirstChild("ScriptCheck") then
+		game:FindFirstChildOfClass("TestService"):FindFirstChild("ScriptCheck"):Destroy()
+	end
+	Global.Stopped = false
+	Global.RealChar = nil
+end
+	
+table.insert(Events, ArtificalEvent:Connect(function()
+	if FakeRig.HumanoidRootPart.Position.Y <= workspace.FallenPartsDestroyHeight + 70 then
+		if TeleportBackWhenVoided == false then
+            pcall(function()
+                Death()
+            end)
+		else
+			FakeRig:MoveTo(SpawnPoint.Position)
+		end
+	end
+	if not CollideFlingInfo then
+		local Torso = Character:FindFirstChild("Torso") or Character:FindFirstChild("UpperTorso")
+		Torso.AssemblyLinearVelocity = Velocity	
+	end
+	for _, v in pairs(BodyVels) do
+		v.Velocity = Velocity
+	end
+
+	for _, v in pairs(CharacterDescendants) do -- [[ Main Things ]] --
+		if v:IsA("BasePart") then
+			if v and v.Parent then
+				if (CollideFlingInfo and v.Name ~= CollideFlingInfo[1].Name) or not CollideFlingInfo then
+					v.AssemblyLinearVelocity = Velocity
+				end
+			end
+		end
+	end
+	if AlignReanimate == true and IsTorsoFling == true then
+		CFrameAlign(CollideFlingInfo[1], CollideFlingInfo[2], CollideFlingInfo[3]) 
+	end
+	if IsTorsoFling == true then
+		if RigType == "R6" then
+			if FakeHum.MoveDirection.Magnitude < 0.1 then
+				CollideFlingPart.AssemblyLinearVelocity = Velocity
+			elseif FakeHum.MoveDirection.Magnitude > 0.1 then
+				CollideFlingPart.AssemblyLinearVelocity = Vector3.new(1000,1000,1000)
+			end
+		else
+			CollideFlingPart.AssemblyLinearVelocity = Velocity
+			if FakeHum.MoveDirection.Magnitude < 0.1 then
+				CollideFlingPart.RotVelocity = Vector3.new()
+			elseif FakeHum.MoveDirection.Magnitude > 0.1 then
+				CollideFlingPart.RotVelocity = Vector3.new(2500,2500,2500)
+			end
+		end
+	else
+
+	end
+	if AlignReanimate == false then
+		for _, v in pairs(CharacterDescendants) do -- [[ Main Things ]] --
+			if v:IsA("Accessory") then
+				if v and v.Parent then
+					CFrameAlign(v.Handle, FakeRig[v.Name].Handle)
+				end
+			end
+		end
+		for i, v in pairs(Offsets) do
+			if RigType == "R15" and R15ToR6 == true and Character:FindFirstChild(i) then
+				CFrameAlign(Character:FindFirstChild(i), v[1], v[2])
+			elseif RigType == "R15" and R15ToR6 == false and Character:FindFirstChild(i) then
+				CFrameAlign(Character:FindFirstChild(i), FakeRig:FindFirstChild(i))
+			elseif RigType == "R6" and Character:FindFirstChild(i) then
+				CFrameAlign(Character:FindFirstChild(i), v[1])
+			end
+		end
+		if BulletHatInfo then
+			CFrameAlign(BulletHatInfo[1].Handle, BulletHatInfo[2], BulletHatInfo[3])
+		end
+		if BulletPartInfo and Global.PartDisconnected == false then
+			if BulletPartInfo[6] and BulletPartInfo[6] == "yes" then
+				CFrameAlign(RootPart, Character:FindFirstChild("UpperTorso") or Character:FindFirstChild("Torso"), CFrame.new(0,Root_Offset,0))
+			else
+				CFrameAlign(BulletPartInfo[1], BulletPartInfo[2], BulletPartInfo[3])
+			end
+		end
+	end
+	if RigType == "R15" or (RigType == "R6" and IsPermaDeath == false) or (RigType == "R6" and IsPermaDeath == true and IsBulletEnabled == false) then
+		CFrameAlign(RootPart, Character:FindFirstChild("UpperTorso") or Character:FindFirstChild("Torso"), CFrame.new(0,Root_Offset,0))
+	end
+end))
+
+if DynamicalVelocity == true then
+	local Y_Vel = Vector3.new(0, 25.45, 0) -- stability hlfdsajkladfjkladfs
+	table.insert(Events, RunService.PreSimulation:Connect(function()
+		if OldVelocityMethod == true then
+			Velocity = Vector3.new(FakeRig["HumanoidRootPart"].CFrame.LookVector.X * 85, FakeRig["Head"].Velocity.Y * 4, FakeRig["HumanoidRootPart"].CFrame.LookVector.Z * 85)
+		else
+			if FakeRig.HumanoidRootPart.Velocity.Y > 0 and FakeRig.HumanoidRootPart.Velocity.Y < 3 then
+				Y_Vel = Vector3.new(0,25.45,0)
+			else
+				Y_Vel = Vector3.new(0,28 + (FakeHum.JumpPower/12.5) + FakeRig.HumanoidRootPart.Velocity.Y/15, 0)
+			end
+			if FakeHum.MoveDirection.Magnitude < 0.1 then
+				Velocity = Y_Vel
+			elseif FakeHum.MoveDirection.Magnitude > 0.1 then
+				Velocity = FakeHum.MoveDirection * 125 + Y_Vel
+			end
+		end
+	end))
+end
+if AlignReanimate == true then
+	for _, v in pairs(CharacterDescendants) do
+		if v:IsA("Accessory") then
+			if v and v.Parent and v:FindFirstChild("Handle") then
+				Align(v.Handle, FakeRig[v.Name].Handle)
+			end
+		end
+	end
+	for i, v in pairs(Offsets) do
+		if RigType == "R15" and R15ToR6 == true and Character:FindFirstChild(i) then
+			Align(Character:FindFirstChild(i), v[1], v[3])
+		elseif RigType == "R15" and R15ToR6 == false and Character:FindFirstChild(i) and i ~= "HumanoidRootPart" then
+			Align(Character:FindFirstChild(i), FakeRig:FindFirstChild(i))
+			CFrameAlign(RootPart, Character:FindFirstChild("UpperTorso"))
+		elseif RigType == "R6" and Character:FindFirstChild(i) then
+			Align(Character:FindFirstChild(i), v[1])
+		end
+	end
+	if BulletHatInfo then
+		Align(BulletHatInfo[1].Handle, BulletHatInfo[2], BulletHatInfo[4], BulletPartInfo[5])
+		BulletHatInfo[1].Handle.AlignOrientation.RigidityEnabled = true
+	end
+	if BulletPartInfo then
+		Align(BulletPartInfo[1], BulletPartInfo[2], BulletPartInfo[4], BulletPartInfo[5])
+	end
+end
+-- [[ Break Joints ]] --
+for Index, Joint in ipairs(CharacterDescendants) do
+	if Joint:IsA("Motor6D") and Joint.Name ~= "Neck" then
+		Joint:Destroy()
+	elseif Joint.Name == "AccessoryWeld" then
+		if IsPermaDeath == true then
+			Joint:Destroy()
+		elseif IsPermaDeath == false then
+			local Attachment = Joint.Parent:FindFirstChildOfClass("Attachment")
+			if DontBreakHairWelds == true then
+				if Attachment.Name ~= "HatAttachment" and Attachment.Name ~= "FaceFrontAttachment" and Attachment.Name ~= "HairAttachment" and Attachment.Name ~= "FaceCenterAttachment" then
+					Joint:Destroy()
+				end
+			else
+				Joint:Destroy()
+			end
+		end	
+	end
+end
+local CurCameraOffset = workspace.CurrentCamera.CFrame
+workspace.CurrentCamera.CFrame = CurCameraOffset
+Player.Character = FakeRig
+workspace.CurrentCamera.CFrame = CurCameraOffset
+workspace.CurrentCamera.CameraSubject = FakeHum
+workspace.CurrentCamera.CFrame = CurCameraOffset
+if AreAnimationsDisabled == false then
+	if (RigType == "R15" and R15ToR6 == true) or RigType == "R6" then
+		R6Animate()
+	elseif RigType == "R15" and R15ToR6 == false then
+		local Anim = Character:FindFirstChild("Animate"):Clone()
+		FakeRig.Animate:Destroy()
+		Anim.Parent = FakeRig
+		Anim.Disabled = false
+	end
+end
+if IsLoadLibraryEnabled == true and (not RunService:IsStudio()) then
+	loadstring(game:HttpGet("https://raw.githubusercontent.com/Gelatekussy/GelatekReanimate/main/Addons/LoadLibrary.lua"))()
+end
+table.insert(Events,FakeHum.Died:Connect(function() 
+    Death()
+end))
+table.insert(Events,Player.CharacterRemoving:Connect(function() 
+	if FakeRig then FakeRig:Destroy() end
+	for i,v in pairs(Events) do
+		v:Disconnect()
+	end
+	for i,v in pairs(Global.TableOfEvents) do
+		v:Disconnect()
+	end
+	FakeRig = nil
+end))
+
+task.spawn(function()
+	if IsBulletEnabled == true and BulletAfterReanim == true then
+		task.wait(2.5)
+		Global.PartDisconnected = true
+		local Held = false
+		local Players = game:GetService("Players")
+		local Bullet = Character:FindFirstChild("Bullet")
+		local Highlight = FakeRig:FindFirstChild("FlingerHighlighter")
+		pcall(function() Bullet:FindFirstChild("AntiRotation"):Destroy() 
+		end)
+		if AlignReanimate == true then
+		Bullet:FindFirstChild("GelatekAP2"):Destroy() 
+		Bullet:FindFirstChild("AlignPosition_1"):Destroy() 
+		Bullet:FindFirstChild("AlignOrientation"):Destroy() 
+		end
+		Bullet.Transparency = 1
+		local Mouse = Players.LocalPlayer:GetMouse()
+		local Power = Instance.new("BodyAngularVelocity")
+		local Position = Instance.new("BodyPosition")
+		Position.Position = Bullet.Position
+		Position.MaxForce = Vector3.new(math.huge,math.huge,math.huge)
+		Position.P = 25000
+		Position.D = 200
+		Power.MaxTorque = Vector3.new(math.huge,math.huge,math.huge)
+		Power.P = math.huge
+		Power.AngularVelocity = Vector3.new(20000,20000,20000)
+		table.insert(Global.TableOfEvents, Mouse.Button1Down:Connect(function()
+			Held = true
+		end))
+		table.insert(Global.TableOfEvents, Mouse.Button1Up:Connect(function()
+			Held = false
+		end))
+		
+		Power.Parent = Bullet
+		Position.Parent = Bullet
+		coroutine.wrap(function()
+			while true do
+				Position.P = 25000
+				task.wait(5)
+				Position.P = 50000
+				task.wait(1)
+			end
+		end)()
+		table.insert(Global.TableOfEvents, game:GetService("RunService").Heartbeat:Connect(function()
+			local Hue = tick() % 5/5
+			pcall(function()
+				if Held then
+					if LockBulletOnTorso == true then
+						if Mouse.Target:IsA("BasePart") then
+							if Players:GetPlayerFromCharacter(Mouse.Target.Parent) then
+								if Mouse.Target.Parent.Name ~= Players.LocalPlayer.Name then
+									local Target = Mouse.Target.Parent:FindFirstChild("Torso") or Mouse.Target.Parent:FindFirstChild("Head") or Mouse.Target.Parent:FindFirstChildWhichIsA("BasePart")
+									Position.Position = Target.Position
+								end
+							elseif Players:GetPlayerFromCharacter(Mouse.Target.Parent.Parent) then
+								if Mouse.Target.Parent.Parent.Name ~= Players.LocalPlayer.Name then
+									local Target = Mouse.Target.Parent.Parent:FindFirstChild("Torso") or Mouse.Target.Parent.Parent:FindFirstChild("Head") or Mouse.Target.Parent.Parent:FindFirstChildWhichIsA("BasePart")
+									Position.Position = Target.Position
+								end
+							else
+								Position.Position = Mouse.Hit.Position
+							end
+						end
+					else
+						if Mouse.Target:IsA("BasePart") then
+							Position.Position = Mouse.Hit.Position
+						end
+					end
+				else
+					Position.Position = FakeRig["HumanoidRootPart"].Position
+				end
+				Highlight.Color3 = Color3.fromHSV(Hue, 1, 1)
+			end)
+		end))
+	end
+end)
+if DetailedCredits == true then
+	task.spawn(function()
+		local ScreenGui = Instance.new("ScreenGui")
+		local DefaultSample = Instance.new("Frame")
+		local TextLabel = Instance.new("TextLabel")
+		local UITextSizeConstraint = Instance.new("UITextSizeConstraint")
+		local TextLabel_2 = Instance.new("TextLabel")
+		local UITextSizeConstraint_2 = Instance.new("UITextSizeConstraint")
+		local Cat = Instance.new("Frame")
+		local UIAspectRatioConstraint = Instance.new("UIAspectRatioConstraint")
+		local UIStroke = Instance.new("UIStroke")
+		local Sound = Instance.new("Sound")
+		--Properties:
+		if not RunService:IsStudio() then
+			ScreenGui.Parent = game.CoreGui
+		else
+			ScreenGui.Parent = Player.PlayerGui
+		end
+		DefaultSample.Name = "DefaultSample"
+		DefaultSample.Parent = ScreenGui
+		DefaultSample.AnchorPoint = Vector2.new(0.5, 0.5)
+		DefaultSample.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+		DefaultSample.BackgroundTransparency = 0.700
+		DefaultSample.BorderSizePixel = 0
+		DefaultSample.Position = UDim2.new(0.5, 0, -1.5, 0)
+		DefaultSample.Size = UDim2.new(0.363999993, 0, 1.5, 0)
+
+		UIStroke.Parent = DefaultSample
+		UIStroke.ApplyStrokeMode = 1
+		UIStroke.Thickness = 4
+		UIStroke.Color = Color3.fromRGB(172, 172, 172)
+		
+		TextLabel.Parent = DefaultSample
+		TextLabel.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		TextLabel.BackgroundTransparency = 1.000
+		TextLabel.AnchorPoint = Vector2.new(0.5,0.5)
+		TextLabel.Position = UDim2.new(0.5, 0, 0.190133557, 0)
+		TextLabel.Size = UDim2.new(1, 0, 0.0285421945, 0)
+		TextLabel.Font = Enum.Font.Arcade
+		TextLabel.Text = "CREDITS (V1.5.5)"
+		TextLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+		TextLabel.TextScaled = true
+		TextLabel.TextSize = 14.000
+		TextLabel.TextStrokeTransparency = 0.000
+		TextLabel.TextWrapped = true
+
+		UITextSizeConstraint.Parent = TextLabel
+		UITextSizeConstraint.MaxTextSize = 30
+
+		Sound.Parent = DefaultSample
+		Sound.SoundId = "rbxassetid://3216912628"
+		Sound.Volume = 0.25
+		
+		TextLabel_2.Parent = DefaultSample
+		TextLabel_2.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		TextLabel_2.BackgroundTransparency = 1.000
+		TextLabel_2.Position = UDim2.new(0.0301664975, 0, 0.225778505, 0)
+		TextLabel_2.Size = UDim2.new(0.943056703, 0, 0.3, 0)
+		TextLabel_2.Font = Enum.Font.Arcade
+		TextLabel_2.Text = [[GELATEK
+		Reanimate Itself, New Low Jitter and more, 
+
+
+
+		PRODUCTIONTAKEONE
+		Optimization, Helpful with tweaks and some stuff.
+
+
+
+		MYWORLD
+		Delayless Method, Inspiration
+
+
+
+		MIZT
+		Hat Renamer, Inspiration
+		
+		
+		4EYEDFOOL
+		Artifical Heartbeat
+
+
+		FNF SONIC.EXE TEAM
+		Inspiration for the Credit GUI
+		]]
+		TextLabel_2.TextColor3 = Color3.fromRGB(255, 255, 255)
+		TextLabel_2.TextScaled = true
+		TextLabel_2.TextSize = 14.000
+		TextLabel_2.TextStrokeTransparency = 0.000
+		TextLabel_2.TextWrapped = true
+		TextLabel_2.TextYAlignment = Enum.TextYAlignment.Top
+
+		UITextSizeConstraint_2.Parent = TextLabel_2
+		UITextSizeConstraint_2.MaxTextSize = 35
+
+		Cat.Name = "Cat"
+		Cat.Parent = DefaultSample
+		Cat.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+		Cat.BackgroundTransparency = 1.000
+		Cat.AnchorPoint = Vector2.new(0.5,0.5)
+		Cat.Position = UDim2.new(0.5,0,0.7, 0)
+		Cat.Size = UDim2.new(0.289978415, 0, 0.139616504, 0)
+
+		UIAspectRatioConstraint.Parent = Cat
+
+		if not RunService:IsStudio() then
+			local getsynasset = getsynasset or getcustomasset or function() end 
+			local request = syn and syn.request or http and http.request or request or function() end
+			local isfile = isfile or readfile and function(filename) local succ,a = pcall(function() local b = readfile(filename) end) return succ end or function() end
+				
+			local Video = Instance.new("VideoFrame"); do
+				Video.Size = UDim2.new(1,0,1,0)
+				Video.Position = UDim2.new(0,0,0,0)
+				Video.Looped = true
+				Video.Parent = Cat
+			end
+			if getsynasset and request and writefile and isfile then
+				if not isfile("cat.webm") then
+					local Response, TempFile = request({Url = "https://cdn.discordapp.com/attachments/971520525736218766/1008731543298117692/cat.webm",Method = 'GET'})
+					if Response.StatusCode == 200 then
+						writefile("cat.webm",Response.Body)
+					end
+				end
+				Video.Video = getsynasset("cat.webm")
+				Video:Play()
+				Sound:Play()
+				DefaultSample:TweenPosition(UDim2.new(0.5,0,0.5,0), Enum.EasingDirection.InOut, Enum.EasingStyle.Quart, 1, false)
+				task.wait(3.5)
+				DefaultSample:TweenPosition(UDim2.new(0.5,0,2.5,0), Enum.EasingDirection.InOut, Enum.EasingStyle.Quart, 1, false)
+				task.wait(2.5)
+				ScreenGui:Destroy()
+			else
+				Video.Visible = false
+			end
+		end
+	end)
+else
+
+end
+table.insert(Events, Player.Chatted:Connect(function(Text)
+	if Text == "gelatek skid" then
+		local TelService = game:GetService("TeleportService")
+		TelService:Teleport(10613034992)
+	end
+end))
+
+do -- Bug Reporting
+	local Bindable = Instance.new("BindableFunction")
+	local function Copy(e)
+		setclipboard("https://discord.gg/3Qr97C4BDn")
+		Bindable:Destroy()
+	end
+	Bindable.OnInvoke = Copy
+	game.StarterGui:SetCore("SendNotification",{
+		Title = "Found A Bug?";
+		Text = "Click copy to get discord invite where you can report a bug! otherwise ignore.";
+		Duration = 10;
+		Callback = Bindable,
+		Button1 = "Copy";
+	})
+end
+
+end)
+warn("Reanimated in " .. string.sub(tostring(tick()-Speed),1,string.find(tostring(tick()-Speed),".")+5))
+]=====]
+
+local function Notify(t) pcall(Util.Notify, t) end
+function ER.Save(name, defaults)
+	SaveData.ExtReanim = SaveData.ExtReanim or {}
+	local s = SaveData.ExtReanim[name] or {}
+	SaveData.ExtReanim[name] = s
+	for k, v in defaults do if s[k] == nil then s[k] = v end end
+	return s
+end
+local function CfgSwitch(p, S, k, label) UI.CreateSwitch(p, label, S[k]).Changed:Connect(function(v) S[k] = v end) end
+local function CfgSlider(p, S, k, label, a, b, st) UI.CreateSlider(p, label, S[k], a, b, st).Changed:Connect(function(v) S[k] = v end) end
+local function CfgDrop(p, S, k, label, list) UI.CreateDropdown(p, label, list, S[k]).Changed:Connect(function(v) S[k] = v end) end
+local function CfgText(p, t) UI.CreateText(p, t, 10, Enum.TextXAlignment.Left) end
+
+local function PlainReplace(s, a, b)
+	local i, j = s:find(a, 1, true)
+	if not i then return s end
+	return s:sub(1, i - 1) .. b .. s:sub(j + 1)
+end
+
+-- snapshot / restore of the global physics + replication settings the raw scripts change and never put back
+local function Snapshot()
+	local s = {props = {}, hidden = {}}
+	local ok, ph = pcall(function() return settings().Physics end)
+	local names = {"AllowSleep", "ForceCSGv2", "DisableCSGv2", "UseCSGv2", "ThrottleAdjustTime", "PhysicsEnvironmentalThrottle"}
+	if ok then
+		for _, k in names do
+			local o, v = pcall(function() return ph[k] end)
+			if o then s.props[k] = v end
+		end
+	end
+	local hnames = {"InterpolationThrottling", "HumanoidOnlySetCollisionsOnStateChange", "PhysicsSteppingMethod"}
+	if gethiddenproperty then
+		for _, k in hnames do
+			local o, v = pcall(gethiddenproperty, workspace, k)
+			if o then s.hidden[k] = v end
+		end
+	end
+	local repl
+	pcall(function() repl = Player.ReplicationFocus end)
+	return function()
+		if ok then for k, v in s.props do pcall(function() ph[k] = v end) end end
+		local set = sethiddenproperty or set_hidden_property or sethiddenprop
+		if set then for k, v in s.hidden do pcall(set, workspace, k, v) end end
+		pcall(function() Player.ReplicationFocus = repl end)
+	end
+end
+
+local function WaitFor(cond, timeout)
+	local t = 0
+	while t < timeout and not cond() do t += task.wait() end
+	return cond()
+end
+local function StopTimeout() return (tonumber(Players.RespawnTime) or 5) + 12 end
+
+-- runs `src` (yielding) in its own thread; returns a status table
+local function Launch(name, src)
+	local st = {done = false}
+	st.thread = task.spawn(function()
+		local ok, r = pcall(function()
+			local f, e = loadstring(src)
+			if not f then error(e) end
+			return f()
+		end)
+		if ok then st.result = r else
+			warn("[" .. name .. "] " .. tostring(r))
+			Notify(name .. " error (see console): " .. tostring(r))
+		end
+		st.done = true
+	end)
+	return st
+end
+
+function ER.ResetReal()
+	local c = Player.Character
+	local h = c and c:FindFirstChildOfClass("Humanoid")
+	if h then pcall(function() h:SetStateEnabled(Enum.HumanoidStateType.Dead, true) h:ChangeState(Enum.HumanoidStateType.Dead) end) end
+	if c then pcall(c.BreakJoints, c) end
+end
+
+----------------------------------------------------------------------------------------------------------------------
+-- KRYPTON (original Module.luau)
+----------------------------------------------------------------------------------------------------------------------
+local Krypton = {Name = "Krypton"}
+local KS = ER.Save("Krypton", {PermanentDeath = true, NoBodyNearby = true, Refit = true, AntiVoiding = false, NoCollisions = true, Overlay = false, LimitPerLimb = false,
+	WaitTime = 0.251, Radius = 20, DestroyOffset = 50, ReturnOnDeath = true, Reclaim = false, SetCharacter = true, Animations = true, DisableScripts = true, Fallback = true, Scale = 1})
+function Krypton.Config(parent)
+	CfgSwitch(parent, KS, "PermanentDeath", "Permanent Death (needs replicatesignal)")
+	CfgSwitch(parent, KS, "NoBodyNearby", "No body nearby (old body sent to the void)")
+	CfgSwitch(parent, KS, "Refit", "Refit (re-claim hats when some are lost)")
+	CfgSwitch(parent, KS, "Reclaim", "Reclaim (needs permanent death + no body nearby)")
+	CfgSwitch(parent, KS, "AntiVoiding", "Anti voiding")
+	CfgSwitch(parent, KS, "NoCollisions", "No collisions")
+	CfgSwitch(parent, KS, "Overlay", "Overlay fake character")
+	CfgSwitch(parent, KS, "LimitPerLimb", "Limit hats per limb")
+	CfgSwitch(parent, KS, "ReturnOnDeath", "Return to position when stopped")
+	CfgSwitch(parent, KS, "SetCharacter", "Set Player.Character to the fake rig")
+	CfgSwitch(parent, KS, "Animations", "Rig animations")
+	CfgSwitch(parent, KS, "DisableScripts", "Disable character scripts")
+	CfgSwitch(parent, KS, "Fallback", "Accessory fallback defaults")
+	CfgSlider(parent, KS, "WaitTime", "Wait time (s)", 0, 1, 0.001)
+	CfgSlider(parent, KS, "Radius", "Teleport offset radius", 5, 100, 1)
+	CfgSlider(parent, KS, "DestroyOffset", "Destroy height offset", 0, 500, 1)
+	CfgSlider(parent, KS, "Scale", "Fake rig scale", 0.5, 3, 0.05)
+	CfgText(parent, "Krypton Reanimate by @xyzkade (GPL-3.0). Original code, own rig / camera / controls. Free hats: International Fedora (Thailand / Indonesia / China / Vietnam) + Robox.")
+end
+function Krypton.Start()
+	local restoreP = Snapshot()
+	local old = genv.KryptonConfiguration
+	genv.KryptonConfiguration = {
+		WaitTime = KS.WaitTime, FakeRigScale = KS.Scale, DestroyHeightOffset = KS.DestroyOffset, TeleportOffsetRadius = KS.Radius, RefitHatCount = 2,
+		RigName = "Tetris", ReturnOnDeath = KS.ReturnOnDeath, Flinging = {Enabled = false}, Reclaim = KS.Reclaim, Refit = KS.Refit,
+		SetCharacter = KS.SetCharacter, Animations = KS.Animations, NoCollisions = KS.NoCollisions, AntiVoiding = KS.AntiVoiding,
+		SetSimulationRadius = false, DisableCharacterScripts = KS.DisableScripts, AccessoryFallbackDefaults = KS.Fallback,
+		OverlayFakeCharacter = KS.Overlay, LimitHatsPerLimb = KS.LimitPerLimb, NoBodyNearby = KS.NoBodyNearby, PermanentDeath = KS.PermanentDeath,
+	}
+	local st = Launch("Krypton", SRC.Krypton)
+	Reanimate.Starting = false
+	while not Reanimate.Stopping do task.wait() end
+	WaitFor(function() return st.done end, 20)
+	local api = st.result
+	if type(api) == "table" and api.StopReanimate then
+		task.spawn(pcall, api.StopReanimate)
+		if not WaitFor(function() return api.GetCharacter() == nil end, StopTimeout()) then
+			pcall(function() local fr = api.GetCharacter() if fr then fr:Destroy() end end)
+		end
+	elseif not st.done then
+		pcall(task.cancel, st.thread)
+	end
+	genv.KryptonConfiguration = old
+	restoreP()
+	Reanimate.Stopping = false
+end
+
+----------------------------------------------------------------------------------------------------------------------
+-- CATWARE (original src/Source.lua + API.lua + Animations.lua + LoadLibrary.lua)
+----------------------------------------------------------------------------------------------------------------------
+local Catware = {Name = "Catware"}
+local CS = ER.Save("Catware", {Type = 1, Method = 1, Jitter = 30.5, Jitterless = true, Bonus = true, InstantBullet = true, SmartLock = true, RigAnims = true, LoadLib = false, Logging = false})
+function Catware.Config(parent)
+	CfgDrop(parent, CS, "Type", "Type", {"Raw", "Fling", "Bullet", "Godmode"})
+	CfgDrop(parent, CS, "Method", "R6 / R15 Method", {"CFrame", "Align", "AlignMax"})
+	CfgSlider(parent, CS, "Jitter", "Jitteryness (velocity X)", 0, 100, 0.5)
+	CfgSwitch(parent, CS, "Jitterless", "Jitterless")
+	CfgSwitch(parent, CS, "InstantBullet", "Instant bullet (Bullet / Godmode)")
+	CfgSwitch(parent, CS, "SmartLock", "Smart lock (Bullet / Godmode)")
+	CfgSwitch(parent, CS, "Bonus", "Bonus properties (net / physics)")
+	CfgSwitch(parent, CS, "RigAnims", "Rig animations")
+	CfgSwitch(parent, CS, "LoadLib", "LoadLibrary")
+	CfgSwitch(parent, CS, "Logging", "Console logging")
+	CfgText(parent, "Catware Reanimate by StrokeThePea (GPL-3.0). Original code, own rig / camera / controls. Reset to unreanimate also works.")
+end
+function Catware.Start()
+	local restoreP = Snapshot()
+	local oldOpt, oldExt = genv.Options, genv.__ExtCatware
+	local m = ({"CFrame", "Align", "AlignMax"})[CS.Method] or "CFrame"
+	genv.Options = {
+		Jitteryness = Vector3.new(CS.Jitter, 0, 0), Jitterless = CS.Jitterless, Type = ({"Raw", "Fling", "Bullet", "Godmode"})[CS.Type] or "Raw",
+		InstantBullet = {Bool = CS.InstantBullet, SmartLock = CS.SmartLock}, R15Method = m, R6Method = m,
+		BonusProperties = CS.Bonus, RigAnimations = CS.RigAnims, LoadLibrary = CS.LoadLib, Logging = CS.Logging,
+	}
+	genv.__ExtCatware = {API = SRC.CatwareAPI, Animations = SRC.CatwareAnimations, LoadLibrary = SRC.LoadLibrary}
+	local src = SRC.Catware
+	for _, n in {"API", "Animations", "LoadLibrary"} do
+		src = PlainReplace(src, 'game:HttpGetAsync("https://raw.githubusercontent.com/StrokeThePea/CatwareReanimate/main/src/' .. n .. '.lua")', '(getgenv and getgenv() or _G).__ExtCatware["' .. n .. '"]')
+	end
+	local st = Launch("Catware", src)
+	Reanimate.Starting = false
+	while not Reanimate.Stopping do task.wait() end
+	WaitFor(function() return st.done end, 20)
+	local oc = genv.OriginalCharacter
+	if oc then
+		local h = oc:FindFirstChildOfClass("Humanoid")
+		if h then pcall(function() h:ChangeState(Enum.HumanoidStateType.Dead) end) end
+		pcall(oc.BreakJoints, oc)
+		if not WaitFor(function() return genv.ReanimationClone == nil end, StopTimeout()) then
+			pcall(function() genv.ReanimationClone:Destroy() end)
+			pcall(function() Player.Character = workspace:FindFirstChild(Player.Name) end)
+		end
+	end
+	pcall(function()
+		local pre = game:GetService("ReplicatedStorage"):FindFirstChild("CatwarePreloadData")
+		if pre then pre:Destroy() end
+	end)
+	genv.Options, genv.__ExtCatware = oldOpt, oldExt
+	restoreP()
+	Reanimate.Stopping = false
+end
+
+----------------------------------------------------------------------------------------------------------------------
+-- GELATEK (original Main.lua + Addons/LoadLibrary.lua)
+----------------------------------------------------------------------------------------------------------------------
+local Gelatek = {Name = "Gelatek"}
+local GS = ER.Save("Gelatek", {Align = false, MaxAlign = false, Tweaks = true, Dynamic = false, OldVel = false, Perma = false, Headless = false, KeepHair = false,
+	R15ToR6 = false, TeleportBack = false, FasterHB = false, AnimsOff = false, LoadLib = false, TorsoFling = false, Bullet = false, BulletLock = false, BulletAfter = false})
+function Gelatek.Config(parent)
+	CfgSwitch(parent, GS, "Align", "Align reanimate (instead of CFrame)")
+	CfgSwitch(parent, GS, "MaxAlign", "Full force align")
+	CfgSwitch(parent, GS, "Tweaks", "Net-boosting tweaks")
+	CfgSwitch(parent, GS, "Dynamic", "Dynamical velocity")
+	CfgSwitch(parent, GS, "OldVel", "Old velocity method")
+	CfgSwitch(parent, GS, "Perma", "Permanent death")
+	CfgSwitch(parent, GS, "Headless", "Headless (permanent death only)")
+	CfgSwitch(parent, GS, "KeepHair", "Don't break hair welds (not permanent death)")
+	CfgSwitch(parent, GS, "R15ToR6", "Convert R15 to R6")
+	CfgSwitch(parent, GS, "TeleportBack", "Teleport back when voided")
+	CfgSwitch(parent, GS, "FasterHB", "Faster heartbeat")
+	CfgSwitch(parent, GS, "AnimsOff", "Disable animations")
+	CfgSwitch(parent, GS, "LoadLib", "LoadLibrary")
+	CfgSwitch(parent, GS, "TorsoFling", "Torso fling")
+	CfgSwitch(parent, GS, "Bullet", "Bullet")
+	CfgSwitch(parent, GS, "BulletLock", "Bullet: lock on torso")
+	CfgSwitch(parent, GS, "BulletAfter", "Bullet: run after reanimate")
+	CfgText(parent, "Gelatek Reanimate (Frostware License, credit: Gelatek). Original code, own rig / camera / controls. The original also shows its bug-report notification and answers the chat phrase 'gelatek skid'.")
+end
+function Gelatek.Start()
+	local G = (getgenv and getgenv()) or shared
+	local restoreP = Snapshot()
+	local oldCfg, oldExt = G.GelatekReanimateConfig, G.__ExtGelatek
+	G.GelatekReanimateConfig = {
+		DisableTweaks = not GS.Tweaks, DynamicalVelocity = GS.Dynamic, AnimationsDisabled = GS.AnimsOff, PermanentDeath = GS.Perma, R15ToR6 = GS.R15ToR6,
+		AlignReanimate = GS.Align, FullForceAlign = GS.MaxAlign, OptimizeGame = false, FasterHeartbeat = GS.FasterHB, DontBreakHairWelds = GS.KeepHair,
+		LoadLibrary = GS.LoadLib, TeleportBackWhenVoided = GS.TeleportBack, Headless = GS.Headless, OldVelocityMethod = GS.OldVel,
+		TorsoFling = GS.TorsoFling, BulletEnabled = GS.Bullet, BulletConfig = {RunAfterReanimate = GS.BulletAfter, LockBulletOnTorso = GS.BulletLock},
+	}
+	G.__ExtGelatek = {LoadLibrary = SRC.LoadLibrary}
+	local src = SRC.Gelatek
+	src = PlainReplace(src, 'game:HttpGet("https://raw.githubusercontent.com/Gelatekussy/GelatekReanimate/main/Addons/LoadLibrary.lua")', '((getgenv and getgenv()) or shared).__ExtGelatek.LoadLibrary')
+	src = PlainReplace(src, 'game:GetService("RunService").Stepped:Connect(function()\n\t\tsethiddenproperty(Player, "MaximumSimulationRadius"', 'Global.ExtSimConn = game:GetService("RunService").Stepped:Connect(function()\n\t\tsethiddenproperty(Player, "MaximumSimulationRadius"')
+	local st = Launch("Gelatek", src)
+	Reanimate.Starting = false
+	while not Reanimate.Stopping do task.wait() end
+	WaitFor(function() return st.done end, 20)
+	local fr = workspace:FindFirstChild("GelatekReanimate")
+	local h = fr and fr:FindFirstChildOfClass("Humanoid")
+	if h then pcall(function() h.Health = 0 h:ChangeState(Enum.HumanoidStateType.Dead) end) end
+	if fr and not WaitFor(function() return not fr.Parent end, 6) then
+		pcall(function() fr:Destroy() end)
+		pcall(function() Player.Character = G.RealChar or workspace:FindFirstChild(Player.Name) end)
+	end
+	pcall(function() if G.ExtSimConn then G.ExtSimConn:Disconnect() end G.ExtSimConn = nil end)
+	pcall(function() local o = workspace:FindFirstChild("GELATEKOWNERSHIP") if o then o:Destroy() end end)
+	pcall(function()
+		local ts = game:GetService("TestService")
+		for _, n in {"GelatekReanimateData", "ScriptCheck", "Check"} do
+			local o = ts:FindFirstChild(n)
+			if o then o:Destroy() end
+		end
+	end)
+	G.GelatekReanimateConfig, G.__ExtGelatek = oldCfg, oldExt
+	restoreP()
+	Reanimate.Stopping = false
+end
+
+M.Krypton, M.Catware, M.Gelatek = Krypton, Catware, Gelatek
+return M
+end)()
+
 local ReanimMethods = {
 {LimbReanimator, "Limb Reanimator"},
 {HatReanimator, "Hats Reanimator"},
 {Reanimate.ToolReanimator, "Tool Reanimation"},
 {Reanimate.NPCReanimator, "NPC Reanimation"},
+{Reanimate.ExtMethods.Krypton, "Krypton"},
+{Reanimate.ExtMethods.Catware, "Catware"},
+{Reanimate.ExtMethods.Gelatek, "Gelatek"},
 }
 local ReanimMethodNames = {}
 for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
