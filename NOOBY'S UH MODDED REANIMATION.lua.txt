@@ -109,6 +109,10 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
        Custom mod (v98: DELTA FAST EXECUTE - new Delta customizer switch (default on): scripts run from the Delta V2 editor, Script Hub and URL runs
                 compile through a shared LRU compile cache and reuse recently downloaded script bodies (90 s); the built-in customizer no longer
                 occupies the cache itself)
+       Custom mod (v101: DELTA EDITOR REPLACEMENT - the custom editor is an OPTION (Customization page > Custom editor, off by default so Delta's own editor stays; when switched on, Delta's own editor frames are hidden and kept hidden and Delta's own Execute /
+                Execute Clipboard connections are switched off through getconnections); ONE reader -> compiler -> executor pipeline shared by the editor,
+                Script Hub search, Nameless Admin and URL runs; reader joins duplicate downloads, compiler skips repeat setfenv work and idle-precompiles the open tab into the
+                shared compile cache (Execute becomes a cache hit + live syntax status); editor gets CHECK, RUN SEL, F5 and double-tap tab rename)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -13018,6 +13022,27 @@ function FX.Intro9(MainFrame, Music, _, opts)
 		E.skip = mk("TextButton", stage, {AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -16, 0, 14), Size = UDim2.fromOffset(168, 30), BackgroundColor3 = BLACK, BackgroundTransparency = 0.3, BorderSizePixel = 0, Font = Enum.Font.Code, TextSize = 14, TextColor3 = WHITE, Text = "SKIP INTRO  >>  OPEN UI", ZIndex = 30, AutoButtonColor = false})
 		mk("UIStroke", E.skip, {Thickness = 1, Color = WHITE, Transparency = 0.2})
 		conns[#conns + 1] = E.skip.Activated:Connect(function() S.skipped = true end)
+		-- [chaos layer] speed lines, glitch slices, colour veils, letterbox
+		E.sl = {}
+		for i = 1, 20 do
+			local f = box(stage, 11, (i % 4 == 0) and EMBER or BONE, 1)
+			f.Visible = false
+			E.sl[i] = {f = f, a = (i / 20) * TAU + math.random() * 0.2, ph = math.random(), sp = 0.9 + math.random() * 1.6, w = (i % 3 == 0) and 3 or 2, hot = (i % 2 == 0)}
+		end
+		E.gl = {}
+		for i = 1, 10 do
+			local f = box(stage, 20, BONE, 1)
+			f.Visible = false
+			E.gl[i] = {f = f, on = false, life = 0, max = 1, tr = 1}
+		end
+		E.ca1 = box(stage, 19, EMBER, 1)
+		E.ca1.Size, E.ca1.Position = UDim2.fromScale(1, 1), UDim2.fromScale(0.5, 0.5)
+		E.ca2 = box(stage, 19, C(40, 220, 255), 1)
+		E.ca2.Size, E.ca2.Position = UDim2.fromScale(1, 1), UDim2.fromScale(0.5, 0.5)
+		E.lbT = box(stage, 21, BLACK, 0)
+		E.lbT.AnchorPoint, E.lbT.Position, E.lbT.Size = Vector2.new(0.5, 0), UDim2.fromScale(0.5, 0), UDim2.new(1, 0, 0, 0)
+		E.lbB = box(stage, 21, BLACK, 0)
+		E.lbB.AnchorPoint, E.lbB.Position, E.lbB.Size = Vector2.new(0.5, 1), UDim2.fromScale(0.5, 1), UDim2.new(1, 0, 0, 0)
 		E.world.Visible = false
 	end
 	local warned = {}
@@ -13285,6 +13310,98 @@ function FX.Intro9(MainFrame, Music, _, opts)
 		E.name.TextColor3 = BONE:Lerp(acc, 0.35)
 		E.name.TextTransparency = 1 - ss(B(26.5), B(27.5), t) * fo * 0.9
 	end
+	local function glitch(n, wide)
+		local acc = accent()
+		for _ = 1, n do
+			local g
+			for i = 1, #E.gl do
+				if not E.gl[i].on then g = E.gl[i] break end
+			end
+			if not g then return end
+			g.on, g.life = true, 0.07 + math.random() * 0.12
+			g.max, g.tr = g.life, 0.3 + math.random() * 0.4
+			g.f.Size = UDim2.fromOffset(S.sx * (0.35 + math.random() * 0.65), S.sy * (0.012 + math.random() * (wide and 0.09 or 0.045)))
+			g.f.Position = UDim2.fromOffset(S.sx * (0.5 + (math.random() - 0.5) * 0.4), S.sy * math.random())
+			g.f.BackgroundColor3 = (math.random() < 0.4) and acc or BONE
+			g.f.BackgroundTransparency = g.tr
+			g.f.Visible = true
+		end
+	end
+	local function chaosHit(p)
+		S.tilt = (math.random() < 0.5 and -1 or 1) * (0.8 + math.random()) * p * K.INT
+		S.slam = (math.random() < 0.5 and -1 or 1) * (0.4 + math.random() * 0.6) * min(p, 2)
+		S.cv = max(S.cv or 0, min(1, 0.35 * p))
+		glitch(floor(1 + p * 2), p >= 2)
+		if p >= 1.4 then
+			S.whip = 1
+			S.flashK = max(S.flashK, 0.3 * K.INT)
+		end
+		local acc = accent()
+		for _ = 1, floor(3 + p * 4) do
+			emit(S.sx * math.random(), S.sy, (math.random() - 0.5) * S.sx * 0.25, -S.sy * (0.5 + math.random() * 0.9), max(2, S.U * 0.006), (math.random() < 0.35) and acc or SAND, false, 0.006, 1.4)
+		end
+	end
+	local function updChaos(t)
+		local now = os.clock()
+		local dt = min(now - (S.cl or now), 0.1)
+		S.cl = now
+		local sc, k = S.sc, S.kick
+		local acc = accent()
+		local tilt, slam, whip = S.tilt or 0, S.slam or 0, S.whip or 0
+		E.world.Rotation = E.world.Rotation + tilt
+		E.world.Position = E.world.Position + UDim2.fromOffset(slam * S.U * 0.03, 0)
+		E.ws.Scale = E.ws.Scale + 0.09 * whip * whip
+		S.tilt, S.slam, S.whip = tilt * exp(-7 * dt), slam * exp(-9 * dt), whip * exp(-5 * dt)
+		local lb = (sc == 3 or sc == 4) and (0.055 + 0.04 * ss(B(16), B(24), t) + 0.01 * k) or 0
+		S.lbk = lerp(S.lbk or 0, lb, 1 - exp(-7 * dt))
+		local h = floor(S.sy * S.lbk)
+		E.lbT.Size, E.lbB.Size = UDim2.new(1, 0, 0, h), UDim2.new(1, 0, 0, h)
+		local cv, wp = S.cv or 0, S.wp or 0
+		S.cv, S.wp = cv * exp(-12 * dt), wp * exp(-10 * dt)
+		E.ca1.BackgroundColor3 = acc
+		E.ca1.BackgroundTransparency = 1 - clamp01(0.30 * cv + ((sc >= 3) and 0.10 * k or 0))
+		E.ca2.BackgroundTransparency = 1 - clamp01(((sc >= 4) and 0.10 * S.hk or 0) + 0.14 * wp)
+		for i = 1, #E.gl do
+			local g = E.gl[i]
+			if g.on then
+				g.life = g.life - dt
+				if g.life <= 0 then
+					g.on = false
+					g.f.Visible = false
+				else
+					g.f.BackgroundTransparency = lerp(1, g.tr, g.life / g.max)
+				end
+			end
+		end
+		local age = t - B(24)
+		local it = 0
+		if age >= 0 then
+			it = 0.8 * clamp01(1 - age / 1.2)
+		elseif sc >= 4 then
+			it = clamp01(0.18 + 0.55 * S.sq + 0.5 * k)
+		elseif sc == 3 then
+			it = 0.12 * S.hk
+		end
+		local sl = E.sl
+		if it > 0.04 then
+			S.slOn = true
+			for i = 1, #sl do
+				local L = sl[i]
+				local pr = (t * L.sp + L.ph) % 1
+				local r = S.U * (0.12 + pr * (0.75 + 0.25 * it))
+				local len = S.U * (0.04 + 0.30 * it * (0.4 + pr))
+				local d = r + len / 2
+				L.f.Position = UDim2.fromOffset(S.cx + cos(L.a) * d, S.cy + sin(L.a) * d)
+				L.f.Size = UDim2.fromOffset(len, L.w)
+				L.f.Rotation = L.a * DEG
+				L.f.BackgroundTransparency = 1 - it * 0.55 * (1 - pr) * (L.hot and 1 or 0.6)
+				L.f.Visible = true
+			end
+		elseif S.slOn then
+			S.slOn = false
+			for i = 1, #sl do sl[i].f.Visible = false end
+		end
+	end
 	local function onKick(s)
 		local sc = S.sc
 		local m = (sc <= 2) and 0.35 or 1
@@ -13292,6 +13409,7 @@ function FX.Intro9(MainFrame, Music, _, opts)
 		S.hub = 1
 		if sc < 3 then return end
 		S.shake = max(S.shake, ((s >= 3) and 0.8 or 0.25) * K.INT)
+		if s >= 3 then chaosHit(1) elseif s >= 2 then chaosHit(0.5) end
 		local acc = accent()
 		if sc == 3 or sc == 4 then
 			for _ = 1, 2 + s * 2 do
@@ -13313,6 +13431,8 @@ function FX.Intro9(MainFrame, Music, _, opts)
 	end
 	local function onWord(s)
 		local sc = S.sc
+		S.wp = 1
+		if sc >= 3 and math.random() < 0.6 then glitch(1) end
 		if sc == 3 or sc == 4 then
 			S.wc = S.wc + 1
 			for n = 1, s do
@@ -13412,6 +13532,7 @@ function FX.Intro9(MainFrame, Music, _, opts)
 				ringAt(S.cx, S.cy, 10, S.U * 1.2, 0.9, WHITE, 6)
 				ringAt(S.cx, S.cy, 10, S.U * 0.8, 0.7, acc0, 4)
 				ringAt(S.cx, S.cy, 10, S.U * 0.5, 0.5, BONE, 3)
+				chaosHit(3)
 				for n = 1, 44 do
 					local a = math.random() * TAU
 					local v = S.U * (0.3 + math.random() * 0.8)
@@ -13423,6 +13544,7 @@ function FX.Intro9(MainFrame, Music, _, opts)
 					ringAt(S.cx, S.cy, S.R * 0.9, S.U * 0.9, 0.8, accent(), 4)
 					S.kick = max(S.kick, 0.9)
 					S.shake = max(S.shake, 0.5 * K.INT)
+					chaosHit(1.6)
 				end
 				S.cue = S.cue + 1
 			end
@@ -13454,6 +13576,7 @@ function FX.Intro9(MainFrame, Music, _, opts)
 			guard("motes", updMotes, t)
 			guard("ring", updRing, t)
 			guard("strips", updStrips, t)
+			guard("chaos", updChaos, t)
 			if age24 >= 0 then
 				guard("title", updTitle, t)
 			end
@@ -13891,6 +14014,248 @@ tween(g, 0.34, Quint, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(g, 0.5 * k)
 task.wait(0.34 * k)
 end
+do
+local orig = FX.EnhanceButton
+function FX.EnhanceButton(b)
+orig(b)
+pcall(function()
+local bc = b:FindFirstChildOfClass("UICorner")
+local function corner(f)
+local c = Util.Instance("UICorner", f)
+c.CornerRadius = bc and bc.CornerRadius or UDim.new(0, FX.Cfg.UIRound)
+return c
+end
+local halo = Util.Instance("Frame", b)
+halo.BackgroundTransparency = 1
+halo.BorderSizePixel = 0
+halo.Size = UDim2.fromScale(1, 1)
+halo.ZIndex = 8
+halo.Interactable = false
+local hc = corner(halo)
+local hs = Util.Instance("UIStroke", halo)
+hs.Thickness = 1.5
+hs.Transparency = 1
+hs.Color = WHITE
+hs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+local flash = Util.Instance("Frame", b)
+flash.BackgroundColor3 = WHITE
+flash.BackgroundTransparency = 1
+flash.BorderSizePixel = 0
+flash.Size = UDim2.fromScale(1, 1)
+flash.ZIndex = 9
+flash.Interactable = false
+local fc = corner(flash)
+if bc then
+bc:GetPropertyChangedSignal("CornerRadius"):Connect(function()
+hc.CornerRadius = bc.CornerRadius
+fc.CornerRadius = bc.CornerRadius
+end)
+end
+local function live()
+return FX.Settings.Transitions and not FX.IsLowEnd()
+end
+b.MouseEnter:Connect(function()
+if not live() then return end
+hs.Color = FX.GetColor and FX.GetColor() or WHITE
+tween(hs, 0.22, Quad, EOut, {Transparency = 0.4})
+end)
+b.MouseLeave:Connect(function()
+tween(hs, 0.35, Quad, EOut, {Transparency = 1})
+end)
+b.MouseButton1Down:Connect(function()
+if not live() then return end
+flash.BackgroundTransparency = 0.8
+tween(flash, 0.3, Quad, EOut, {BackgroundTransparency = 1})
+tween(hs, 0.08, Quad, EOut, {Transparency = 0.1})
+end)
+end)
+end
+end
+function FX.Polish(env, win, content, topBar)
+local S = FX.Settings
+local NSK = NumberSequenceKeypoint.new
+local function on()
+return S.Transitions and S.Ambient and not FX.IsLowEnd() and win.Parent and win.Visible
+end
+local function accent()
+local ok, c = pcall(FX.GetColor)
+return ok and c or WHITE
+end
+local function mkf(parent, z)
+local f = Util.Instance("Frame", parent)
+f.BorderSizePixel = 0
+f.BackgroundColor3 = WHITE
+f.BackgroundTransparency = 1
+f.ZIndex = z
+f.Interactable = false
+return f
+end
+local rim = mkf(win, 60)
+rim.Size = UDim2.fromScale(1, 1)
+pcall(FX.RoundCorner, rim)
+local rs = Util.Instance("UIStroke", rim)
+rs.Thickness = 1.5
+rs.Color = WHITE
+rs.Transparency = 0.15
+rs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+local rg = Util.Instance("UIGradient", rs)
+rg.Transparency = NumberSequence.new({NSK(0, 1), NSK(0.4, 1), NSK(0.5, 0), NSK(0.6, 1), NSK(1, 1)})
+local aur = mkf(content, 49)
+aur.Size = UDim2.fromScale(1, 1)
+aur.BackgroundTransparency = 0.88
+local ag = Util.Instance("UIGradient", aur)
+ag.Rotation = 35
+ag.Transparency = NumberSequence.new({NSK(0, 0), NSK(0.5, 1), NSK(1, 0.35)})
+local sp = mkf(content, 48)
+sp.AnchorPoint = Vector2.new(0.5, 0.5)
+sp.Size = UDim2.fromOffset(0, 0)
+local spL, spB = {}, {0.965, 0.95, 0.93}
+for i, dia in ipairs({210, 124, 58}) do
+local c = mkf(sp, 48)
+c.AnchorPoint = Vector2.new(0.5, 0.5)
+c.Position = UDim2.fromScale(0.5, 0.5)
+c.Size = UDim2.fromOffset(dia, dia)
+Util.Instance("UICorner", c).CornerRadius = UDim.new(1, 0)
+spL[i] = c
+end
+local sweep = mkf(content, 52)
+sweep.Size = UDim2.new(0.35, 0, 0, 2)
+sweep.Position = UDim2.new(-0.4, 0, 0, 0)
+Util.Instance("UIGradient", sweep).Transparency = NumberSequence.new({NSK(0, 1), NSK(0.5, 0), NSK(1, 1)})
+local veil = mkf(content, 51)
+veil.Size = UDim2.fromScale(1, 1)
+local bloom = mkf(win, 5)
+bloom.AnchorPoint = Vector2.new(0.5, 1)
+bloom.Position = UDim2.new(0.5, 0, 1, -1)
+bloom.Size = UDim2.new(0.12, 0, 0, 2)
+Util.Instance("UIGradient", bloom).Transparency = NumberSequence.new({NSK(0, 1), NSK(0.5, 0), NSK(1, 1)})
+local tl
+if topBar then
+tl = mkf(topBar, 6)
+tl.AnchorPoint = Vector2.new(0, 1)
+tl.Size = UDim2.new(0.22, 0, 0, 1)
+tl.Position = UDim2.new(-0.3, 0, 1, 0)
+tl.BackgroundTransparency = 0.15
+Util.Instance("UIGradient", tl).Transparency = NumberSequence.new({NSK(0, 1), NSK(0.5, 0), NSK(1, 1)})
+end
+local function flare(th)
+rs.Thickness = th
+rs.Transparency = 0
+tween(rs, 0.7, Quint, EOut, {Thickness = 1.5, Transparency = 0.15})
+end
+local lastPage = 0
+local function pageFx()
+if not on() or FX.IntroActive then return end
+local n = os.clock()
+if n - lastPage < 0.3 then return end
+lastPage = n
+local col = accent()
+sweep.BackgroundColor3 = col
+sweep.Position = UDim2.new(-0.4, 0, 0, 0)
+sweep.BackgroundTransparency = 0.05
+tween(sweep, 0.55, Quint, EOut, {Position = UDim2.new(1.05, 0, 0, 0)})
+task.delay(0.35, function() tween(sweep, 0.25, Quad, EOut, {BackgroundTransparency = 1}) end)
+veil.BackgroundColor3 = FX.GetBG()
+veil.BackgroundTransparency = 0.78
+tween(veil, 0.34, Quad, EOut, {BackgroundTransparency = 1})
+bloom.BackgroundColor3 = col
+bloom.Size = UDim2.new(0.12, 0, 0, 2)
+bloom.BackgroundTransparency = 0.1
+tween(bloom, 0.5, Quint, EOut, {Size = UDim2.new(0.96, 0, 0, 2)})
+task.delay(0.28, function() tween(bloom, 0.3, Quad, EOut, {BackgroundTransparency = 1}) end)
+end
+local seen = setmetatable({}, {__mode = "k"})
+local function watch(c)
+if seen[c] or not c:IsA("ScrollingFrame") then return end
+seen[c] = true
+c:GetPropertyChangedSignal("Visible"):Connect(function()
+if c.Visible then pageFx() end
+end)
+end
+for _, c in ipairs(content:GetChildren()) do watch(c) end
+content.ChildAdded:Connect(watch)
+win:GetPropertyChangedSignal("Visible"):Connect(function()
+if win.Visible and on() and not FX.IntroActive then
+flare(4)
+local col = accent()
+bloom.BackgroundColor3 = col
+bloom.Size = UDim2.new(0.12, 0, 0, 2)
+bloom.BackgroundTransparency = 0.1
+tween(bloom, 0.6, Quint, EOut, {Size = UDim2.new(0.96, 0, 0, 2)})
+task.delay(0.35, function() tween(bloom, 0.3, Quad, EOut, {BackgroundTransparency = 1}) end)
+end
+end)
+local dragging
+if topBar then
+topBar.InputBegan:Connect(function(i)
+local ty = i.UserInputType
+if (ty == Enum.UserInputType.MouseButton1 or ty == Enum.UserInputType.Touch) and on() then
+dragging = true
+tween(rs, 0.2, Quad, EOut, {Thickness = 3, Transparency = 0})
+end
+end)
+UserInputService.InputEnded:Connect(function(i)
+local ty = i.UserInputType
+if dragging and (ty == Enum.UserInputType.MouseButton1 or ty == Enum.UserInputType.Touch) then
+dragging = nil
+tween(rs, 0.45, Quint, EOut, {Thickness = 1.5, Transparency = 0.15})
+end
+end)
+end
+local acc, lastCol = 0, nil
+local spA, spx, spy = 0, 0, 0
+local mouseOK = UserInputService.MouseEnabled and not UserInputService.TouchEnabled
+RunService.RenderStepped:Connect(function(dt)
+if not win.Parent then return end
+acc = acc + dt
+local gap = 1 / 30
+if FX.Gov and FX.Gov.Stride and FX.Gov.Stride > 1 then gap = gap * FX.Gov.Stride end
+if acc < gap then return end
+dt, acc = acc, 0
+local live = on()
+rim.Visible, aur.Visible = live, live
+if tl then tl.Visible = live end
+if not live then
+sp.Visible = false
+return
+end
+local t = os.clock()
+local col = accent()
+if col ~= lastCol then
+lastCol = col
+rs.Color = col:Lerp(WHITE, 0.35)
+ag.Color = ColorSequence.new(col)
+for _, c in ipairs(spL) do c.BackgroundColor3 = col end
+if tl then tl.BackgroundColor3 = col end
+end
+rg.Rotation = (t * 45) % 360
+ag.Offset = Vector2.new(math.sin(t * 0.25) * 0.35, math.cos(t * 0.2) * 0.2)
+if tl then
+tl.Position = UDim2.new((t * 0.18) % 1.5 - 0.3, 0, 1, 0)
+end
+local inside = false
+local ap, as = content.AbsolutePosition, content.AbsoluteSize
+if mouseOK then
+local m = UserInputService:GetMouseLocation()
+inside = m.X >= ap.X and m.Y >= ap.Y and m.X <= ap.X + as.X and m.Y <= ap.Y + as.Y
+if inside then
+local k = math.min(1, dt * 10)
+if spA < 0.05 then spx, spy = m.X, m.Y end
+spx, spy = spx + (m.X - spx) * k, spy + (m.Y - spy) * k
+end
+end
+spA = spA + ((inside and 1 or 0) - spA) * math.min(1, dt * 8)
+if spA < 0.02 then
+sp.Visible = false
+else
+sp.Visible = true
+sp.Position = UDim2.fromOffset(spx - ap.X, spy - ap.Y)
+for i, c in ipairs(spL) do
+c.BackgroundTransparency = 1 - (1 - spB[i]) * spA
+end
+end
+end)
+end
 function FX.Chrome(env)
 local win, content = env.UIMainWindow, env.WindowContent
 local music = env.UISound and env.UISound.Music
@@ -14086,6 +14451,7 @@ if m.X < ap.X or m.Y < ap.Y or m.X > ap.X + as.X or m.Y > ap.Y + as.Y then retur
 FX.Ring(win, FX.GetColor(), 64, 0.45, 2, UDim2.fromOffset(m.X - ap.X, m.Y - ap.Y))
 end)
 end)
+guard("polish", function() FX.Polish(env, win, content, topBar) end)
 end
 local breath, breathTok = nil, 0
 function FX.ThemePulse()
@@ -15277,11 +15643,10 @@ end, ...)
 end
 function X.ReadFile(path)
 if type(readfile) ~= "function" then return nil, "readfile unavailable" end
-local okE, ex = pcall(isfile, path)
-if not (okE and ex) then return nil, "file not found: " .. tostring(path) end
 local ok, body = pcall(readfile, path)
 if ok and type(body) == "string" and body ~= "" then return body end
-return nil, "unreadable or empty file: " .. tostring(path)
+if ok then return nil, "unreadable or empty file: " .. tostring(path) end
+return nil, "file not found: " .. tostring(path)
 end
 function X.RunFile(path, ...)
 local body, err = X.ReadFile(path)
@@ -234259,7 +234624,9 @@ local function runUrl(u, name, hdr)
 	if type(src) ~= "string" or src == "" then
 		return false, er or "empty source"
 	end
-	src = src:gsub("^\239\187\191", "")
+	if src:byte(1) == 239 and src:byte(2) == 187 and src:byte(3) == 191 then
+		src = src:sub(4)
+	end
 	local fn, er2 = ld(src, name or ("@" .. u))
 	if type(fn) ~= "function" then
 		return false, er2 or "compile failed"
@@ -234272,6 +234639,213 @@ local function runUrl(u, name, hdr)
 		return e
 	end)
 end
+
+-- [v101 pipeline] ONE shared reader -> compiler -> executor used by the custom editor, the Script Hub search, Nameless Admin / URL runs and every customizer run action
+xpcall(function()
+	local P = {}
+	__dcm_env.__DeltaPipeline = P
+	local stats = { reads = 0, compiles = 0, runs = 0, failures = 0, compileMs = 0, joined = 0 }
+	local fenvDone = setmetatable({}, { __mode = "k" })
+	local pending = {}
+	local function stripBom(s)
+		if s:byte(1) == 239 and s:byte(2) == 187 and s:byte(3) == 191 then
+			return s:sub(4)
+		end
+		return s
+	end
+	-- the shared compile cache is only present while the Delta fast-execute switch is on
+	function P.cached()
+		local fast = rawget(__dcm_boot.hostEnv, "UhDeltaFast")
+		return type(fast) == "table" and type(fast.Compile) == "function"
+	end
+	-- honest capability report: Delta's compiler is only reachable through loadstring, bytecode is produced inside it and is not exposed
+	function P.caps()
+		local fast = rawget(__dcm_boot.hostEnv, "UhDeltaFast")
+		return {
+			loadstring = type(__dcm_boot.getLoader()) == "function",
+			compileCache = P.cached(),
+			netCache = type(fast) == "table" and type(fast.NetGet) == "function",
+			readfile = type(readfile) == "function",
+			getconnections = type(getconnections) == "function",
+		}
+	end
+	-- identical downloads that are already in flight are joined instead of fetched twice
+	local function fetch(url, headers)
+		local key = url .. "|" .. tostring(type(headers) == "table" and headers.Referer or "")
+		local p = pending[key]
+		if p then
+			stats.joined += 1
+			while p.busy do
+				task.wait()
+			end
+			return p.body, p.err
+		end
+		p = { busy = true }
+		pending[key] = p
+		local ok, body, err = pcall(httpTxt, url, headers)
+		if not ok then
+			err = body
+			body = nil
+		end
+		p.body, p.err, p.busy = body, err, false
+		pending[key] = nil
+		return body, err
+	end
+	-- READER: text / url / file in, one clean source string out (no copies unless a BOM is present)
+	function P.read(input)
+		if type(input) == "string" then
+			input = { text = input }
+		end
+		if type(input) ~= "table" then
+			return nil, "bad input"
+		end
+		local text = input.text
+		if type(text) ~= "string" then
+			if type(input.url) == "string" and input.url ~= "" then
+				local got, err = fetch(input.url, input.headers)
+				if type(got) ~= "string" or got == "" then
+					return nil, err or "empty script source"
+				end
+				text = got
+			elseif type(input.file) == "string" and input.file ~= "" then
+				if type(readfile) ~= "function" then
+					return nil, "readfile unavailable"
+				end
+				local ok, body = pcall(readfile, input.file)
+				if not ok or type(body) ~= "string" then
+					return nil, ok and "unreadable file" or tostring(body)
+				end
+				text = body
+			else
+				return nil, "no script source"
+			end
+		end
+		text = stripBom(text)
+		if text:find("%S") == nil then
+			return nil, "empty script"
+		end
+		stats.reads += 1
+		return text
+	end
+	-- COMPILER: executor loadstring behind the shared LRU compile cache; a cached closure keeps its environment, so setfenv runs once per closure
+	function P.compile(text, chunk)
+		local ld = __dcm_boot.getLoader()
+		if type(ld) ~= "function" then
+			return nil, "loadstring unavailable", 0
+		end
+		local t0 = os.clock()
+		local fn, err = ld(text, chunk or "=DeltaCustom")
+		local ms = (os.clock() - t0) * 1000
+		if type(fn) ~= "function" then
+			stats.failures += 1
+			return nil, err or "compile failed", ms
+		end
+		stats.compiles += 1
+		stats.compileMs += ms
+		if not fenvDone[fn] and type(__dcm_boot.hostSetfenv) == "function" then
+			fenvDone[fn] = true
+			pcall(__dcm_boot.hostSetfenv, fn, __dcm_boot.runtimeEnv)
+		end
+		return fn, nil, ms
+	end
+	function P.errorLine(err)
+		return tonumber(tostring(err or ""):match(":(%d+):"))
+	end
+	-- reader + compiler without running: fn, err, ms, failedStage
+	function P.load(input)
+		local text, rerr = P.read(input)
+		if not text then
+			return nil, rerr, 0, "Load"
+		end
+		local fn, cerr, ms = P.compile(text, type(input) == "table" and input.chunk or nil)
+		if not fn then
+			return nil, cerr, ms, "Compile"
+		end
+		return fn, nil, ms
+	end
+	-- EXECUTOR: own thread + traceback; errors that happen after the script yields are reported through onError
+	function P.run(fn, onError)
+		local returned, early = false, nil
+		stats.runs += 1
+		task.spawn(function()
+			local ok, err = xpcall(fn, function(e)
+				return __dcm_boot.trace(e)
+			end)
+			if not ok then
+				stats.failures += 1
+				if returned then
+					if onError then
+						pcall(onError, err)
+					end
+				else
+					early = err
+				end
+			end
+		end)
+		returned = true
+		if early ~= nil then
+			return false, early
+		end
+		return true
+	end
+	-- pipeline entry: report(stage, where, detail, compileMs); stages: Loading, Compiling, Running, Done, Failed
+	function P.execute(input, report)
+		local function say(...)
+			if report then
+				pcall(report, ...)
+			end
+		end
+		task.spawn(function()
+			say("Loading")
+			local text, rerr = P.read(input)
+			if not text then
+				return say("Failed", "Load", rerr)
+			end
+			say("Compiling")
+			local fn, cerr, ms = P.compile(text, type(input) == "table" and input.chunk or nil)
+			if not fn then
+				return say("Failed", "Compile", cerr, ms)
+			end
+			say("Running")
+			local ok, err = P.run(fn, function(e)
+				say("Failed", "Run", e, ms)
+			end)
+			if not ok then
+				return say("Failed", "Run", err, ms)
+			end
+			say("Done", nil, nil, ms)
+		end)
+	end
+	function P.stats()
+		local out = {}
+		for k, v in pairs(stats) do
+			out[k] = v
+		end
+		local api = rawget(__dcm_boot.hostEnv, "UhDeltaAPI")
+		if type(api) == "table" and type(api.Stats) == "function" then
+			local ok, hs = pcall(api.Stats)
+			if ok then
+				out.host = hs
+			end
+		end
+		return out
+	end
+	-- every URL run inside the customizer (Nameless Admin card, helper modules) uses the same reader / compiler / executor
+	runUrl = function(u, name, hdr)
+		local fn, err = P.load({ url = u, headers = hdr, chunk = name or ("@" .. tostring(u)) })
+		if type(fn) ~= "function" then
+			return false, err or "load failed"
+		end
+		stats.runs += 1
+		return xpcall(fn, function(e)
+			stats.failures += 1
+			warn("[DeltaCustomization] " .. tostring(name or u) .. " failed:\n" .. __dcm_boot.trace(e))
+			return e
+		end)
+	end
+end, function(e)
+	warn("[DeltaCustomization] pipeline init failed: " .. tostring(e))
+end)
 UIS = Svc("UserInputService")
 local CG = Svc("CoreGui")
 local HS = Svc("HttpService")
@@ -242053,45 +242627,59 @@ local function mkCard(par, i, d)
 		dc.ZIndex = 3
 	end
 
+
+	local running = false
 	con(run.MouseButton1Click:Connect(function()
-		local ok, er = pcall(function()
-			local ld = __dcm_boot.getLoader()
-			if type(ld) ~= "function" then
-				error("loadstring unavailable")
-			end
-			local src = rw
-			if rwIsUrl then
-				local headers
-				if eng == "RScripts" then
-					headers = { Referer = RSCRIPTS_BASE }
-				elseif eng == "RobloxScripts" then
-					headers = { Referer = "https://robloxscripts.com" }
-				elseif eng == "HaxHell" then
-					headers = { Referer = HAXHELL_BASE }
-				end
-				local got, gotEr = httpTxt(rw, headers)
-				if type(got) ~= "string" or got == "" then
-					error(gotEr or "empty script source")
-				end
-				src = got
-			end
-			if type(src) ~= "string" or src == "" then
-				error("script source must be a string, got " .. tostring(typeof and typeof(src) or type(src)))
-			end
-			local fn, cer = ld(src, "@ScriptHubEntry")
-			if type(fn) ~= "function" then
-				error(cer or "compile failed")
-			end
-			if type(__dcm_boot.hostSetfenv) == "function" then
-				pcall(__dcm_boot.hostSetfenv, fn, __dcm_boot.runtimeEnv)
-			end
-			fn()
-		end)
-		if ok then
-			toast("ScriptHub", "Executed script.")
-		else
-			toast("ScriptHub", tostring(er))
+		if running then
+			return
 		end
+		local P = __dcm_env.__DeltaPipeline
+		if not P then
+			toast("ScriptHub", "Execution pipeline unavailable.")
+			return
+		end
+		running = true
+		local function state(text, enabled)
+			if run.Parent then
+				run.Text = text
+				run.Active = enabled
+				run.TextTransparency = enabled and 0 or 0.4
+			end
+		end
+		local function finish(text, hold)
+			state(text, false)
+			task.delay(hold, function()
+				running = false
+				state("Run", true)
+			end)
+		end
+		local headers
+		if eng == "RScripts" then
+			headers = { Referer = RSCRIPTS_BASE }
+		elseif eng == "RobloxScripts" then
+			headers = { Referer = "https://robloxscripts.com" }
+		elseif eng == "HaxHell" then
+			headers = { Referer = HAXHELL_BASE }
+		end
+		local input = { chunk = "@ScriptHubEntry/" .. tostring(d.title or d.name or "Script"), headers = headers }
+		if rwIsUrl then
+			input.url = rw
+		else
+			input.text = rw
+		end
+		P.execute(input, function(stage, where, detail, ms)
+			if stage == "Failed" then
+				local msg = tostring(detail or "unknown error")
+				warn("[ScriptHub] " .. tostring(where) .. " failed: " .. msg)
+				toast("ScriptHub", tostring(where) .. " failed: " .. (msg:match("^[^\n]*") or msg))
+				finish("Failed", 1.6)
+			elseif stage == "Done" then
+				toast("ScriptHub", string.format("Executed script (compiled in %d ms).", math.floor((ms or 0) + 0.5)))
+				finish("Done", 1.2)
+			else
+				state(stage, false)
+			end
+		end)
 	end))
 
 	if cp then
@@ -244871,13 +245459,14 @@ do
 		})
 	end
 
+
 	local function executeSource(source, chunkName)
-		source = tostring(source or ""):gsub("^\239\187\191", "")
+		source = tostring(source or "")
 		if source:match("^%s*$") then
 			return false
 		end
-		local loader = __dcm_boot.getLoader()
-		if type(loader) ~= "function" then
+		local P = __dcm_env.__DeltaPipeline
+		if not P then
 			notify({
 				Title = "Delta Customization",
 				Description = "Script execution is unavailable in this Delta build.",
@@ -244885,23 +245474,12 @@ do
 			})
 			return false
 		end
-		local compiled, compileError = loader(source, chunkName or "=Delta V2")
-		if type(compiled) ~= "function" then
-			warn("[DeltaCustomization] compile error in " .. tostring(chunkName or "script") .. ": " .. tostring(compileError))
-			notify({
-				Title = "Delta V2 compile error",
-				Description = __dcm_boot.clip(compileError or "Unknown compile error"),
-				Duration = 7,
-			})
-			return false
-		end
-		task.spawn(function()
-			local ok, runtimeError = xpcall(compiled, __dcm_boot.trace)
-			if not ok then
-				warn("[DeltaCustomization] runtime error in " .. tostring(chunkName or "script") .. ":\n" .. tostring(runtimeError))
+		P.execute({ text = source, chunk = chunkName or "=Delta V2" }, function(stage, where, detail)
+			if stage == "Failed" then
+				warn("[DeltaCustomization] " .. tostring(where) .. " error in " .. tostring(chunkName or "script") .. ":\n" .. tostring(detail))
 				notify({
-					Title = "Delta V2 runtime error",
-					Description = __dcm_boot.clip(runtimeError or "Unknown runtime error"),
+					Title = where == "Run" and "Delta V2 runtime error" or "Delta Customization",
+					Description = __dcm_boot.clip(detail or "Unknown error"),
 					Duration = 7,
 				})
 			end
@@ -245198,8 +245776,14 @@ do
 			return
 		end
 		local text = box.Text or ""
-		local _, lineBreaks = text:gsub("\n", "\n")
-		local lines = lineBreaks + 1
+		local lines, nlPos = 1, 0
+		while true do
+			nlPos = string.find(text, "\n", nlPos + 1, true)
+			if not nlPos then
+				break
+			end
+			lines += 1
+		end
 		statusLabel.Text = string.format("%s   •   %d lines   •   %d chars   •   autosave", box.Name, lines, #text)
 	end
 
@@ -245750,7 +246334,7 @@ do
 		end
 
 		connect(codeFrame:GetPropertyChangedSignal("BackgroundColor3"), applyAll)
-		return { hook = hook, sync = queue, applyAll = applyAll, restore = restore }
+		return { hook = hook, sync = queue, applyAll = applyAll, restore = restore, rich = tokenize }
 	end)()
 
 	local function hookCodeBox(box)
@@ -246313,6 +246897,132 @@ do
 		return holder, template
 	end
 
+	-- [v99 customizer UI] shared row motion: entrance pop, hover glow, activation pulse, pill bump
+	do
+		local R = {}
+		__dcm_env.__DeltaRowFx = R
+		local TS = game:GetService("TweenService")
+		local fadeInfo = TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+		local popInfo = TweenInfo.new(0.34, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		local slowInfo = TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		R.colorInfo = TweenInfo.new(0.24, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		function R.accent()
+			local c = Color3.fromRGB(79, 164, 242)
+			local sb = v2Main:FindFirstChild("Sidebar") or v2Main:FindFirstChild("Sidebar", true)
+			local av = sb and sb:FindFirstChild("ActiveColor")
+			if av and av:IsA("Color3Value") then
+				c = av.Value
+			end
+			return c
+		end
+		function R.play(obj, info, props)
+			if obj and obj.Parent then
+				local ok, tw = pcall(TS.Create, TS, obj, info, props)
+				if ok and tw then
+					tw:Play()
+					return tw
+				end
+			end
+		end
+		function R.scaleOf(obj, name)
+			local sc = obj:FindFirstChild(name)
+			if not sc then
+				sc = Instance.new("UIScale")
+				sc.Name = name
+				sc.Parent = obj
+			end
+			return sc
+		end
+		function R.decorate(row, button)
+			if not (row and row:IsA("GuiObject")) then
+				return
+			end
+			local stroke = Instance.new("UIStroke")
+			stroke.Name = "LT_RowGlow"
+			stroke.Thickness = 1.5
+			stroke.Transparency = 1
+			stroke.Color = R.accent()
+			stroke.Parent = row
+			local sc = R.scaleOf(row, "LT_RowScale")
+			local clk = os.clock()
+			if clk - (R.lastAt or 0) > 0.5 then
+				R.idx = 0
+			end
+			R.lastAt = clk
+			R.idx = (R.idx or 0) + 1
+			sc.Scale = 0.9
+			task.delay(math.min(R.idx - 1, 9) * 0.045, function()
+				R.play(sc, popInfo, { Scale = 1 })
+			end)
+			connect(row.MouseEnter, function()
+				stroke.Color = R.accent()
+				R.play(stroke, fadeInfo, { Transparency = 0.45 })
+			end)
+			connect(row.MouseLeave, function()
+				R.play(stroke, fadeInfo, { Transparency = 1 })
+			end)
+			if not row:FindFirstChildWhichIsA("UIListLayout") then
+				local edge = Instance.new("Frame")
+				edge.Name = "LT_RowEdge"
+				edge.AnchorPoint = Vector2.new(0, 0.5)
+				edge.Position = UDim2.new(0, 5, 0.5, 0)
+				edge.Size = UDim2.new(0, 3, 0, 0)
+				edge.BackgroundColor3 = R.accent()
+				edge.BorderSizePixel = 0
+				edge.Active = false
+				edge.ZIndex = row.ZIndex + 2
+				local ec = Instance.new("UICorner")
+				ec.CornerRadius = UDim.new(1, 0)
+				ec.Parent = edge
+				edge.Parent = row
+				connect(row.MouseEnter, function()
+					edge.BackgroundColor3 = R.accent()
+					R.play(edge, popInfo, { Size = UDim2.new(0, 3, 0.58, 0) })
+				end)
+				connect(row.MouseLeave, function()
+					R.play(edge, fadeInfo, { Size = UDim2.new(0, 3, 0, 0) })
+				end)
+			end
+			if button and button:IsA("GuiButton") then
+				local ps = R.scaleOf(button, "LT_PillScale")
+				connect(button.MouseEnter, function()
+					R.play(ps, fadeInfo, { Scale = 1.06 })
+				end)
+				connect(button.MouseLeave, function()
+					R.play(ps, fadeInfo, { Scale = 1 })
+				end)
+				connect(button.MouseButton1Down, function()
+					R.play(sc, fadeInfo, { Scale = 0.985 })
+				end)
+				connect(button.MouseButton1Up, function()
+					R.play(sc, popInfo, { Scale = 1 })
+				end)
+			end
+		end
+		function R.pulse(row)
+			pcall(function()
+				local stroke = row and row:FindFirstChild("LT_RowGlow")
+				local sc = row and row:FindFirstChild("LT_RowScale")
+				if stroke then
+					stroke.Color = R.accent()
+					stroke.Transparency = 0
+					R.play(stroke, slowInfo, { Transparency = 1 })
+				end
+				if sc then
+					sc.Scale = 1.025
+					R.play(sc, popInfo, { Scale = 1 })
+				end
+			end)
+		end
+		function R.bump(button)
+			pcall(function()
+				local ps = R.scaleOf(button, "LT_PillScale")
+				ps.Scale = 1.14
+				R.play(ps, popInfo, { Scale = 1 })
+			end)
+		end
+	end
+
 	local function createSettingRow(name, titleText, descText, buttonText, callback)
 		local holder, template = findSettingsTemplate()
 		if not (holder and template) then
@@ -246347,6 +247057,10 @@ do
 						return
 					end
 					locked = true
+					local fxr = __dcm_env.__DeltaRowFx
+					if fxr then
+						fxr.pulse(row)
+					end
 					callback()
 					task.delay(0.1, function()
 						locked = false
@@ -246368,6 +247082,10 @@ do
 		end
 		row.Parent = holder
 		track(row)
+		local fxr = __dcm_env.__DeltaRowFx
+		if fxr then
+			pcall(fxr.decorate, row, button)
+		end
 		return row, button
 	end
 
@@ -246513,6 +247231,7 @@ do
 		local enabled = initial
 		local row
 		local button
+		local shown = false
 		local function refresh()
 			if button and button.Parent then
 				local activeColor = Color3.fromRGB(79, 164, 242)
@@ -246521,7 +247240,15 @@ do
 				if activeValue and activeValue:IsA("Color3Value") then
 					activeColor = activeValue.Value
 				end
-				button.BackgroundColor3 = enabled and activeColor or __dcm_env.__DeltaOffColor()
+				local target = enabled and activeColor or __dcm_env.__DeltaOffColor()
+				local fxr = __dcm_env.__DeltaRowFx
+				if shown and fxr then
+					fxr.play(button, fxr.colorInfo, { BackgroundColor3 = target })
+					fxr.bump(button)
+				else
+					button.BackgroundColor3 = target
+				end
+				shown = true
 				setButtonTitle(button, enabled and "ON" or "OFF")
 			end
 		end
@@ -247164,6 +247891,596 @@ do
 	if autoRestoreEnabled then
 		task.spawn(restoreSavedTabs, false)
 	end
+
+	-- [v100 custom editor] replaces Delta's editor: own tabs, multiline editing, highlighting, reader/compiler/executor via the shared pipeline
+	xpcall(function()
+		local P = __dcm_env.__DeltaPipeline
+		if not (P and executorOverlay and executorOverlay.Parent) then
+			return
+		end
+		local HS = game:GetService("HttpService")
+		local DIR, FILE = "DeltaCustom", "DeltaCustom/CustomEditor.json"
+		local BG, PANEL, LINE = Color3.fromRGB(18, 20, 26), Color3.fromRGB(26, 29, 38), Color3.fromRGB(48, 53, 68)
+		local TXT, DIM = Color3.fromRGB(222, 228, 240), Color3.fromRGB(124, 132, 152)
+		local GREEN, RED, ACTIVE = Color3.fromRGB(92, 214, 140), Color3.fromRGB(255, 104, 104), Color3.fromRGB(40, 46, 64)
+		local E = { tabs = {}, active = 1, lines = 1, msgUntil = 0 }
+		local enabled = readBool("CustomEditor", false)
+
+		local function accent()
+			local R = __dcm_env.__DeltaRowFx
+			return R and R.accent() or Color3.fromRGB(79, 164, 242)
+		end
+		local function mk(class, parent, props)
+			local o = Instance.new(class)
+			for k, v in pairs(props) do
+				o[k] = v
+			end
+			o.Parent = parent
+			return o
+		end
+		local function corner(o, r)
+			mk("UICorner", o, { CornerRadius = UDim.new(0, r or 6) })
+		end
+
+		-- persistence (debounced autosave; first run imports Delta's own tabs)
+		local function loadSaved()
+			if type(isfile) ~= "function" or type(readfile) ~= "function" then
+				return false
+			end
+			local okF, ex = pcall(isfile, FILE)
+			if not (okF and ex) then
+				return false
+			end
+			local okR, raw = pcall(readfile, FILE)
+			if not (okR and type(raw) == "string" and raw ~= "") then
+				return false
+			end
+			local okD, data = pcall(HS.JSONDecode, HS, raw)
+			if not (okD and type(data) == "table" and type(data.tabs) == "table" and #data.tabs > 0) then
+				return false
+			end
+			for i, t in ipairs(data.tabs) do
+				E.tabs[i] = { name = tostring(t.name or ("script" .. i .. ".lua")), text = type(t.text) == "string" and t.text or "" }
+			end
+			E.active = math.clamp(tonumber(data.active) or 1, 1, #E.tabs)
+			return true
+		end
+		local function flush()
+			if type(writefile) ~= "function" then
+				return
+			end
+			pcall(function()
+				if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(DIR) then
+					makefolder(DIR)
+				end
+				writefile(FILE, HS:JSONEncode({ active = E.active, tabs = E.tabs }))
+			end)
+		end
+		local saveToken = 0
+		local function save()
+			saveToken += 1
+			local my = saveToken
+			task.delay(1.2, function()
+				if my == saveToken and runtime.alive then
+					flush()
+				end
+			end)
+		end
+		if not loadSaved() then
+			task.wait(1)
+			for _, native in ipairs(getCodeBoxes()) do
+				E.tabs[#E.tabs + 1] = { name = native.Name, text = native.Text or "" }
+			end
+			if #E.tabs == 0 then
+				E.tabs[1] = { name = "script1.lua", text = "" }
+			end
+		end
+		if not runtime.alive then
+			return
+		end
+
+		-- UI
+		local root = mk("Frame", executorOverlay, {
+			Name = "LT_CustomEditor", BackgroundColor3 = BG, BorderSizePixel = 0,
+			Size = UDim2.fromScale(1, 1), ZIndex = 40, ClipsDescendants = true, Visible = enabled,
+		})
+		track(root)
+		corner(root, 8)
+		local tabBar = mk("ScrollingFrame", root, {
+			BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.fromOffset(8, 8), Size = UDim2.new(1, -16, 0, 28),
+			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X, ScrollingDirection = Enum.ScrollingDirection.X,
+			ScrollBarThickness = 0, ZIndex = 41,
+		})
+		mk("UIListLayout", tabBar, { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center })
+		local toolbar = mk("Frame", root, { BackgroundTransparency = 1, Position = UDim2.fromOffset(8, 42), Size = UDim2.new(1, -16, 0, 28), ZIndex = 41 })
+		local tools = mk("ScrollingFrame", toolbar, { BackgroundTransparency = 1, BorderSizePixel = 0, Size = UDim2.new(0.62, 0, 1, 0), CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.X, ScrollingDirection = Enum.ScrollingDirection.X, ScrollBarThickness = 0, ZIndex = 41 })
+		mk("UIListLayout", tools, { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, VerticalAlignment = Enum.VerticalAlignment.Center })
+		local statusLabel = mk("TextLabel", toolbar, {
+			BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0), Position = UDim2.fromScale(1, 0), Size = UDim2.new(0.38, 0, 1, 0),
+			Font = Enum.Font.Gotham, TextSize = 11, TextColor3 = DIM, TextXAlignment = Enum.TextXAlignment.Right, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 41, Text = "",
+		})
+		local GUT = 46
+		local gutter = mk("Frame", root, { BackgroundColor3 = PANEL, BorderSizePixel = 0, Position = UDim2.fromOffset(8, 76), Size = UDim2.new(0, GUT, 1, -84), ClipsDescendants = true, ZIndex = 41 })
+		corner(gutter, 6)
+		local gutterLabel = mk("TextLabel", gutter, {
+			BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 6), Size = UDim2.new(1, -8, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
+			Font = Enum.Font.Code, TextSize = 14, TextColor3 = DIM, TextXAlignment = Enum.TextXAlignment.Right, TextYAlignment = Enum.TextYAlignment.Top, Text = "1", ZIndex = 42,
+		})
+		local scroller = mk("ScrollingFrame", root, {
+			BackgroundColor3 = PANEL, BorderSizePixel = 0, Position = UDim2.fromOffset(8 + GUT + 4, 76), Size = UDim2.new(1, -(16 + GUT + 4), 1, -84),
+			CanvasSize = UDim2.new(), ScrollingDirection = Enum.ScrollingDirection.XY, ScrollBarThickness = 6, ScrollBarImageColor3 = LINE,
+			ElasticBehavior = Enum.ElasticBehavior.Never, ZIndex = 41,
+		})
+		corner(scroller, 6)
+		mk("UIStroke", scroller, { Color = LINE, Thickness = 1, Transparency = 0.4 })
+		local function textProps(extra)
+			local t = { BackgroundTransparency = 1, BorderSizePixel = 0, Font = Enum.Font.Code, TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, TextWrapped = false, Size = UDim2.fromOffset(400, 300) }
+			for k, v in pairs(extra) do
+				t[k] = v
+			end
+			return t
+		end
+		local overlay = mk("TextLabel", scroller, textProps({ RichText = true, TextColor3 = TXT, Text = "", ZIndex = 41, Interactable = false }))
+		mk("UIPadding", overlay, { PaddingLeft = UDim.new(0, 6), PaddingTop = UDim.new(0, 6) })
+		local box = mk("TextBox", scroller, textProps({ MultiLine = true, ClearTextOnFocus = false, TextColor3 = TXT, Text = "", PlaceholderText = "-- write or paste a script here", PlaceholderColor3 = DIM, ZIndex = 42 }))
+		mk("UIPadding", box, { PaddingLeft = UDim.new(0, 6), PaddingTop = UDim.new(0, 6) })
+
+		local function setStatus(text, color, hold)
+			statusLabel.Text = text
+			statusLabel.TextColor3 = color or DIM
+			E.msgUntil = os.clock() + (hold or 0)
+		end
+		local function layout()
+			local tb, win = box.TextBounds, scroller.AbsoluteWindowSize
+			local w, h = math.max(win.X - 8, tb.X + 48), math.max(win.Y - 8, tb.Y + 36)
+			box.Size = UDim2.fromOffset(w, h)
+			overlay.Size = box.Size
+			scroller.CanvasSize = UDim2.fromOffset(w, h)
+		end
+		local function refresh()
+			local text = box.Text
+			local n, pos = 1, 0
+			while true do
+				pos = string.find(text, "\n", pos + 1, true)
+				if not pos then
+					break
+				end
+				n += 1
+			end
+			if n ~= E.lines then
+				E.lines = n
+				local nums = table.create(math.min(n, 50000))
+				for i = 1, math.min(n, 50000) do
+					nums[i] = i
+				end
+				gutterLabel.Text = table.concat(nums, "\n")
+			end
+			local shown = false
+			if syntaxHighlightEnabled and text ~= "" and #text <= 70000 and syntaxHighlighter.rich then
+				local rich, col = syntaxHighlighter.rich(text)
+				if rich and #rich <= 190000 then
+					overlay.Text = rich
+					overlay.TextColor3 = col or TXT
+					shown = true
+				end
+			end
+			overlay.Visible = shown
+			box.TextTransparency = shown and 1 or 0
+			layout()
+			if os.clock() >= E.msgUntil then
+				local base = string.format("%s   •   %d lines   •   %d chars", E.tabs[E.active].name, n, #text)
+				local syn = E.syn
+				if syn and syn.text == text then
+					statusLabel.Text = base .. "   •   " .. syn.msg
+					statusLabel.TextColor3 = syn.ok and GREEN or RED
+				else
+					statusLabel.Text = base
+					statusLabel.TextColor3 = DIM
+				end
+			end
+		end
+		local token = 0
+		local function schedule()
+			token += 1
+			local my = token
+			local delay = math.max(#box.Text > 60000 and 0.08 or 0.025, __dcm_env.__DeltaFastExec.remaining())
+			task.delay(delay, function()
+				if my == token and runtime.alive and root.Parent then
+					refresh()
+				end
+			end)
+		end
+		local function followCursor()
+			local cp = box.CursorPosition
+			if cp < 1 then
+				return
+			end
+			local text = box.Text
+			local line, pos = 1, 0
+			while true do
+				local nl = string.find(text, "\n", pos + 1, true)
+				if not nl or nl >= cp then
+					break
+				end
+				line += 1
+				pos = nl
+			end
+			local lineH = (text ~= "" and box.TextBounds.Y > 0) and (box.TextBounds.Y / math.max(E.lines, 1)) or (box.TextSize + 2)
+			local y = 6 + (line - 1) * lineH
+			local cur, winH = scroller.CanvasPosition, scroller.AbsoluteWindowSize.Y
+			if y < cur.Y then
+				scroller.CanvasPosition = Vector2.new(cur.X, y)
+			elseif y + lineH + 6 > cur.Y + winH then
+				scroller.CanvasPosition = Vector2.new(cur.X, y + lineH + 6 - winH)
+			end
+		end
+		local precompile
+		local preToken = 0
+		connect(box:GetPropertyChangedSignal("Text"), function()
+			E.tabs[E.active].text = box.Text
+			schedule()
+			save()
+			if precompile then
+				precompile()
+			end
+		end)
+		local curQueued = false
+		connect(box:GetPropertyChangedSignal("CursorPosition"), function()
+			if curQueued then
+				return
+			end
+			curQueued = true
+			task.defer(function()
+				curQueued = false
+				followCursor()
+			end)
+		end)
+		connect(scroller:GetPropertyChangedSignal("CanvasPosition"), function()
+			gutterLabel.Position = UDim2.fromOffset(0, 6 - scroller.CanvasPosition.Y)
+		end)
+		connect(scroller:GetPropertyChangedSignal("AbsoluteWindowSize"), layout)
+
+		-- tabs
+		local renderTabs
+		local function switchTo(i)
+			if not E.tabs[i] then
+				return
+			end
+			E.active = i
+			box.Text = E.tabs[i].text
+			scroller.CanvasPosition = Vector2.new(0, 0)
+			renderTabs()
+			refresh()
+			save()
+		end
+		local function addTab(name, text)
+			local nextN = 0
+			for _, t in ipairs(E.tabs) do
+				nextN = math.max(nextN, tonumber(t.name:match("^script(%d+)%.lua$")) or 0)
+			end
+			E.tabs[#E.tabs + 1] = { name = name or ("script" .. (nextN + 1) .. ".lua"), text = text or "" }
+			switchTo(#E.tabs)
+		end
+		local function closeTab(i)
+			if #E.tabs <= 1 then
+				return
+			end
+			table.remove(E.tabs, i)
+			switchTo(math.clamp(E.active > i and E.active - 1 or E.active, 1, #E.tabs))
+		end
+		renderTabs = function()
+			for _, c in ipairs(tabBar:GetChildren()) do
+				if not c:IsA("UIListLayout") then
+					c:Destroy()
+				end
+			end
+			for i, t in ipairs(E.tabs) do
+				local on = i == E.active
+				local item = mk("Frame", tabBar, { AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = on and ACTIVE or PANEL, BorderSizePixel = 0, LayoutOrder = i, ZIndex = 41 })
+				corner(item, 6)
+				if on then
+					mk("UIStroke", item, { Color = accent(), Thickness = 1, Transparency = 0.35 })
+				end
+				mk("UIListLayout", item, { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder })
+				local nameBtn = mk("TextButton", item, {
+					AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.new(0, 0, 1, 0), BackgroundTransparency = 1, Text = t.name, Font = Enum.Font.GothamMedium,
+					TextSize = 12, TextColor3 = on and TXT or DIM, LayoutOrder = 1, ZIndex = 42,
+				})
+				mk("UIPadding", nameBtn, { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, #E.tabs > 1 and 4 or 10) })
+				nameBtn.MouseButton1Click:Connect(function()
+					local now = os.clock()
+					if E.active == i and E.tapped == i and now - (E.tapAt or 0) < 0.45 then
+						E.tapped = nil
+						local field = mk("TextBox", item, {
+							Size = UDim2.new(0, math.max(nameBtn.AbsoluteSize.X, 96), 1, 0), BackgroundColor3 = BG, BorderSizePixel = 0, Text = t.name,
+							Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = TXT, ClearTextOnFocus = false, LayoutOrder = 1, ZIndex = 43,
+						})
+						nameBtn.Visible = false
+						field:CaptureFocus()
+						field.FocusLost:Once(function()
+							local clean = string.sub((string.gsub(field.Text, "[^%w%._%- ]", "")), 1, 40)
+							if clean ~= "" and E.tabs[i] then
+								E.tabs[i].name = clean
+							end
+							renderTabs()
+							refresh()
+							save()
+						end)
+						return
+					end
+					E.tapped, E.tapAt = i, now
+					if E.active ~= i then
+						switchTo(i)
+					end
+				end)
+				if #E.tabs > 1 then
+					local x = mk("TextButton", item, { Size = UDim2.new(0, 20, 1, 0), BackgroundTransparency = 1, Text = "×", Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = DIM, LayoutOrder = 2, ZIndex = 42 })
+					x.MouseButton1Click:Connect(function()
+						closeTab(i)
+					end)
+				end
+			end
+			local plus = mk("TextButton", tabBar, { Size = UDim2.new(0, 28, 1, 0), BackgroundColor3 = PANEL, BorderSizePixel = 0, Text = "+", Font = Enum.Font.GothamBold, TextSize = 16, TextColor3 = accent(), LayoutOrder = 9999, ZIndex = 42 })
+			corner(plus, 6)
+			plus.MouseButton1Click:Connect(function()
+				addTab()
+			end)
+		end
+
+		-- toolbar: Execute goes reader -> compiler -> executor through the shared pipeline
+		local function toolButton(text, width, color, order, callback)
+			local b = mk("TextButton", tools, {
+				Size = UDim2.new(0, width, 1, 0), BackgroundColor3 = color, BorderSizePixel = 0, Text = text, Font = Enum.Font.GothamBold,
+				TextSize = 11, TextColor3 = Color3.new(1, 1, 1), AutoButtonColor = true, LayoutOrder = order, ZIndex = 42,
+			})
+			corner(b, 6)
+			connect(b.MouseButton1Click, callback)
+			return b
+		end
+		local running = false
+		local execButton
+		local function runSource(src, name)
+			if running then
+				return
+			end
+			if src:find("%S") == nil then
+				setStatus("Nothing to execute", DIM, 2)
+				return
+			end
+			running = true
+			P.execute({ text = src, chunk = "=" .. name }, function(stage, where, detail, ms)
+				if stage == "Failed" then
+					running = false
+					local msg = tostring(detail or "unknown error")
+					warn("[DeltaCustomEditor] " .. tostring(where) .. " error in " .. name .. ":\n" .. msg)
+					setStatus(tostring(where) .. " error: " .. (msg:match("^[^\n]*") or msg), RED, 8)
+					notify({ Title = "Delta " .. tostring(where) .. " error", Description = __dcm_boot.clip(msg), Duration = 7 })
+					execButton.Text = "FAILED"
+				elseif stage == "Done" then
+					running = false
+					setStatus(string.format("Executed %s   •   compiled in %d ms", name, math.floor((ms or 0) + 0.5)), GREEN, 4)
+					execButton.Text = "DONE"
+				else
+					setStatus(stage .. "…", accent(), 30)
+					execButton.Text = stage:upper()
+					return
+				end
+				task.delay(1.1, function()
+					if execButton.Parent then
+						execButton.Text = "EXECUTE"
+					end
+				end)
+			end)
+		end
+		local function execute()
+			runSource(box.Text, E.tabs[E.active].name)
+		end
+		-- idle precompile: the open tab is compiled into the shared cache after a pause, so EXECUTE is a cache hit and the status shows the syntax state
+		precompile = function()
+			if not P.cached() then
+				return
+			end
+			preToken = preToken + 1
+			local my = preToken
+			task.delay(1.3, function()
+				if my ~= preToken or running or not runtime.alive or not root.Parent then
+					return
+				end
+				local text = box.Text
+				if #text > 150000 or text:find("%S") == nil then
+					E.syn = nil
+					return
+				end
+				local name = E.tabs[E.active].name
+				local fn, err = P.compile(text, "=" .. name)
+				if fn then
+					E.syn = { text = text, ok = true, msg = "ready" }
+				else
+					local line = P.errorLine(err)
+					E.syn = { text = text, ok = false, msg = line and ("syntax error, line " .. line) or "syntax error" }
+				end
+				if box.Text == text and os.clock() >= E.msgUntil then
+					statusLabel.Text = string.format("%s   •   %d lines   •   %d chars   •   %s", name, E.lines, #text, E.syn.msg)
+					statusLabel.TextColor3 = E.syn.ok and GREEN or RED
+				end
+			end)
+		end
+		execButton = toolButton("EXECUTE", 84, Color3.fromRGB(45, 125, 88), 1, execute)
+		connect(UIS.InputBegan, function(input)
+			if input.KeyCode == Enum.KeyCode.F5 and enabled and box:IsFocused() then
+				execute()
+			end
+		end)
+		toolButton("CLEAR", 58, Color3.fromRGB(57, 63, 75), 2, function()
+			box.Text = ""
+			setStatus("Cleared " .. E.tabs[E.active].name, DIM, 2)
+		end)
+		toolButton("COPY", 54, Color3.fromRGB(57, 63, 75), 3, function()
+			local text = box.Text
+			local a, b = box.SelectionStart, box.CursorPosition
+			if a ~= -1 and b ~= -1 and a ~= b then
+				text = text:sub(math.min(a, b), math.max(a, b) - 1)
+			end
+			writeClipboard(text)
+			setStatus("Copied " .. #text .. " chars", DIM, 2)
+		end)
+		toolButton("PASTE", 58, Color3.fromRGB(57, 63, 75), 4, function()
+			local value = readClipboard()
+			if type(value) ~= "string" then
+				setStatus("Clipboard access unavailable - use the keyboard paste", RED, 4)
+				return
+			end
+			local text, cp = box.Text, box.CursorPosition
+			if cp < 1 then
+				cp = #text + 1
+			end
+			box.Text = text:sub(1, cp - 1) .. value .. text:sub(cp)
+			task.defer(function()
+				pcall(function()
+					box:CaptureFocus()
+					box.CursorPosition = cp + #value
+					box.SelectionStart = -1
+				end)
+			end)
+		end)
+		toolButton("RUN CLIP", 74, Color3.fromRGB(56, 103, 154), 5, function()
+			executeClipboardCode()
+		end)
+		toolButton("CHECK", 58, Color3.fromRGB(57, 63, 75), 6, function()
+			local text = box.Text
+			if text:find("%S") == nil then
+				setStatus("Nothing to check", DIM, 2)
+				return
+			end
+			local fn, err, ms = P.load({ text = text, chunk = "=" .. E.tabs[E.active].name })
+			if fn then
+				E.syn = { text = text, ok = true, msg = "ready" }
+				setStatus(string.format("Compiled OK   •   %d ms", math.floor((ms or 0) + 0.5)), GREEN, 4)
+			else
+				local line = P.errorLine(err)
+				E.syn = { text = text, ok = false, msg = line and ("syntax error, line " .. line) or "syntax error" }
+				setStatus("Compile error: " .. (tostring(err):match("^[^\n]*") or tostring(err)), RED, 8)
+			end
+		end)
+		toolButton("RUN SEL", 70, Color3.fromRGB(56, 103, 154), 7, function()
+			local a, b = box.SelectionStart, box.CursorPosition
+			if a == -1 or b == -1 or a == b then
+				setStatus("Select some code first", DIM, 2)
+				return
+			end
+			runSource(box.Text:sub(math.min(a, b), math.max(a, b) - 1), E.tabs[E.active].name .. " (selection)")
+		end)
+
+		-- native editor handling: Delta's editor frames stay hidden while the custom editor is active, and Delta's own Execute / Execute Clipboard
+		-- connections are switched off through getconnections (re-enabled when the custom editor is turned off)
+		local hidden, guarded, silenced = {}, {}, setmetatable({}, { __mode = "k" })
+		local function silenceNative(on)
+			if type(getconnections) ~= "function" then
+				return 0
+			end
+			local count = 0
+			for _, bname in ipairs({ "Execute", "ExecuteClipboard" }) do
+				local b = buttonsFrame:FindFirstChild(bname)
+				if b and b:IsA("GuiButton") then
+					for _, sname in ipairs({ "MouseButton1Click", "Activated", "TouchTap" }) do
+						local okC, list = pcall(getconnections, b[sname])
+						if okC and type(list) == "table" then
+							for _, c in ipairs(list) do
+								if on then
+									if not silenced[c] and pcall(function()
+										c:Disable()
+									end) then
+										silenced[c] = true
+										count += 1
+									end
+								elseif silenced[c] then
+									pcall(function()
+										c:Enable()
+									end)
+									silenced[c] = nil
+								end
+							end
+						end
+					end
+				end
+			end
+			return count
+		end
+		local function guard(o)
+			if o and not guarded[o] then
+				guarded[o] = true
+				connect(o:GetPropertyChangedSignal("Visible"), function()
+					if enabled and o.Visible then
+						hidden[o] = true
+						o.Visible = false
+					end
+				end)
+			end
+		end
+		local function applyMode()
+			root.Visible = enabled
+			for _, o in ipairs({ tabsFrame, codeFrame, buttonsFrame }) do
+				if enabled then
+					if hidden[o] == nil then
+						hidden[o] = o.Visible
+					end
+					o.Visible = false
+					guard(o)
+				elseif hidden[o] ~= nil then
+					o.Visible = hidden[o]
+				end
+			end
+			if statusFrame then
+				if enabled then
+					statusFrame.Visible = false
+					guard(statusFrame)
+				else
+					queueStatusUpdate()
+				end
+			end
+			local n = silenceNative(enabled)
+			E.silenced = enabled and ((E.silenced or 0) + n) or 0
+		end
+		addRestorer(function()
+			flush()
+			enabled = false
+			applyMode()
+		end)
+		createToggleSetting(
+			"LT_CustomEditor",
+			"Custom editor",
+			"Replaces Delta's editor with the customizer's own editor, reader, compiler and executor (off brings Delta's editor back)",
+			enabled,
+			function(v)
+				enabled = v
+				saveBool("CustomEditor", v)
+				applyMode()
+			end
+		)
+		__dcm_env.__DeltaEditor = {
+			open = function(name, text)
+				addTab(name, text)
+			end,
+			execute = execute,
+			isActive = function()
+				return enabled
+			end,
+			info = function()
+				return { active = enabled, nativeConnectionsSilenced = E.silenced or 0, pipeline = P.caps(), stats = P.stats() }
+			end,
+		}
+		box.Text = E.tabs[E.active].text
+		renderTabs()
+		applyMode()
+		if enabled then
+			warn("[DeltaCustomEditor] active; Delta's own Execute connections silenced: " .. tostring(E.silenced or 0) .. (type(getconnections) == "function" and "" or " (getconnections unavailable - native editor only hidden)"))
+		end
+		task.defer(function()
+			refresh()
+		end)
+	end, function(e)
+		warn("[DeltaCustomEditor] init failed: " .. tostring(e))
+	end)
 end
 
 --[[
@@ -248223,6 +249540,793 @@ do
         return nil
     end
 
+    -- [MOTION] one coordinated motion layer: a single easing language, 13 effects, all gated by IMMERSION + intensity + low-end mode
+    --  1 panel materialize (dock-in)   2 control cascade   3 prism bar wipe + sweep   4 title decode   5 sidebar spotlight spring
+    --  6 page content cascade   7 ink ripple   8 hover sheen   9 text roll-in   10 colour morph + squash
+    --  11 menu reveal (scale + scrim + depth blur)   12 theme wave   13 row edge / stagger / press squish (see __DeltaRowFx)
+    do
+        local M = { weak = function() return setmetatable({}, { __mode = "k" }) end }
+        __iui.motion = M
+        M.I = {
+            fast = TweenInfo.new(0.14, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            soft = TweenInfo.new(0.36, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+            pop = TweenInfo.new(0.46, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+            slow = TweenInfo.new(0.85, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+            away = TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            glide = TweenInfo.new(0.55, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut),
+            spread = TweenInfo.new(0.55, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+            dim = TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+            wave = TweenInfo.new(0.95, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+        }
+        M.rest = M.weak()
+        M.tok = M.weak()
+        M.dtok = M.weak()
+        M.bound = M.weak()
+        M.tb = M.weak()
+        M.rv = M.weak()
+        M.tcol = M.weak()
+        M.tat = M.weak()
+        M.sheenAt = M.weak()
+
+        function M.ok()
+            return __iui.alive and uiEnabled and TS ~= nil
+        end
+        function M.lite()
+            return __iui.lowEnd == true
+        end
+        function M.amp()
+            return math.clamp(animationIntensity, 0.4, 1.25)
+        end
+        function M.play(obj, info, props)
+            if not (obj and obj.Parent) then
+                return nil
+            end
+            local ok, tw = pcall(function()
+                return TS:Create(obj, info, props)
+            end)
+            if ok and tw then
+                tw:Play()
+                return tw
+            end
+            return nil
+        end
+        -- one UIScale per object, shared with the press / row systems so scales never fight
+        function M.scaleOf(obj)
+            local s = obj:FindFirstChild("LT_RowScale") or obj:FindFirstChild("LT_IUIPress") or obj:FindFirstChild("LT_MotionScale")
+            if not s then
+                s = track(Instance.new("UIScale"))
+                s.Name = obj:IsA("GuiButton") and "LT_IUIPress" or "LT_MotionScale"
+                s.Scale = 1
+                s.Parent = obj
+            end
+            return s
+        end
+        -- screen position -> coordinates of the immersive parent (handles the topbar inset)
+        function M.origin()
+            local ok, v = pcall(function()
+                if __iuiParent:IsA("GuiObject") then
+                    return __iuiParent.AbsolutePosition
+                end
+                if __iuiParent:IsA("ScreenGui") and not __iuiParent.IgnoreGuiInset then
+                    return game:GetService("GuiService"):GetGuiInset()
+                end
+                return Vector2.zero
+            end)
+            return ok and v or Vector2.zero
+        end
+        function M.stop()
+            for obj, r in M.rest do
+                pcall(function()
+                    obj.BackgroundTransparency = r.bt
+                    if r.tt < 0.99 then
+                        obj.TextTransparency = r.tt
+                    end
+                end)
+            end
+            table.clear(M.rest)
+        end
+
+        -- [fade + scale rise] shared by the panel cascade, page cascade and menu rows
+        function M.rise(obj, delay, from)
+            if not (M.ok() and obj and obj.Parent and obj:IsA("GuiObject")) then
+                return
+            end
+            local hasText = obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")
+            local r = M.rest[obj]
+            if not r then
+                r = { bt = obj.BackgroundTransparency, tt = hasText and obj.TextTransparency or 1 }
+                M.rest[obj] = r
+            end
+            if r.bt >= 0.99 and r.tt >= 0.99 then
+                M.rest[obj] = nil
+                return
+            end
+            local tok = (M.tok[obj] or 0) + 1
+            M.tok[obj] = tok
+            local sc = (not M.lite()) and M.scaleOf(obj) or nil
+            if r.bt < 0.99 then
+                obj.BackgroundTransparency = 1
+            end
+            if r.tt < 0.99 then
+                obj.TextTransparency = 1
+            end
+            if sc then
+                sc.Scale = from or 0.93
+            end
+            task.delay(delay or 0, function()
+                if M.tok[obj] ~= tok then
+                    return
+                end
+                if not obj.Parent then
+                    M.rest[obj] = nil
+                    return
+                end
+                local props = {}
+                if r.bt < 0.99 then
+                    props.BackgroundTransparency = r.bt
+                end
+                if r.tt < 0.99 then
+                    props.TextTransparency = r.tt
+                end
+                M.play(obj, M.I.soft, props)
+                if sc then
+                    M.play(sc, M.I.pop, { Scale = 1 })
+                end
+                task.delay(0.55, function()
+                    if M.tok[obj] == tok then
+                        M.rest[obj] = nil
+                    end
+                end)
+            end)
+        end
+
+        -- [3] prism bar: wipes in, then a light pass slides through (replayed on every setting change)
+        function M.sweep(bar)
+            local g = bar and bar:FindFirstChild("LT_IUIGradient")
+            if not g or not M.ok() or M.lite() then
+                return
+            end
+            g.Offset = Vector2.new(-1, 0)
+            M.play(g, M.I.slow, { Offset = Vector2.zero })
+        end
+        function M.wipe(bar)
+            if not (bar and bar.Parent) or M.lite() then
+                return
+            end
+            local full = bar.Size
+            bar.Size = UDim2.new(0, 0, full.Y.Scale, full.Y.Offset)
+            M.play(bar, M.I.slow, { Size = full })
+            M.sweep(bar)
+        end
+
+        -- [4] title decode: glyphs resolve left to right
+        function M.decode(label, final)
+            if not (label and label.Parent) or M.lite() or not M.ok() then
+                return
+            end
+            final = final or label.Text
+            local tok = (M.dtok[label] or 0) + 1
+            M.dtok[label] = tok
+            task.spawn(function()
+                local glyphs = "01#%&/<>[]+=*?"
+                local ok = pcall(function()
+                    local chars = {}
+                    for _, cp in utf8.codes(final) do
+                        chars[#chars + 1] = utf8.char(cp)
+                    end
+                    local total = #chars
+                    local steps = 14
+                    for step = 1, steps do
+                        if M.dtok[label] ~= tok or not label.Parent then
+                            return
+                        end
+                        local lock = math.floor(total * step / steps)
+                        local out = table.create(total)
+                        for i = 1, total do
+                            local ch = chars[i]
+                            if i <= lock or ch == " " then
+                                out[i] = ch
+                            else
+                                local g = math.random(1, #glyphs)
+                                out[i] = glyphs:sub(g, g)
+                            end
+                        end
+                        label.Text = table.concat(out)
+                        task.wait(0.03)
+                    end
+                end)
+                if M.dtok[label] == tok and label.Parent then
+                    label.Text = final
+                end
+                if not ok then
+                    label.Text = final
+                end
+            end)
+        end
+
+        -- [1][2] control panel: dock-in, accent ignite on the border, children rise in sequence
+        function M.materialize(panel, title, subtitle, bar, hint)
+            if not (M.ok() and panel and panel.Parent) then
+                return
+            end
+            M.bar = bar
+            M.title = title
+            M.titleText = title and title.Text or nil
+            local amp = M.amp()
+            local rest = panel.Position
+            local bt = panel.BackgroundTransparency
+            local stroke = panel:FindFirstChild("LT_IUIStroke")
+            local sT = stroke and stroke.Transparency or 0.42
+            local sC = stroke and stroke.Color or style.stroke
+            panel.Position = rest + UDim2.fromOffset(0, math.floor(28 * amp))
+            panel.BackgroundTransparency = 1
+            local sc = M.scaleOf(panel)
+            sc.Scale = 1 - 0.07 * amp
+            M.play(panel, M.I.slow, { Position = rest })
+            M.play(panel, M.I.soft, { BackgroundTransparency = bt })
+            M.play(sc, M.I.pop, { Scale = 1 })
+            if stroke and not M.lite() then
+                stroke.Color = style.accent
+                stroke.Thickness = 3
+                stroke.Transparency = 0.05
+                M.play(stroke, M.I.slow, { Color = sC, Thickness = 1, Transparency = sT })
+            end
+            local kids = {}
+            for _, c in panel:GetChildren() do
+                if c:IsA("GuiObject") then
+                    kids[#kids + 1] = c
+                end
+            end
+            table.sort(kids, function(a, b)
+                return a.LayoutOrder < b.LayoutOrder
+            end)
+            for i, c in kids do
+                if c ~= bar then
+                    M.rise(c, 0.08 + (i - 1) * 0.04, 0.9)
+                end
+            end
+            M.wipe(bar)
+            M.decode(title, M.titleText)
+        end
+
+        -- [7][8] shared clipped layer inside a button (rounded like the button) for ripple + sheen
+        function M.clipOf(button)
+            local clip = button:FindFirstChild("LT_FxClip")
+            if clip then
+                return clip
+            end
+            if button:FindFirstChildWhichIsA("UIListLayout") or button:FindFirstChildWhichIsA("UIGridLayout") then
+                return nil
+            end
+            clip = track(Instance.new("Frame"))
+            clip.Name = "LT_FxClip"
+            clip.BackgroundTransparency = 1
+            clip.BorderSizePixel = 0
+            clip.Size = UDim2.fromScale(1, 1)
+            clip.ClipsDescendants = true
+            clip.Active = false
+            clip.ZIndex = button.ZIndex + 1
+            local cr = button:FindFirstChildWhichIsA("UICorner")
+            if cr then
+                local c2 = Instance.new("UICorner")
+                c2.Name = "LT_FxCorner"
+                c2.CornerRadius = cr.CornerRadius
+                c2.Parent = clip
+            end
+            clip.Parent = button
+            return clip
+        end
+        function M.ripple(button, input)
+            if not M.ok() or not button.Parent then
+                return
+            end
+            local size = button.AbsoluteSize
+            if size.X < 14 or size.Y < 14 then
+                return
+            end
+            local clip = M.clipOf(button)
+            if not clip then
+                return
+            end
+            local ap = button.AbsolutePosition
+            local inset = Vector2.zero
+            pcall(function()
+                inset = game:GetService("GuiService"):GetGuiInset()
+            end)
+            local raw = Vector2.new(input.Position.X, input.Position.Y)
+            local cand = {}
+            if input.UserInputType ~= Enum.UserInputType.Touch then
+                local okm, mouse = pcall(function()
+                    return UIS:GetMouseLocation()
+                end)
+                if okm and mouse then
+                    cand[#cand + 1] = mouse - ap
+                end
+            end
+            cand[#cand + 1] = raw + inset - ap
+            cand[#cand + 1] = raw - ap
+            local px, py = size.X * 0.5, size.Y * 0.5
+            for _, v in cand do
+                if v.X >= 0 and v.Y >= 0 and v.X <= size.X and v.Y <= size.Y then
+                    px, py = v.X, v.Y
+                    break
+                end
+            end
+            local d = math.max(size.X, size.Y) * 2.3
+            local dot = Instance.new("Frame")
+            dot.Name = "LT_Ripple"
+            dot.AnchorPoint = Vector2.new(0.5, 0.5)
+            dot.Position = UDim2.fromOffset(px, py)
+            dot.Size = UDim2.fromOffset(0, 0)
+            dot.BackgroundColor3 = lerpColor(style.accent, Color3.new(1, 1, 1), 0.4)
+            dot.BackgroundTransparency = math.clamp(0.8 - 0.12 * M.amp(), 0.6, 0.78)
+            dot.BorderSizePixel = 0
+            dot.Active = false
+            dot.ZIndex = clip.ZIndex
+            local rc = Instance.new("UICorner")
+            rc.Name = "LT_FxCorner"
+            rc.CornerRadius = UDim.new(1, 0)
+            rc.Parent = dot
+            dot.Parent = clip
+            M.play(dot, M.I.spread, { Size = UDim2.fromOffset(d, d) })
+            M.play(dot, M.I.dim, { BackgroundTransparency = 1 })
+            task.delay(0.62, function()
+                pcall(function()
+                    dot:Destroy()
+                end)
+            end)
+        end
+        function M.sheen(button)
+            if not M.ok() or M.lite() or not button.Parent then
+                return
+            end
+            local size = button.AbsoluteSize
+            if size.X < 56 or size.Y < 24 then
+                return
+            end
+            local now = os.clock()
+            if now - (M.sheenAt[button] or 0) < 0.7 then
+                return
+            end
+            M.sheenAt[button] = now
+            local clip = M.clipOf(button)
+            if not clip then
+                return
+            end
+            local bar = clip:FindFirstChild("LT_Sheen")
+            if not bar then
+                bar = Instance.new("Frame")
+                bar.Name = "LT_Sheen"
+                bar.AnchorPoint = Vector2.new(0.5, 0.5)
+                bar.Size = UDim2.new(0.32, 0, 2.2, 0)
+                bar.Rotation = 18
+                bar.BorderSizePixel = 0
+                bar.BackgroundColor3 = Color3.new(1, 1, 1)
+                bar.BackgroundTransparency = 0.88
+                bar.Active = false
+                bar.ZIndex = clip.ZIndex
+                local g = Instance.new("UIGradient")
+                g.Name = "LT_FxGrad"
+                g.Transparency = NumberSequence.new({
+                    NumberSequenceKeypoint.new(0, 1),
+                    NumberSequenceKeypoint.new(0.5, 0),
+                    NumberSequenceKeypoint.new(1, 1),
+                })
+                g.Parent = bar
+                bar.Parent = clip
+            end
+            bar.Position = UDim2.new(-0.25, 0, 0.5, 0)
+            M.play(bar, M.I.glide, { Position = UDim2.new(1.25, 0, 0.5, 0) })
+        end
+        function M.bindButton(button)
+            if M.bound[button] or not button:IsA("GuiButton") then
+                return
+            end
+            M.bound[button] = true
+            connect(button.InputBegan, function(input)
+                local t = input.UserInputType
+                if t == Enum.UserInputType.MouseButton1 or t == Enum.UserInputType.Touch then
+                    M.ripple(button, input)
+                end
+            end)
+            if not __iui.touch then
+                connect(button.MouseEnter, function()
+                    M.sheen(button)
+                end)
+            end
+        end
+
+        -- [9] text roll-in: new text rises into place
+        function M.roll(b)
+            if not M.ok() or M.lite() or not b.Parent then
+                return
+            end
+            local pad = b:FindFirstChild("LT_RollPad")
+            if not pad then
+                pad = track(Instance.new("UIPadding"))
+                pad.Name = "LT_RollPad"
+                pad.Parent = b
+            end
+            pad.PaddingTop = UDim.new(0, 9)
+            pad.PaddingBottom = UDim.new(0, 0)
+            b.TextTransparency = 0.8
+            M.play(pad, M.I.pop, { PaddingTop = UDim.new(0, 0) })
+            M.play(b, M.I.soft, { TextTransparency = 0 })
+        end
+        function M.watchText(b)
+            if M.tb[b] ~= nil then
+                return
+            end
+            M.tb[b] = b.Text
+            connect(b:GetPropertyChangedSignal("Text"), function()
+                if b.Text == M.tb[b] then
+                    return
+                end
+                M.tb[b] = b.Text
+                M.roll(b)
+            end)
+        end
+
+        -- [10] colour morph + squash (replaces the instant colour snap on the control panel)
+        function M.squash(btn)
+            if M.lite() then
+                return
+            end
+            local sc = M.scaleOf(btn)
+            sc.Scale = 0.93
+            M.play(sc, M.I.pop, { Scale = 1 })
+        end
+        function M.setColor(obj, color)
+            if not (obj and obj.Parent) then
+                return
+            end
+            if M.tcol[obj] == color and os.clock() - (M.tat[obj] or 0) < 0.45 then
+                return
+            end
+            M.tcol[obj] = color
+            M.tat[obj] = os.clock()
+            if obj.BackgroundColor3 == color then
+                return
+            end
+            if not M.ok() or M.lite() then
+                obj.BackgroundColor3 = color
+                return
+            end
+            M.play(obj, M.I.soft, { BackgroundColor3 = color })
+            if obj:IsA("GuiButton") then
+                M.squash(obj)
+            end
+        end
+        function M.bindPanelButton(b)
+            M.watchText(b)
+            connect(b.Activated, function()
+                M.sweep(M.bar)
+            end)
+        end
+
+        -- [5] sidebar spotlight: an outline that springs between sidebar buttons and stretches with its velocity
+        function M.spotFrame()
+            if M.spot and M.spot.Parent then
+                return M.spot
+            end
+            local f = track(Instance.new("Frame"))
+            f.Name = "LT_SidebarSpot"
+            f.BackgroundColor3 = style.accent
+            f.BackgroundTransparency = 0.93
+            f.BorderSizePixel = 0
+            f.Active = false
+            f.Visible = false
+            f.ZIndex = 24000
+            f.Size = UDim2.fromOffset(40, 40)
+            local c = Instance.new("UICorner")
+            c.Name = "LT_FxCorner"
+            c.CornerRadius = UDim.new(0, 10)
+            c.Parent = f
+            local s = Instance.new("UIStroke")
+            s.Name = "LT_SpotStroke"
+            s.Color = style.accent
+            s.Thickness = 1.5
+            s.Transparency = 0.3
+            s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+            s.Parent = f
+            f.Parent = __iuiParent
+            M.spot = f
+            M.sp = nil
+            return f
+        end
+        function M.tint()
+            local f = M.spot
+            if f and f.Parent then
+                M.play(f, M.I.soft, { BackgroundColor3 = style.accent })
+                local s = f:FindFirstChild("LT_SpotStroke")
+                if s then
+                    M.play(s, M.I.soft, { Color = style.accent })
+                end
+            end
+        end
+        function M.loop(dt)
+            local f, target = M.spot, M.target
+            if not (f and f.Parent) then
+                return
+            end
+            M.acc = (M.acc or 0) + dt
+            if M.acc < (M.lite() and 0.05 or (M.idle and 0.12 or 0.015)) then
+                return
+            end
+            local h = math.min(M.acc, 0.05)
+            M.acc = 0
+            if not (M.ok() and target and target.Parent) then
+                f.Visible = false
+                M.sp = nil
+                return
+            end
+            local now = os.clock()
+            if now - (M.visAt or 0) > 0.25 then
+                M.visAt = now
+                local seen = target.AbsoluteSize.X > 1
+                local p = target
+                while seen and p and p ~= game do
+                    if p:IsA("GuiObject") and not p.Visible then
+                        seen = false
+                    elseif p:IsA("ScreenGui") and not p.Enabled then
+                        seen = false
+                    end
+                    p = p.Parent
+                end
+                M.seen = seen
+            end
+            if not M.seen then
+                f.Visible = false
+                M.sp = nil
+                return
+            end
+            local o = M.origin()
+            local ap, sz = target.AbsolutePosition - o, target.AbsoluteSize
+            local tx, ty = ap.X + sz.X * 0.5, ap.Y + sz.Y * 0.5
+            local sp = M.sp
+            if not sp then
+                sp = { x = tx, y = ty, w = sz.X, h = sz.Y, vx = 0, vy = 0, vw = 0, vh = 0 }
+                M.sp = sp
+                M.idle = false
+                f.Visible = true
+            end
+            local err = math.abs(tx - sp.x) + math.abs(ty - sp.y) + math.abs(sz.X - sp.w) + math.abs(sz.Y - sp.h)
+            local vel = math.abs(sp.vx) + math.abs(sp.vy) + math.abs(sp.vw) + math.abs(sp.vh)
+            if err < 0.25 and vel < 1 then
+                sp.x, sp.y, sp.w, sp.h = tx, ty, sz.X, sz.Y
+                sp.vx, sp.vy, sp.vw, sp.vh = 0, 0, 0, 0
+                if not M.idle then
+                    M.idle = true
+                    f.Size = UDim2.fromOffset(sz.X, sz.Y)
+                    f.Position = UDim2.fromOffset(tx - sz.X * 0.5, ty - sz.Y * 0.5)
+                end
+                return
+            end
+            M.idle = false
+            local k, c = 320, 25
+            sp.vx += ((tx - sp.x) * k - sp.vx * c) * h
+            sp.x += sp.vx * h
+            sp.vy += ((ty - sp.y) * k - sp.vy * c) * h
+            sp.y += sp.vy * h
+            sp.vw += ((sz.X - sp.w) * k - sp.vw * c) * h
+            sp.w += sp.vw * h
+            sp.vh += ((sz.Y - sp.h) * k - sp.vh * c) * h
+            sp.h += sp.vh * h
+            local w = math.max(sp.w + math.min(math.abs(sp.vx) * 0.03, 18), 4)
+            local hh = math.max(sp.h + math.min(math.abs(sp.vy) * 0.03, 18), 4)
+            f.Size = UDim2.fromOffset(math.floor(w + 0.5), math.floor(hh + 0.5))
+            f.Position = UDim2.fromOffset(math.floor(sp.x - w * 0.5 + 0.5), math.floor(sp.y - hh * 0.5 + 0.5))
+        end
+        function M.ensureLoop()
+            if M.loopOn then
+                return
+            end
+            M.loopOn = true
+            connect(RS and RS.RenderStepped or nil, function(dt)
+                if (M.fails or 0) >= 5 then
+                    return
+                end
+                local ok = pcall(M.loop, dt)
+                if not ok then
+                    M.fails = (M.fails or 0) + 1
+                end
+            end)
+        end
+
+        -- [6] page content cascade: visible rows rise in sequence as the transition curtain lifts
+        function M.cascade(page)
+            if not (M.ok() and page and page.Parent) then
+                return
+            end
+            task.delay(0.17, function()
+                if not (M.ok() and page.Parent and page.Visible) then
+                    return
+                end
+                local box = page:FindFirstChild("Holder") or page:FindFirstChildWhichIsA("ScrollingFrame") or page
+                local top = page.AbsolutePosition.Y
+                local bottom = top + page.AbsoluteSize.Y
+                local list = {}
+                for _, c in box:GetChildren() do
+                    if c:IsA("GuiObject") and c.Visible and c.AbsoluteSize.Y > 6 then
+                        local y = c.AbsolutePosition.Y
+                        if y < bottom and y + c.AbsoluteSize.Y > top then
+                            list[#list + 1] = c
+                        end
+                    end
+                end
+                table.sort(list, function(a, b)
+                    return a.AbsolutePosition.Y < b.AbsolutePosition.Y
+                end)
+                for i = 1, math.min(#list, M.lite() and 5 or 11) do
+                    M.rise(list[i], (i - 1) * 0.035, 0.95)
+                end
+            end)
+        end
+        function M.onPage(page, snap)
+            if not (M.ok() and page) then
+                return
+            end
+            local sidebar = findDescendant("Sidebar")
+            local btn = sidebar and sidebar:FindFirstChild(page.Name)
+            if btn and btn:IsA("GuiObject") then
+                M.target = btn
+                M.spotFrame()
+                M.tint()
+                M.ensureLoop()
+                M.idle = false
+            end
+            if not snap then
+                M.cascade(page)
+            end
+        end
+
+        -- [11] menu reveal: scale pop, border ignite, scrim and depth blur, rows rise in sequence
+        function M.scrimOf(menu)
+            local parent = menu.Parent
+            if not parent then
+                return nil
+            end
+            local s = parent:FindFirstChild("LT_MenuScrim")
+            if not s then
+                s = track(Instance.new("Frame"))
+                s.Name = "LT_MenuScrim"
+                s.BackgroundColor3 = Color3.new(0, 0, 0)
+                s.BackgroundTransparency = 1
+                s.BorderSizePixel = 0
+                s.Size = UDim2.fromScale(1, 1)
+                s.Active = false
+                s.Visible = false
+                s.ZIndex = math.max(menu.ZIndex - 1, 1)
+                s.Parent = parent
+            end
+            return s
+        end
+        function M.reveal(menu)
+            if not M.ok() then
+                return
+            end
+            local scrim = M.scrimOf(menu)
+            if scrim then
+                scrim.Visible = true
+                M.play(scrim, M.I.soft, { BackgroundTransparency = 0.55 })
+            end
+            local sc = M.scaleOf(menu)
+            sc.Scale = 0.88
+            M.play(sc, M.I.pop, { Scale = 1 })
+            local st = menu:FindFirstChildWhichIsA("UIStroke")
+            if st and not M.lite() then
+                local c0, t0, k0 = st.Color, st.Transparency, st.Thickness
+                st.Color = style.accent
+                st.Thickness = 3
+                st.Transparency = 0.1
+                M.play(st, M.I.slow, { Color = c0, Transparency = t0, Thickness = k0 })
+            end
+            if blurEffect and transitionBlurEnabled and not M.lite() and not __iui.transitionBusy then
+                pcall(function()
+                    blurEffect.Enabled = true
+                end)
+                M.play(blurEffect, M.I.soft, { Size = 8 })
+            end
+            local list = menu:FindFirstChild("List")
+            if list then
+                local i = 0
+                for _, row in list:GetChildren() do
+                    if row:IsA("GuiObject") then
+                        i += 1
+                        M.rise(row, 0.06 + i * 0.03, 0.94)
+                    end
+                end
+            end
+        end
+        function M.dismiss(menu)
+            local scrim = menu.Parent and menu.Parent:FindFirstChild("LT_MenuScrim")
+            if scrim then
+                M.play(scrim, M.I.away, { BackgroundTransparency = 1 })
+                task.delay(0.24, function()
+                    if scrim.Parent and not menu.Visible then
+                        scrim.Visible = false
+                    end
+                end)
+            end
+            if blurEffect and blurEffect.Parent and not __iui.transitionBusy and M.ok() then
+                M.play(blurEffect, M.I.away, { Size = 0 })
+                task.delay(0.26, function()
+                    if not __iui.transitionBusy and not menu.Visible then
+                        pcall(function()
+                            blurEffect.Enabled = false
+                        end)
+                    end
+                end)
+            end
+        end
+        function M.watchReveal(menu)
+            if M.rv[menu] then
+                return
+            end
+            M.rv[menu] = true
+            connect(menu:GetPropertyChangedSignal("Visible"), function()
+                if menu.Visible then
+                    M.reveal(menu)
+                else
+                    M.dismiss(menu)
+                end
+            end)
+            if menu.Visible then
+                M.reveal(menu)
+            end
+        end
+
+        -- [12] theme wave: a ring expands from the control panel when the style / theme changes
+        function M.themeWave()
+            if not M.ok() or M.lite() then
+                return
+            end
+            M.tint()
+            M.decode(M.title, M.titleText)
+            local panel = __iui.controlPanel
+            local o = M.origin()
+            local cx, cy
+            if panel and panel.Parent then
+                local ap, sz = panel.AbsolutePosition - o, panel.AbsoluteSize
+                cx, cy = ap.X + sz.X * 0.5, ap.Y + sz.Y * 0.5
+            else
+                local sz = __iuiParent.AbsoluteSize
+                cx, cy = sz.X * 0.5, sz.Y * 0.5
+            end
+            local cam = workspace.CurrentCamera
+            local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+            local d = math.max(vp.X, vp.Y) * 2.8
+            local ring = Instance.new("Frame")
+            ring.Name = "LT_ThemeWave"
+            ring.AnchorPoint = Vector2.new(0.5, 0.5)
+            ring.Position = UDim2.fromOffset(cx, cy)
+            ring.Size = UDim2.fromOffset(24, 24)
+            ring.BackgroundColor3 = style.accent
+            ring.BackgroundTransparency = 0.93
+            ring.BorderSizePixel = 0
+            ring.Active = false
+            ring.ZIndex = 26000
+            local rc = Instance.new("UICorner")
+            rc.Name = "LT_FxCorner"
+            rc.CornerRadius = UDim.new(1, 0)
+            rc.Parent = ring
+            local rs = Instance.new("UIStroke")
+            rs.Name = "LT_FxStroke"
+            rs.Color = style.accent2
+            rs.Thickness = 3
+            rs.Transparency = 0.15
+            rs.Parent = ring
+            ring.Parent = __iuiParent
+            M.play(ring, M.I.wave, { Size = UDim2.fromOffset(d, d), BackgroundTransparency = 1 })
+            M.play(rs, M.I.wave, { Transparency = 1, Thickness = 0.5 })
+            task.delay(1.05, function()
+                pcall(function()
+                    ring:Destroy()
+                end)
+            end)
+        end
+    end
+
     local function watchPages()
         local pageNames = { "Home", "Executor", "Scripthub", "Settings", "Console", "Music" }
         for _, name in pageNames do
@@ -248238,6 +250342,7 @@ do
                             __iui.currentPage = visible
                             __iui.refreshButtons()
                             playTransition()
+                            pcall(__iui.motion.onPage, visible)
                         end
                     end)
                 end)
@@ -248247,6 +250352,7 @@ do
             end
         end
         __iui.currentPage = currentVisiblePage()
+        pcall(__iui.motion.onPage, __iui.currentPage, true)
     end
 
     __iui.getColors = function()
@@ -248269,6 +250375,7 @@ do
             return
         end
         __iui.bound[button] = true
+        pcall(__iui.motion.bindButton, button)
         local info = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
         local function press(v)
             if not __iui.alive or not uiEnabled or __iui.lowEnd then
@@ -248415,6 +250522,7 @@ do
             ensureCorner(b, 11)
             ensureStroke(b, style.stroke, 1)
             bindStyleHover(b)
+            pcall(__iui.motion.bindPanelButton, b)
             connect(b.Activated, callback)
             return b
         end
@@ -248422,6 +250530,7 @@ do
         local styleButton = makeButton("Style", "STYLE: " .. styleNames[styleIndex], 3, function()
             styleIndex = (styleIndex % #styleNames) + 1
             applyStyle()
+            pcall(__iui.motion.themeWave)
             if __iui.refreshPanel then
                 __iui.refreshPanel()
             end
@@ -248446,7 +250555,7 @@ do
         local blurButton = makeButton("Blur", "TRANSITION BLUR: " .. (transitionBlurEnabled and "ON" or "OFF"), 6, function()
             transitionBlurEnabled = not transitionBlurEnabled
             blurButton.Text = "TRANSITION BLUR: " .. (transitionBlurEnabled and "ON" or "OFF")
-            blurButton.BackgroundColor3 = transitionBlurEnabled and style.accent or style.button
+            __iui.motion.setColor(blurButton, transitionBlurEnabled and style.accent or style.button)
             saveState()
         end)
         blurButton.BackgroundColor3 = transitionBlurEnabled and style.accent or style.button
@@ -248502,7 +250611,7 @@ do
             if not (panel and panel.Parent) then
                 return
             end
-            panel.BackgroundColor3 = style.panel
+            __iui.motion.setColor(panel, style.panel)
             ensureStroke(panel, style.stroke, 1)
             ensureGradient(panel, style.panel, style.panel2)
             if prismBar and prismBar.Parent then
@@ -248514,13 +250623,16 @@ do
             hint.TextColor3 = style.muted
             styleButton.Text = "STYLE: " .. styleNames[styleIndex]
             for _, b in { styleButton, animationButton, transitionButton, blurButton, intensityButton, preview, toggle } do
-                b.BackgroundColor3 = style.button
+                if b ~= blurButton and b ~= toggle then
+                    __iui.motion.setColor(b, style.button)
+                end
                 b.TextColor3 = style.text
             end
-            blurButton.BackgroundColor3 = transitionBlurEnabled and style.accent or style.button
-            toggle.BackgroundColor3 = uiEnabled and style.accent or style.button
+            __iui.motion.setColor(blurButton, transitionBlurEnabled and style.accent or style.button)
+            __iui.motion.setColor(toggle, uiEnabled and style.accent or style.button)
         end
 
+        pcall(__iui.motion.materialize, panel, title, subtitle, prismBar, hint)
         __iui.controlPanel = panel
         return panel
     end
@@ -248529,6 +250641,9 @@ do
         connect(__iuiParent.DescendantAdded, function(object)
             if not __iui.alive then
                 return
+            end
+            if object.Name == "LT_SidebarSortMenu" then
+                pcall(__iui.motion.watchReveal, object)
             end
             if object.Name:sub(1, 4) == "LT_" then
                 return
@@ -248579,6 +250694,7 @@ do
                 blurEffect.Enabled = false
             end)
         end
+        pcall(__iui.motion.stop)
         for object in __iui.objects do
             if object and object.Parent then
                 pcall(function()
@@ -248615,6 +250731,7 @@ do
             __iui.refreshPanel()
         end
         __iui.refreshButtons()
+        pcall(__iui.motion.themeWave)
     end
 
     __iui.applyStyle = applyStyle
