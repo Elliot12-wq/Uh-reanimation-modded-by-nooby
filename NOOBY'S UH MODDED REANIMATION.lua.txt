@@ -18303,6 +18303,306 @@ end
 end)
 end
 end
+-- ===== Nooby Neural AI shared core: ONE module set + ONE conversation state, mounted into the main UI or the Delta tab =====
+Util.NeuralAI = (function()
+local REPO = "https://raw.githubusercontent.com/Elliot12-wq/Offline-Ai-system/main/"
+local DIR = "NoobyAI"
+local FILES = {"AI_Config", "AI_NLP", "AI_Memory", "AI_Knowledge", "AI_Retrieval", "AI_Personality", "AI_Neural", "AI_Generator", "AI_UI"}
+local UI_PATCH = {
+{[====[function UI.init(c) ctx, Config = c, c.Config end]====], [====[function UI.init(c) ctx, Config = c, c.Config end
+-- embed mode: the window fills a host frame (main UI overlay or Delta tab) and can be moved between hosts
+local host, hostConn
+function UI.setHost(f)
+	host = f
+	if hostConn then hostConn:Disconnect() hostConn = nil end
+	if win and f then
+		win.Parent = f
+		hostConn = f:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() if UI.relayout then UI.relayout() end end)
+		if UI.relayout then UI.relayout() end
+	end
+end]====]},
+{[====[	local W = math.clamp(vp.X - 20, 300, 900)
+	local Hh = math.clamp(vp.Y - 20, 320, 620)
+]====], [====[	local W = math.clamp(vp.X - 20, 300, 900)
+	local Hh = math.clamp(vp.Y - 20, 320, 620)
+	if host then local hs = host.AbsoluteSize; W, Hh = math.max(280, hs.X), math.max(260, hs.Y) end
+	if UI._close then local cl = host == nil or host:GetAttribute("AIClose") == true; UI._close.Visible = cl; if statusRow then statusRow.Position = UDim2.new(1, cl and -44 or -12, 0.5, 0) end end
+]====]},
+{[====[	win.Size = UDim2.fromOffset(W, Hh)
+]====], [====[	if not host then win.Size = UDim2.fromOffset(W, Hh) end
+]====]},
+{[====[-- ===== build =====
+local function build()
+	ensureGui()
+]====], [====[UI.relayout = layout
+
+-- ===== build =====
+local function build()
+	if not host then ensureGui() end
+]====]},
+{[====[BackgroundColor3 = T.bg, ClipsDescendants = true }, gui)
+	round(win, 14)]====], [====[BackgroundColor3 = T.bg, ClipsDescendants = true }, host or gui)
+	if host then win.AnchorPoint, win.Position, win.Size = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), UDim2.fromScale(1, 1) end
+	round(win, 14)]====]},
+{[====[	closeBtn.MouseButton1Click:Connect(]====], [====[	UI._close = closeBtn
+	closeBtn.MouseButton1Click:Connect(]====]},
+{[====[	conn(topbar.InputBegan, function(i)
+		if i.UserInputType]====], [====[	conn(topbar.InputBegan, function(i)
+		if host then return end
+		if i.UserInputType]====]},
+{[====[	if cam then conn(cam:GetPropertyChangedSignal("ViewportSize"), layout) end
+]====], [====[	if cam then conn(cam:GetPropertyChangedSignal("ViewportSize"), layout) end
+	if host then hostConn = host:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout) end
+]====]},
+
+}
+local Core = {M = nil, H = nil, building = false, built = false, waiters = {}, pendingHost = nil, closeFn = nil}
+local function genv()
+local ok, g = pcall(function() return getgenv and getgenv() end)
+return (ok and type(g) == "table") and g or _G
+end
+local function fnv(name)
+local v = rawget(genv(), name)
+if type(v) ~= "function" then v = rawget(_G, name) end
+return type(v) == "function" and v or nil
+end
+local function fsOk()
+return fnv("readfile") and fnv("writefile") and fnv("isfile") and true or false
+end
+local function ensureDirs()
+local mf, isf = fnv("makefolder"), fnv("isfolder")
+if not (mf and isf) then return end
+pcall(function()
+if not isf(DIR) then mf(DIR) end
+if not isf(DIR .. "/cache") then mf(DIR .. "/cache") end
+end)
+end
+local function download(name)
+local url = REPO .. name .. ".lua"
+local body
+local ok, r = pcall(function() return game:HttpGet(url) end)
+if ok and type(r) == "string" and #r > 40 and not r:find("^404: Not Found") then body = r end
+if not body then
+local rq = fnv("request") or fnv("http_request") or (syn and syn.request)
+if rq then
+local ok2, res = pcall(rq, {Url = url, Method = "GET"})
+if ok2 and type(res) == "table" and (res.StatusCode or res.Status) == 200 and type(res.Body) == "string" and #res.Body > 40 then body = res.Body end
+end
+end
+if not body then
+local ok3, r3 = pcall(function() return game:GetService("HttpService"):GetAsync(url) end)
+if ok3 and type(r3) == "string" and #r3 > 40 then body = r3 end
+end
+if body and fsOk() then
+ensureDirs()
+pcall(fnv("writefile"), DIR .. "/cache/" .. name .. ".lua", body)
+end
+return body
+end
+local function source(name)
+if fsOk() then
+local path = DIR .. "/cache/" .. name .. ".lua"
+local okc, c = pcall(function() if fnv("isfile")(path) then return fnv("readfile")(path) end end)
+if okc and type(c) == "string" and #c > 40 then
+task.spawn(download, name)
+return c
+end
+end
+return download(name)
+end
+local function compile(name, text)
+local ld = fnv("loadstring") or (type(loadstring) == "function" and loadstring) or (type(load) == "function" and load) or nil
+if not ld then return nil, "this executor has no loadstring" end
+local fn, err = ld(text, "=" .. name)
+if not fn then return nil, tostring(err) end
+local ok, mod = pcall(fn)
+if not ok then return nil, tostring(mod) end
+return mod
+end
+local function loadModules()
+local M = {}
+for _, name in ipairs(FILES) do
+local text = source(name)
+if not text then return nil, "Could not download " .. name .. ".lua from Elliot12-wq/Offline-Ai-system and no cached copy exists." end
+if name == "AI_UI" and not text:find("UI.relayout", 1, true) then
+if text:find("UI.setHost", 1, true) then
+return nil, "AI_UI.lua in the repo is an older embed build - replace it with the updated AI_UI.lua."
+end
+for _, p in ipairs(UI_PATCH) do
+local i, j = text:find(p[1], 1, true)
+if i then text = text:sub(1, i - 1) .. p[2] .. text:sub(j + 1) end
+end
+end
+local mod, err = compile(name, text)
+if type(mod) ~= "table" then return nil, name .. ": " .. tostring(err) end
+M[name:sub(4)] = mod
+end
+local ctx = {}
+for k, v in pairs(M) do ctx[k] = v end
+M.Config.init()
+M.Memory.init(ctx)
+M.Knowledge.init(ctx)
+M.Retrieval.init(ctx)
+M.Personality.init(ctx)
+M.Neural.init(ctx)
+M.Generator.init(ctx)
+M.UI.init(ctx)
+return M
+end
+local function respond(M, raw)
+local Mem, K, NLP, Gen, Ret, Neu, Cfg = M.Memory, M.Knowledge, M.NLP, M.Generator, M.Retrieval, M.Neural, M.Config
+Cfg.adapt()
+local cmd, arg = raw:match("^/(%a+)%s*(.-)%s*$")
+if cmd then
+cmd = cmd:lower()
+if cmd == "new" then
+Mem.newConvo()
+return {render = {}}
+elseif cmd == "status" then
+local ms, ks, ns = Mem.stats(), K.stats(), Neu.status()
+return {text = string.format("**Status**\n- Chats: %d\n- Memories: %d facts, %d learned\n- Verified entries: %d\n- Neural: %s\n- Storage: %s\n- Memory pressure: %d", ms.convos, ms.facts, ks.learned, ks.verified, ns.state, ms.persist and "saved on this device" or "session only", Cfg.pressure)}
+elseif cmd == "neural" then
+local on = arg:lower() == "on"
+local _, msg = Neu.setEnabled(on)
+return {text = msg or (on and "Neural on." or "Neural off.")}
+elseif cmd == "forget" then
+return {text = M.Personality.ack({kind = "forgot", key = arg, n = Mem.forget(arg) + K.forget(arg)})}
+elseif cmd == "reset" then
+if arg:lower() == "confirm" then
+Mem.clearAll()
+K.clearLearned()
+Ret.invalidate()
+return {render = {}, text = "Everything I stored has been cleared."}
+end
+return {text = "This wipes all chats, facts and learned notes. Send `/reset confirm` to continue."}
+end
+end
+local prev = Mem.temp.prev
+local ev
+if Mem.temp.awaitFix then
+local aw = Mem.temp.awaitFix
+Mem.temp.awaitFix = nil
+if raw:lower():find("^never ?mind") or raw:lower():find("^cancel") then
+Mem.addTurn("u", raw)
+Mem.addTurn("a", "Okay, no problem.")
+return {text = "Okay, no problem."}
+end
+ev = {kind = "corrected", status = (K.learn("correction", raw, {q = aw.q}))}
+Ret.invalidate()
+end
+local a = Neu.apply(NLP.analyze(raw, {prev = prev}))
+local i = a.intent
+if not ev then
+if i == "teach" and a.slots.teach then
+local t = a.slots.teach
+if t.personal then
+ev = {kind = "taught", status = Mem.remember(t.key, t.value, not t.temp), personal = true, temp = t.temp}
+else
+ev = {kind = "taught", status = (K.learn("note", t.value, {key = t.key, temp = t.temp})), temp = t.temp}
+Ret.invalidate()
+end
+elseif i == "forget" then
+local q = a.slots.forget or ""
+ev = {kind = "forgot", key = q, n = Mem.forget(q) + K.forget(q)}
+Ret.invalidate()
+elseif i == "correction" then
+if a.slots.fix and a.slots.fix ~= "" then
+ev = {kind = "corrected", status = (K.learn("correction", a.slots.fix, {q = prev and prev.q}))}
+if prev and prev.ids then
+for _, id in ipairs(prev.ids) do pcall(K.reinforce, prev.terms, id, -1) end
+end
+Ret.invalidate()
+elseif prev then
+Mem.temp.awaitFix = {q = prev.q}
+ev = {kind = "needfix"}
+else
+ev = {kind = "nothing"}
+end
+elseif i == "setting" then
+if a.slots.level then
+Mem.setPref("level", a.slots.level)
+ev = {kind = "level", level = a.slots.level}
+elseif a.slots.verbosity then
+Mem.setPref("verbosity", a.slots.verbosity)
+ev = {kind = "verbosity", v = a.slots.verbosity}
+end
+end
+end
+local r
+local simple = {greeting = 1, thanks = 1, bye = 1, identity = 1, capabilities = 1, smalltalk = 1, memory_query = 1, teach = 1, setting = 1, forget = 1, correction = 1}
+if not ev and not simple[i] then r = Ret.search(a, prev) end
+local res = Gen.reply(a, r, ev)
+local meta = res.meta or {}
+if not ev then Mem.temp.prev = {topic = meta.topic or a.topic, terms = a.terms, ids = meta.ids or {}, q = raw} end
+Mem.addTurn("u", raw, a.topic)
+Mem.addTurn("a", res.text, meta.topic or a.topic)
+return {text = res.text}
+end
+local function makeHandlers(M)
+local Mem, K = M.Memory, M.Knowledge
+return {
+status = function()
+local ms, ks = Mem.stats(), K.stats()
+return {persist = ms.persist, convos = ms.convos, facts = ms.facts, learned = ks.learned, pressure = M.Config.pressure, neural = M.Neural.state == "loaded" and "loaded" or "off"}
+end,
+list = function() return Mem.list() end,
+new = function() Mem.newConvo() return {} end,
+open = function(id) return Mem.open(id) end,
+delete = function(id) return Mem.delete(id) end,
+ask = function(text, cb)
+task.delay(0.2, function()
+local ok, res = pcall(respond, M, text)
+if not ok then res = {text = "Something went wrong: " .. tostring(res):match("^[^\n]*")} end
+cb(res)
+end)
+end,
+close = function() if Core.closeFn then pcall(Core.closeFn) end end,
+toggle = function() end,
+}
+end
+function Core.IsReady() return Core.built end
+function Core.Flush()
+if Core.M then pcall(Core.M.Memory.flush) end
+end
+-- Mount(host, {onClose = fn}, cb(ok, err)): moves the single AI window into `host`
+function Core.Mount(host, opts, cb)
+Core.closeFn = opts and opts.onClose or nil
+Core.pendingHost = host
+if Core.built then
+local ok, e = pcall(function()
+Core.M.UI.setHost(host)
+Core.M.UI.show(Core.H)
+end)
+if cb then cb(ok, not ok and tostring(e) or nil) end
+return
+end
+if cb then Core.waiters[#Core.waiters + 1] = cb end
+if Core.building then return end
+Core.building = true
+task.spawn(function()
+local M, err = loadModules()
+local ok = M ~= nil
+if ok then
+task.wait()
+Core.H = makeHandlers(M)
+ok, err = pcall(function()
+M.UI.setHost(Core.pendingHost)
+M.UI.show(Core.H)
+local msgs = M.Memory.current()
+if msgs and #msgs > 0 then M.UI.render(msgs) end
+end)
+if ok then Core.M, Core.built = M, true else pcall(M.UI.destroyWindow) end
+end
+Core.building = false
+local w = Core.waiters
+Core.waiters = {}
+for _, f in ipairs(w) do pcall(f, ok, not ok and tostring(err) or nil) end
+end)
+end
+pcall(function() genv().NoobyNeuralAI = Core end)
+return Core
+end)()
+
 FX.Delta = (function()
 local D = {Detected = false, Active = false, Executor = "", Status = "idle"}
 local CG = cloneref(game:GetService("CoreGui"))
@@ -44430,7 +44730,7 @@ task.defer(function()
 	local getCurrentSectionName
 	local sidebarCurrentSection = nil
 	local autoCloseOnLoad = true
-	local sectionsList = { "Executor", "Home", "Scripthub", "Settings", "Console", "Music" }
+	local sectionsList = { "Executor", "Home", "Scripthub", "Settings", "Console", "Music", "NoobyAI" }
 	local gestureWidthValue = Instance.new("NumberValue")
 	gestureWidthValue.Name = "GestureWidthValue"
 	gestureWidthValue.Value = sidebarGestureWidth
@@ -45554,7 +45854,7 @@ if type(__lt.deltaPatchState.visualEnv) == "table" and not __lt.deltaPatchState.
 				return
 			end
 		end
-		local sectionsList = { "Executor", "Home", "Scripthub", "Settings", "Console", "Music" }
+		local sectionsList = { "Executor", "Home", "Scripthub", "Settings", "Console", "Music", "NoobyAI" }
 		local settingsPath = "DeltaCustom/Settings.json"
 		local settingsConfig = {}
 		if HS and type(isfile) == "function" and type(readfile) == "function" and isfile(settingsPath) then
@@ -46099,6 +46399,22 @@ local function stop()
 		end)
 		st.pg.musicButton = nil
 	end
+	if st.pg.ai then
+		pcall(function()
+			st.pg.ai:Destroy()
+		end)
+		st.pg.ai = nil
+	end
+	if st.pg.aiButton then
+		pcall(function()
+			st.pg.aiButton:Destroy()
+		end)
+		st.pg.aiButton = nil
+	end
+	if st.pg.aiUnload then
+		pcall(st.pg.aiUnload)
+		st.pg.aiUnload = nil
+	end
 	if st.pg.sh and st.pg.sh:FindFirstChild("LT_ScriptHub") then
 		pcall(function()
 			st.pg.sh.LT_ScriptHub:Destroy()
@@ -46173,6 +46489,7 @@ local sec = {
 	"Settings",
 	"Console",
 	"Music",
+	"NoobyAI",
 }
 
 local musicState = {
@@ -46400,6 +46717,7 @@ function syncTabColors(forceTab)
 		Settings = sidebarRefs.settings,
 		Console = sidebarRefs.console,
 		Music = musicState.button,
+		NoobyAI = musicState.aiButton,
 	}
 	for n, b in map do
 		applyBtnState(b, curTab == n)
@@ -49337,6 +49655,9 @@ musicState.setupSidebar = function()
 		if b and b:IsA("GuiButton") then
 			con(b.MouseButton1Click:Connect(function()
 				closeMusic(true)
+				if musicState.aiClose then
+					musicState.aiClose(true)
+				end
 				task.defer(function()
 					syncTabColors(nm or b.Name)
 				end)
@@ -49385,6 +49706,374 @@ musicState.setupSidebar = function()
 end
 
 musicState.setupSidebar()
+
+-- ===== Nooby Neural AI tab (Delta): mounts the shared main-script AI core (Util.NeuralAI) into this page =====
+do
+	local ai = { tween = nil }
+	local function getCore()
+		local env = __dcm_boot and __dcm_boot.hostEnv
+		local c = type(env) == "table" and rawget(env, "NoobyNeuralAI") or nil
+		if type(c) ~= "table" then
+			local okg, g = pcall(function()
+				return getgenv and getgenv()
+			end)
+			c = okg and type(g) == "table" and rawget(g, "NoobyNeuralAI") or rawget(_G, "NoobyNeuralAI")
+		end
+		return type(c) == "table" and c or nil
+	end
+	local base = sh or hm or se or ex or co
+	local aiPage = mk("Frame", {
+		Name = "NoobyAI",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = musicState.closedPos,
+		Size = base and base.Size or UDim2.new(0.848344803, 0, 0.892481446, 0),
+		BackgroundColor3 = base and base.BackgroundColor3 or col.bg,
+		BackgroundTransparency = base and base.BackgroundTransparency or 0,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		Visible = false,
+		ZIndex = base and base.ZIndex or 100,
+		Parent = gui,
+	})
+	if base then
+		for _, ch in base:GetChildren() do
+			if ch:IsA("UICorner") or ch:IsA("UIStroke") or ch:IsA("UIGradient") then
+				pcall(function()
+					ch:Clone().Parent = aiPage
+				end)
+			end
+		end
+	end
+	local aiHost = mk("Frame", {
+		Name = "LT_NoobyAI",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, 0),
+		Size = UDim2.new(1, -16, 1, -16),
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		ZIndex = 50,
+		Parent = aiPage,
+	})
+	local aiStatus = mk("TextLabel", {
+		Name = "LT_AIStatus",
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0.5, 0),
+		Size = UDim2.new(1, -40, 0, 70),
+		BackgroundTransparency = 1,
+		Text = "",
+		TextWrapped = true,
+		TextColor3 = col.td,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 14,
+		Visible = false,
+		ZIndex = 60,
+		Parent = aiHost,
+	})
+	st.pg.ai = aiPage
+
+	local function setStatus(text)
+		aiStatus.Text = text or ""
+		aiStatus.Visible = text ~= nil
+	end
+	musicState.aiEnsure = function()
+		local core = getCore()
+		if not core then
+			setStatus("Nooby Neural AI core is unavailable. Run the main script so the shared AI core is loaded.")
+			return
+		end
+		if not core.IsReady() then
+			setStatus("Loading Nooby Neural AI…")
+		end
+		core.Mount(aiHost, {
+			onClose = function()
+				hideAll("Home")
+			end,
+		}, function(ok, err)
+			if ok then
+				setStatus(nil)
+			else
+				setStatus(tostring(err) .. "\n(open the tab again to retry)")
+			end
+		end)
+	end
+
+	local function aiTween(toPos, show, hideAfter)
+		if ai.tween then
+			pcall(function()
+				ai.tween:Cancel()
+			end)
+			ai.tween = nil
+		end
+		if show then
+			aiPage.Visible = true
+		end
+		if TS then
+			local tw = TS:Create(aiPage, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), { Position = toPos })
+			ai.tween = tw
+			if hideAfter then
+				con(tw.Completed:Connect(function(state)
+					if ai.tween == tw and state == Enum.PlaybackState.Completed then
+						aiPage.Visible = false
+					end
+				end))
+			end
+			tw:Play()
+		else
+			aiPage.Position = toPos
+			if hideAfter then
+				aiPage.Visible = false
+			end
+		end
+	end
+	local function aiOpen()
+		closeMusic(false)
+		for _, n in sec do
+			local p = gui:FindFirstChild(n)
+			if p and p:IsA("GuiObject") and p ~= aiPage then
+				p.Visible = false
+			end
+		end
+		aiPage.Position = musicState.closedPos
+		aiTween(musicState.openPos, true, false)
+		musicState.aiEnsure()
+		task.defer(function()
+			syncTabColors("NoobyAI")
+		end)
+	end
+	musicState.aiClose = function(anim)
+		if not aiPage.Visible then
+			return
+		end
+		local core = getCore()
+		if core then
+			pcall(core.Flush)
+		end
+		if anim then
+			aiTween(musicState.closedPos, false, true)
+		else
+			aiTween(musicState.closedPos, false, false)
+			aiPage.Visible = false
+		end
+	end
+
+	-- ---------- sidebar button ----------
+	local srcBtn = musicState.sourceButton or sidebarRefs.console or musicState.button or sidebarRefs.scripthub
+	if srcBtn then
+		local btn = srcBtn:Clone()
+		btn.Name = "NoobyAI"
+		btn.Parent = srcBtn.Parent
+		musicState.aiButton = btn
+		st.pg.aiButton = btn
+		local lbl = txtOf(btn)
+		if lbl then
+			lbl.Text = "Nooby Neural AI"
+			pcall(function()
+				lbl.TextWrapped = true
+				lbl.TextScaled = true
+			end)
+		end
+		local il = imgOf(btn)
+		if il then
+			pcall(function()
+				il.Image = ""
+				il.ImageRectOffset = Vector2.new(0, 0)
+				il.ImageRectSize = Vector2.new(0, 0)
+				for _, d in il:GetChildren() do
+					d:Destroy()
+				end
+				local g = mk("TextLabel", {
+					Name = "LT_AIGlyph",
+					BackgroundTransparency = 1,
+					AnchorPoint = Vector2.new(0.5, 0.5),
+					Position = UDim2.fromScale(0.5, 0.5),
+					Size = UDim2.fromScale(1, 1),
+					Text = "AI",
+					TextScaled = true,
+					Font = Enum.Font.GothamBlack,
+					TextColor3 = offImg,
+					ZIndex = il.ZIndex + 1,
+					Parent = il,
+				})
+				local function recolor()
+					g.TextColor3 = il.ImageColor3
+				end
+				il.ImageColor3 = offImg
+				recolor()
+				con(il:GetPropertyChangedSignal("ImageColor3"):Connect(recolor))
+			end)
+		end
+		pcall(function()
+			btn.BackgroundColor3 = bgOff()
+		end)
+		pcall(function()
+			local tog, mb = sidebarRefs.toggle, musicState.button
+			if tog and mb and btn.Parent == tog.Parent and mb.Parent == tog.Parent then
+				local tp, mp = tog.Position, mb.Position
+				btn.Position = tp
+				btn.LayoutOrder = (tog.LayoutOrder or 0)
+				tog.Position = UDim2.new(tp.X.Scale, tp.X.Offset, tp.Y.Scale + (tp.Y.Scale - mp.Y.Scale), tp.Y.Offset + (tp.Y.Offset - mp.Y.Offset))
+				tog.LayoutOrder = (tog.LayoutOrder or 0) + 1
+			end
+		end)
+		improveSidebarTouch(btn)
+		if btn:IsA("GuiButton") then
+			con(btn.MouseButton1Click:Connect(aiOpen))
+		end
+		if musicState.button and musicState.button:IsA("GuiButton") then
+			con(musicState.button.MouseButton1Click:Connect(function()
+				musicState.aiClose(false)
+			end))
+		end
+	end
+	con(aiPage:GetPropertyChangedSignal("Visible"):Connect(function()
+		task.defer(syncTabColors)
+	end))
+	st.pg.aiUnload = function()
+		local core = getCore()
+		if core then
+			pcall(core.Flush)
+		end
+	end
+
+	-- ---------- responsive sidebar: keeps every tab button inside the viewport (compact sizing, scroll when still too tall) ----------
+	do
+		local sbLayout = sb:FindFirstChildOfClass("UIListLayout")
+		local fitting, token, wrap, compacted = false, 0, nil, false
+		local function sbList()
+			local list = {}
+			local function take(p)
+				for _, d in p:GetChildren() do
+					if d:IsA("GuiButton") then
+						list[#list + 1] = d
+					end
+				end
+			end
+			take(sb)
+			if wrap then
+				take(wrap)
+			end
+			local h = math.max(sb.AbsoluteSize.Y, 1)
+			table.sort(list, function(a, b)
+				if sbLayout and a.LayoutOrder ~= b.LayoutOrder then
+					return a.LayoutOrder < b.LayoutOrder
+				end
+				return a.Position.Y.Scale * h + a.Position.Y.Offset < b.Position.Y.Scale * h + b.Position.Y.Offset
+			end)
+			return list
+		end
+		local function fit()
+			if fitting or not sb.Parent then
+				return
+			end
+			local sg = sb:FindFirstAncestorOfClass("ScreenGui")
+			local cam = workspace.CurrentCamera
+			local vp = (sg and sg.AbsoluteSize.Y > 0 and sg.AbsoluteSize) or (cam and cam.ViewportSize) or Vector2.new(800, 600)
+			local top = math.max(sb.AbsolutePosition.Y, 0)
+			local off = top - sb.AbsolutePosition.Y
+				local availH = math.min(sb.AbsoluteSize.Y - off, vp.Y - top - 4)
+			if availH <= 40 then
+				return
+			end
+			local list = sbList()
+			local n = #list
+			if n == 0 then
+				return
+			end
+			local needs = compacted
+			if not needs then
+				for _, b in list do
+					if b.AbsolutePosition.Y + b.AbsoluteSize.Y > top + availH + 1 then
+						needs = true
+						break
+					end
+				end
+			end
+			if not needs then
+				return
+			end
+			local pad, gap = 6, 4
+			local minH = UIS.TouchEnabled and 36 or 30
+			local bh = math.floor((availH - pad * 2 - gap * (n - 1)) / n)
+			local scroll = false
+			if bh < minH then
+				bh = minH
+				scroll = true
+			end
+			bh = math.min(bh, 64)
+			local total = pad * 2 + n * bh + (n - 1) * gap
+			fitting = true
+			compacted = true
+			local parent = sb
+			if scroll then
+				wrap = wrap
+					or mk("ScrollingFrame", {
+						Name = "LT_SidebarScroll",
+						BackgroundTransparency = 1,
+						BorderSizePixel = 0,
+						Position = UDim2.new(0, 0, 0, 0),
+						ScrollBarThickness = 3,
+						Active = true,
+						ScrollingEnabled = true,
+						ScrollingDirection = Enum.ScrollingDirection.Y,
+						ElasticBehavior = Enum.ElasticBehavior.Never,
+						ZIndex = sb.ZIndex,
+						Parent = sb,
+					})
+				wrap.Size = UDim2.new(1, 0, 0, availH)
+				wrap.Position = UDim2.fromOffset(0, off)
+				wrap.CanvasSize = UDim2.new(0, 0, 0, total)
+				wrap.Visible = true
+				parent = wrap
+			elseif wrap then
+				wrap.Visible = false
+			end
+			if sbLayout then
+				sbLayout.Padding = UDim.new(0, gap)
+				sbLayout.Parent = parent
+			end
+			for i, b in list do
+				for _, c in b:GetChildren() do
+					if c:IsA("UIAspectRatioConstraint") then
+						pcall(function()
+							c.Enabled = false
+						end)
+					end
+				end
+				b.Size = UDim2.new(b.Size.X.Scale, b.Size.X.Offset, 0, bh)
+				if b.Parent ~= parent then
+					b.Parent = parent
+				end
+				if not sbLayout then
+					b.Position = UDim2.new(b.Position.X.Scale, b.Position.X.Offset, 0, pad + (i - 1) * (bh + gap) + math.floor(bh * b.AnchorPoint.Y))
+				end
+			end
+			task.defer(function()
+				fitting = false
+			end)
+		end
+		local function schedule()
+			token += 1
+			local t = token
+			task.delay(0.12, function()
+				if t == token then
+					fit()
+				end
+			end)
+		end
+		con(sb:GetPropertyChangedSignal("AbsoluteSize"):Connect(schedule))
+		con(sb.ChildAdded:Connect(schedule))
+		local sg = sb:FindFirstAncestorOfClass("ScreenGui")
+		if sg then
+			con(sg:GetPropertyChangedSignal("AbsoluteSize"):Connect(schedule))
+		end
+		for _, b in sbList() do
+			con(b:GetPropertyChangedSignal("Position"):Connect(schedule))
+		end
+		schedule()
+		task.delay(0.6, fit)
+	end
+	task.defer(syncTabColors)
+end
 end
 
 st.fn.setupHubMusic();
@@ -54300,7 +54989,7 @@ do
         local sidebar = findDescendant("Sidebar")
         local executor = findDescendant("Executor")
         local currentPage
-        for _, name in { "Home", "Executor", "Scripthub", "Settings", "Console", "Music" } do
+        for _, name in { "Home", "Executor", "Scripthub", "Settings", "Console", "Music", "NoobyAI" } do
             local p = findDescendant(name)
             if p and p:IsA("GuiObject") and p.Visible then
                 currentPage = p
@@ -54713,7 +55402,7 @@ do
     end
 
     local function currentVisiblePage()
-        for _, name in { "Home", "Executor", "Scripthub", "Settings", "Console", "Music" } do
+        for _, name in { "Home", "Executor", "Scripthub", "Settings", "Console", "Music", "NoobyAI" } do
             local p = __iuiParent:FindFirstChild(name, true)
             if p and p:IsA("GuiObject") and p.Visible then
                 return p
@@ -55510,7 +56199,7 @@ do
     end
 
     local function watchPages()
-        local pageNames = { "Home", "Executor", "Scripthub", "Settings", "Console", "Music" }
+        local pageNames = { "Home", "Executor", "Scripthub", "Settings", "Console", "Music", "NoobyAI" }
         for _, name in pageNames do
             local page = __iuiParent:FindFirstChild(name, true)
             if page and page:IsA("GuiObject") then
@@ -62233,6 +62922,15 @@ end
 if self.Inputs.GP.JB then
 self.Jump = true
 end
+local FC = Reanimate.Freecam
+if FC then
+if FC.Active then
+FC.Move, FC.Jump = self.Move, self.Jump
+self.Move, self.Jump = Vector3.zero, false
+else
+FC.Move, FC.Jump = Vector3.zero, false
+end
+end
 end)
 end
 do
@@ -62421,6 +63119,120 @@ end)
 MobileShiftlock.Activated:Connect(function()
 Reanimate.Shiftlocked = Reanimate.ShiftlockEnabled and not Reanimate.Shiftlocked
 end)
+do
+local CAS = game:GetService("ContextActionService")
+local F = {Active = false, Speed = math.clamp(tonumber(SaveData.FreecamSpeed) or 32, 1, 256), Boost = 3, Move = Vector3.zero, Jump = false, UpHeld = false, DownHeld = false, Pan = Vector3.zero, Pos = Vector3.zero, Yaw = 0, Pitch = 0, sYaw = 0, sPitch = 0, Vel = Vector3.zero, Hooks = {}}
+Reanimate.Freecam = F
+local gui = Instance.new("Frame")
+gui.Name = "FreecamControls"
+gui.BackgroundTransparency = 1
+gui.AnchorPoint = Vector2.new(1, 0.5)
+gui.Position = UDim2.new(1, -10, 0.5, 0)
+gui.Size = UDim2.fromOffset(60, 168)
+gui.Visible = false
+gui.ZIndex = 50
+gui.Parent = SCREENGUI
+local function mkBtn(txt, y)
+local b = Instance.new("TextButton")
+b.Size = UDim2.fromOffset(48, 48)
+b.Position = UDim2.fromOffset(6, y)
+b.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
+b.BackgroundTransparency = 0.3
+b.AutoButtonColor = false
+b.Text = txt
+b.TextColor3 = Color3.new(1, 1, 1)
+b.Font = Enum.Font.GothamBold
+b.TextSize = 16
+b.ZIndex = 50
+local c = Instance.new("UICorner")
+c.CornerRadius = UDim.new(1, 0)
+c.Parent = b
+b.Parent = gui
+return b
+end
+local function isPress(i)
+return i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1
+end
+local function hold(b, key)
+b.InputBegan:Connect(function(i) if isPress(i) then F[key] = true end end)
+b.InputEnded:Connect(function(i) if isPress(i) then F[key] = false end end)
+end
+local exitB, upB, dnB = mkBtn("X", 0), mkBtn("UP", 60), mkBtn("DN", 120)
+hold(upB, "UpHeld")
+hold(dnB, "DownHeld")
+exitB.Activated:Connect(function() F.Set(false) end)
+local SINK = "UhFreecamSink"
+local function sink() return Enum.ContextActionResult.Sink end
+function F.SetSpeed(v)
+v = math.clamp(v, 1, 256)
+if math.abs(v - F.Speed) < 0.001 then return end
+F.Speed = v
+SaveData.FreecamSpeed = v
+if F.OnSpeed then pcall(F.OnSpeed, v) end
+end
+function F.Set(on)
+on = on and true or false
+if on == F.Active then return end
+if on then
+if not Camera then return end
+local cf = Camera.CFrame
+local rx, ry = cf:ToEulerAnglesYXZ()
+F.Pos, F.Yaw, F.Pitch, F.sYaw, F.sPitch = cf.Position, ry, rx, ry, rx
+F.Vel, F.Pan, F.Restore = Vector3.zero, Vector3.zero, nil
+F.Active = true
+pcall(function()
+CAS:BindActionAtPriority(SINK, sink, false, Enum.ContextActionPriority.High.Value + 1, Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D, Enum.KeyCode.Space, Enum.KeyCode.Up, Enum.KeyCode.Down, Enum.KeyCode.Left, Enum.KeyCode.Right, Enum.KeyCode.ButtonA, Enum.KeyCode.Thumbstick1)
+end)
+else
+F.Active = false
+F.UpHeld, F.DownHeld = false, false
+F.Move, F.Jump = Vector3.zero, false
+pcall(function() CAS:UnbindAction(SINK) end)
+F.Restore = {t = 0, from = Camera and Camera.CFrame or CFrame.new()}
+end
+gui.Visible = on and UserInputService.TouchEnabled
+for _, h in ipairs(F.Hooks) do pcall(h, on) end
+pcall(Util.UINotify, "Freecam " .. (on and "ON" or "OFF"))
+end
+function F.Step(dt)
+if not Camera then return end
+if F.Active then
+local pan = F.Pan
+F.Pan = Vector3.zero
+F.Yaw -= pan.X
+F.Pitch = math.clamp(F.Pitch - pan.Y, -1.5, 1.5)
+if pan.Z ~= 0 then F.SetSpeed(F.Speed * math.exp(-pan.Z * 0.12)) end
+local a = 1 - math.exp(-30 * dt)
+F.sYaw += (F.Yaw - F.sYaw) * a
+F.sPitch += (F.Pitch - F.sPitch) * a
+local rot = CFrame.Angles(0, F.sYaw, 0) * CFrame.Angles(F.sPitch, 0, 0)
+local typing = UserInputService:GetFocusedTextBox() ~= nil
+local m = F.Move
+local v = rot:VectorToWorldSpace(Vector3.new(m.X, 0, m.Z))
+local up = (F.Jump or F.UpHeld or (not typing and UserInputService:IsKeyDown(Enum.KeyCode.E))) and 1 or 0
+local down = (F.DownHeld or (not typing and (UserInputService:IsKeyDown(Enum.KeyCode.Q) or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)))) and 1 or 0
+v += Vector3.new(0, up - down, 0)
+if v.Magnitude > 1 then v = v.Unit end
+local boost = (not typing and UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)) and F.Boost or 1
+F.Vel = F.Vel:Lerp(v * F.Speed * boost, 1 - math.exp(-10 * dt))
+F.Pos += F.Vel * dt
+local cf = CFrame.new(F.Pos) * rot
+Camera.CFrame, Camera.Focus = cf, cf * CFrame.new(0, 0, -16)
+elseif F.Restore then
+local r = F.Restore
+r.t += dt
+local a = math.clamp(r.t / 0.5, 0, 1)
+a = a * a * (3 - 2 * a)
+Camera.CFrame = r.from:Lerp(Camera.CFrame, a)
+if r.t >= 0.5 then F.Restore = nil end
+end
+end
+UserInputService.InputBegan:Connect(function(input)
+if input.KeyCode == Enum.KeyCode.M and (UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)) and not UserInputService:GetFocusedTextBox() then
+F.Set(not F.Active)
+end
+end)
+end
 RunService:BindToRenderStep("Uhhhhhh_Camera", Enum.RenderPriority.Camera.Value + 1, function(dt)
 self.VRMode = VRService.VREnabled
 if UserInputService:GetFocusedTextBox() then
@@ -62435,6 +63247,13 @@ end
 self:OnPanInput(self.Inputs.GP.DJ * Vector2.new(1, 0.77) * math.rad(4) * 60 * dt * GameSettings.GamepadCameraSensitivity, true)
 local input = self.Input * Vector3.new(1, GameSettings:GetCameraYInvertValue(), 1)
 self.Input = Vector3.zero
+do
+local FC = Reanimate.Freecam
+if FC and FC.Active then
+FC.Pan += input
+input = Vector3.zero
+end
+end
 local zoomDelta = input.Z
 if math.abs(zoomDelta) > 0 then
 if zoomDelta > 0 then
@@ -62546,6 +63365,7 @@ for _,v in Reanimate.CharacterLTMs do
 v.LocalTransparencyModifier = ltm
 end
 end
+Reanimate.Freecam.Step(dt)
 pcall(function() CoreGui.TopBarApp.TopBarApp.FullScreenFrame.HurtOverlay.Visible = false end)
 end)
 end
@@ -70228,6 +71048,16 @@ PlaceholderTransparencySlider.Value = val
 Reanimate.PlaceholderTransparency = val
 SaveData.PlaceholderTransparency = val
 end)
+do
+local F = Reanimate.Freecam
+local FreecamSwitch = UI.CreateSwitch(MainPage, "Freecam (Shift + M)", F.Active)
+FreecamSwitch.Changed:Connect(function(val) F.Set(val) end)
+local FreecamSpeedSlider = UI.CreateSlider(MainPage, "Freecam Speed", F.Speed, 1, 256, 1)
+FreecamSpeedSlider.Changed:Connect(function(val) F.SetSpeed(val) end)
+F.Hooks[#F.Hooks + 1] = function(on) if FreecamSwitch.Value ~= on then FreecamSwitch.Value = on end end
+F.OnSpeed = function(v) if FreecamSpeedSlider.Value ~= v then FreecamSpeedSlider.Value = v end end
+UI.CreateText(MainPage, "Detaches the camera; reanimation keeps running. WASD move, Space/E up, Q/Ctrl down, Shift boost, wheel/pinch = speed. Mobile: stick + UP/DN/X buttons.", 10, Enum.TextXAlignment.Center)
+end
 Util.FCMark("perf")
 UI.CreateSeparator(MainPage)
 do
@@ -71894,6 +72724,194 @@ AF.Active, AF.Target, AF.Command = nil, nil, nil
 status("Alt-fling: disabled")
 end
 if Util.Fling.Method == 8 then AF.Enable() end
+end
+do
+-- Lua Chat Mode: toggle beside the chat mic icon; ON = chat input runs as Lua on THIS client only.
+local LC = {On = false, Commands = {}, Env = {}}
+Util.LuaChat = LC
+local genv = (type(getgenv) == "function" and getgenv()) or _G
+local ld = loadstring or load
+local pill, knob, label, box, bar, host, native, mic
+local hidden, lastScan, lastMic, conn = false, 0, 0, nil
+local function esc(s)
+return (tostring(s):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+local function out(t, col)
+t = tostring(t)
+if #t > 800 then t = t:sub(1, 800) .. "..." end
+local ok = pcall(function()
+local chans = TextChatService:FindFirstChild("TextChannels")
+local ch = chans and (chans:FindFirstChild("RBXGeneral") or chans:FindFirstChild("RBXSystem"))
+ch:DisplaySystemMessage('<font color="' .. col .. '">[Lua] ' .. esc(t) .. "</font>")
+end)
+if not ok then pcall(Util.UINotify, t) end
+end
+local function join(...)
+local t = {}
+for i = 1, select("#", ...) do t[i] = tostring((select(i, ...))) end
+return table.concat(t, " ")
+end
+function LC.Register(name, fn, desc)
+if type(name) ~= "string" or type(fn) ~= "function" then return false end
+LC.Commands[name] = {fn = fn, desc = tostring(desc or "")}
+return true
+end
+local env = setmetatable(LC.Env, {__index = function(_, k)
+local c = LC.Commands[k]
+if c then return c.fn end
+return genv[k]
+end})
+env.print = function(...) out(join(...), "#9CDCFE") end
+env.warn = function(...) out(join(...), "#FFB454") end
+env.Player, env.LocalPlayer, env.Players, env.Util = Player, Player, Players, Util
+LC.Register("help", function()
+local n = {}
+for k, c in pairs(LC.Commands) do n[#n + 1] = k .. (c.desc ~= "" and (" - " .. c.desc) or "") end
+table.sort(n)
+out(table.concat(n, "\n"), "#8AB4FF")
+end, "list registered commands")
+LC.Register("off", function() LC.Set(false) end, "turn Lua chat mode off")
+function LC.Submit(code)
+if type(code) ~= "string" or not code:match("%S") then return false end
+if type(ld) ~= "function" then out("loadstring unavailable", "#FF6B6B") return false end
+local fn, err = ld("return " .. code, "=LuaChat")
+if not fn then fn, err = ld(code, "=LuaChat") end
+if not fn then out(err, "#FF6B6B") return false end
+pcall(setfenv, fn, env)
+task.spawn(function()
+local r = table.pack(pcall(fn))
+if not r[1] then out(r[2], "#FF6B6B")
+elseif r.n > 1 then out(join(table.unpack(r, 2, r.n)), "#7CE38B")
+else out("ok", "#7CE38B") end
+end)
+return true
+end
+local function hasLayout(g)
+for _, c in ipairs(g:GetChildren()) do
+if c:IsA("UIListLayout") or c:IsA("UIGridLayout") or c:IsA("UITableLayout") or c:IsA("UIPageLayout") then return true end
+end
+return false
+end
+local function shown(g)
+while g and g ~= game do
+if g:IsA("LayerCollector") then return g.Enabled end
+if g:IsA("GuiObject") and not g.Visible then return false end
+g = g.Parent
+end
+return false
+end
+local function find()
+local ec = CoreGui:FindFirstChild("ExperienceChat")
+local b = ec and ec:FindFirstChild("chatInputBar", true)
+if not b then return false end
+local tb = b:FindFirstChild("TextBox", true)
+if not (tb and tb:IsA("TextBox")) then
+tb = nil
+for _, d in ipairs(b:GetDescendants()) do
+if d:IsA("TextBox") and d.Name ~= "LuaChatInput" then tb = d break end
+end
+end
+if not tb then return false end
+native, bar, host, mic, hidden = tb, b, b, nil, false
+while hasLayout(host) and host.Parent and host.Parent ~= CoreGui do host = host.Parent end
+return true
+end
+local function findMic()
+local best, bx = nil, -1
+for _, d in ipairs(bar:GetDescendants()) do
+if (d:IsA("GuiButton") or d:IsA("ImageLabel")) and not (pill and d:IsDescendantOf(pill)) and d.Visible and d.AbsoluteSize.X > 8 and d.AbsoluteSize.X <= bar.AbsoluteSize.Y * 1.6 then
+local n = d.Name:lower()
+if n:find("voice") or n:find("mic") then return d end
+if d.AbsolutePosition.X > bx then best, bx = d, d.AbsolutePosition.X end
+end
+end
+return best
+end
+local function build()
+if pill then pcall(pill.Destroy, pill) end
+if box then pcall(box.Destroy, box) end
+pill = Instance.new("TextButton")
+pill.Name, pill.Text, pill.AutoButtonColor, pill.BorderSizePixel, pill.ZIndex = "LuaChatToggle", "", false, 0, 50
+pill.AnchorPoint = Vector2.new(0, 0.5)
+Instance.new("UICorner", pill).CornerRadius = UDim.new(1, 0)
+knob = Instance.new("Frame", pill)
+knob.Name, knob.BorderSizePixel, knob.ZIndex, knob.BackgroundColor3 = "Knob", 0, 51, Color3.new(1, 1, 1)
+knob.AnchorPoint = Vector2.new(0, 0.5)
+Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+label = Instance.new("TextLabel", pill)
+label.Name, label.Text, label.BackgroundTransparency, label.ZIndex = "Label", "Lua", 1, 51
+label.Font, label.TextColor3 = Enum.Font.GothamBold, Color3.new(1, 1, 1)
+box = Instance.new("TextBox")
+box.Name, box.BackgroundTransparency, box.BorderSizePixel, box.ZIndex = "LuaChatInput", 1, 0, 50
+box.ClearTextOnFocus, box.MultiLine, box.TextWrapped, box.ClipsDescendants = false, false, false, true
+box.TextXAlignment, box.TextYAlignment = Enum.TextXAlignment.Left, Enum.TextYAlignment.Center
+box.PlaceholderText, box.Text, box.Visible = "Lua code...", "", false
+pill.Parent, box.Parent = host, host
+pill.Activated:Connect(function() LC.Set(not LC.On) end)
+box.FocusLost:Connect(function(enter)
+if not LC.On then return end
+local s = box.Text
+if enter and s:match("%S") then
+box.Text = ""
+LC.Submit(s)
+end
+end)
+end
+local function step()
+if not (native and native.Parent and bar and bar.Parent and host and host.Parent and pill and pill.Parent == host and box and box.Parent == host) then
+if os.clock() - lastScan < 0.5 then return end
+lastScan = os.clock()
+if not find() then return end
+build()
+end
+local vis = shown(bar)
+pill.Visible = vis
+if not vis then box.Visible = false return end
+if not (mic and mic.Parent) and os.clock() - lastMic > 2 then lastMic = os.clock() mic = findMic() end
+local on = LC.On
+local hp, bp, np = host.AbsolutePosition, bar.AbsolutePosition, native.AbsolutePosition
+local bs, ns = bar.AbsoluteSize, native.AbsoluteSize
+local ph = math.clamp(math.floor(ns.Y * 0.62), 16, 28)
+local pw = math.floor(ph * 2.1)
+local re = (mic and mic.Parent and mic.Visible) and mic.AbsolutePosition.X or (bp.X + bs.X - 8)
+local px = re - 6 - pw
+pill.Size = UDim2.fromOffset(pw, ph)
+pill.Position = UDim2.fromOffset(px - hp.X, np.Y + ns.Y / 2 - hp.Y)
+pill.BackgroundColor3 = on and Color3.fromRGB(46, 160, 90) or Color3.fromRGB(72, 74, 80)
+knob.Size = UDim2.fromOffset(ph - 6, ph - 6)
+knob.Position = UDim2.new(on and 1 or 0, on and -(ph - 3) or 3, 0.5, 0)
+label.Size = UDim2.fromOffset(pw - ph, ph)
+label.Position = UDim2.fromOffset(on and 3 or ph - 3, 0)
+label.TextSize = math.max(9, math.floor(ph * 0.5))
+if on then
+hidden = true
+if native.Visible then native.Visible = false end
+box.Position = UDim2.fromOffset(np.X - hp.X, np.Y - hp.Y)
+box.Size = UDim2.fromOffset(math.max(40, px - 6 - np.X), ns.Y)
+if not box.Visible then
+pcall(function() box.FontFace = native.FontFace end)
+pcall(function() box.TextSize, box.TextColor3, box.PlaceholderColor3 = native.TextSize, native.TextColor3, native.PlaceholderColor3 end)
+box.Visible = true
+end
+else
+if hidden then hidden = false native.Visible = true end
+if box.Visible then box.Visible = false end
+end
+end
+function LC.Set(on)
+LC.On = on and true or false
+if not LC.On and box then pcall(function() box.Text = "" box:ReleaseFocus() end) end
+pcall(step)
+out(LC.On and "Lua mode ON" or "Lua mode OFF", "#8AB4FF")
+end
+function LC.Destroy()
+LC.On = false
+pcall(step)
+if conn then conn:Disconnect() conn = nil end
+if pill then pcall(pill.Destroy, pill) end
+if box then pcall(box.Destroy, box) end
+end
+conn = RunService.RenderStepped:Connect(function() pcall(step) end)
 end
 local MovementStyles = {}
 local DanceableDances = {}
@@ -73577,6 +74595,55 @@ hubBusy = true
 task.spawn(function()
 pcall(fn)
 hubBusy = false
+end)
+end
+do
+local AIOverlay = Util.Instance("Frame", UIMainFrame)
+AIOverlay.AnchorPoint = Vector2.new(0.5, 0.5)
+AIOverlay.Position = UDim2.new(0.5, 0, 0.5, 0)
+AIOverlay.Size = UDim2.new(1, -24, 1, -24)
+AIOverlay.BackgroundTransparency = 1
+AIOverlay.Visible = false
+AIOverlay.ZIndex = 50
+AIOverlay:SetAttribute("AIClose", true)
+local AICap = Util.Instance("UISizeConstraint", AIOverlay)
+AICap.MinSize = Vector2.new(300, 260)
+AICap.MaxSize = Vector2.new(900, 520)
+local AIStatus = Util.Instance("TextLabel", AIOverlay)
+AIStatus.AnchorPoint = Vector2.new(0.5, 0.5)
+AIStatus.Position = UDim2.new(0.5, 0, 0.5, 0)
+AIStatus.Size = UDim2.new(1, -40, 0, 60)
+AIStatus.BackgroundTransparency = 1
+AIStatus.TextWrapped = true
+AIStatus.Font = Enum.Font.Code
+AIStatus.TextSize = 14
+AIStatus.TextColor3 = Color3.new(1, 1, 1)
+AIStatus.Text = ""
+AIStatus.Visible = false
+local function closeAI()
+AIOverlay.Visible = false
+pcall(Util.NeuralAI.Flush)
+end
+local function openAI()
+AIOverlay.Visible = true
+if not Util.NeuralAI.IsReady() then
+AIStatus.Text = "Loading Nooby Neural AI..."
+AIStatus.Visible = true
+end
+Util.NeuralAI.Mount(AIOverlay, {onClose = closeAI}, function(ok, err)
+if ok then
+AIStatus.Visible = false
+else
+AIStatus.Text = "Nooby Neural AI failed to load: " .. tostring(err) .. "\n(tap the AI button again to retry)"
+AIStatus.Visible = true
+end
+end)
+end
+UI.CreateButton(MainPage, "Nooby Neural AI >", 15).Activated:Connect(openAI)
+pcall(function()
+UIMainWindow:GetPropertyChangedSignal("Visible"):Connect(function()
+if not UIMainWindow.Visible then closeAI() end
+end)
 end)
 end
 local NoobyHubPage = UI.CreatePage()
