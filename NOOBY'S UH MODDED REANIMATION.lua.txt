@@ -19234,6 +19234,30 @@ Core.waiters = {}
 for _, f in ipairs(w) do pcall(f, ok, not ok and tostring(err) or nil) end
 end)
 end
+-- ===== JARVIS butler: greeting + alerts (AI_Butler.lua), with a plain greeting fallback if the module cannot load =====
+Core.Repo, Core.Dir, Core.butler = REPO, DIR, nil
+function Core.StartButler(api)
+api.repo, api.dir = REPO, DIR
+task.spawn(function()
+local okT, text = pcall(source, "AI_Butler")
+if okT and type(text) == "string" then
+local mod = compile("AI_Butler", text)
+if type(mod) == "table" and type(mod.start) == "function" then
+local ok, inst = pcall(mod.start, api)
+if ok and type(inst) == "table" then Core.butler = inst return end
+end
+end
+local t0 = os.clock()
+while os.clock() - t0 < 150 and api.introRunning() do task.wait(0.25) end
+t0 = os.clock()
+while os.clock() - t0 < 60 and not api.uiReady() do task.wait(0.25) end
+local lp = game:GetService("Players").LocalPlayer
+local name = lp and ((lp.DisplayName ~= "" and lp.DisplayName) or lp.Name) or "friend"
+local h = tonumber(os.date("%H")) or 12
+local per = (h >= 5 and h < 12) and "morning" or (h >= 12 and h < 17) and "afternoon" or "evening"
+pcall(api.notify, "JARVIS", ("Good %s, %s. All systems are standing by."):format(per, name))
+end)
+end
 pcall(function() local g = genv(); g.JarvisAI = Core; g.NoobyNeuralAI = Core end)
 return Core
 end)()
@@ -76877,6 +76901,7 @@ pcall(RefreshKeybinds)
 InitLogsText.Add("\n[LOG] Loaded " .. (#MovementStyles + #DanceableDances) .. " modules - " .. #MovementStyles .. " Movesets, " .. #DanceableDances .. " Dances.")
 InitLogsText.Add("\n[LOG] Init complete!")
 Util.UINotify("Init complete" .. (InitLogsText.HasError and " with errors" or ""))
+pcall(function() local b = Util.Jarvis and Util.Jarvis.butler if b then b.onInit(InitLogsText.Text) end end)
 if Util.ModuleProgress then Util.ModuleProgress.Done = Util.ModuleProgress.Total end
 Util.StaleBuiltins = {}
 IsUhhhhhhFullyLoaded = true
@@ -76904,6 +76929,47 @@ IsUhhhhhhFullyLoaded = true
 pcall(function() InitLogsText.Add("\n[ERROR] Module load aborted: " .. tostring(errR)) end)
 error(errR, 0)
 end
+end
+do
+local function jarvisShow(text, hold)
+local c = (Util.FX and Util.FX.Cfg) or {}
+local mode = c.NotifMode or 1
+if mode == 4 then return false end
+local ok = false
+if mode ~= 3 and Util.UINotify then
+local msg = "JARVIS: " .. text
+ok = pcall(Util.UINotify, msg, 1, true)
+if ok then
+task.spawn(function()
+local t0, step = os.clock(), math.max(1, (tonumber(c.NotifDuration) or 4) - 1)
+while true do
+task.wait(step)
+if os.clock() - t0 >= hold - 1 then break end
+pcall(Util.UINotify, msg, 1, true)
+end
+end)
+end
+end
+if mode ~= 2 or not ok then
+if pcall(function() game:GetService("StarterGui"):SetCore("SendNotification", {Title = "JARVIS", Text = text, Duration = hold}) end) then ok = true end
+end
+return ok
+end
+Util.Jarvis.StartButler({
+notify = function(_, text)
+text = tostring(text)
+local hold = math.clamp(#text / 14 + 3, 6, 15)
+return jarvisShow(text, hold), hold
+end,
+getTitle = function()
+local t = SaveData and SaveData.JarvisTitle
+if type(t) == "string" and t ~= "" then return t end
+end,
+introRunning = function() return (Util.IntroRunning or (Util.FX and Util.FX.IntroActive)) and true or false end,
+uiReady = function() return IsUhhhhhhFullyLoaded and true or false end,
+runCompat = function() return LimbReanimator.RunCompatCheck() end,
+getInitLog = function() if IsUhhhhhhFullyLoaded then return {text = InitLogsText.Text} end end,
+})
 end
 Util.FCMark("hub")
 UI.CreateSeparator(MainPage)
