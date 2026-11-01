@@ -18303,10 +18303,10 @@ end
 end)
 end
 end
--- ===== Nooby Neural AI shared core: ONE module set + ONE conversation state, mounted into the main UI or the Delta tab =====
-Util.NeuralAI = (function()
+-- ===== JARVIS shared core: ONE module set + ONE conversation state, mounted into the main UI or the Delta tab =====
+Util.Jarvis = (function()
 local REPO = "https://raw.githubusercontent.com/Elliot12-wq/Offline-Ai-system/main/"
-local DIR = "NoobyAI"
+local DIR = "NoobyAI" -- storage folder kept so existing JARVIS memory/cache persist
 local FILES = {"AI_Config", "AI_NLP", "AI_Memory", "AI_Knowledge", "AI_Retrieval", "AI_Personality", "AI_Neural", "AI_Generator", "AI_UI"}
 local UI_PATCH = {
 {[====[function UI.init(c) ctx, Config = c, c.Config end]====], [====[function UI.init(c) ctx, Config = c, c.Config end
@@ -18432,6 +18432,9 @@ for _, p in ipairs(UI_PATCH) do
 local i, j = text:find(p[1], 1, true)
 if i then text = text:sub(1, i - 1) .. p[2] .. text:sub(j + 1) end
 end
+end
+for _, p in ipairs({{"Nooby Neural AI", "JARVIS"}, {"NOOBY NEURAL AI", "JARVIS"}, {"Nooby AI", "JARVIS"}}) do
+text = text:gsub(p[1]:gsub("%p", "%%%0"), (p[2]:gsub("%%", "%%%%")))
 end
 local mod, err = compile(name, text)
 if type(mod) ~= "table" then return nil, name .. ": " .. tostring(err) end
@@ -18599,7 +18602,7 @@ Core.waiters = {}
 for _, f in ipairs(w) do pcall(f, ok, not ok and tostring(err) or nil) end
 end)
 end
-pcall(function() genv().NoobyNeuralAI = Core end)
+pcall(function() local g = genv(); g.JarvisAI = Core; g.NoobyNeuralAI = Core end)
 return Core
 end)()
 
@@ -44730,7 +44733,7 @@ task.defer(function()
 	local getCurrentSectionName
 	local sidebarCurrentSection = nil
 	local autoCloseOnLoad = true
-	local sectionsList = { "Executor", "Home", "Scripthub", "Settings", "Console", "Music", "NoobyAI" }
+	local sectionsList = { "Executor", "Home", "Scripthub", "Settings", "Console", "Music", "JarvisAI" }
 	local gestureWidthValue = Instance.new("NumberValue")
 	gestureWidthValue.Name = "GestureWidthValue"
 	gestureWidthValue.Value = sidebarGestureWidth
@@ -45854,7 +45857,7 @@ if type(__lt.deltaPatchState.visualEnv) == "table" and not __lt.deltaPatchState.
 				return
 			end
 		end
-		local sectionsList = { "Executor", "Home", "Scripthub", "Settings", "Console", "Music", "NoobyAI" }
+		local sectionsList = { "Executor", "Home", "Scripthub", "Settings", "Console", "Music", "JarvisAI" }
 		local settingsPath = "DeltaCustom/Settings.json"
 		local settingsConfig = {}
 		if HS and type(isfile) == "function" and type(readfile) == "function" and isfile(settingsPath) then
@@ -46489,7 +46492,7 @@ local sec = {
 	"Settings",
 	"Console",
 	"Music",
-	"NoobyAI",
+	"JarvisAI",
 }
 
 local musicState = {
@@ -46717,7 +46720,7 @@ function syncTabColors(forceTab)
 		Settings = sidebarRefs.settings,
 		Console = sidebarRefs.console,
 		Music = musicState.button,
-		NoobyAI = musicState.aiButton,
+		JarvisAI = musicState.aiButton,
 	}
 	for n, b in map do
 		applyBtnState(b, curTab == n)
@@ -49707,23 +49710,23 @@ end
 
 musicState.setupSidebar()
 
--- ===== Nooby Neural AI tab (Delta): mounts the shared main-script AI core (Util.NeuralAI) into this page =====
+-- ===== JARVIS tab (Delta): mounts the shared main-script AI core (Util.Jarvis) into this page =====
 do
 	local ai = { tween = nil }
 	local function getCore()
 		local env = __dcm_boot and __dcm_boot.hostEnv
-		local c = type(env) == "table" and rawget(env, "NoobyNeuralAI") or nil
+		local c = type(env) == "table" and (rawget(env, "JarvisAI") or rawget(env, "NoobyNeuralAI")) or nil
 		if type(c) ~= "table" then
 			local okg, g = pcall(function()
 				return getgenv and getgenv()
 			end)
-			c = okg and type(g) == "table" and rawget(g, "NoobyNeuralAI") or rawget(_G, "NoobyNeuralAI")
+			c = okg and type(g) == "table" and (rawget(g, "JarvisAI") or rawget(g, "NoobyNeuralAI")) or (rawget(_G, "JarvisAI") or rawget(_G, "NoobyNeuralAI"))
 		end
 		return type(c) == "table" and c or nil
 	end
 	local base = sh or hm or se or ex or co
 	local aiPage = mk("Frame", {
-		Name = "NoobyAI",
+		Name = "JarvisAI",
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = musicState.closedPos,
 		Size = base and base.Size or UDim2.new(0.848344803, 0, 0.892481446, 0),
@@ -49745,7 +49748,7 @@ do
 		end
 	end
 	local aiHost = mk("Frame", {
-		Name = "LT_NoobyAI",
+		Name = "LT_JarvisAI",
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.new(0.5, 0, 0.5, 0),
 		Size = UDim2.new(1, -16, 1, -16),
@@ -49778,11 +49781,11 @@ do
 	musicState.aiEnsure = function()
 		local core = getCore()
 		if not core then
-			setStatus("Nooby Neural AI core is unavailable. Run the main script so the shared AI core is loaded.")
+			setStatus("JARVIS core is unavailable. Run the main script so the shared AI core is loaded.")
 			return
 		end
 		if not core.IsReady() then
-			setStatus("Loading Nooby Neural AI…")
+			setStatus("Loading JARVIS…")
 		end
 		core.Mount(aiHost, {
 			onClose = function()
@@ -49837,7 +49840,7 @@ do
 		aiTween(musicState.openPos, true, false)
 		musicState.aiEnsure()
 		task.defer(function()
-			syncTabColors("NoobyAI")
+			syncTabColors("JarvisAI")
 		end)
 	end
 	musicState.aiClose = function(anim)
@@ -49860,13 +49863,13 @@ do
 	local srcBtn = musicState.sourceButton or sidebarRefs.console or musicState.button or sidebarRefs.scripthub
 	if srcBtn then
 		local btn = srcBtn:Clone()
-		btn.Name = "NoobyAI"
+		btn.Name = "JarvisAI"
 		btn.Parent = srcBtn.Parent
 		musicState.aiButton = btn
 		st.pg.aiButton = btn
 		local lbl = txtOf(btn)
 		if lbl then
-			lbl.Text = "Nooby Neural AI"
+			lbl.Text = "JARVIS"
 			pcall(function()
 				lbl.TextWrapped = true
 				lbl.TextScaled = true
@@ -54989,7 +54992,7 @@ do
         local sidebar = findDescendant("Sidebar")
         local executor = findDescendant("Executor")
         local currentPage
-        for _, name in { "Home", "Executor", "Scripthub", "Settings", "Console", "Music", "NoobyAI" } do
+        for _, name in { "Home", "Executor", "Scripthub", "Settings", "Console", "Music", "JarvisAI" } do
             local p = findDescendant(name)
             if p and p:IsA("GuiObject") and p.Visible then
                 currentPage = p
@@ -55402,7 +55405,7 @@ do
     end
 
     local function currentVisiblePage()
-        for _, name in { "Home", "Executor", "Scripthub", "Settings", "Console", "Music", "NoobyAI" } do
+        for _, name in { "Home", "Executor", "Scripthub", "Settings", "Console", "Music", "JarvisAI" } do
             local p = __iuiParent:FindFirstChild(name, true)
             if p and p:IsA("GuiObject") and p.Visible then
                 return p
@@ -56199,7 +56202,7 @@ do
     end
 
     local function watchPages()
-        local pageNames = { "Home", "Executor", "Scripthub", "Settings", "Console", "Music", "NoobyAI" }
+        local pageNames = { "Home", "Executor", "Scripthub", "Settings", "Console", "Music", "JarvisAI" }
         for _, name in pageNames do
             local page = __iuiParent:FindFirstChild(name, true)
             if page and page:IsA("GuiObject") then
@@ -62922,15 +62925,6 @@ end
 if self.Inputs.GP.JB then
 self.Jump = true
 end
-local FC = Reanimate.Freecam
-if FC then
-if FC.Active then
-FC.Move, FC.Jump = self.Move, self.Jump
-self.Move, self.Jump = Vector3.zero, false
-else
-FC.Move, FC.Jump = Vector3.zero, false
-end
-end
 end)
 end
 do
@@ -63119,120 +63113,6 @@ end)
 MobileShiftlock.Activated:Connect(function()
 Reanimate.Shiftlocked = Reanimate.ShiftlockEnabled and not Reanimate.Shiftlocked
 end)
-do
-local CAS = game:GetService("ContextActionService")
-local F = {Active = false, Speed = math.clamp(tonumber(SaveData.FreecamSpeed) or 32, 1, 256), Boost = 3, Move = Vector3.zero, Jump = false, UpHeld = false, DownHeld = false, Pan = Vector3.zero, Pos = Vector3.zero, Yaw = 0, Pitch = 0, sYaw = 0, sPitch = 0, Vel = Vector3.zero, Hooks = {}}
-Reanimate.Freecam = F
-local gui = Instance.new("Frame")
-gui.Name = "FreecamControls"
-gui.BackgroundTransparency = 1
-gui.AnchorPoint = Vector2.new(1, 0.5)
-gui.Position = UDim2.new(1, -10, 0.5, 0)
-gui.Size = UDim2.fromOffset(60, 168)
-gui.Visible = false
-gui.ZIndex = 50
-gui.Parent = SCREENGUI
-local function mkBtn(txt, y)
-local b = Instance.new("TextButton")
-b.Size = UDim2.fromOffset(48, 48)
-b.Position = UDim2.fromOffset(6, y)
-b.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
-b.BackgroundTransparency = 0.3
-b.AutoButtonColor = false
-b.Text = txt
-b.TextColor3 = Color3.new(1, 1, 1)
-b.Font = Enum.Font.GothamBold
-b.TextSize = 16
-b.ZIndex = 50
-local c = Instance.new("UICorner")
-c.CornerRadius = UDim.new(1, 0)
-c.Parent = b
-b.Parent = gui
-return b
-end
-local function isPress(i)
-return i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1
-end
-local function hold(b, key)
-b.InputBegan:Connect(function(i) if isPress(i) then F[key] = true end end)
-b.InputEnded:Connect(function(i) if isPress(i) then F[key] = false end end)
-end
-local exitB, upB, dnB = mkBtn("X", 0), mkBtn("UP", 60), mkBtn("DN", 120)
-hold(upB, "UpHeld")
-hold(dnB, "DownHeld")
-exitB.Activated:Connect(function() F.Set(false) end)
-local SINK = "UhFreecamSink"
-local function sink() return Enum.ContextActionResult.Sink end
-function F.SetSpeed(v)
-v = math.clamp(v, 1, 256)
-if math.abs(v - F.Speed) < 0.001 then return end
-F.Speed = v
-SaveData.FreecamSpeed = v
-if F.OnSpeed then pcall(F.OnSpeed, v) end
-end
-function F.Set(on)
-on = on and true or false
-if on == F.Active then return end
-if on then
-if not Camera then return end
-local cf = Camera.CFrame
-local rx, ry = cf:ToEulerAnglesYXZ()
-F.Pos, F.Yaw, F.Pitch, F.sYaw, F.sPitch = cf.Position, ry, rx, ry, rx
-F.Vel, F.Pan, F.Restore = Vector3.zero, Vector3.zero, nil
-F.Active = true
-pcall(function()
-CAS:BindActionAtPriority(SINK, sink, false, Enum.ContextActionPriority.High.Value + 1, Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D, Enum.KeyCode.Space, Enum.KeyCode.Up, Enum.KeyCode.Down, Enum.KeyCode.Left, Enum.KeyCode.Right, Enum.KeyCode.ButtonA, Enum.KeyCode.Thumbstick1)
-end)
-else
-F.Active = false
-F.UpHeld, F.DownHeld = false, false
-F.Move, F.Jump = Vector3.zero, false
-pcall(function() CAS:UnbindAction(SINK) end)
-F.Restore = {t = 0, from = Camera and Camera.CFrame or CFrame.new()}
-end
-gui.Visible = on and UserInputService.TouchEnabled
-for _, h in ipairs(F.Hooks) do pcall(h, on) end
-pcall(Util.UINotify, "Freecam " .. (on and "ON" or "OFF"))
-end
-function F.Step(dt)
-if not Camera then return end
-if F.Active then
-local pan = F.Pan
-F.Pan = Vector3.zero
-F.Yaw -= pan.X
-F.Pitch = math.clamp(F.Pitch - pan.Y, -1.5, 1.5)
-if pan.Z ~= 0 then F.SetSpeed(F.Speed * math.exp(-pan.Z * 0.12)) end
-local a = 1 - math.exp(-30 * dt)
-F.sYaw += (F.Yaw - F.sYaw) * a
-F.sPitch += (F.Pitch - F.sPitch) * a
-local rot = CFrame.Angles(0, F.sYaw, 0) * CFrame.Angles(F.sPitch, 0, 0)
-local typing = UserInputService:GetFocusedTextBox() ~= nil
-local m = F.Move
-local v = rot:VectorToWorldSpace(Vector3.new(m.X, 0, m.Z))
-local up = (F.Jump or F.UpHeld or (not typing and UserInputService:IsKeyDown(Enum.KeyCode.E))) and 1 or 0
-local down = (F.DownHeld or (not typing and (UserInputService:IsKeyDown(Enum.KeyCode.Q) or UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)))) and 1 or 0
-v += Vector3.new(0, up - down, 0)
-if v.Magnitude > 1 then v = v.Unit end
-local boost = (not typing and UserInputService:IsKeyDown(Enum.KeyCode.LeftShift)) and F.Boost or 1
-F.Vel = F.Vel:Lerp(v * F.Speed * boost, 1 - math.exp(-10 * dt))
-F.Pos += F.Vel * dt
-local cf = CFrame.new(F.Pos) * rot
-Camera.CFrame, Camera.Focus = cf, cf * CFrame.new(0, 0, -16)
-elseif F.Restore then
-local r = F.Restore
-r.t += dt
-local a = math.clamp(r.t / 0.5, 0, 1)
-a = a * a * (3 - 2 * a)
-Camera.CFrame = r.from:Lerp(Camera.CFrame, a)
-if r.t >= 0.5 then F.Restore = nil end
-end
-end
-UserInputService.InputBegan:Connect(function(input)
-if input.KeyCode == Enum.KeyCode.M and (UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift)) and not UserInputService:GetFocusedTextBox() then
-F.Set(not F.Active)
-end
-end)
-end
 RunService:BindToRenderStep("Uhhhhhh_Camera", Enum.RenderPriority.Camera.Value + 1, function(dt)
 self.VRMode = VRService.VREnabled
 if UserInputService:GetFocusedTextBox() then
@@ -63247,13 +63127,6 @@ end
 self:OnPanInput(self.Inputs.GP.DJ * Vector2.new(1, 0.77) * math.rad(4) * 60 * dt * GameSettings.GamepadCameraSensitivity, true)
 local input = self.Input * Vector3.new(1, GameSettings:GetCameraYInvertValue(), 1)
 self.Input = Vector3.zero
-do
-local FC = Reanimate.Freecam
-if FC and FC.Active then
-FC.Pan += input
-input = Vector3.zero
-end
-end
 local zoomDelta = input.Z
 if math.abs(zoomDelta) > 0 then
 if zoomDelta > 0 then
@@ -63365,7 +63238,6 @@ for _,v in Reanimate.CharacterLTMs do
 v.LocalTransparencyModifier = ltm
 end
 end
-Reanimate.Freecam.Step(dt)
 pcall(function() CoreGui.TopBarApp.TopBarApp.FullScreenFrame.HurtOverlay.Visible = false end)
 end)
 end
@@ -66944,6 +66816,215 @@ return FakeTool
 end
 local BaseParts = {}
 local UnknownMotor6Ds = {}
+local Ragdoll = LimbReanimator.RagdollMode and true or false
+local RagdollParts, RagdollByPart, RGWC, RagdollWarned = {}, {}, {}, {}
+local RagdollZero = Vector3.zero
+local function RagdollFinite(p)
+return p.X == p.X and p.Y == p.Y and p.Z == p.Z and math.abs(p.X) < 1e7 and math.abs(p.Y) < 1e7 and math.abs(p.Z) < 1e7
+end
+local function RagdollFiniteCF(cf)
+local x, y, z, a, b, c, d, e, f, g, h, i = cf:GetComponents()
+return math.abs(x) < 1e7 and math.abs(y) < 1e7 and math.abs(z) < 1e7 and math.abs(a) <= 1.01 and math.abs(b) <= 1.01 and math.abs(c) <= 1.01 and math.abs(d) <= 1.01 and math.abs(e) <= 1.01 and math.abs(f) <= 1.01 and math.abs(g) <= 1.01 and math.abs(h) <= 1.01 and math.abs(i) <= 1.01
+end
+local function RagdollJointPose(mv, rel)
+local c0, c1 = mv.C0, mv.C1
+return c0 * (c0:Inverse() * rel * c1).Rotation * c1:Inverse()
+end
+local function RagdollRelease(map, restore)
+local rg = map.RG
+if not rg then return end
+map.RG, map.RT = nil, nil
+if rg.Conn then
+rg.Conn:Disconnect()
+rg.Conn = nil
+end
+for _,o in {rg.AP, rg.AO, rg.DA, rg.BS, rg.A0, rg.A1, rg.PX} do
+pcall(o.Destroy, o)
+end
+if RagdollByPart[rg.P1] == map then
+RagdollByPart[rg.P1] = nil
+RagdollParts[rg.P1] = nil
+end
+if restore and rg.Motor then
+pcall(function() rg.Motor.Enabled = true end)
+end
+end
+local function GameHasSocket(p0, p1)
+local model = p1.Parent
+if not model then return false end
+for _,d in model:GetDescendants() do
+if d:IsA("BallSocketConstraint") and d.Name ~= "RagdollSocket" then
+local a, b = d.Attachment0, d.Attachment1
+local x, y = a and a.Parent, b and b.Parent
+if (x == p0 and y == p1) or (x == p1 and y == p0) then return true end
+end
+end
+return false
+end
+local RagdollRoot
+local function RagdollFolder()
+if not (RagdollRoot and RagdollRoot.Parent) then
+RagdollRoot = Instance.new("Folder")
+RagdollRoot.Name = "RGP" .. math.random(100000, 999999)
+RagdollRoot.Parent = workspace
+end
+return RagdollRoot
+end
+local function RagdollClean()
+if RagdollRoot then
+pcall(RagdollRoot.Destroy, RagdollRoot)
+RagdollRoot = nil
+end
+end
+local function Ragdollize(map, v, kp0, kp1)
+local p0, p1 = kp0 or v.Part0, kp1 or v.Part1
+if not (p0 and p1) then return end
+local hum = p1.Parent and p1.Parent:FindFirstChildOfClass("Humanoid")
+if hum then
+hum.RequiresNeck = false
+hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+end
+local rg = map.RG
+if rg and rg.P1 == p1 and rg.PX and rg.PX.Parent and rg.AP.Parent and rg.AO.Parent then
+rg.Motor, rg.P0 = v, p0
+else
+if rg then RagdollRelease(map) end
+rg = {P0 = p0, P1 = p1, Motor = v, Fresh = true}
+local px = Instance.new("Part")
+px.Name = "RagdollProxy"
+px.Size = p1.Size
+px.Transparency = 1
+px.CanCollide, px.CanTouch, px.CanQuery = false, false, false
+px.CFrame = p1.CFrame
+px.Parent = RagdollFolder()
+local da = Instance.new("Attachment")
+da.Name = "RagdollDrive"
+da.Parent = px
+local stiff = LimbReanimator.RagdollStiffness or 100
+local ap = Instance.new("AlignPosition")
+ap.Name = "RagdollAP"
+ap.Mode = Enum.PositionAlignmentMode.OneAttachment
+ap.Attachment0 = da
+ap.ApplyAtCenterOfMass = true
+ap.RigidityEnabled = false
+ap.MaxForce, ap.MaxVelocity = math.huge, math.huge
+ap.Responsiveness = stiff
+ap.Position = px.Position
+ap.Parent = px
+local ao = Instance.new("AlignOrientation")
+ao.Name = "RagdollAO"
+ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+ao.Attachment0 = da
+ao.RigidityEnabled = false
+ao.MaxTorque, ao.MaxAngularVelocity = math.huge, math.huge
+ao.Responsiveness = stiff
+ao.CFrame = px.CFrame
+ao.Parent = px
+rg.PX, rg.DA, rg.AP, rg.AO = px, da, ap, ao
+map.RG = rg
+end
+RagdollByPart[p1] = map
+end
+local function RagdollWorld(part)
+local c = RGWC[part]
+if c then return c end
+local m = RagdollByPart[part]
+if m and m.RT and m.RG then
+c = RagdollWorld(m.RG.P0) * m.RT
+else
+c = part.CFrame
+end
+RGWC[part] = c
+return c
+end
+local function RagdollSample(RootPart)
+local rc = RootPart.CFrame
+for _,map in LimbMapping do
+local rg = map.RG
+if rg then
+rg.Act = nil
+local px = rg.PX
+if px and px.Parent and map.Reference and not rg.Fresh then
+local pw
+if rg.P0 == RootPart then
+pw = rc
+else
+local pm = RagdollByPart[rg.P0]
+local ppx = pm and pm.RG and pm.RG.PX
+if ppx and ppx.Parent then pw = ppx.CFrame end
+end
+if pw then
+local rel = pw:ToObjectSpace(px.CFrame)
+if RagdollFiniteCF(rel) then
+local mv = rg.Motor
+if rg.P0 ~= RootPart and mv and mv.Parent then rel = RagdollJointPose(mv, rel) end
+if RagdollFiniteCF(rel) then rg.Act = rel end
+end
+end
+end
+end
+end
+end
+local function RagdollDrive(RootPart)
+table.clear(RGWC)
+RGWC[RootPart] = RootPart.CFrame
+local now = os.clock()
+for _,map in LimbMapping do
+local rg = map.RG
+if rg and map.Reference then
+local p1 = rg.P1
+if not (rg.PX.Parent and rg.AP.Parent and rg.AO.Parent) and p1.Parent and rg.Motor and now - (rg.Rebuilt or 0) > 0.25 then
+local rp0, motor = rg.P0, rg.Motor
+RagdollRelease(map)
+pcall(Ragdollize, map, motor, rp0, p1)
+rg = map.RG
+if rg then rg.Rebuilt = now end
+end
+if rg and rg.PX.Parent and rg.AP.Parent and rg.AO.Parent then
+local px = rg.PX
+local w = RagdollWorld(p1)
+local pos = w.Position
+if RagdollFiniteCF(w) then
+if rg.Fresh then
+rg.Fresh = nil
+px.CFrame = w
+px.AssemblyLinearVelocity = RagdollZero
+px.AssemblyAngularVelocity = RagdollZero
+end
+if map.RPart0 ~= "ROOT" and not (rg.BS and rg.BS.Parent and rg.A0.Parent) then
+local pm = RagdollByPart[rg.P0]
+local ppx = pm and pm.RG and pm.RG.PX
+local mv = rg.Motor
+if ppx and ppx.Parent and mv and mv.Parent then
+for _,o in {rg.A0, rg.A1, rg.BS} do
+pcall(o.Destroy, o)
+end
+local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
+a0.Name, a1.Name = "RagdollA0", "RagdollA1"
+a0.CFrame, a1.CFrame = mv.C0, mv.C1
+a0.Parent, a1.Parent = ppx, px
+local bs = Instance.new("BallSocketConstraint")
+bs.Name = "RagdollSocket"
+bs.LimitsEnabled = false
+bs.TwistLimitsEnabled = false
+bs.Attachment0, bs.Attachment1 = a0, a1
+bs.Parent = px
+rg.A0, rg.A1, rg.BS = a0, a1, bs
+end
+end
+local pcf = px.CFrame
+if not RagdollFiniteCF(pcf) or (pcf.Position - pos).Magnitude > 8 then
+px.CFrame = w
+px.AssemblyLinearVelocity = RagdollZero
+px.AssemblyAngularVelocity = RagdollZero
+end
+rg.AP.Position = pos
+rg.AO.CFrame = w
+end
+end
+end
+end
+end
 local CharOnDesc = function(v)
 if v:IsA("BasePart") then
 if not table.find(BaseParts, v) then
@@ -66962,6 +67043,7 @@ p0, p1 = p0.Name, p1.Name
 for _,map in LimbMapping do
 if map.Part0 == p0 and map.Part1 == p1 then
 map.Reference = v
+if Ragdoll then pcall(Ragdollize, map, v) end
 return
 end
 end
@@ -67035,8 +67117,12 @@ end)
 lastspawn = os.clock()
 table.clear(BaseParts)
 table.clear(UnknownMotor6Ds)
+table.clear(RagdollParts)
+table.clear(RagdollByPart)
 for _,map in LimbMapping do
 map.Reference = nil
+if map.RG then RagdollRelease(map) end
+map.RG, map.RT = nil, nil
 end
 character.DescendantAdded:Connect(CharOnDesc)
 for _,v in character:GetDescendants() do
@@ -67123,10 +67209,26 @@ end
 for _,v in UnknownMotor6Ds do
 Util.SetMotor6DTransform(v, CFrame.identity)
 end
+if Ragdoll then RagdollSample(RootPart) end
 for _,map in LimbMapping do
 local v = map.Reference
 if v then
+if map.RG then
 if flingtarget then
+map.RT = v.C0 * v.C1:Inverse()
+pcall(Util.SetMotor6DTransform, v, CFrame.identity)
+else
+local cf = Reanimate.LimbPoseCFrame(map, v, ReanimCharacter, RootPart)
+if cf ~= CFrame.identity and (dorep or not map.CFrame) then
+map.CFrame = cf
+end
+map.RT = map.CFrame
+local rg = map.RG
+if dorep or not rg.Out then rg.Out = rg.Act or map.CFrame end
+if rg.Out and not RagdollFiniteCF(rg.Out) then rg.Out = map.CFrame end
+if rg.Out then pcall(Util.SetMotor6DOffset, v, rg.Out) end
+end
+elseif flingtarget then
 Util.SetMotor6DTransform(v, CFrame.identity)
 else
 local cf = Reanimate.LimbPoseCFrame(map, v, ReanimCharacter, RootPart)
@@ -67137,6 +67239,7 @@ Util.SetMotor6DOffset(v, map.CFrame)
 end
 end
 end
+if Ragdoll then RagdollDrive(RootPart) end
 end
 Reanimate.Starting = false
 local rebuildWindowStart, rebuildCount, lastRebuild, rebuildGaveUp = 0, 0, 0, false
@@ -67194,8 +67297,10 @@ end
 local nowc, fpb, vz, infoT = os.clock(), Reanimate.FirstPersonBody and true or false, LOPT.vz, LOPT.info
 for _,v in BaseParts do
 if v.CanCollide then v.CanCollide = false end
+if not RagdollParts[v] then
 if v.Velocity ~= vz then v.Velocity = vz end
 if v.RotVelocity ~= vz then v.RotVelocity = vz end
+end
 local info = infoT[v]
 if not info or nowc - info.at > 1 or info.fpb ~= fpb then
 info = {at = nowc, fpb = fpb, tool = v:FindFirstAncestorWhichIsA("Tool") ~= nil, head = false}
@@ -67333,6 +67438,10 @@ end
 table.clear(LimbReanimator.FlingTargets)
 table.clear(LimbReanimator._TempNotFling)
 CharConn:Disconnect()
+if Ragdoll then
+for _,map in LimbMapping do RagdollRelease(map) end
+RagdollClean()
+end
 if Player.Character then
 local h = Player.Character:FindFirstChild("Humanoid")
 if h then
@@ -67342,6 +67451,36 @@ end
 end
 Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
+end
+do
+SaveData.Reanimator.RagdollStiffness = SaveData.Reanimator.RagdollStiffness or 100
+LimbReanimator.RagdollStiffness = SaveData.Reanimator.RagdollStiffness
+local RagdollReanimator = setmetatable({Name = "Ragdoll"}, {__index = LimbReanimator})
+Reanimate.RagdollReanimator = RagdollReanimator
+function RagdollReanimator.Config(parent)
+UI.CreateText(parent, "Ragdoll Reanimation: your real limbs are detached into BallSocket ragdoll limbs and physically driven to the reanimated pose.\nUses the Limb Reanimator settings below.", 10, Enum.TextXAlignment.Center)
+LimbReanimator.Config(parent)
+local sl = UI.CreateSlider(parent, "Ragdoll Stiffness", LimbReanimator.RagdollStiffness, 10, 200, 1)
+sl.Changed:Connect(function(val)
+val = math.clamp(val, 10, 200)
+LimbReanimator.RagdollStiffness = val
+SaveData.Reanimator.RagdollStiffness = val
+end)
+UI.CreateText(parent, "^^^ how hard the ragdoll limbs are pulled to the pose (applies on the next Reanimate)", 10, Enum.TextXAlignment.Center)
+end
+function RagdollReanimator.Start()
+LimbReanimator.RagdollMode = true
+local ok, err = pcall(LimbReanimator.Start)
+LimbReanimator.RagdollMode = nil
+if not ok then
+warn("[Ragdoll Reanimator] failed to start: " .. tostring(err))
+pcall(Util.Notify, "Ragdoll Reanimator failed to start (see console): " .. tostring(err))
+pcall(Reanimate.DestroyCharacter)
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+Reanimate.Stopping = false
+end
+end
 end
 local HatReanimator = {}
 HatReanimator.Name = "Hats"
@@ -70782,13 +70921,18 @@ if not SaveData.ReanimSel8 then
 SaveData.ReanimSel8 = true
 if SaveData.SelectedReanimator == 5 then SaveData.SelectedReanimator = 4 end
 end
-if SaveData.SelectedReanimator > 3 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
+if not SaveData.ReanimSelRagdoll then
+SaveData.ReanimSelRagdoll = true
+if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end
+end
+if SaveData.SelectedReanimator > 4 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
 Util.FCMark("reanim")
 
 local ReanimMethods = {
 {LimbReanimator, "Limb Reanimator"},
 {HatReanimator, "Hats Reanimator"},
 {Reanimate.ToolReanimator, "Tool Reanimation"},
+{Reanimate.RagdollReanimator, "Ragdoll Reanimator"},
 }
 local ReanimMethodNames = {}
 for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
@@ -71048,16 +71192,6 @@ PlaceholderTransparencySlider.Value = val
 Reanimate.PlaceholderTransparency = val
 SaveData.PlaceholderTransparency = val
 end)
-do
-local F = Reanimate.Freecam
-local FreecamSwitch = UI.CreateSwitch(MainPage, "Freecam (Shift + M)", F.Active)
-FreecamSwitch.Changed:Connect(function(val) F.Set(val) end)
-local FreecamSpeedSlider = UI.CreateSlider(MainPage, "Freecam Speed", F.Speed, 1, 256, 1)
-FreecamSpeedSlider.Changed:Connect(function(val) F.SetSpeed(val) end)
-F.Hooks[#F.Hooks + 1] = function(on) if FreecamSwitch.Value ~= on then FreecamSwitch.Value = on end end
-F.OnSpeed = function(v) if FreecamSpeedSlider.Value ~= v then FreecamSpeedSlider.Value = v end end
-UI.CreateText(MainPage, "Detaches the camera; reanimation keeps running. WASD move, Space/E up, Q/Ctrl down, Shift boost, wheel/pinch = speed. Mobile: stick + UP/DN/X buttons.", 10, Enum.TextXAlignment.Center)
-end
 Util.FCMark("perf")
 UI.CreateSeparator(MainPage)
 do
@@ -71326,7 +71460,7 @@ end
 local hats
 if cur == HatReanimator then
 hats = true
-elseif cur == LimbReanimator then
+elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator then
 hats = false
 else
 hats = (SaveData.SelectedReanimator == 2)
@@ -74622,24 +74756,25 @@ AIStatus.Text = ""
 AIStatus.Visible = false
 local function closeAI()
 AIOverlay.Visible = false
-pcall(Util.NeuralAI.Flush)
+pcall(Util.Jarvis.Flush)
 end
 local function openAI()
 AIOverlay.Visible = true
-if not Util.NeuralAI.IsReady() then
-AIStatus.Text = "Loading Nooby Neural AI..."
+if not Util.Jarvis.IsReady() then
+AIStatus.Text = "Loading JARVIS..."
 AIStatus.Visible = true
 end
-Util.NeuralAI.Mount(AIOverlay, {onClose = closeAI}, function(ok, err)
+Util.Jarvis.Mount(AIOverlay, {onClose = closeAI}, function(ok, err)
 if ok then
 AIStatus.Visible = false
 else
-AIStatus.Text = "Nooby Neural AI failed to load: " .. tostring(err) .. "\n(tap the AI button again to retry)"
+AIStatus.Text = "JARVIS failed to load: " .. tostring(err) .. "\n(tap the AI button again to retry)"
 AIStatus.Visible = true
 end
 end)
 end
-UI.CreateButton(MainPage, "Nooby Neural AI >", 15).Activated:Connect(openAI)
+Util.OpenJarvis = openAI
+UI.CreateButton(MainPage, "JARVIS >", 15).Activated:Connect(openAI)
 pcall(function()
 UIMainWindow:GetPropertyChangedSignal("Visible"):Connect(function()
 if not UIMainWindow.Visible then closeAI() end
@@ -76733,6 +76868,10 @@ UI.CreateButton(Hub, "&lt; Back", 20).Activated:Connect(closePage)
 UI.CreateText(Hub, "<b>FEATURE CENTER</b>", 15, Enum.TextXAlignment.Center)
 UI.CreateText(Hub, "<font color=\"#AAAAAA\">Every option of the main page, sorted into categories.</font>", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(Hub)
+UI.CreateButton(Hub, "JARVIS &gt;", 20).Activated:Connect(function()
+if Util.OpenJarvis then Util.OpenJarvis() end
+end)
+UI.CreateText(Hub, "<font color=\"#AAAAAA\">Chat with the built-in JARVIS</font>", 10, Enum.TextXAlignment.Center)
 local pages = {}
 local moves = {}
 local function openCat(page)
