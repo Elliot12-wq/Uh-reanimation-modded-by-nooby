@@ -358,39 +358,413 @@ local t = d.Tier or 4
 return t <= 1 or (t == 2 and d.Mobile == true)
 end
 do
-local avg, evalT, badT, goodT = 1 / 60, 0, 0, 0
-local dwell, engagedAt, releasedAt = 12, 0, -1e9
-local cap = 0
-pcall(function() if type(getfpscap) == "function" then cap = tonumber(getfpscap()) or 0 end end)
-RunService.Heartbeat:Connect(function(dt)
+-- Adaptive Performance Engine: 5 profiles, device-seeded start, FPS governor, manual override, VFX scaling
+local Perf = {}
+FX.Perf = Perf
+local floor, max, min, clock = math.floor, math.max, math.min, os.clock
+local NAMES = {"Ultra", "High", "Balanced", "Low", "Potato"}
+Perf.Names = NAMES
+Gov.Level = 1
+-- stride: UI/chrome frame skipping | vfx: particle Rate multiplier | trail/beam/shad/spot/bloom/sun/dof: feature kept on
+-- gs: GlobalShadows | q: QualityLevel | deco: terrain decoration+water | mesh: cap mesh detail | capM/capD: fps cap mobile/desktop
+-- sim: SimulationRadius refresh interval (s) | ray: void-raycast stride in RC loop | uifps: LowEnd UI fps | low: (unused - engine never auto-enables LowEnd UI mode)
+local P = {
+{stride = 1, vfx = 1, trail = true, beam = true, shad = true, spot = true, bloom = true, sun = true, dof = true, gs = true, deco = true, sim = 0, ray = 1, uifps = 30},
+{stride = 1, vfx = 0.75, trail = true, beam = true, shad = true, spot = true, bloom = true, sun = true, dof = false, gs = true, deco = true, sim = 0, ray = 1, uifps = 30},
+{stride = 1, vfx = 0.5, trail = true, beam = true, shad = false, spot = true, bloom = true, sun = false, dof = false, gs = false, q = 5, deco = true, sim = 0.25, ray = 1, uifps = 30},
+{stride = 1, vfx = 0.25, trail = false, beam = false, shad = false, spot = true, bloom = true, sun = false, dof = false, gs = false, q = 3, deco = false, mesh = true, capM = 60, sim = 0.5, ray = 2, uifps = 30},
+{stride = 1, vfx = 0.08, trail = false, beam = false, shad = false, spot = false, bloom = false, sun = false, dof = false, gs = false, q = 1, deco = false, mesh = true, capM = 30, sim = 1, ray = 3, uifps = 30},
+}
+Perf.Profiles = P
+local Cur = P[1]
+local level, ceiling, startLv, mode, seeded = nil, 1, 1, "auto", false
+local userLow, engineSet = false, false
+local listeners = {}
+Perf.RayStride = 1
+-- ---------- instance scaling (particles / trails / beams / lights / post effects) ----------
+local CLS = {ParticleEmitter = 1, Trail = 2, Beam = 3, PointLight = 4, SpotLight = 4, SurfaceLight = 4, BloomEffect = 5, SunRaysEffect = 5, DepthOfFieldEffect = 5}
+local POST = {BloomEffect = "bloom", SunRaysEffect = "sun", DepthOfFieldEffect = "dof"}
+local Rec = setmetatable({}, {__mode = "k"})
+local Mod = {}
+local Q, qh, qt = {}, 1, 0
+local active, modI, modPrune, restoring = false, nil, false, false
+local scanList, scanI, pruneT = nil, 1, 0
+local addedA, addedB, conn
+local BUDGET = 0.0012
+local function offBool(inst, r, prop, off)
+if off then
+if inst[prop] == true then inst[prop] = false r[prop] = true end
+elseif r[prop] then
+if inst[prop] == false then inst[prop] = true end
+r[prop] = nil
+end
+end
+local function applyOne(inst, p)
+local r = Rec[inst]
+if not r then return end
+local cn = inst.ClassName
+local k = CLS[cn]
+if k == 1 then
+local cur, a = inst.Rate, r.a
+if p.vfx >= 1 then
+if a ~= nil then
+if cur == a then inst.Rate = r.o end
+r.a, r.o = nil, nil
+end
+else
+local base = (a ~= nil and cur == a) and r.o or cur
+local want = base * p.vfx
+r.o, r.a = base, want
+if cur ~= want then inst.Rate = want end
+end
+elseif k == 2 then offBool(inst, r, "Enabled", not p.trail)
+elseif k == 3 then offBool(inst, r, "Enabled", not p.beam)
+elseif k == 4 then
+offBool(inst, r, "Shadows", not p.shad)
+if cn ~= "PointLight" then offBool(inst, r, "Enabled", not p.spot) end
+elseif k == 5 then offBool(inst, r, "Enabled", not p[POST[cn]])
+end
+end
+local function track(inst, p)
+if Rec[inst] == nil then
+Rec[inst] = {}
+Mod[#Mod + 1] = inst
+end
+pcall(applyOne, inst, p)
+end
+local function onAdded(d)
+if CLS[d.ClassName] then
+if qt - qh > 3000 then
+Perf._rescan = true
+return
+end
+qt = qt + 1
+Q[qt] = d
+end
+end
+local function startScan()
+local l = {}
+pcall(function() l = workspace:GetDescendants() end)
+pcall(function()
+local b = Lighting:GetDescendants()
+for i = 1, #b do l[#l + 1] = b[i] end
+end)
+scanList, scanI = l, 1
+end
+local function startAdded()
+if not addedA then addedA = workspace.DescendantAdded:Connect(onAdded) end
+if not addedB then addedB = Lighting.DescendantAdded:Connect(onAdded) end
+end
+local function stopAdded()
+if addedA then addedA:Disconnect() addedA = nil end
+if addedB then addedB:Disconnect() addedB = nil end
+end
+local function work()
+local t0 = clock()
+local p = restoring and P[1] or Cur
+if modI then
+local i, n = modI, #Mod
+while i <= n do
+local inst = Mod[i]
+if inst.Parent == nil then
+Rec[inst] = nil
+Mod[i] = Mod[n]
+Mod[n] = nil
+n = n - 1
+else
+if not modPrune then pcall(applyOne, inst, p) end
+i = i + 1
+end
+if i % 32 == 0 and clock() - t0 > BUDGET then modI = i return end
+end
+modI, modPrune = nil, false
+if restoring then
+restoring = false
+if not active then
+Mod = {}
+Rec = setmetatable({}, {__mode = "k"})
+end
+end
+end
+if Perf._rescan and active then Perf._rescan = nil Q, qh, qt = {}, 1, 0 startScan() end
+if scanList and active then
+local l, i, n = scanList, scanI, #scanList
+while i <= n do
+local inst = l[i]
+i = i + 1
+if CLS[inst.ClassName] then track(inst, Cur) end
+if i % 64 == 0 and clock() - t0 > BUDGET then scanI = i return end
+end
+scanList = nil
+end
+local c = 0
+while qh <= qt and active do
+local inst = Q[qh]
+Q[qh] = nil
+qh = qh + 1
+if inst.Parent ~= nil then track(inst, Cur) end
+c = c + 1
+if c % 32 == 0 and clock() - t0 > BUDGET then return end
+end
+if qh > qt and qt > 0 then Q, qh, qt = {}, 1, 0 end
+end
+local function retarget()
+local on = level ~= nil and level >= 2
+if on then
+restoring = false
+if not active then
+active = true
+startAdded()
+startScan()
+end
+modI, modPrune = 1, false
+elseif active then
+active = false
+stopAdded()
+scanList, Q, qh, qt = nil, {}, 1, 0
+modI, modPrune, restoring = 1, false, true
+end
+end
+-- ---------- global rendering knobs (originals saved lazily, restored when no longer overridden) ----------
+local G = {}
+local function applyGlobals(p)
+pcall(function()
+if p.gs == false then
+if G.gs == nil then G.gs = Lighting.GlobalShadows end
+Lighting.GlobalShadows = false
+elseif G.gs ~= nil then
+Lighting.GlobalShadows = G.gs
+G.gs = nil
+end
+end)
+pcall(function()
+local R = settings().Rendering
+if p.q then
+if G.q == nil then G.q = R.QualityLevel end
+R.QualityLevel = string.format("Level%02d", p.q)
+elseif G.q ~= nil then
+R.QualityLevel = G.q
+G.q = nil
+end
+if p.mesh then
+if G.m == nil then G.m = R.MeshPartDetailLevel end
+R.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04
+elseif G.m ~= nil then
+R.MeshPartDetailLevel = G.m
+G.m = nil
+end
+end)
+pcall(function()
+local T = workspace:FindFirstChildOfClass("Terrain")
+if not T then return end
+if p.deco == false then
+if not G.t then G.t = {T.Decoration, T.WaterWaveSize, T.WaterWaveSpeed, T.WaterReflectance} end
+T.Decoration, T.WaterWaveSize, T.WaterWaveSpeed, T.WaterReflectance = false, 0, 0, 0
+elseif G.t then
+local t = G.t
+G.t = nil
+T.Decoration, T.WaterWaveSize, T.WaterWaveSpeed, T.WaterReflectance = t[1], t[2], t[3], t[4]
+end
+end)
+pcall(function()
+if type(setfpscap) ~= "function" then return end
+local d = FX.Device
+local want = d and d.Mobile == true and p.capM or nil
+if want then
+if G.cap == nil then G.cap = (type(getfpscap) == "function" and tonumber(getfpscap())) or false end
+setfpscap(want)
+elseif G.cap ~= nil then
+local o = G.cap
+G.cap = nil
+setfpscap((o and o > 0) and o or ((d and d.Mobile == true) and 120 or 999))
+end
+end)
+end
+-- ---------- profile switching ----------
+local avg, evalT, badT, goodT = nil, 0, 0, 0
+local cap, capAt = 0, -1e9
+local lastChange, settleUntil, lastUp, holdLevel, holdUntil, holdDur = 0, 0, -1e9, nil, 0, 300
+local function emit()
+for i = 1, #listeners do pcall(listeners[i], level, mode) end
+end
+local function setLevel(n)
+n = max(1, min(5, floor(n)))
+if n == level then return end
+level = n
+local p = P[n]
+Cur = p
+Perf.Level, Perf.RayStride = n, p.ray
+Gov.Stride, Gov.Level = p.stride, n
+FX.LowEndTriFPS, FX.LowEndUIFPS = p.uifps, p.uifps
+FX.SetProfile(nil, nil) -- engine never overrides UI settings (no low-end-style UI from profiles)
+local wantLow = userLow -- engine never turns Low End UI Mode on by itself; only the user's own toggle counts
+if wantLow ~= true and (RawCfg.LowEnd == true) ~= wantLow then
+engineSet = true
+pcall(FX.SetLowEnd, wantLow)
+engineSet = false
+elseif Util and Util.UIPlus and Util.UIPlus.Apply then
+pcall(Util.UIPlus.Apply)
+end
+if FX.Store then FX.Store.AutoLow = false end
+applyGlobals(p)
+retarget()
+avg, badT, goodT, capAt = nil, 0, 0, -1e9
+lastChange = clock()
+settleUntil = lastChange + 2.5
+emit()
+end
+FX.OnLowEnd(function(on)
+if not engineSet then
+userLow = on
+if FX.Store then FX.Store.AutoLow = false end
+end
+end)
+function Perf.Seed(tier, mobile)
+tier = max(1, min(4, floor(tonumber(tier) or 3)))
+local c, s
+if tier == 1 then c, s = 4, 5
+elseif tier == 2 then if mobile then c, s = 3, 4 else c, s = 2, 2 end
+elseif tier == 3 then c = mobile and 2 or 1 s = c
+else c, s = 1, 1 end
+seeded, ceiling = true, c
+startLv = level and max(startLv, s) or s
+local store = FX.Store
+if not level then userLow = RawCfg.LowEnd == true and not (store and store.AutoLow == true) end
+if mode == "auto" then
+setLevel(level and max(level, s) or s)
+elseif level then
+applyGlobals(P[level])
+end
+end
+function Perf.Boot()
+local v = floor(tonumber(RawCfg.PerfProfile) or 1)
+if v >= 2 and v <= 6 then
+mode = "manual"
+local store = FX.Store
+userLow = RawCfg.LowEnd == true and not (store and store.AutoLow == true)
+setLevel(v - 1)
+else
+mode = "auto"
+end
+end
+function Perf.Select(v)
+v = floor(tonumber(v) or 1)
+if v >= 2 and v <= 6 then
+if mode == "manual" and level == v - 1 then return end
+mode = "manual"
+if level == v - 1 then emit() else setLevel(v - 1) end
+else
+if mode == "auto" then return end
+mode = "auto"
+avg, badT, goodT, holdLevel = nil, 0, 0, nil
+settleUntil = clock() + 3
+if seeded then
+if level then setLevel(max(level, startLv)) end
+elseif level then
+setLevel(1)
+end
+emit()
+end
+end
+function Perf.Manual() return mode == "manual" end
+function Perf.OnChange(fn) listeners[#listeners + 1] = fn end
+function Perf.Status()
+return {Level = level, Name = level and NAMES[level] or nil, Mode = mode, FPS = avg and 1 / avg or nil, Ceiling = ceiling, Seeded = seeded}
+end
+local simT = 0
+function Perf.SimDue()
+local iv = Cur.sim
+if iv <= 0 then return true end
+local t = clock()
+if t - simT >= iv then simT = t return true end
+return false
+end
+FX.SimDue = Perf.SimDue
+-- ---------- single Heartbeat: job pump + lightweight FPS governor ----------
+local function step(dt)
+if modI or scanList or qh <= qt or Perf._rescan then work() end
+if active then
+pruneT = pruneT + dt
+if pruneT > 20 then
+pruneT = 0
+if not modI then modI, modPrune = 1, true end
+end
+end
+if mode ~= "auto" or not seeded or not level then return end
+if dt > 1 then
+avg, badT, goodT = nil, 0, 0
+settleUntil = clock() + 2
+return
+end
 if dt > 0.25 then dt = 0.25 end
-avg = avg + (dt - avg) * 0.04
+avg = avg and (avg + (dt - avg) * 0.05) or dt
 evalT = evalT + dt
 if evalT < 0.5 then return end
 local el = evalT
 evalT = 0
+local now = clock()
+if now < settleUntil then return end
+if now - capAt > 10 then
+capAt, cap = now, 0
+pcall(function() if type(getfpscap) == "function" then cap = tonumber(getfpscap()) or 0 end end)
+end
+local T = (cap > 0 and cap < 90) and cap or 60
 local fps = 1 / avg
-local now = os.clock()
-if Gov.Stride == 1 then
-if fps < 40 and fps >= 24 and RawCfg.LowEnd ~= true and not (cap > 0 and cap < 45) then badT = badT + el else badT = 0 end
-if badT >= 4 then
+if fps < T * 0.72 then
+badT, goodT = badT + el, 0
+if badT >= (fps < T * 0.5 and 2.5 or 4) and level < 5 then
+local drop = fps < T * 0.35 and 2 or 1
 badT, goodT = 0, 0
-dwell = (now - releasedAt < 60) and math.min(dwell * 2, 120) or 12
-engagedAt = now
-Gov.Stride = 2
+local prev = level
+setLevel(level + drop)
+if now - lastUp < 60 and level ~= prev then
+holdLevel, holdUntil = level, now + holdDur
+holdDur = min(holdDur * 2, 1800)
 end
-elseif RawCfg.LowEnd == true then
-Gov.Stride = 1
-releasedAt = now
-elseif now - engagedAt >= dwell then
-if fps > 52 then goodT = goodT + el else goodT = 0 end
-if goodT >= 6 then
+end
+elseif fps > T * 0.92 then
+goodT, badT = goodT + el, 0
+if goodT >= 8 and now - lastChange >= 15 then
+local lim = ceiling
+if holdLevel and now < holdUntil then lim = max(lim, holdLevel) end
 goodT = 0
-Gov.Stride = 1
-releasedAt = now
+if level > lim then
+lastUp = now
+setLevel(level - 1)
 end
 end
-end)
+else
+badT, goodT = max(0, badT - el), max(0, goodT - el)
+end
+end
+function Perf.Start()
+if not conn then conn = RunService.Heartbeat:Connect(step) end
+end
+function Perf.Stop()
+if conn then conn:Disconnect() conn = nil end
+stopAdded()
+active, scanList, modI, Q, qh, qt, Perf._rescan = false, nil, nil, {}, 1, 0, nil
+for i = 1, #Mod do pcall(applyOne, Mod[i], P[1]) end
+Mod = {}
+Rec = setmetatable({}, {__mode = "k"})
+restoring = false
+applyGlobals(P[1])
+Gov.Stride, Gov.Level, Cur, Perf.RayStride = 1, 1, P[1], 1
+FX.SetProfile(nil, nil)
+if level and P[level].low and not userLow and (RawCfg.LowEnd == true) then
+engineSet = true
+pcall(FX.SetLowEnd, false)
+engineSet = false
+end
+level, seeded, Perf.Level = nil, false, nil
+end
+do
+local genv = (type(getgenv) == "function" and getgenv()) or _G
+local old = genv.__UHPerf
+if type(old) == "table" and old ~= Perf and type(old.Stop) == "function" then pcall(old.Stop) end
+genv.__UHPerf = Perf
+end
+Perf.Start()
 end
 FX.Settings = setmetatable({}, {
 __index = function(_, k)
@@ -425,7 +799,7 @@ UIScale = 1, UIFont = 2, UIAnimSpeed = 1, UIParticles = true, UIGradient = true,
 LiquidGlass = true, GlassClarity = 0.4, Haptics = true,
 PageTrans = 1, BtnAnim = 1,
 RbxIconTheme = true, RbxBarTheme = true, ChatStyle = true, ChatTextSize = 14, ChatBgTr = 0.3, ChatWinW = 1, ChatWinH = 1, BubbleDur = 15, BubbleDist = 100, BubbleTail = true,
-LowEnd = false,
+LowEnd = false, PerfProfile = 1, UICache = true,
 DeltaLogo = true, DeltaMotion = true, DeltaBlur = true, DeltaIntro = true, DeltaSpeed = 1, DeltaSource = "", DeltaEnabled = true, DeltaExecHelpers = true, DeltaFastExec = true,
 MusicDance = true, MusicColor = true,
 }
@@ -467,6 +841,7 @@ FX.Cfg[k] = v
 FX.Store[k] = v
 end
 end
+if FX.Perf then FX.Perf.Boot() end
 end
 function FX.SetCfg(key, value)
 FX.Cfg[key] = value
@@ -474,6 +849,7 @@ if FX.Store then
 FX.Store[key] = value
 end
 if (key == "MusicDance" or key == "MusicColor") and FX.Audio then pcall(FX.Audio.Refresh) end
+if key == "PerfProfile" and FX.Perf then FX.Perf.Select(value) end
 end
 function FX.ResetCfg()
 for k, d in pairs(DEFAULT_CFG) do
@@ -881,6 +1257,222 @@ w1.CFrame = CFrame.fromMatrix((a + b) / 2, right, up, back)
 setSz(w2, Vector3.new(th, math.max(height, 0.001), math.max(math.abs(ac:Dot(back)), 0.001)))
 w2.CFrame = CFrame.fromMatrix((a + c) / 2, -right, up, -back)
 end
+do
+-- ═══ UI CACHE (v292) ═══ everything the UI used to rebuild every launch / every frame is written ONCE into
+-- UhhhhhhReanim/Assets/cache and reused from disk. Triangle3D/ = the 4 double-sided face meshes of the 3D triangle (1 part per
+-- face instead of 2 wedges + per-frame wedge maths). VFX/ = ring + spark textures (1 ImageLabel instead of Frame + UICorner +
+-- UIStroke). Created by the Uh Admin on start (FX.Cache.Init / Warm). Every consumer falls back to the old live-built look when the
+-- executor has no file API or an asset fails to load. Turn off with Custom.UICache = false.
+local Cache = {Ver = 1, Root = "UhhhhhhReanim/Assets/cache", Mem = {}, Done = {}, MeshUnit = 2, MeshBad = false}
+FX.Cache = Cache
+local function fsOk()
+return type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+and type(makefolder) == "function" and type(isfolder) == "function" and type(getcustomasset) == "function"
+end
+function Cache.Enabled() return FX.Cfg.UICache ~= false and fsOk() end
+function Cache.Init()
+if Cache.Ready ~= nil then return Cache.Ready end
+Cache.Ready = false
+if not fsOk() then return false end
+local ok = pcall(function()
+for _, d in ipairs({"UhhhhhhReanim", "UhhhhhhReanim/Assets", Cache.Root, Cache.Root .. "/Triangle3D", Cache.Root .. "/VFX"}) do
+if not isfolder(d) then makefolder(d) end
+end
+local idx = Cache.Root .. "/cache.json"
+local okR, raw = pcall(readfile, idx)
+if not (okR and type(raw) == "string" and raw:find('"v":' .. Cache.Ver .. ",", 1, true)) then Cache.Fresh = true end
+writefile(idx, '{"v":' .. Cache.Ver .. ',"note":"UI cache - Triangle3D meshes + VFX textures, delete this folder to rebuild it"}')
+end)
+Cache.Ready = ok
+return ok
+end
+function Cache.File(rel, gen)
+if not Cache.Init() then return nil end
+local path = Cache.Root .. "/" .. rel
+local ok = pcall(function()
+if Cache.Done[rel] or (not Cache.Fresh and isfile(path)) then Cache.Done[rel] = true return end
+writefile(path, gen())
+Cache.Done[rel] = true
+end)
+if ok and Cache.Done[rel] then return path end
+return nil
+end
+function Cache.Asset(rel, gen)
+local m = Cache.Mem[rel]
+if m ~= nil then return m or nil end
+local id = false
+if Cache.Enabled() then
+local path = Cache.File(rel, gen)
+if path then
+local ok, r = pcall(getcustomasset, path)
+if ok and type(r) == "string" and r ~= "" then id = r end
+end
+end
+Cache.Mem[rel] = id
+return id or nil
+end
+-- ---------- 3D triangle: one double-sided .mesh per face, vertices relative to the face centre ----------
+local function meshText(i)
+local idx = TET_FACES[i]
+local a, b, c = TET[idx[1]], TET[idx[2]], TET[idx[3]]
+local ctr = (a + b + c) / 3
+local nrm = (b - a):Cross(c - a).Unit
+if nrm:Dot(ctr) < 0 then nrm = -nrm end
+local k = Cache.MeshUnit -- version 1.00 meshes store coordinates at 2x
+local function vtx(p, n)
+local d = (p - ctr) * k
+return string.format("[%.5f,%.5f,%.5f][%.5f,%.5f,%.5f][0,0,0]", d.X, d.Y, d.Z, n.X, n.Y, n.Z)
+end
+local m = -nrm
+return "version 1.00\n2\n" .. vtx(a, nrm) .. vtx(b, nrm) .. vtx(c, nrm) .. vtx(a, m) .. vtx(c, m) .. vtx(b, m) .. "\n"
+end
+function Cache.TriFaces()
+if Cache.Faces ~= nil then return Cache.Faces or nil end
+local ids = {}
+for i = 1, #TET_FACES do
+local id = Cache.Asset("Triangle3D/face" .. i .. ".mesh", function() return meshText(i) end)
+if not id then ids = false break end
+ids[i] = id
+end
+Cache.Faces = ids
+return ids or nil
+end
+function Cache.VerifyMesh(sm, id)
+if Cache.Verified then return end
+Cache.Verified = true
+task.spawn(function()
+local CP = game:GetService("ContentProvider")
+pcall(function() CP:PreloadAsync({sm}) end)
+local ok, st = pcall(function() return CP:GetAssetFetchStatus(id) end)
+if ok and st == Enum.AssetFetchStatus.Failure then Cache.MeshBad = true end
+end)
+end
+-- ---------- VFX textures: tiny PNGs built once with a pure-Lua encoder (stored deflate blocks) ----------
+local crcT
+local function be32(n)
+return string.char(bit32.rshift(n, 24) % 256, bit32.rshift(n, 16) % 256, bit32.rshift(n, 8) % 256, n % 256)
+end
+local function crc32(s)
+if not crcT then
+crcT = {}
+for i = 0, 255 do
+local c = i
+for _ = 1, 8 do
+if c % 2 == 1 then c = bit32.bxor(bit32.rshift(c, 1), 0xEDB88320) else c = bit32.rshift(c, 1) end
+end
+crcT[i] = c
+end
+end
+local c = 0xFFFFFFFF
+for i = 1, #s do c = bit32.bxor(crcT[bit32.band(bit32.bxor(c, s:byte(i)), 0xFF)], bit32.rshift(c, 8)) end
+return bit32.bxor(c, 0xFFFFFFFF)
+end
+local function adler32(s)
+local a, b = 1, 0
+for i = 1, #s do a = (a + s:byte(i)) % 65521 b = (b + a) % 65521 end
+return b * 65536 + a
+end
+local function chunk(kind, data) return be32(#data) .. kind .. data .. be32(crc32(kind .. data)) end
+local function png(w, h, alphaAt)
+local rows = {}
+for y = 0, h - 1 do
+local row = {"\0"}
+for x = 0, w - 1 do
+local a = math.floor(math.clamp(alphaAt(x, y), 0, 1) * 255 + 0.5)
+row[#row + 1] = string.char(255, 255, 255, a)
+end
+rows[#rows + 1] = table.concat(row)
+end
+local raw = table.concat(rows)
+local z, pos, n = {"\120\1"}, 1, #raw
+repeat
+local len = math.min(65535, n - pos + 1)
+local fin = (pos + len > n) and 1 or 0
+z[#z + 1] = string.char(fin, len % 256, math.floor(len / 256), (65535 - len) % 256, math.floor((65535 - len) / 256))
+z[#z + 1] = raw:sub(pos, pos + len - 1)
+pos = pos + len
+until pos > n
+z[#z + 1] = be32(adler32(raw))
+return "\137PNG\r\n\26\n" .. chunk("IHDR", be32(w) .. be32(h) .. "\8\6\0\0\0") .. chunk("IDAT", table.concat(z)) .. chunk("IEND", "")
+end
+local VFX = {
+ring = {n = 128, fn = function(x, y)
+local u, v = (x + 0.5) / 64 - 1, (y + 0.5) / 64 - 1
+local r = math.sqrt(u * u + v * v)
+if r >= 1 then return 0 end
+local core = math.clamp(1 - math.abs(r - 0.94) / 0.028, 0, 1)
+local glow = math.clamp(1 - math.abs(r - 0.94) / 0.07, 0, 1)
+return math.max(core, glow * glow * 0.22)
+end},
+spark = {n = 32, fn = function(x, y)
+local u, v = (x + 0.5) / 16 - 1, (y + 0.5) / 16 - 1
+return math.clamp((1 - math.sqrt(u * u + v * v)) * 1.8, 0, 1)
+end},
+}
+function Cache.VFX(name)
+local d = VFX[name]
+if not d then return nil end
+return Cache.Asset("VFX/" .. name .. ".png", function() return png(d.n, d.n, d.fn) end)
+end
+function Cache.Warm()
+if Cache.Warmed or not Cache.Enabled() then return end
+Cache.Warmed = true
+task.spawn(function()
+pcall(Cache.TriFaces)
+task.wait()
+for name in pairs(VFX) do
+pcall(Cache.VFX, name)
+task.wait()
+end
+end)
+end
+-- ---------- cached VFX: Ring / Sparks use the PNG textures, old frame versions stay as fallback ----------
+local ringOld, sparksOld = FX.Ring, FX.Sparks
+function FX.Ring(parent, color, size, time, thick, pos)
+if FX.Lite() then return end
+local id = Cache.VFX("ring")
+if not id then return ringOld(parent, color, size, time, thick, pos) end
+local r = Util.Instance("ImageLabel", parent)
+r.AnchorPoint = Vector2.new(0.5, 0.5)
+r.Position = pos or UDim2.fromScale(0.5, 0.5)
+r.Size = UDim2.fromOffset(8, 8)
+r.BackgroundTransparency = 1
+r.BorderSizePixel = 0
+r.ZIndex = 30
+r.Interactable = false
+r.Image = id
+r.ImageColor3 = color
+r.ImageTransparency = 0.1
+tween(r, time, Quint, EOut, {Size = UDim2.fromOffset(size, size), ImageTransparency = 1})
+Debris:AddItem(r, time + 0.1)
+return r
+end
+function FX.Sparks(parent, color, n, dist, time)
+if FX.Lite() then return end
+local id = Cache.VFX("spark")
+if not id then return sparksOld(parent, color, n, dist, time) end
+for _ = 1, n do
+local f = Util.Instance("ImageLabel", parent)
+f.AnchorPoint = Vector2.new(0.5, 0.5)
+f.Position = UDim2.fromScale(0.5, 0.5)
+f.Size = UDim2.fromOffset(7, 7)
+f.BackgroundTransparency = 1
+f.BorderSizePixel = 0
+f.ZIndex = 30
+f.Interactable = false
+f.Image = id
+f.ImageColor3 = color
+local a = math.random() * math.pi * 2
+local d = dist * (0.45 + math.random() * 0.55)
+tween(f, time, Quint, EOut, {
+Position = UDim2.new(0.5, math.cos(a) * d, 0.5, math.sin(a) * d),
+ImageTransparency = 1,
+Size = UDim2.fromOffset(2, 2),
+})
+Debris:AddItem(f, time + 0.1)
+end
+end
+end
 local Audio = {
 Mode = "off", running = false, frame = 0,
 energy = 0, amp = 0.25, beat = 0, kick = 0, beatN = 0, beatStr = 0,
@@ -1122,11 +1714,39 @@ cam.CFrame = CFrame.new(0, 0, 5.4)
 vp.CurrentCamera = cam
 local model = Util.Instance("Model", vp)
 local faces, edges, nodes = {}, {}, {}
+local meshIds = nil
+do
+local C = FX.Cache
+if C and CFG.UICache ~= false and not C.MeshBad then
+local okM, ids = pcall(C.TriFaces)
+if okM and type(ids) == "table" then meshIds = ids end
+end
+end
+local function toWedges(f)
+if not f.mp then return end
+pcall(function() f.mp:Destroy() end)
+f.mp, f.sm = nil, nil
+f.w1, f.w2 = newPart("WedgePart", model), newPart("WedgePart", model)
+end
 for i, idx in ipairs(TET_FACES) do
 local a, b, c = TET[idx[1]], TET[idx[2]], TET[idx[3]]
 local nrm = (b - a):Cross(c - a).Unit
 if nrm:Dot((a + b + c) / 3) < 0 then nrm = -nrm end
-faces[i] = {v = {a, b, c}, n = nrm, center = (a + b + c) / 3, w1 = newPart("WedgePart", model), w2 = newPart("WedgePart", model)}
+local fc = {v = {a, b, c}, n = nrm, center = (a + b + c) / 3}
+faces[i] = fc
+if meshIds and meshIds[i] then
+local mp = newPart("Part", model)
+mp.Size = Vector3.new(0.05, 0.05, 0.05)
+local sm = Instance.new("SpecialMesh")
+sm.MeshType = Enum.MeshType.FileMesh
+sm.MeshId = meshIds[i]
+sm.Scale = Vector3.new(1, 1, 1)
+sm.Parent = mp
+fc.mp, fc.sm = mp, sm
+FX.Cache.VerifyMesh(sm, meshIds[i])
+else
+fc.w1, fc.w2 = newPart("WedgePart", model), newPart("WedgePart", model)
+end
 end
 for i, pair in ipairs(TET_EDGES) do
 local a, b = TET[pair[1]], TET[pair[2]]
@@ -1233,14 +1853,21 @@ local htr = math.clamp(h.tr - T.hot * 0.08 - T.hoverAmt * 0.02, 0, 1)
 if h.ltr ~= htr then h.ltr = htr h.fr.BackgroundTransparency = htr end
 end
 end
+local MRot = M - M.Position
 for i, f in ipairs(faces) do
+if f.mp and FX.Cache.MeshBad then toWedges(f) end
 local rot = CFrame.fromAxisAngle(f.axis, f.spin * e * spinMul)
 local c = f.center
 local off = f.dir * (D * e)
+if f.mp then
+f.mp.CFrame = CFrame.new(M * ((c + off) * S)) * MRot * rot
+if f.ls ~= S then f.ls = S f.sm.Scale = Vector3.new(S, S, S) end
+else
 local p1 = M * ((c + off + rot * (f.v[1] - c)) * S)
 local p2 = M * ((c + off + rot * (f.v[2] - c)) * S)
 local p3 = M * ((c + off + rot * (f.v[3] - c)) * S)
 drawTri(p1, p2, p3, f.w1, f.w2, 0.03)
+end
 if styleDue then
 local nv = M:VectorToWorldSpace(rot:VectorToWorldSpace(f.n))
 local lam = math.max(0, nv:Dot(LIGHT))
@@ -1252,8 +1879,13 @@ end
 local k = 0.6 + 0.4 * lam
 col = Color3.new(col.R * k, col.G * k, col.B * k):Lerp(WHITE, math.min(1, lam * lam * 0.4 + rim * 0.05 + T.hot * 0.5))
 local tr = CFG.TriFaces and math.clamp(CFG.TriFaceTr - T.hot * 0.22 + fadeOut - rim * 0.07, 0, 1) or 1
+if f.mp then
+f.mp.Color = col
+f.mp.Transparency = tr
+else
 f.w1.Color, f.w2.Color = col, col
 f.w1.Transparency, f.w2.Transparency = tr, tr
+end
 end
 end
 if low then return end
@@ -23479,37 +24111,7 @@ pcall(function() genv.UHDevProfile = prof end)
 local function apply(t)
 prof.Tier, prof.Class = t, ({"low", "low", "mid", "high"})[t]
 prof.LowEnd, prof.AntiLag, prof.AssetMode = t == 1, t == 1, ({"Batch", "Medium", "Medium"})[t]
-FX.LowEndTriFPS = t == 1 and 20 or 30
-FX.LowEndUIFPS = t == 1 and 20 or 30
-local store = FX.Store
-if store then
-local want = t == 1
-local was = store.AutoLow
-if was == nil and type(store.AutoTier) == "number" then was = store.AutoTier <= 2 end
-if was ~= want then
-if want then FX.SetLowEnd(true) elseif was then FX.SetLowEnd(false) end
-store.AutoLow = want
-end
-end
-if t < 4 then
-try(function() settings().Rendering.QualityLevel = string.format("Level%02d", ({1, 3, 5})[t]) end)
-try(function() game:GetService("Lighting").GlobalShadows = false end)
-if t <= 2 then
-try(function()
-local tr = workspace.Terrain
-tr.WaterWaveSize = 0
-tr.WaterWaveSpeed = 0
-tr.WaterReflectance = 0
-end)
-elseif type(setfpscap) == "function" then
-try(setfpscap, mobile and 120 or 999)
-end
-if mobile and t <= 2 then
-try(function() workspace.Terrain.Decoration = false end)
-try(function() settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04 end)
-if type(setfpscap) == "function" then try(setfpscap, t == 1 and 30 or 60) end
-end
-end
+if FX.Perf then FX.Perf.Seed(t, mobile) end
 end
 apply(tier)
 if mobile and gb and not manualTier then
@@ -23541,6 +24143,12 @@ State = {open = false, hover = false, boost = 0, flash = 0, shake = 0, shown = f
 local U = Util.UhAdmin
 U.Tris = U.Tris or {}
 U.State = U.State or {open = false, hover = false, boost = 0, flash = 0, shake = 0, shown = false}
+pcall(function()
+U.Cache = FX.Cache
+U.CachePath = FX.Cache.Root
+FX.Cache.Init()
+FX.Cache.Warm()
+end)
 local S = U.State
 local SIZE, TRI = 56, 42
 local UIS = UserInputService
@@ -63437,10 +64045,14 @@ for i = 1, 8 do
 RCOffsets[i] = CFrame.Angles(0, (i / 4) * math.pi, 0):VectorToWorldSpace(Vector3.new(0, 0, -0.5))
 end
 local RCDown = Vector3.new(0, -65536, 0)
+local rayN = 0
 Util.LinkDestroyI2C(RC, RunService.PostSimulation:Connect(function(dt)
 RCHumanoid.Jump = CJump
 local rcf = RCRootPart.CFrame
 local tcf, pos = rcf.Rotation, rcf.Position
+rayN = rayN + 1
+local rst = Util.FX.Perf.RayStride
+if rst <= 1 or rayN % rst == 0 then
 local RCHumanoidState = RCHumanoid:GetState().Name
 local safe = true
 local void = true
@@ -63464,6 +64076,7 @@ SafeY = pos.Y
 IsFloat = false
 else
 IsFloat = true
+end
 end
 if Reanimate.PatchmaVoidFloat and IsFloat then
 pos = Vector3.new(pos.X, SafeY, pos.Z)
@@ -68371,6 +68984,7 @@ HatReanimator.HatMapSummary = "(no hat map yet...)"
 table.clear(HatReanimator.FlingTargets)
 local lastsimradchange = 0
 local function SetSimulationRadius()
+if not Util.FX.SimDue() then return end
 local function setsimrad(plr, radius)
 pcall(function()
 plr.SimulationRadius = radius
@@ -70291,8 +70905,10 @@ local nextsummary, stuckSince = 0, nil
 while not Reanimate.Stopping do
 RunService.PreSimulation:Wait()
 workspace.FallenPartsDestroyHeight = 0/0
+if Util.FX.SimDue() then
 pcall(function() Player.SimulationRadius = #Players:GetPlayers() * 1000 end)
 pcall(sethiddenproperty, Player, "SimulationRadius", #Players:GetPlayers() * 1000)
+end
 local Character = Player.Character
 local ReanimCharacter = Reanimate.Character
 local ltm = Reanimate.LocalTransparencyModifier
@@ -70657,11 +71273,13 @@ local stuckSince = nil
 while not Reanimate.Stopping do
 RunService.PreSimulation:Wait()
 workspace.FallenPartsDestroyHeight = 0/0
+if Util.FX.SimDue() then
 pcall(function()
 local r = #Players:GetPlayers() * 1000
 Player.SimulationRadius = r
 end)
 pcall(sethiddenproperty, Player, "SimulationRadius", #Players:GetPlayers() * 1000)
+end
 local ReanimOkay = false
 local Character = Player.Character
 local ReanimCharacter = Reanimate.Character
@@ -71212,6 +71830,36 @@ LowEndSwitch.Value = on
 end
 end)
 UI.CreateText(MainPage, "Fixes lag spikes on weak devices: simpler 3D triangle, basic UI without effects. Turn it off to get everything back.", 10, Enum.TextXAlignment.Center)
+end
+do
+local FX = Util.FX
+local PF = FX.Perf
+if PF then
+local PNAMES = {"Auto", "Ultra", "High", "Balanced", "Low", "Potato"}
+local sel = UI.CreateDropdown(MainPage, "Performance Profile", PNAMES, math.clamp(math.floor(tonumber(FX.Cfg.PerfProfile) or 1), 1, 6))
+local info = UI.CreateText(MainPage, "", 10, Enum.TextXAlignment.Center)
+local syncing = false
+local function refresh()
+local s = PF.Status()
+local want = (s.Mode == "manual" and s.Level) and (s.Level + 1) or 1
+if sel.Value ~= want then
+syncing = true
+sel.Value = want
+syncing = false
+end
+local line
+if not s.Level then line = "Auto: waiting for device check."
+elseif s.Mode == "auto" then line = "Auto: running " .. s.Name .. " (adapts to your device and FPS)."
+else line = "Manual: " .. s.Name .. ". Automatic adjustments are off; choose Auto to turn them back on." end
+if info.Text ~= line then info.Text = line end
+end
+sel.Changed:Connect(function(v)
+FX.SetCfg("PerfProfile", v)
+if not syncing then pcall(Util.UINotify, "Performance profile: " .. PNAMES[v]) end
+end)
+PF.OnChange(refresh)
+refresh()
+end
 end
 local AntiLag = {}
 do
