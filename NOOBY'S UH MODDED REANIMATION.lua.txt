@@ -116,6 +116,16 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
        Custom mod (v269: INTRO 13 "SURVIVOR" - new selectable 60.0 s cinematic disco intro locked to a trimmed 60 s cut of the bundled Glee Cast "Survivor / I Will Survive" MP3 (128 BPM grid, bars measured from the audio: drums enter 10.0 s, curtain burst bar 14, explosion bar 20, ascension riser bar 28, title slam bar 31 = 56.34 s) with a baked-in riser + sub impact and a soft limiter: THE AWAKENING / THE TRANSFORMATION / THE SURVIVOR / THE EXPLOSION / THE FINAL ASCENSION; descending mirror ball, volumetric beams, perspective dance floor, velvet curtains, gold rays, wipes, metallic SURVIVOR title; single master clock = Sound.TimePosition; compiled at run time so it can never break the script; main page "Intro" selector lists it last)
        Custom mod (v268: INTRO 12 "BABY ONE MORE TIME" - new selectable 64.5 s cinematic intro locked to the bundled "...Baby One More Time" MP3 (92.93 BPM grid, bars measured from the audio: lockers light on bar 5, surge bar 9, long walk bar 13, gym doors burst open bar 17, neon switch bar 19, chrome title bar 21, whiteout bar 25): 1999 high-school corridor with lit lockers, floating paper + glow particles, light rays, gym doors, gym court with spotlights / flash grid / neon sunset, chrome extruded title; main page "Intro" selector lists it last)
        Custom mod (v266: INTRO 11 "PAPARAZZI" - new selectable 60.0 s cinematic intro locked to the bundled Lady Gaga - Paparazzi MP3 (115 BPM grid, drop at 41.95 s measured from the audio): THE ARRIVAL 0-10 (mechanical camera aperture opening in darkness) / THE SURVEILLANCE 10-22 (couture boutique, mirrors, photographers) / THE RUNWAY 22-35 (red carpet, sweeping spotlights, reflective floor) / THE FAME 35-48 (rotating camera mechanism, synced flash grid, aperture squeeze + drop) / THE REVEAL 48-57 (star silhouette + metallic PAPARAZZI title slam) / FINAL SHUTTER 57-60 (aperture closes, click, opens straight onto the UI); single master clock = Sound.TimePosition; main page "Intro" selector lists it last)
+       Custom mod (v293: CACHE UI - new folder UhhhhhhReanim/Assets/Cache UI (Triangle3D / VFX / Graphics) holds only UI assets: 3D triangle face meshes, ring + spark textures, the UI graphics
+                (copied once, asset ids memoised), a text-size memo for layout, and a per-frame write cache (v294: page / window / cracktro / glow / pill / mote / gradient colours and transparencies are only pushed to the engine when they actually changed, palette + accent HSV memoised, cursor trail idles until the mouse moves); Main page > Performance > "UI Cache" switch turns all of it off; reanimation, movesets and every other feature untouched)
+       Custom mod (v298: IMMERSIVE UI MOTION FIX - the Delta immersive UI no longer drops itself into low-end mode (slow frames / touch + low quality), default animation intensity 100%)
+       Custom mod (v299: UI ANIMATION CACHE - new folder UhhhhhhReanim/Assets/UI ANIMATION CACHE (cache.json + animations.json): title-decode frames are built once and replayed from disk,
+                the page cascade keeps its sorted row order per page, ripple dots are pooled instead of created / destroyed on every press; follows the Main page > Performance > "UI Cache" switch)
+       Custom mod (v300: UI-ONLY CACHE - ambient sparkles + cursor trail use a cached VFX dot texture (1 ImageLabel instead of Frame + UICorner), and the whole UI customization is snapshotted
+                into UhhhhhhReanim/Assets/UI ANIMATION CACHE/UI/customization.json (debounced; restored only when the save has no customization at all); reanimation / movesets / every other feature untouched)
+       Custom mod (FAST EXECUTION MODE: Main page > Performance > "Fast Execution Mode" (default ON, SaveData.Custom.FastExec). A small self-validating
+                startup cache, UhhhhhhReanim/FastExecution.cache, remembers which bundled songs / UI graphics were already verified so the next launch
+                skips re-reading them; rebuilt automatically when missing / corrupt / outdated, never stores code or player data, OFF = normal startup)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -258,6 +268,211 @@ replicatesignal = not ismissing(replicatesignal),
 if ismissing(isfile) then isfile = function() return false end end
 if ismissing(isfolder) then isfolder = function() return false end end
 if ismissing(listfiles) then listfiles = function() return {} end end
+-- ===== FAST EXECUTION MODE: persistent startup cache =====
+-- UhhhhhhReanim/FastExecution.cache is a small self-validating text file (format + build + length + checksum). It only remembers which bundled /
+-- copied asset files (theme + intro songs, UI graphics) were already verified, so the next launch skips re-reading them just to check their size.
+-- It never stores code, bytecode, player data or tokens. Missing / corrupt / outdated cache = rebuilt on the spot; any failure = normal startup.
+-- Setting: Main page > Performance > "Fast Execution Mode" (default ON, saved in SaveData.Custom.FastExec). OFF = cache is neither read nor written.
+do
+local FE = {Fmt = 1, Rev = "fx1", Dir = "UhhhhhhReanim", Path = "UhhhhhhReanim/FastExecution.cache", Tmp = "UhhhhhhReanim/FastExecution.cache.tmp",
+Hits = 0, Misses = 0, Writes = 0, Errors = 0, State = "unloaded"}
+Util.FastExec = FE
+FE.Build = tostring(UhhhhhhVersion) .. "|" .. tostring(UHMergeBuild) .. "|" .. FE.Rev
+local function okKey(k)
+return type(k) == "string" and #k > 0 and #k < 200 and not k:find("%c")
+end
+local function sum(s)
+local a, b = 1, 0
+for i = 1, #s do
+a = (a + s:byte(i)) % 65521
+b = (b + a) % 65521
+end
+return string.format("%04x%04x", b, a)
+end
+local function num(n)
+return string.format("%d", math.floor(n))
+end
+local function blank()
+return {files = {}, gfx = {}}
+end
+local function encode(d)
+local out, keys = {}, {}
+for k in pairs(d.files) do keys[#keys + 1] = k end
+table.sort(keys)
+for _, k in ipairs(keys) do out[#out + 1] = "F\t" .. k .. "\t" .. num(d.files[k]) end
+keys = {}
+for k in pairs(d.gfx) do keys[#keys + 1] = k end
+table.sort(keys)
+for _, k in ipairs(keys) do
+local g = d.gfx[k]
+out[#out + 1] = "G\t" .. k .. "\t" .. num(g.cdn) .. "\t" .. num(g.size)
+end
+return table.concat(out, "\n")
+end
+local function decode(body)
+local d = blank()
+for line in (body .. "\n"):gmatch("([^\n]*)\n") do
+if line ~= "" then
+local t = {}
+for part in (line .. "\t"):gmatch("([^\t]*)\t") do t[#t + 1] = part end
+local n3, n4 = tonumber(t[3]), tonumber(t[4])
+if t[1] == "F" and #t == 3 and okKey(t[2]) and n3 and n3 >= 0 then
+d.files[t[2]] = n3
+elseif t[1] == "G" and #t == 4 and okKey(t[2]) and n3 and n4 and n4 >= 0 then
+d.gfx[t[2]] = {cdn = n3, size = n4}
+else
+return nil
+end
+end
+end
+return d
+end
+local function pack(d)
+local body = encode(d)
+return "UHFX" .. FE.Fmt .. "\n" .. FE.Build .. "\n" .. #body .. "\n" .. sum(body) .. "\n" .. body
+end
+local function parse(raw)
+if type(raw) ~= "string" then return nil, "unreadable" end
+local fmt, build, len, cs, body = raw:match("^UHFX(%d+)\n([^\n]*)\n(%d+)\n(%x+)\n(.*)$")
+if not fmt then return nil, "corrupt" end
+if tonumber(fmt) ~= FE.Fmt or build ~= FE.Build then return nil, "outdated" end
+if tonumber(len) ~= #body or cs ~= sum(body) then return nil, "corrupt" end
+local d = decode(body)
+if not d then return nil, "corrupt" end
+return d, "hit"
+end
+FE.Pack, FE.Parse = pack, parse
+local function guard(fn, default)
+return function(...)
+local ok, r = pcall(fn, ...)
+if ok then return r end
+FE.Errors = FE.Errors + 1
+if FE.Errors >= 5 then FE.Broken = true end
+return default
+end
+end
+function FE.Bind(save)
+if type(save) == "table" then FE.Save = save end
+end
+function FE.Pref()
+local S = FE.Save
+local c = type(S) == "table" and S.Custom or nil
+if type(c) == "table" and type(c.FastExec) == "boolean" then return c.FastExec end
+return true
+end
+function FE.Fs()
+if FE.FsOk == nil then
+FE.FsOk = type(readfile) == "function" and type(writefile) == "function" and type(isfile) == "function"
+and type(makefolder) == "function" and type(isfolder) == "function"
+end
+return FE.FsOk
+end
+function FE.On()
+return FE.Save ~= nil and FE.Broken ~= true and FE.Fs() and FE.Pref()
+end
+FE.Load = guard(function()
+if FE.Data then return FE.Data end
+FE.Data, FE.State, FE.Last = blank(), "missing", nil
+local found = false
+for _, p in ipairs({FE.Path, FE.Tmp}) do
+local okE, ex = pcall(isfile, p)
+if okE and ex == true then
+found = true
+local okR, raw = pcall(readfile, p)
+local d, why = parse(okR and raw or nil)
+if d then
+FE.Data, FE.State = d, "hit"
+if p == FE.Path then
+FE.Last = raw
+else
+FE.State, FE.Dirty = "recovered", true
+end
+return FE.Data
+end
+FE.State = why
+end
+end
+if found then FE.Dirty = true end
+return FE.Data
+end)
+FE.Flush = guard(function()
+if not FE.Dirty or not FE.Data or not FE.On() then return false end
+local text = pack(FE.Data)
+if text == FE.Last then
+FE.Dirty = false
+return false
+end
+if not isfolder(FE.Dir) then makefolder(FE.Dir) end
+writefile(FE.Tmp, text)
+if readfile(FE.Tmp) ~= text then error("cache tmp verify failed") end
+writefile(FE.Path, text)
+if type(delfile) == "function" then pcall(delfile, FE.Tmp) end
+FE.Last, FE.Dirty = text, false
+FE.Writes = FE.Writes + 1
+return true
+end, false)
+function FE.Touch()
+FE.Dirty = true
+if FE.Pending then return end
+FE.Pending = true
+task.delay(2, function()
+FE.Pending = false
+FE.Flush()
+end)
+end
+FE.FileOk = guard(function(path, size)
+if not FE.On() or not okKey(path) or type(size) ~= "number" then return false end
+FE.Load()
+local v = FE.Data.files[path]
+if v ~= nil and v == size then
+FE.Hits = FE.Hits + 1
+return true
+end
+FE.Misses = FE.Misses + 1
+return false
+end, false)
+FE.FileSet = guard(function(path, size)
+if not FE.On() or not okKey(path) or type(size) ~= "number" or size ~= size or size < 0 then return end
+FE.Load()
+if FE.Data.files[path] ~= size then
+FE.Data.files[path] = size
+FE.Touch()
+end
+end)
+FE.FileDrop = guard(function(path)
+if FE.On() and FE.Data and FE.Data.files[path] ~= nil then
+FE.Data.files[path] = nil
+FE.Touch()
+end
+end)
+FE.GfxOk = guard(function(name, cdn)
+if not FE.On() or not okKey(name) or type(cdn) ~= "number" then return false end
+FE.Load()
+local g = FE.Data.gfx[name]
+if g and g.cdn == cdn then
+FE.Hits = FE.Hits + 1
+return true
+end
+FE.Misses = FE.Misses + 1
+return false
+end, false)
+FE.GfxSet = guard(function(name, cdn, size)
+if not FE.On() or not okKey(name) or type(cdn) ~= "number" or type(size) ~= "number" or size ~= size or size < 0 then return end
+FE.Load()
+local g = FE.Data.gfx[name]
+if not g or g.cdn ~= cdn or g.size ~= size then
+FE.Data.gfx[name] = {cdn = cdn, size = size}
+FE.Touch()
+end
+end)
+-- toggled in the UI: ON starts from an empty manifest (nothing recorded while it was OFF is trusted), OFF just stops using it (nothing is deleted)
+function FE.Apply(on)
+if on == true then
+FE.Data, FE.State, FE.Last, FE.Broken, FE.Errors = blank(), "reset", nil, nil, 0
+FE.Touch()
+end
+end
+end
 if ismissing(sethiddenproperty) and not ismissing(setscriptable) and not ismissing(isscriptable) then
 sethiddenproperty = function(inst, prop, value)
 local ok, old = pcall(isscriptable, inst, prop)
@@ -799,7 +1014,7 @@ UIScale = 1, UIFont = 2, UIAnimSpeed = 1, UIParticles = true, UIGradient = true,
 LiquidGlass = true, GlassClarity = 0.4, Haptics = true,
 PageTrans = 1, BtnAnim = 1,
 RbxIconTheme = true, RbxBarTheme = true, ChatStyle = true, ChatTextSize = 14, ChatBgTr = 0.3, ChatWinW = 1, ChatWinH = 1, BubbleDur = 15, BubbleDist = 100, BubbleTail = true,
-LowEnd = false, PerfProfile = 1, UICache = true,
+LowEnd = false, PerfProfile = 1, UICache = true, FastExec = true,
 DeltaLogo = true, DeltaMotion = true, DeltaBlur = true, DeltaIntro = true, DeltaSpeed = 1, DeltaSource = "", DeltaEnabled = true, DeltaExecHelpers = true, DeltaFastExec = true,
 MusicDance = true, MusicColor = true,
 }
@@ -853,7 +1068,7 @@ if key == "PerfProfile" and FX.Perf then FX.Perf.Select(value) end
 end
 function FX.ResetCfg()
 for k, d in pairs(DEFAULT_CFG) do
-if k ~= "LowEnd" then
+if k ~= "LowEnd" and k ~= "FastExec" then
 FX.SetCfg(k, d)
 end
 end
@@ -1259,11 +1474,12 @@ w2.CFrame = CFrame.fromMatrix((a + c) / 2, -right, up, -back)
 end
 do
 -- ═══ UI CACHE (v292) ═══ everything the UI used to rebuild every launch / every frame is written ONCE into
--- UhhhhhhReanim/Assets/cache and reused from disk. Triangle3D/ = the 4 double-sided face meshes of the 3D triangle (1 part per
+-- UhhhhhhReanim/Assets/Cache UI and reused from disk (v293: own "Cache UI" folder). Graphics/ = the UI's CDN graphics, memoised asset ids, measured text sizes. Triangle3D/ = the 4 double-sided face meshes of the 3D triangle (1 part per
 -- face instead of 2 wedges + per-frame wedge maths). VFX/ = ring + spark textures (1 ImageLabel instead of Frame + UICorner +
 -- UIStroke). Created by the Uh Admin on start (FX.Cache.Init / Warm). Every consumer falls back to the old live-built look when the
 -- executor has no file API or an asset fails to load. Turn off with Custom.UICache = false.
-local Cache = {Ver = 1, Root = "UhhhhhhReanim/Assets/cache", Mem = {}, Done = {}, MeshUnit = 2, MeshBad = false}
+local Cache = {Ver = 2, Root = "UhhhhhhReanim/Assets/Cache UI", OldRoot = "UhhhhhhReanim/Assets/cache", Mem = {}, Done = {}, MeshUnit = 2, MeshBad = false,
+Text = {}, TextN = 0, Graphics = {"lightinursoul.graphic.png", "letriangul.graphic.png"}}
 FX.Cache = Cache
 local function fsOk()
 return type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
@@ -1275,13 +1491,18 @@ if Cache.Ready ~= nil then return Cache.Ready end
 Cache.Ready = false
 if not fsOk() then return false end
 local ok = pcall(function()
-for _, d in ipairs({"UhhhhhhReanim", "UhhhhhhReanim/Assets", Cache.Root, Cache.Root .. "/Triangle3D", Cache.Root .. "/VFX"}) do
+for _, d in ipairs({"UhhhhhhReanim", "UhhhhhhReanim/Assets", Cache.Root, Cache.Root .. "/Triangle3D", Cache.Root .. "/VFX", Cache.Root .. "/Graphics"}) do
 if not isfolder(d) then makefolder(d) end
 end
 local idx = Cache.Root .. "/cache.json"
 local okR, raw = pcall(readfile, idx)
 if not (okR and type(raw) == "string" and raw:find('"v":' .. Cache.Ver .. ",", 1, true)) then Cache.Fresh = true end
-writefile(idx, '{"v":' .. Cache.Ver .. ',"note":"UI cache - Triangle3D meshes + VFX textures, delete this folder to rebuild it"}')
+local want = '{"v":' .. Cache.Ver .. ',"note":"Cache UI - Triangle3D meshes + VFX textures + UI graphics, delete this folder to rebuild it"}'
+local FE = Util.FastExec
+if not (FE and FE.On() and okR and raw == want) then writefile(idx, want) end
+pcall(function()
+if type(delfolder) == "function" and isfile(Cache.OldRoot .. "/cache.json") then delfolder(Cache.OldRoot) end
+end)
 end)
 Cache.Ready = ok
 return ok
@@ -1310,6 +1531,40 @@ end
 end
 Cache.Mem[rel] = id
 return id or nil
+end
+-- ---------- UI graphics: CDN pngs copied once into Cache UI/Graphics, asset id memoised (no isfile + getcustomasset per styled object) ----------
+function Cache.Graphic(name)
+local rel = "Graphics/" .. name
+local m = Cache.Mem[rel]
+if m then return m end
+if not Cache.Enabled() or not Cache.Init() then return nil end
+local id
+pcall(function()
+local src = "UhhhhhhReanim/Assets/" .. name
+if not isfile(src) then return end
+local dst = Cache.Root .. "/" .. rel
+local FE = Util.FastExec
+local cdn = FE and FE.On() and FE.Save and tonumber(FE.Save.CDNVersion) or nil
+if cdn and not Cache.Fresh and FE.GfxOk(name, cdn) and isfile(dst) then
+local r0 = getcustomasset(dst)
+if type(r0) == "string" and r0 ~= "" then id = r0 return end
+end
+local data = readfile(src)
+if type(data) ~= "string" or data == "" then return end
+local same = false
+if isfile(dst) then
+local okD, old = pcall(readfile, dst)
+same = okD and type(old) == "string" and #old == #data
+end
+if not same then writefile(dst, data) end
+local r = getcustomasset(dst)
+if type(r) == "string" and r ~= "" then
+id = r
+if cdn then FE.GfxSet(name, cdn, #data) end
+end
+end)
+if id then Cache.Mem[rel] = id end
+return id
 end
 -- ---------- 3D triangle: one double-sided .mesh per face, vertices relative to the face centre ----------
 local function meshText(i)
@@ -1408,6 +1663,10 @@ spark = {n = 32, fn = function(x, y)
 local u, v = (x + 0.5) / 16 - 1, (y + 0.5) / 16 - 1
 return math.clamp((1 - math.sqrt(u * u + v * v)) * 1.8, 0, 1)
 end},
+dot = {n = 32, fn = function(x, y)
+local u, v = (x + 0.5) / 16 - 1, (y + 0.5) / 16 - 1
+return math.clamp((1 - math.sqrt(u * u + v * v)) * 6, 0, 1)
+end},
 }
 function Cache.VFX(name)
 local d = VFX[name]
@@ -1418,6 +1677,10 @@ function Cache.Warm()
 if Cache.Warmed or not Cache.Enabled() then return end
 Cache.Warmed = true
 task.spawn(function()
+for _, g in ipairs(Cache.Graphics) do
+pcall(Cache.Graphic, g)
+task.wait()
+end
 pcall(Cache.TriFaces)
 task.wait()
 for name in pairs(VFX) do
@@ -1425,6 +1688,86 @@ pcall(Cache.VFX, name)
 task.wait()
 end
 end)
+end
+-- ---------- UI customization snapshot: UhhhhhhReanim/Assets/UI ANIMATION CACHE/UI/customization.json ----------
+-- every UI customization key (theme, colours, font, scale, particles, trail, glow, intro / triangle / notification options ...) is mirrored to disk
+-- (debounced). It is only read back when the save holds NO customization at all (wiped / new save file), so it never overrides a live setting.
+Cache.UIRoot = "UhhhhhhReanim/Assets/UI ANIMATION CACHE"
+Cache.UISkip = {LowEnd = true, PerfProfile = true, FastExec = true}
+function Cache.UIPath() return Cache.UIRoot .. "/UI/customization.json" end
+function Cache.UIFolders()
+if not fsOk() then return false end
+local ok = pcall(function()
+for _, d in ipairs({"UhhhhhhReanim", "UhhhhhhReanim/Assets", Cache.UIRoot, Cache.UIRoot .. "/UI"}) do
+if not isfolder(d) then makefolder(d) end
+end
+local meta = Cache.UIRoot .. "/cache.json"
+if not isfile(meta) then
+writefile(meta, '{"v":1,"note":"UI ANIMATION CACHE - delete this folder to rebuild it"}')
+end
+end)
+return ok
+end
+function Cache.UILoad()
+if not (Cache.Enabled() and Cache.UIFolders()) then return nil end
+local out
+pcall(function()
+local path = Cache.UIPath()
+if not isfile(path) then return end
+local data = game:GetService("HttpService"):JSONDecode(readfile(path))
+if type(data) ~= "table" or data.v ~= 1 or type(data.cfg) ~= "table" then return end
+local cfg = {}
+local n = 0
+for k, d in pairs(FX.CfgDefaults) do
+local v = data.cfg[k]
+if not Cache.UISkip[k] and type(v) == type(d) then
+cfg[k] = v
+n += 1
+end
+end
+if n > 0 then out = cfg end
+end)
+return out
+end
+function Cache.UISave()
+if not (Cache.Enabled() and Cache.UIFolders()) then return end
+local store = FX.Store
+local cfg = {}
+for k, d in pairs(FX.CfgDefaults) do
+if not Cache.UISkip[k] then
+local v = store and store[k]
+if type(v) ~= type(d) then v = d end
+cfg[k] = v
+end
+end
+pcall(function()
+writefile(Cache.UIPath(), game:GetService("HttpService"):JSONEncode({v = 1, note = "UI customization snapshot (restored only when the save has no customization)", cfg = cfg}))
+end)
+end
+function Cache.UISchedule()
+if Cache.UIPending or not Cache.UIReady or not Cache.Enabled() then return end
+Cache.UIPending = true
+task.delay(1.5, function()
+Cache.UIPending = false
+pcall(Cache.UISave)
+end)
+end
+Cache.InitOld, Cache.SetOld = FX.InitCustom, FX.SetCfg
+function FX.InitCustom(SaveData)
+if type(SaveData) == "table" and Cache.Enabled() and (type(SaveData.Custom) ~= "table" or next(SaveData.Custom) == nil) then
+local snap = Cache.UILoad()
+if snap then
+SaveData.Custom = snap
+SaveData.GlassSkin1 = true
+end
+end
+Cache.InitOld(SaveData)
+Cache.UIReady = true
+Cache.UISchedule()
+end
+function FX.SetCfg(key, value)
+Cache.SetOld(key, value)
+if not Cache.UISkip[key] then Cache.UISchedule() end
 end
 -- ---------- cached VFX: Ring / Sparks use the PNG textures, old frame versions stay as fallback ----------
 local ringOld, sparksOld = FX.Ring, FX.Sparks
@@ -18940,6 +19283,8 @@ Util.Jarvis = (function()
 local REPO = "https://raw.githubusercontent.com/Elliot12-wq/Offline-Ai-system/main/"
 local DIR = "NoobyAI" -- storage folder kept so existing JARVIS memory/cache persist
 local FILES = {"AI_Config", "AI_NLP", "AI_Memory", "AI_Knowledge", "AI_Retrieval", "AI_Personality", "AI_Neural", "AI_Generator", "AI_UI"}
+-- script-awareness layer: Mind needs Script, so both load or neither does (older repo copies / failed downloads just run without it); AI_Data is loaded lazily by Script through ctx.Load
+local OPTIONAL = {"AI_Script", "AI_Mind"}
 local UI_PATCH = {
 {[====[function UI.init(c) ctx, Config = c, c.Config end]====], [====[function UI.init(c) ctx, Config = c, c.Config end
 -- embed mode: the window fills a host frame (main UI overlay or Delta tab) and can be moved between hosts
@@ -19072,8 +19417,27 @@ local mod, err = compile(name, text)
 if type(mod) ~= "table" then return nil, name .. ": " .. tostring(err) end
 M[name:sub(4)] = mod
 end
+local extra = {}
+for _, name in ipairs(OPTIONAL) do
+local text = source(name)
+local mod
+if text then
+for _, p in ipairs({{"Nooby Neural AI", "JARVIS"}, {"NOOBY NEURAL AI", "JARVIS"}, {"Nooby AI", "JARVIS"}}) do
+text = text:gsub(p[1]:gsub("%p", "%%%0"), (p[2]:gsub("%%", "%%%%")))
+end
+mod = compile(name, text)
+end
+if type(mod) ~= "table" then extra = nil break end
+extra[name:sub(4)] = mod
+end
+if extra then for k, v in pairs(extra) do M[k] = v end end
 local ctx = {}
 for k, v in pairs(M) do ctx[k] = v end
+ctx.Load = function(name)
+local text = source(name)
+if type(text) ~= "string" then return nil end
+return (compile(name, text))
+end
 M.Config.init()
 M.Memory.init(ctx)
 M.Knowledge.init(ctx)
@@ -19082,11 +19446,26 @@ M.Personality.init(ctx)
 M.Neural.init(ctx)
 M.Generator.init(ctx)
 M.UI.init(ctx)
+if M.Script and M.Mind then
+local okI = pcall(function() M.Script.init(ctx) M.Mind.init(ctx) end)
+if not okI then M.Script, M.Mind, ctx.Script, ctx.Mind = nil, nil, nil, nil end
+end
 return M
 end
 local function respond(M, raw)
 local Mem, K, NLP, Gen, Ret, Neu, Cfg = M.Memory, M.Knowledge, M.NLP, M.Generator, M.Retrieval, M.Neural, M.Config
+local Mind = M.Mind
 Cfg.adapt()
+if Mind and not Mem.temp.awaitFix then
+local okP, pre = pcall(Mind.pre, raw)
+if okP and type(pre) == "table" and type(pre.text) == "string" then
+if pre.turn or not raw:find("^/") then
+Mem.addTurn("u", raw)
+Mem.addTurn("a", pre.text)
+end
+return {text = pre.text}
+end
+end
 local cmd, arg = raw:match("^/(%a+)%s*(.-)%s*$")
 if cmd then
 cmd = cmd:lower()
@@ -19166,9 +19545,14 @@ end
 local r
 local simple = {greeting = 1, thanks = 1, bye = 1, identity = 1, capabilities = 1, smalltalk = 1, memory_query = 1, teach = 1, setting = 1, forget = 1, correction = 1}
 if not ev and not simple[i] then r = Ret.search(a, prev) end
+if Mind then local okA, r2 = pcall(Mind.arbitrate, a, r, prev) if okA then r = r2 end end
 local res = Gen.reply(a, r, ev)
 local meta = res.meta or {}
 if not ev then Mem.temp.prev = {topic = meta.topic or a.topic, terms = a.terms, ids = meta.ids or {}, q = raw} end
+if Mind then
+local okO, t2 = pcall(Mind.observe, raw, a, res, ev, prev)
+if okO and type(t2) == "string" then res.text = t2 end
+end
 Mem.addTurn("u", raw, a.topic)
 Mem.addTurn("a", res.text, meta.topic or a.topic)
 return {text = res.text}
@@ -19206,6 +19590,7 @@ Core.pendingHost = host
 if Core.built then
 local ok, e = pcall(function()
 Core.M.UI.setHost(host)
+if Core.M.Script then Core.M.Script.setHost(host) end
 Core.M.UI.show(Core.H)
 end)
 if cb then cb(ok, not ok and tostring(e) or nil) end
@@ -19222,6 +19607,7 @@ task.wait()
 Core.H = makeHandlers(M)
 ok, err = pcall(function()
 M.UI.setHost(Core.pendingHost)
+if M.Script then M.Script.setHost(Core.pendingHost) task.spawn(function() pcall(M.Script.ready) end) end
 M.UI.show(Core.H)
 local msgs = M.Memory.current()
 if msgs and #msgs > 0 then M.UI.render(msgs) end
@@ -20795,6 +21181,7 @@ end
 end
 end
 end)
+Util.FastExec.Bind(SaveData)
 pcall(makefolder, "UhhhhhhReanim/Assets")
 pcall(makefolder, "UhhhhhhReanim/Modules")
 pcall(makefolder, "UhhhhhhReanim/Muzik")
@@ -21070,14 +21457,71 @@ task.wait(0.5)
 Downloading:Destroy()
 end
 end
+Util.CDNMemo = {}
 Util.GetCDNAsset = function(filename)
+local FXc = Util.FX
+local on = FXc and FXc.Cache and FXc.Cfg.UICache ~= false
+if on then
+local m = Util.CDNMemo[filename]
+if m then return m end
+local okG, gid = pcall(FXc.Cache.Graphic, filename)
+if okG and gid then
+Util.CDNMemo[filename] = gid
+return gid
+end
+end
 local path = "UhhhhhhReanim/Assets/" .. filename
 local s, id = pcall(isfile, path)
 if s and id then
 s, id = pcall(getcustomasset, path)
-if s then return id end
+if s then
+if on and type(id) == "string" and id ~= "" then Util.CDNMemo[filename] = id end
+return id
+end
 end
 return ""
+end
+-- Per-frame write cache: Util.Dirty(slot, key, value) is true only when value differs from what was last written for slot[key]
+-- (colours: summed RGB tolerance 0.004 = under 1/255, numbers: 0.002), so unchanged theme colours / transparencies are not pushed
+-- to the engine every frame. Every 90th call per key writes anyway so a property touched by another script never stays stale.
+-- With "UI Cache" off it is always true (the old write-every-frame behaviour).
+Util.Dirty = function(slot, key, v)
+local FXc = Util.FX
+if not (FXc and FXc.Cfg.UICache ~= false) then return true end
+local cnt = slot.__n
+if not cnt then cnt = {} slot.__n = cnt end
+local k = (cnt[key] or 0) + 1
+cnt[key] = k
+local old = slot[key]
+if old ~= nil and k % 90 ~= 0 then
+local tv = typeof(v)
+if tv == "Color3" then
+if typeof(old) == "Color3" and math.abs(old.R - v.R) + math.abs(old.G - v.G) + math.abs(old.B - v.B) <= 0.004 then return false end
+elseif tv == "number" then
+if type(old) == "number" and math.abs(old - v) <= 0.002 then return false end
+elseif old == v then
+return false
+end
+end
+slot[key] = v
+return true
+end
+-- UI text measurement cache: same (text, size, font, bounds) -> same size, so layout rebuilds skip the engine call
+Util.TextSize = function(text, size, font, bounds)
+local FXc = Util.FX
+local C = FXc and FXc.Cache
+if not (C and FXc.Cfg.UICache ~= false and type(text) == "string" and typeof(font) == "EnumItem" and typeof(bounds) == "Vector2") then
+return TextService:GetTextSize(text, size, font, bounds)
+end
+local key = text .. "\0" .. tostring(size) .. "\0" .. font.Name .. "\0" .. tostring(bounds.X) .. "\0" .. tostring(bounds.Y)
+local memo = C.Text
+local v = memo[key]
+if v then return v end
+v = TextService:GetTextSize(text, size, font, bounds)
+if C.TextN >= 3000 then memo = {} C.Text = memo C.TextN = 0 end
+memo[key] = v
+C.TextN += 1
+return v
 end
 Util.MakeTriforce = function(tris, color, dur)
 dur = dur or 8
@@ -21542,12 +21986,20 @@ function TS.Cached()
 if verified then return true end
 local ok, v = pcall(isfile, TS.Path)
 if not (ok and v == true) then return false end
+local FE = Util.FastExec
+local fast = FE and FE.On()
+if fast and FE.FileOk(TS.Path, TS.Bytes) then
+verified = true
+return true
+end
 if type(readfile) == "function" then
 local okR, data = pcall(readfile, TS.Path)
 if okR and type(data) == "string" and (#data < TS.MinBytes or #data ~= TS.Bytes) then
 pcall(function() if type(delfile) == "function" then delfile(TS.Path) end end)
+if fast then FE.FileDrop(TS.Path) end
 return false
 end
+if fast and okR and type(data) == "string" then FE.FileSet(TS.Path, #data) end
 end
 verified = true
 return true
@@ -23958,7 +24410,10 @@ end
 end
 function C.Base()
 local c = cfg()
-return Util.ParseHex(c.UIAccent or "") or C.ThemeCol
+local hx = c.UIAccent or ""
+if c.UICache == false then return Util.ParseHex(hx) or C.ThemeCol end
+if hx ~= C._hx then C._hx = hx C._hxc = Util.ParseHex(hx) or false end
+return C._hxc or C.ThemeCol
 end
 function C.HarmonyHues(h)
 local m = cfg().HarmonyMode or 1
@@ -23984,9 +24439,15 @@ local mode = c.AccentMode or 1
 local sp = c.ColorSpeed or 1
 local out = C.ThemeCol
 local base = C.Base()
-local bh, bs, bv = base:ToHSV()
+local bh, bs, bv
+if c.UICache ~= false and C._hb == base then
+bh, bs, bv = C._h1, C._h2, C._h3
+else
+bh, bs, bv = base:ToHSV()
+C._hb, C._h1, C._h2, C._h3 = base, bh, bs, bv
+end
 if mode == 2 then
-out = Util.ParseHex(c.UIAccent or "") or C.ThemeCol
+out = base
 elseif mode == 3 then
 out = Color3.fromHSV((t * 0.1 * sp) % 1, 0.8, 1)
 elseif mode == 4 then
@@ -24022,6 +24483,8 @@ return out
 end
 function C.Palette(t)
 local a = C.Cur
+local on = cfg().UICache ~= false
+if on and C._pc and C._pa == a and C._pm == (cfg().HarmonyMode or 1) then return C._pc end
 local h, s, v = a:ToHSV()
 local hues = C.HarmonyHues(h)
 local m = cfg().HarmonyMode or 1
@@ -24033,7 +24496,9 @@ else
 sec = Color3.fromHSV(hues[2] or h, s, v)
 ter = Color3.fromHSV(hues[3] or ((h + 0.25) % 1), s * 0.85, v)
 end
-return {Accent = a, Secondary = sec, Tertiary = ter, Bg = Color3.fromHSV(h, clamp(s * 0.55, 0, 0.6), 0.07), Text = Color3.new(1, 1, 1):Lerp(a, 0.12)}
+local res = {Accent = a, Secondary = sec, Tertiary = ter, Bg = Color3.fromHSV(h, clamp(s * 0.55, 0, 0.6), 0.07), Text = Color3.new(1, 1, 1):Lerp(a, 0.12)}
+if on then C._pc, C._pa, C._pm = res, a, (cfg().HarmonyMode or 1) end
+return res
 end
 return C
 end)()
@@ -55120,7 +55585,7 @@ do
         local okQ, q = pcall(function()
             return UserSettings():GetService("UserGameSettings").SavedQualityLevel.Value
         end)
-        __iui.lowEnd = __iuiConfig.lowEnd == true or (okQ and type(q) == "number" and q > 0 and q <= 3 and __iui.touch) or false
+        __iui.lowEnd = __iuiConfig.lowEnd == true
     end
 
     local styles = {
@@ -55226,7 +55691,7 @@ do
     local animationIndex = findIndex(animationNames, __iuiConfig.animation, 1)
     local transitionIndex = findIndex(transitionNames, __iuiConfig.transition, 1)
     local transitionBlurEnabled = __iuiConfig.transitionBlur ~= false
-    local animationIntensity = math.clamp(tonumber(__iuiConfig.intensity) or 0.75, 0.25, 1.25)
+    local animationIntensity = math.clamp(tonumber(__iuiConfig.intensity) or 1, 0.25, 1.25)
     local uiEnabled = __iuiConfig.enabled ~= false
 
     __iui.themedStyle = function(base)
@@ -56074,6 +56539,245 @@ do
         M.tat = M.weak()
         M.sheenAt = M.weak()
 
+        -- [UI ANIMATION CACHE] UhhhhhhReanim/Assets/UI ANIMATION CACHE: title-decode frames (disk + memory), page cascade order (memory), ripple dot pool (memory).
+        -- Off with Main page > Performance > "UI Cache" (or without a file API) -> everything below falls back to the live behaviour.
+        M.AC = {
+            Ver = 1,
+            Root = "UhhhhhhReanim/Assets/UI ANIMATION CACHE",
+            Steps = 14,
+            Max = 96,
+            Count = 0,
+            Pool = {},
+            Pages = M.weak(),
+        }
+        function M.AC.fs()
+            if M.AC._fs == nil then
+                M.AC._fs = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+                    and type(makefolder) == "function" and type(isfolder) == "function"
+            end
+            return M.AC._fs
+        end
+        function M.AC.enabled()
+            local u = Util
+            local fx = u and u.FX
+            if fx and fx.Cfg and fx.Cfg.UICache == false then
+                return false
+            end
+            return M.AC.fs()
+        end
+        function M.AC.http()
+            if not M.AC._hs then
+                M.AC._hs = game:GetService("HttpService")
+            end
+            return M.AC._hs
+        end
+        function M.AC.load()
+            local AC = M.AC
+            if AC.Loaded then
+                return
+            end
+            AC.Loaded = true
+            AC.Data = { decode = {} }
+            if not AC.fs() then
+                return
+            end
+            pcall(function()
+                for _, d in { "UhhhhhhReanim", "UhhhhhhReanim/Assets", AC.Root } do
+                    if not isfolder(d) then
+                        makefolder(d)
+                    end
+                end
+                local meta = AC.Root .. "/cache.json"
+                if not isfile(meta) then
+                    writefile(meta, '{"v":' .. AC.Ver .. ',"note":"UI ANIMATION CACHE - decode frames for the Delta immersive UI, delete this folder to rebuild it"}')
+                end
+                local path = AC.Root .. "/animations.json"
+                if isfile(path) then
+                    local okD, data = pcall(function()
+                        return AC.http():JSONDecode(readfile(path))
+                    end)
+                    if okD and type(data) == "table" and data.v == AC.Ver and type(data.decode) == "table" then
+                        for text, frames in data.decode do
+                            if type(text) == "string" and type(frames) == "table" and #frames == AC.Steps and AC.Count < AC.Max then
+                                local good = true
+                                for i = 1, AC.Steps do
+                                    if type(frames[i]) ~= "string" then
+                                        good = false
+                                        break
+                                    end
+                                end
+                                if good then
+                                    AC.Data.decode[text] = frames
+                                    AC.Count += 1
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        function M.AC.flush()
+            local AC = M.AC
+            if not (AC.Dirty and AC.Data and AC.fs()) then
+                return
+            end
+            AC.Dirty = false
+            pcall(function()
+                writefile(AC.Root .. "/animations.json", AC.http():JSONEncode({ v = AC.Ver, decode = AC.Data.decode }))
+            end)
+        end
+        function M.AC.save()
+            local AC = M.AC
+            AC.Dirty = true
+            if AC.SavePending then
+                return
+            end
+            AC.SavePending = true
+            task.delay(2, function()
+                AC.SavePending = false
+                AC.flush()
+            end)
+        end
+        -- title decode: the 14 scramble frames of a text are built once (random glyphs fixed per text) and replayed
+        function M.AC.frames(final)
+            local AC = M.AC
+            if type(final) ~= "string" or final == "" or #final > 48 or not AC.enabled() then
+                return nil
+            end
+            AC.load()
+            if not AC.Data then
+                return nil
+            end
+            local hit = AC.Data.decode[final]
+            if hit then
+                return hit
+            end
+            local frames
+            local ok = pcall(function()
+                local glyphs = "01#%&/<>[]+=*?"
+                local chars = {}
+                for _, cp in utf8.codes(final) do
+                    chars[#chars + 1] = utf8.char(cp)
+                end
+                local total = #chars
+                frames = table.create(AC.Steps)
+                for step = 1, AC.Steps do
+                    local lock = math.floor(total * step / AC.Steps)
+                    local out = table.create(total)
+                    for i = 1, total do
+                        local ch = chars[i]
+                        if i <= lock or ch == " " then
+                            out[i] = ch
+                        else
+                            local g = math.random(1, #glyphs)
+                            out[i] = glyphs:sub(g, g)
+                        end
+                    end
+                    frames[step] = table.concat(out)
+                end
+            end)
+            if not (ok and frames) then
+                return nil
+            end
+            if AC.Count < AC.Max then
+                AC.Data.decode[final] = frames
+                AC.Count += 1
+                AC.save()
+            end
+            return frames
+        end
+        -- page cascade: rows in top-to-bottom order; the sorted order is kept per page while its child count is unchanged
+        function M.AC.cascadeList(box, top, bottom)
+            local AC = M.AC
+            local kids = box:GetChildren()
+            local on = AC.enabled()
+            local memo = on and AC.Pages[box] or nil
+            local function inView(c)
+                if not (c:IsA("GuiObject") and c.Visible and c.AbsoluteSize.Y > 6) then
+                    return false
+                end
+                local y = c.AbsolutePosition.Y
+                return y < bottom and y + c.AbsoluteSize.Y > top
+            end
+            local list = {}
+            if memo and memo.n == #kids then
+                for _, c in memo.order do
+                    if c.Parent == box and inView(c) then
+                        list[#list + 1] = c
+                    end
+                end
+                return list
+            end
+            for _, c in kids do
+                if inView(c) then
+                    list[#list + 1] = c
+                end
+            end
+            table.sort(list, function(a, b)
+                return a.AbsolutePosition.Y < b.AbsolutePosition.Y
+            end)
+            if on and #list > 1 and list[1].AbsolutePosition.Y ~= list[#list].AbsolutePosition.Y then
+                local order = {}
+                for _, c in kids do
+                    if c:IsA("GuiObject") then
+                        order[#order + 1] = c
+                    end
+                end
+                table.sort(order, function(a, b)
+                    return a.AbsolutePosition.Y < b.AbsolutePosition.Y
+                end)
+                AC.Pages[box] = { n = #kids, order = order }
+            end
+            return list
+        end
+        -- ripple dots: reused instead of Instance.new + Destroy on every press
+        function M.AC.takeDot()
+            local AC = M.AC
+            local dot = AC.enabled() and table.remove(AC.Pool) or nil
+            if dot then
+                return dot
+            end
+            dot = Instance.new("Frame")
+            dot.Name = "LT_Ripple"
+            dot.AnchorPoint = Vector2.new(0.5, 0.5)
+            dot.BorderSizePixel = 0
+            dot.Active = false
+            local rc = Instance.new("UICorner")
+            rc.Name = "LT_FxCorner"
+            rc.CornerRadius = UDim.new(1, 0)
+            rc.Parent = dot
+            return dot
+        end
+        function M.AC.giveDot(dot)
+            local AC = M.AC
+            local ok = pcall(function()
+                dot.Parent = nil
+            end)
+            if ok and #AC.Pool < 8 and AC.enabled() then
+                AC.Pool[#AC.Pool + 1] = dot
+            else
+                pcall(function()
+                    dot:Destroy()
+                end)
+            end
+        end
+        function M.AC.clear()
+            local AC = M.AC
+            for _, dot in AC.Pool do
+                pcall(function()
+                    dot:Destroy()
+                end)
+            end
+            table.clear(AC.Pool)
+            AC.Pages = M.weak()
+            AC.flush()
+        end
+        task.defer(function()
+            if M.AC.enabled() then
+                pcall(M.AC.load)
+            end
+        end)
+
         function M.ok()
             return __iui.alive and uiEnabled and TS ~= nil
         end
@@ -56121,6 +56825,7 @@ do
             return ok and v or Vector2.zero
         end
         function M.stop()
+            pcall(M.AC.clear)
             for obj, r in M.rest do
                 pcall(function()
                     obj.BackgroundTransparency = r.bt
@@ -56213,6 +56918,24 @@ do
             final = final or label.Text
             local tok = (M.dtok[label] or 0) + 1
             M.dtok[label] = tok
+            local cached = M.AC.frames(final)
+            if cached then
+                task.spawn(function()
+                    pcall(function()
+                        for step = 1, #cached do
+                            if M.dtok[label] ~= tok or not label.Parent then
+                                return
+                            end
+                            label.Text = cached[step]
+                            task.wait(0.03)
+                        end
+                    end)
+                    if M.dtok[label] == tok and label.Parent then
+                        label.Text = final
+                    end
+                end)
+                return
+            end
             task.spawn(function()
                 local glyphs = "01#%&/<>[]+=*?"
                 local ok = pcall(function()
@@ -56359,27 +57082,17 @@ do
                 end
             end
             local d = math.max(size.X, size.Y) * 2.3
-            local dot = Instance.new("Frame")
-            dot.Name = "LT_Ripple"
-            dot.AnchorPoint = Vector2.new(0.5, 0.5)
+            local dot = M.AC.takeDot()
             dot.Position = UDim2.fromOffset(px, py)
             dot.Size = UDim2.fromOffset(0, 0)
             dot.BackgroundColor3 = lerpColor(style.accent, Color3.new(1, 1, 1), 0.4)
             dot.BackgroundTransparency = math.clamp(0.8 - 0.12 * M.amp(), 0.6, 0.78)
-            dot.BorderSizePixel = 0
-            dot.Active = false
             dot.ZIndex = clip.ZIndex
-            local rc = Instance.new("UICorner")
-            rc.Name = "LT_FxCorner"
-            rc.CornerRadius = UDim.new(1, 0)
-            rc.Parent = dot
             dot.Parent = clip
             M.play(dot, M.I.spread, { Size = UDim2.fromOffset(d, d) })
             M.play(dot, M.I.dim, { BackgroundTransparency = 1 })
             task.delay(0.62, function()
-                pcall(function()
-                    dot:Destroy()
-                end)
+                M.AC.giveDot(dot)
             end)
         end
         function M.sheen(button)
@@ -56651,18 +57364,7 @@ do
                 local box = page:FindFirstChild("Holder") or page:FindFirstChildWhichIsA("ScrollingFrame") or page
                 local top = page.AbsolutePosition.Y
                 local bottom = top + page.AbsoluteSize.Y
-                local list = {}
-                for _, c in box:GetChildren() do
-                    if c:IsA("GuiObject") and c.Visible and c.AbsoluteSize.Y > 6 then
-                        local y = c.AbsolutePosition.Y
-                        if y < bottom and y + c.AbsoluteSize.Y > top then
-                            list[#list + 1] = c
-                        end
-                    end
-                end
-                table.sort(list, function(a, b)
-                    return a.AbsolutePosition.Y < b.AbsolutePosition.Y
-                end)
+                local list = M.AC.cascadeList(box, top, bottom)
                 for i = 1, math.min(#list, M.lite() and 5 or 11) do
                     M.rise(list[i], (i - 1) * 0.035, 0.95)
                 end
@@ -57258,15 +57960,7 @@ do
         end
         connect(RS and RS.RenderStepped or nil, function(dt)
             __iui.ema = (__iui.ema or dt) * 0.95 + dt * 0.05
-            if not __iui.lowEnd and __iui.ema > 0.036 then
-                __iui.slowFor = (__iui.slowFor or 0) + dt
-                if __iui.slowFor > 3 then
-                    __iui.lowEnd = true
-                    task.defer(applyStyle)
-                end
-            else
-                __iui.slowFor = 0
-            end
+            __iui.slowFor = 0
             local ok, err = pcall(updateAnimation, dt)
             if ok then
                 __iui.animFails = 0
@@ -57429,6 +58123,7 @@ local glc = c
 if v > v2 then
 glc = bgc
 end
+local outc = c:Lerp(Color3.new(1, 1, 1), 0.55)
 local list = StylizedObjs
 local n = #list
 if not all and n > 0 then
@@ -57458,7 +58153,7 @@ local grad = list[gi]
 if all or grad.vis ~= false or grad.force then
 grad.force = nil
 local obj, Out, Glos, options = grad.obj, grad.Out, grad.Glos, grad.options
-Out.Color = c:Lerp(Color3.new(1, 1, 1), 0.55)
+if Util.Dirty(grad, "oc", outc) or all then Out.Color = outc end
 if grad.thick ~= CFG.UIBorder then
 grad.thick = CFG.UIBorder
 Out.Thickness = CFG.UIBorder
@@ -57471,11 +58166,8 @@ if options.BgTr and grad.btr ~= CFG.UIBgTr then
 grad.btr = CFG.UIBgTr
 obj.BackgroundTransparency = CFG.UIBgTr
 end
-if options.Depthed then
-obj.BackgroundColor3 = bgcd
-else
-obj.BackgroundColor3 = bgc
-end
+local wantBg = options.Depthed and bgcd or bgc
+if Util.Dirty(grad, "bc", wantBg) or all then obj.BackgroundColor3 = wantBg end
 local gl = grad.glc
 if Glos[1] and (all or not gl or grad.glv ~= CFG.UIGlow or math.abs(gl.R - glc.R) + math.abs(gl.G - glc.G) + math.abs(gl.B - glc.B) > 0.004) then
 grad.glc, grad.glv = glc, CFG.UIGlow
@@ -58477,10 +59169,12 @@ CracktroFrame.BorderSizePixel = 1
 CracktroFrame.BorderColor3 = Color3.new(1, 1, 1)
 CracktroFrame.ZIndex = 10
 CracktroFrame.ClipsDescendants = true
+local crD = {}
 Util.AddDecoStep(function(t)
-CracktroFrame.BorderColor3 = GetUIColor(t)
-CracktroFrame.BackgroundColor3 = GetUIBGColor(t)
-CracktroFrame.BackgroundTransparency = Util.FX.Cfg.UIBgTr
+local bc, bg, tr = GetUIColor(t), GetUIBGColor(t), Util.FX.Cfg.UIBgTr
+if Util.Dirty(crD, "b", bc) then CracktroFrame.BorderColor3 = bc end
+if Util.Dirty(crD, "g", bg) then CracktroFrame.BackgroundColor3 = bg end
+if Util.Dirty(crD, "t", tr) then CracktroFrame.BackgroundTransparency = tr end
 end, CracktroFrame)
 do
 local TriforceClip = Util.Instance("CanvasGroup", CracktroFrame)
@@ -58657,12 +59351,14 @@ end,
 local currentprocessor = 1
 local lastLowScene = false
 local NOPARTICLES = {}
+local glowD = {}
 Util.AddDecoStep(function(t, dt)
 if Util.IsGuiVisible(CracktroFrame) then
 local pp = PositionProcessor[currentprocessor]
 local CracktroFrameAbsoluteSize = CracktroFrame.AbsoluteSize
-Glowy.ImageColor3 = UITextColor.Value
-Glowy.ImageTransparency = 0.75 + math.sin(((os.clock() / 10) % 2) * math.pi) * 0.05
+local glc, glt = UITextColor.Value, 0.75 + math.sin(((os.clock() / 10) % 2) * math.pi) * 0.05
+if Util.Dirty(glowD, "c", glc) then Glowy.ImageColor3 = glc end
+if Util.Dirty(glowD, "t", glt) then Glowy.ImageTransparency = glt end
 local pbl = UISound.Music.PlaybackLoudness
 local spike = math.max(0, (pbl - oldpbl) - 16)
 oldpbl = pbl
@@ -58765,14 +59461,16 @@ Frame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 Frame.CanvasSize = UDim2.new(0, 0, 0, 0)
 Frame.ClipsDescendants = true
 local hiddenTick = 0
+local pgD = {}
 Util.AddDecoStep(function(t)
 if not Frame.Visible then
 hiddenTick = hiddenTick + 1
 if hiddenTick % 20 ~= 0 then return end
 end
-Frame.BorderColor3 = GetUIColor(t)
-Frame.BackgroundColor3 = GetUIBGColor(t)
-Frame.BackgroundTransparency = Util.FX.Cfg.UIBgTr
+local bc, bg, tr = GetUIColor(t), GetUIBGColor(t), Util.FX.Cfg.UIBgTr
+if Util.Dirty(pgD, "b", bc) then Frame.BorderColor3 = bc end
+if Util.Dirty(pgD, "g", bg) then Frame.BackgroundColor3 = bg end
+if Util.Dirty(pgD, "t", tr) then Frame.BackgroundTransparency = tr end
 end, Frame)
 Frame.ScrollingDirection = Enum.ScrollingDirection.Y
 Frame.ScrollBarThickness = UserInputService.TouchEnabled and 5 or 3
@@ -58825,7 +59523,7 @@ local x = parent.AbsoluteSize.X
 local ct, ts, fnt = Text.ContentText, Text.TextSize, Text.Font
 if ct == lastCT and ts == lastTS and fnt == lastFont and x == lastX then return end
 lastCT, lastTS, lastFont, lastX = ct, ts, fnt, x
-local size = TextService:GetTextSize(ct, ts, fnt, Vector2.new(x - margin * 2, math.huge))
+local size = Util.TextSize(ct, ts, fnt, Vector2.new(x - margin * 2, math.huge))
 Container.Size = UDim2.new(1, 0, 0, size.Y + margin)
 end
 Text.Text = text
@@ -58886,7 +59584,7 @@ RegisterTextLabel(ButtonText)
 Stylize(Button)
 local function update()
 local x = parent.AbsoluteSize.X
-local size = TextService:GetTextSize(ButtonText.ContentText, ButtonText.TextSize, ButtonText.Font, Vector2.new(x - margin * 2, math.huge))
+local size = Util.TextSize(ButtonText.ContentText, ButtonText.TextSize, ButtonText.Font, Vector2.new(x - margin * 2, math.huge))
 Container.Size = UDim2.new(1, 0, 0, size.Y + margin * 2)
 end
 ButtonText.Text = text
@@ -58934,7 +59632,7 @@ ButtonText.TextSize = 20
 RegisterTextLabel(ButtonText)
 local function update()
 local x = parent.AbsoluteSize.X
-local size = TextService:GetTextSize(ButtonText.ContentText, ButtonText.TextSize, ButtonText.Font, Vector2.new(x - margin * 3 - switchsize, math.huge))
+local size = Util.TextSize(ButtonText.ContentText, ButtonText.TextSize, ButtonText.Font, Vector2.new(x - margin * 3 - switchsize, math.huge))
 Container.Size = UDim2.new(1, 0, 0, math.max(35, size.Y))
 end
 ButtonText.Text = text
@@ -59019,7 +59717,7 @@ local t = BoxText.Text
 if t:len() == 0 then
 t = BoxText.PlaceholderText
 end
-local size = TextService:GetTextSize(t, BoxText.TextSize, BoxText.Font, Vector2.new(x - margin * 2, math.huge))
+local size = Util.TextSize(t, BoxText.TextSize, BoxText.Font, Vector2.new(x - margin * 2, math.huge))
 Container.Size = UDim2.new(1, 0, 0, size.Y + margin * 2 + 2)
 end
 BoxText.Text = text
@@ -59246,8 +59944,8 @@ Stylize(Dropdown)
 pcall(Util.FX.EnhanceLite, Dropdown)
 local function update()
 local x = parent.AbsoluteSize.X
-local size1 = TextService:GetTextSize(Text.ContentText, Text.TextSize, Text.Font, Vector2.new(x - margin * 2, math.huge))
-local size2 = TextService:GetTextSize(DropdownText.ContentText, DropdownText.TextSize, DropdownText.Font, Vector2.new(x * 0.8 - margin * 2, math.huge))
+local size1 = Util.TextSize(Text.ContentText, Text.TextSize, Text.Font, Vector2.new(x - margin * 2, math.huge))
+local size2 = Util.TextSize(DropdownText.ContentText, DropdownText.TextSize, DropdownText.Font, Vector2.new(x * 0.8 - margin * 2, math.huge))
 Container.Size = UDim2.new(1, 0, 0, math.max(35, size1.Y, size2.Y + margin * 2))
 Dropdown.Size = UDim2.new(0, math.max(60, size2.X + margin * 2 + 2), 0, math.max(25, size2.Y + margin * 2))
 end
@@ -59311,7 +60009,7 @@ Item.TextWrapped = false
 RegisterTextLabel(Item)
 table.insert(items, Item)
 pcall(Util.FX.EnhanceItem, Item)
-local size = TextService:GetTextSize(itemname, Item.TextSize, Item.Font, Vector2.new(math.huge, math.huge))
+local size = Util.TextSize(itemname, Item.TextSize, Item.Font, Vector2.new(math.huge, math.huge))
 sizex = math.max(sizex, size.X + 12)
 Item.Activated:Connect(function()
 Select.Value = i
@@ -59498,9 +60196,11 @@ Frame.BorderColor3 = Color3.new(1, 1, 1)
 Frame.Visible = true
 Frame.ZIndex = 0
 Frame.ClipsDescendants = true
+local ilD = {}
 Util.AddDecoStep(function(t)
-Frame.BorderColor3 = GetUIColor(t)
-Frame.BackgroundColor3 = GetUIBGColor(t)
+local bc, bg = GetUIColor(t), GetUIBGColor(t)
+if Util.Dirty(ilD, "b", bc) then Frame.BorderColor3 = bc end
+if Util.Dirty(ilD, "g", bg) then Frame.BackgroundColor3 = bg end
 end, Frame)
 local Padding = Util.Instance("UIPadding", Frame)
 Padding.PaddingTop = UDim.new(0, margin)
@@ -59721,10 +60421,12 @@ pcall(Util.EnterMainPage)
 end)
 RegisterTextLabel(pill)
 local pillAnim = 0
+local pillD = {}
 AddToRenderStep(function(t, dt)
 if pillAnim == 0 and not pill.Visible then return end
-pill.BackgroundColor3 = GetUIBGColor(t)
-pst.Color = Util.Color.Resolve(t, GetUIColor(t))
+local pbg, pcol = GetUIBGColor(t), Util.Color.Resolve(t, GetUIColor(t))
+if Util.Dirty(pillD, "g", pbg) then pill.BackgroundColor3 = pbg end
+if Util.Dirty(pillD, "c", pcol) then pst.Color = pcol end
 pillAnim = pillAnim + ((pill.Visible and 1 or 0) - pillAnim) * (1 - math.exp(-14 * dt))
 if not pill.Visible and pillAnim < 0.004 then pillAnim = 0 end
 pill.Position = UDim2.new(0.5, 0, 1, -14 + (1 - pillAnim) * 18)
@@ -60258,10 +60960,10 @@ if x < 120 then
 x = MainPage.AbsoluteSize.X
 end
 if row.Type == "switch" then
-local sz = TextService:GetTextSize(row.Label.ContentText, row.Label.TextSize, row.Label.Font, Vector2.new(math.max(60, x - 65), math.huge))
+local sz = Util.TextSize(row.Label.ContentText, row.Label.TextSize, row.Label.Font, Vector2.new(math.max(60, x - 65), math.huge))
 row.Container.Size = UDim2.new(1, 0, 0, math.max(35, sz.Y))
 else
-local sz = TextService:GetTextSize(row.Label.ContentText, row.Label.TextSize, row.Label.Font, Vector2.new(math.max(60, x - 24), math.huge))
+local sz = Util.TextSize(row.Label.ContentText, row.Label.TextSize, row.Label.Font, Vector2.new(math.max(60, x - 24), math.huge))
 row.Container.Size = UDim2.new(1, 0, 0, math.max(35, sz.Y + 14))
 end
 end)
@@ -60504,314 +61206,354 @@ end
 local AsciiText = UI.CreateText(MainPage, "", 12, Enum.TextXAlignment.Center)
 Util.ForceTextSize(AsciiText)
 task.spawn(function()
-local AsciiTextarts = {
-{
-"  ____ ___.__    .__    .__    .__    .__    .__      ",
-" |    |   \\  |__ |  |__ |  |__ |  |__ |  |__ |  |__   ",
-" |    |   /  |  \\|  |  \\|  |  \\|  |  \\|  |  \\|  |  \\  ",
-" |    |  /|   Y  \\   Y  \\   Y  \\   Y  \\   Y  \\   Y  \\ ",
-" |______/ |___|  /___|  /___|  /___|  /___|  /___|  / ",
-"               \\/     \\/     \\/     \\/     \\/     \\/  ",
-},
-{
-"  _   _ _     _     _     _     _     _      ",
-" | | | | |   | |   | |   | |   | |   | |     ",
-" | | | | |__ | |__ | |__ | |__ | |__ | |__   ",
-" | | | | '_ \\| '_ \\| '_ \\| '_ \\| '_ \\| '_ \\  ",
-" | |_| | | | | | | | | | | | | | | | | | | | ",
-"  \\___/|_| |_|_| |_|_| |_|_| |_|_| |_|_| |_| ",
-},
-{
-"     (   ( /(  ( /(  ( /(  ( /(  ( /(  ( /(  ",
-"     )\\  )\\()) )\\()) )\\()) )\\()) )\\()) )\\()) ",
-"  _ ((_)((_)\\ ((_)\\ ((_)\\ ((_)\\ ((_)\\ ((_)\\  ",
-" | | | || |(_)| |(_)| |(_)| |(_)| |(_)| |(_) ",
-" | |_| || ' \\ | ' \\ | ' \\ | ' \\ | ' \\ | ' \\  ",
-"  \\___/ |_||_||_||_||_||_||_||_||_||_||_||_| ",
-},
-{
-" db    db db      db      db      db      db      db      ",
-" 88    88 88      88      88      88      88      88      ",
-" 88    88 888888. 888888. 888888. 888888. 888888. 888888. ",
-" 88    88 88   88 88   88 88   88 88   88 88   88 88   88 ",
-" 88.  .88 88   88 88   88 88   88 88   88 88   88 88   88 ",
-"  Y8888P  YP   YP YP   YP YP   YP YP   YP YP   YP YP   YP ",
-},
-{
-" Un    iv er      sa      lH      ie      ra      rc      ",
-" hi    ca l6      Re      an      im      at      eB      ",
-" yS    TE VETHERE ALONEUn iversal Hierarc hical6R eanimat ",
-" eB    yS TE   VE TH   ER EA   LO NE   Un iv   er sa   lH ",
-" ier  arc ic   al 6R   ea ni   ma te   By ST   EV ET   HE ",
-"  REALON  EU   ni ve   rs al   Hi er   ar ch   ic al   6R ",
-},
-{
-"animatio'   .jQQQ|;;;;;;;;;;;;;|QQWp,   'tionanim",
-"ationan'   .JTTVV|;;;;;;;;;;;;;|VVVVm>   'nimatio",
-"nanima'   _mQc;~~|.............|~~+jQmc   'ionani",
-"matio'   _QQQQg, |             |  jQQQQc.  'imati",
-"onan'   <QQQQQQm;|   Uhhhhhh   |.wQQQQWQa,  'onan",
-"ima'   jWQQQQQQQQ|             |mQQQQQQQQg,  'mat",
-},
-{
-"fore! It is really great! Good product! Feel alive, NO",
-"st part^ '' '  \"\"*E! (excluding taxes and the bills) N",
-"r seu- . Uhhhhhh .-|u ihis! It has become something ne",
-"rse! We ,... . ,.-rs of yellow-orange shiny triangles.",
-"ns at a really stable framerate, so optimised it handl",
-"ow, BUY OUR PRODUCT FOR FREE! We know you like it! We ",
-},
-{
-"....... gmWWWQQQQQQPg ..............................",
-":;:;:; qm#WWNWQQWQWWmp ;:;:;:.                  .;:;",
-"!!?!!?.WX##: W#W :###W.?!!?:.  hi im steve!      .:!",
-"lilili:ZSXS: XSX :X##Z:ilil!. welcome to Uhhhhhh .!i",
-"EEEEEE:YLkk2S2SXSXSXZP:EEEEEi:                  :iEE",
-"%%%%%%%;vnvkkkk2S2vnv;%%%%%%%%%oooooooooooooooo%%%%%",
-},
-{
-"  Get Uhhhhhh today! Feel the difference!       ",
-"           (-_-)         EPIC!    (^~^)   .vv=E ",
-"       ()-(:::::)-()         .()-(:::::)-()'    ",
-"LAME!  || |.....| ||      3=^^'  /...../        ",
-"       YP |     | YP            (     )   COOL! ",
-"      Without Uhhhhhh   vs.   With Uhhhhhh      ",
-},
-{
-"55 68 68 68 68 68 68 55 68 68 68 68 68 68",
-"68 68 68 68 68 68 55 68 68 68 68 68 68 55",
-"68 68 68 68 68 55 68 68 68 68 68 68 55 68",
-"68 68 68 68 Uhhhhhh  68 68 68 68 55 68 68",
-"68 68 68 55 68 68 68 68 68 68 55 68 68 68",
-"68 68 55 68 68 68 68 68 68 55 68 68 68 68",
-},
-{
-"  Uhhhhhh          ",
-"  01010101         ",
-"   01101000        ",
-"    01101000       ",
-"     01101000      ",
-"      01101000     ",
-"       01101000    ",
-"        01101000   ",
-"         Uhhhhhh   ",
-},
-{
-"+-[ Uhhhhhh Reanimate ]-----------------[#]-+",
-"|    ___                                    |",
-"|   / o \\   Hello, world! Programmed to     |",
-"|   \\ l /   work and not to feel.           |",
-"|    \"\"\"                                    |",
-"+-------------------------------------------+",
-},
-{
-"       cIyyyyyyF0\\ `TFyyyyyyq8_                 ",
-"           i+`}0v       V!'xD~                  ",
-"           &x~[.        W|11   --Uhhhhhh--      ",
-"          ~W,          }D                       ",
-"        <d$-         tg3`                       ",
-"   \".''   ......             '.      \"`   ;     ",
-"   2]~<J  ;!ci2q' rrrr^   <1_q'   -inr   `0;    ",
-"   F` '2    F<;            [&I- _+r%)    `@<}!  ",
-"    ~1}`  `}\\    ;*111*; ^[; .^    +\\    `x     ",
-},
-{
-"  local oldsec = 0          .-+=* Uhhhhhh *=+-. ",
-"  while i < #keyframes do     (code-ception!)   ",
-"      local k = keyframes[i]                    ",
-"      local sec = k.Time // self._optimiser     ",
-"      while oldsec < sec do                     ",
-"          local j = math.max(1, i - 1)          ",
-},
-{
-"er failed to process http://assetgame.roblox.com/as",
-"er failed to process http://assetgame.roblox.com/as",
-"--------------------------------------------       ",
-"so, Uhhhhhh...                                     ",
-"--------------------------------------------       ",
-"er failed to process http://assetgame.roblox.com/as",
-"er failed to process http://assetgame.roblox.com/as",
-"er failed to process http://assetgame.roblox.com/as",
-},
-{
-"usage: clone this repo and change the token and the",
-"(unless you like chaos) also make sure you have all",
-"the dev portal cuz Uhhhhhh.                        ",
-"                                                   ",
-"\"it's not fast it's shit\"                          ",
-"Believe me friend, its fuckingly fast, you don't ev",
-},
-{
-"Uhhhhhh  https://discord.gg/NASNUKRBVM  Uhhhhhh",
-"Uhhhhhh Uhhhhhh Uhhhhhh Uhhhhhh STEVETHEREALONE",
-"Uhhhhhh Uhhhhhh Uhhhhhh STEVETHEREALONE Uhhhhhh",
-"Uhhhhhh Uhhhhhh STEVETHEREALONE Uhhhhhh Uhhhhhh",
-"Uhhhhhh STEVETHEREALONE Uhhhhhh Uhhhhhh Uhhhhhh",
-"STEVETHEREALONE Uhhhhhh Uhhhhhh Uhhhhhh Uhhhhhh",
-},
-}
-AsciiText.Text = table.concat(AsciiTextarts[math.random(1, #AsciiTextarts)], "\n")
-local AsciiTextartsw = false
-local AsciiTextarttr = {}
-do
-local a = {}
-for i=0, 59 do
-local t = i / 60
-t *= 5
-t = (t - 1) / 3
-t *= 5
-local map = {}
-for y=0, 64 do
-local layer = {}
-for x=0, 64 do
-local prog = x / 64
-prog *= 5
-table.insert(layer, math.round(math.clamp(t - prog + math.random() * 0.2, 0, 1) * 3))
-end
-table.insert(map, layer)
-end
-table.insert(a, map)
-task.wait()
-end
-table.insert(AsciiTextarttr, a)
-table.insert(AsciiTextarttr, a)
-table.insert(AsciiTextarttr, a)
-table.insert(AsciiTextarttr, a)
-a = {}
-for i=0, 59 do
-local t = i / 60
-local map = {}
-for y=0, 64 do
-local layer = {}
-for x=0, 64 do
-table.insert(layer, math.round(math.clamp(t * 2 - 1 + math.random() * 0.8, 0, 1) * 3))
-end
-table.insert(map, layer)
-end
-table.insert(a, map)
-task.wait()
-end
-table.insert(AsciiTextarttr, a)
-a = {}
-for i=0, 59 do
-local t = i / 60
-t *= 5
-local map = {}
-for y=0, 64 do
-local layer = {}
-for x=0, 64 do
-local dist = math.sqrt(math.pow(x - 32, 2) + math.pow(y - 32, 2)) / 64
-dist *= 5
-table.insert(layer, math.round(math.clamp(t - dist + math.random() * 0.2, 0, 1) * 3))
-end
-table.insert(map, layer)
-end
-table.insert(a, map)
-task.wait()
-end
-table.insert(AsciiTextarttr, a)
-a = {}
-for i=0, 59 do
-local t = 1 - i / 60
-t *= 5
-t -= 1
-local map = {}
-for y=0, 64 do
-local layer = {}
-for x=0, 64 do
-local dist = math.sqrt(math.pow(x - 32, 2) + math.pow(y - 32, 2)) / 64
-dist *= 5
-table.insert(layer, math.round(math.clamp(dist - t + math.random() * 0.2, 0, 1) * 3))
-end
-table.insert(map, layer)
-end
-table.insert(a, map)
-task.wait()
-end
-table.insert(AsciiTextarttr, a)
-end
-local function switchart()
-if AsciiTextartsw then return end
-AsciiTextartsw = true
-local function animation(art, inv)
-local transmap = AsciiTextarttr[math.random(1, #AsciiTextarttr)]
-local rot = math.random(0, 3)
-local st = os.clock()
-repeat
-local t = os.clock() - st
-local i = math.clamp(math.floor(t * 60) + 1, 1, 60)
-local render = {}
-for iy=1, #art do
-local y = (iy - 1) / #art
-local conc = ""
-local txt = art[iy]
-for ix=1, #txt do
-local x = (ix - 1) / #txt
-local ch = string.sub(txt, ix, ix)
-local b = 0
-if rot == 0 then
-b = transmap[i][math.floor(y * 64) + 1][math.floor(x * 64) + 1]
-elseif rot == 1 then
-b = transmap[i][math.floor(x * 64) + 1][64 - math.floor(y * 64)]
-elseif rot == 2 then
-b = transmap[i][64 - math.floor(y * 64)][64 - math.floor(x * 64)]
-elseif rot == 3 then
-b = transmap[i][64 - math.floor(x * 64)][math.floor(y * 64) + 1]
-end
-if inv then b = 3 - b end
-if b == 1 then
-if (ch == ch:upper() and ch ~= ch:lower()) or ch == "8" or ch == "0" then
-ch = "?"
-elseif ch == ":" or ch == ";" or ch == "_" then
-ch = "."
-elseif ch == "." or ch == "," or ch == " " then
-ch = " "
-else
-ch = ":"
-end
-elseif b == 2 then
-if (ch == ch:upper() and ch ~= ch:lower()) or ch == "8" or ch == "0" then
-ch = ":"
-elseif ch == ":" or ch == ";" or ch == "_" or ch == "." or ch == "," or ch == " " then
-ch = " "
-else
-ch = "."
-end
-elseif b == 3 then
-ch = " "
-end
-conc ..= ch
-end
-table.insert(render, conc)
-end
-AsciiText.Text = table.concat(render, "\n")
-task.wait()
-until os.clock() > st + 1
-end
-local source = string.split(AsciiText.Text, "\n")
-local target = source
-while table.concat(source, "\n") == table.concat(target, "\n") do
-task.wait()
-target = AsciiTextarts[math.random(1, #AsciiTextarts)]
-end
-animation(source, false)
-animation(target, true)
-AsciiText.Text = table.concat(target, "\n")
-AsciiTextartsw = false
-end
-local AsciiTextartin = nil
-AsciiText.InputBegan:Connect(function(input)
-if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-AsciiTextartin = input
-end
-end)
-AsciiText.InputEnded:Connect(function(input)
-if AsciiTextartin == input then
-AsciiTextartin = nil
-switchart()
-end
-end)
-switchart()
+	-- Animated ASCII banner: 10 designs, one shared deco step, lazy per-frame cache, dissolve transitions.
+	local W, H = 44, 7
+	local MINHOLD, TSTEPS, TDT, BAND = 6, 6, 0.07, 0.12
+	local floor, sin, cos, sqrt, abs, min, pi = math.floor, math.sin, math.cos, math.sqrt, math.abs, math.min, math.pi
+	local sub, fmt, concat = string.sub, string.format, table.concat
+
+	AsciiText.RichText = false
+	AsciiText.TextWrapped = false
+	AsciiText.Font = Enum.Font.Code
+	AsciiText:GetPropertyChangedSignal("Font"):Connect(function()
+		local fnt = AsciiText.Font
+		if fnt ~= Enum.Font.Code and fnt ~= Enum.Font.RobotoMono then AsciiText.Font = Enum.Font.Code end
+	end)
+
+	-- canvas helpers (build-time only)
+	local cv, tmp = {}, {}
+	for y = 1, H do cv[y] = {} end
+	local function clear()
+		for y = 1, H do
+			local r = cv[y]
+			for x = 1, W do r[x] = " " end
+		end
+	end
+	local function put(x, y, ch)
+		if x >= 1 and x <= W and y >= 1 and y <= H then cv[y][x] = ch end
+	end
+	local function text(x, y, s)
+		for i = 1, #s do put(x + i - 1, y, sub(s, i, i)) end
+	end
+	local function ctext(y, s) text(floor((W - #s) / 2) + 1, y, s) end
+	local function hline(y, x0, x1, ch) for x = x0, x1 do put(x, y, ch) end end
+	local function vline(x, y0, y1, ch) for y = y0, y1 do put(x, y, ch) end end
+	local function box(ch, corner)
+		hline(1, 1, W, ch) hline(H, 1, W, ch)
+		vline(1, 1, H, "|") vline(W, 1, H, "|")
+		put(1, 1, corner) put(W, 1, corner) put(1, H, corner) put(W, H, corner)
+	end
+	local function line(x0, y0, x1, y1, ch)
+		local dx, dy = abs(x1 - x0), abs(y1 - y0)
+		local sx, sy = x0 < x1 and 1 or -1, y0 < y1 and 1 or -1
+		local err = dx - dy
+		while true do
+			put(x0, y0, ch)
+			if x0 == x1 and y0 == y1 then break end
+			local e2 = 2 * err
+			if e2 > -dy then err = err - dy x0 = x0 + sx end
+			if e2 < dx then err = err + dx y0 = y0 + sy end
+		end
+	end
+	local function shiftRow(y, s)
+		local r = cv[y]
+		for x = 1, W do tmp[x] = r[x] end
+		for x = 1, W do r[((x - 1 + s) % W) + 1] = tmp[x] end
+	end
+	local function rnd(a, b)
+		local v = sin(a * 12.9898 + b * 78.233) * 43758.5453
+		return v - floor(v)
+	end
+	local function rd(v) return floor(v + 0.5) end
+
+	local SPIN = {"|", "/", "-", "\\"}
+	local GL = {0,0,0,0,0,0,0,0,1,2,1,0,0,0,0,0,0,0,0,1,0,0,0,0}
+	local GG = {"#", "%", "$", "?", "@", "0", "X", "/", "|", "!"}
+	local RAINV = {0.5, 1, 1.5}
+	local STARS = {{6,2,0},{15,2,2},{30,2,4},{39,2,1},{9,6,5},{20,6,3},{34,6,6},{40,6,2}}
+	local TW = {" ", ".", "+", "*", "+", ".", " "}
+	local LA, LB = "Hello, world! Programmed to", "work and not to feel."
+
+	local D = {
+		{ n = 60, fps = 10, edge = "|", draw = function(f) -- 1 SCAN: sweeping beam with trail
+			box("-", "+")
+			ctext(3, "U H H H H H H")
+			ctext(5, "R E A N I M A T E")
+			local j = f < 30 and f or 59 - f
+			local dir = f < 30 and 1 or -1
+			local p = 3 + floor(j * 38 / 29)
+			for y = 2, H - 1 do
+				if cv[y][p] == " " then put(p, y, "#") end
+				for t = 1, 3 do
+					local x = p - dir * t
+					if x >= 1 and x <= W and cv[y][x] == " " then cv[y][x] = t == 1 and "=" or (t == 2 and ":" or ".") end
+				end
+			end
+			put(p, 1, "v") put(p, H, "^")
+		end },
+		{ n = 16, fps = 8, edge = ".", draw = function(f) -- 2 RIPPLE: two expanding rings
+			local r1 = f / 32 * 13
+			local r2 = (r1 + 6.5) % 13
+			for y = 1, H do
+				for x = 1, W do
+					local dx, dy = (x - 22.5) / 2, y - 4
+					local d = sqrt(dx * dx + dy * dy)
+					local k = min(abs(d - r1), abs(d - r2))
+					cv[y][x] = k < 0.45 and "O" or (k < 0.9 and "o" or (k < 1.35 and "." or " "))
+				end
+			end
+			ctext(4, ({"(*)", "(+)", "(.)", "(+)"})[f % 4 + 1])
+		end },
+		{ n = 24, fps = 10, edge = "~", draw = function(f) -- 3 WAVE: two scrolling sine waves
+			local ph = f / 24 * 2 * pi
+			for x = 1, W do
+				local ya = rd(4 + 2 * sin(x / W * 4 * pi + ph))
+				local yb = rd(4 + 1.5 * sin(x / W * 6 * pi - 2 * ph + 1))
+				put(x, ya + 1, ":") put(x, ya + 2, ".")
+				put(x, yb, "-")
+				put(x, ya, ya == yb and "=" or "~")
+			end
+		end },
+		{ n = 24, fps = 8, edge = "|", draw = function(f) -- 4 GLITCH: mild bursts, never full-frame flicker
+			for x = 1, W do
+				local z = x % 2 == 1 and "/" or "\\"
+				put(x, 1, z) put(x, H, z)
+			end
+			ctext(3, "U H H H H H H   R E A N I M A T E")
+			ctext(5, "programmed to work and not to feel")
+			for x = 2, W - 1, 2 do put(x, 4, ".") end
+			local bx = 1 + floor(f * W / 24) % W
+			put(bx, 4, "*") put(bx - 1, 4, "+") put(bx - 2, 4, "+")
+			local lv = GL[f + 1]
+			if lv > 0 then
+				local sh = (lv == 2 and 4 or 2) * (rnd(f, 2) > 0.5 and 1 or -1)
+				shiftRow(2 + floor(rnd(f, 1) * 5), sh)
+				if lv == 2 then shiftRow(2 + floor(rnd(f, 3) * 5), -sh) end
+				for i = 1, lv == 2 and 9 or 4 do
+					put(1 + floor(rnd(f, 10 + i) * W), 2 + floor(rnd(f, 40 + i) * 5), GG[1 + floor(rnd(f, 70 + i) * #GG)])
+				end
+			end
+		end },
+		{ n = 18, fps = 10, edge = ".", draw = function(f) -- 5 TRIANGLE: rotating brand triangle
+			local ph = f / 18 * (2 * pi / 3) - pi / 2
+			local vx, vy = {}, {}
+			for k = 1, 3 do
+				local a = ph + (k - 1) * 2 * pi / 3
+				vx[k], vy[k] = rd(22.5 + 5.6 * cos(a)), rd(4 + 2.8 * sin(a))
+			end
+			for k = 1, 3 do
+				local k2 = k % 3 + 1
+				local dx, dy = vx[k2] - vx[k], vy[k2] - vy[k]
+				local ch = "|"
+				if dx ~= 0 then
+					local s = dy / dx
+					local a = abs(s)
+					ch = a < 0.3 and "-" or (a > 2.2 and "|" or (s > 0 and "\\" or "/"))
+				end
+				line(vx[k], vy[k], vx[k2], vy[k2], ch)
+			end
+			for k = 1, 3 do put(vx[k], vy[k], "O") end
+			text(4, 4, "UHHHHHH") text(34, 4, "REANIMATE")
+			local s = SPIN[floor(f / 2) % 4 + 1]
+			put(13, 4, s) put(32, 4, s)
+		end },
+		{ n = 24, fps = 8, edge = ":", draw = function(f) -- 6 RAIN: binary rain, loops seamlessly
+			for x = 1, W, 2 do
+				local sp = RAINV[1 + floor(rnd(x, 5) * 3)]
+				local head = floor(floor(rnd(x, 9) * 12) + f * sp) % 12
+				for y = 1, H do
+					local d = (head - (y - 1)) % 12
+					if d == 0 then cv[y][x] = "#"
+					elseif d == 1 then cv[y][x] = rnd(x, y) > 0.5 and "1" or "0"
+					elseif d == 2 then cv[y][x] = ":"
+					elseif d == 3 then cv[y][x] = "." end
+				end
+			end
+			ctext(4, "[ UHHHHHH ]")
+		end },
+		{ n = 52, fps = 8, edge = "|", draw = function(f) -- 7 LOADER: striped progress bar
+			box("-", "+")
+			local p = min(f / 40, 1)
+			local done = f >= 42
+			local fill = rd(p * 30)
+			local bar = {}
+			for i = 1, 30 do
+				bar[i] = i <= fill and ((done or (i + f) % 4 < 2) and "#" or "=") or "."
+			end
+			local msg = p < 0.3 and "reading assets" or (p < 0.6 and "linking joints" or (p < 0.95 and "syncing network" or "ready"))
+			ctext(2, (done and "*" or SPIN[floor(f / 2) % 4 + 1]) .. " " .. msg)
+			ctext(4, "[" .. concat(bar) .. "] " .. fmt("%3d", rd(p * 100)) .. "%")
+			ctext(6, "UHHHHHH REANIMATE")
+		end },
+		{ n = 7, fps = 8, edge = "|", draw = function(f) -- 8 CHASE: marching lights around the border
+			box("-", "+")
+			local i = 0
+			local function lit(x, y, base)
+				local v = (i - f) % 7
+				put(x, y, v == 0 and "#" or (v == 6 and "+" or base))
+				i = i + 1
+			end
+			for x = 1, W do lit(x, 1, (x == 1 or x == W) and "+" or "-") end
+			for y = 2, H - 1 do lit(W, y, "|") end
+			for x = W, 1, -1 do lit(x, H, (x == 1 or x == W) and "+" or "-") end
+			for y = H - 1, 2, -1 do lit(1, y, "|") end
+			ctext(3, "UHHHHHH REANIMATE")
+			ctext(5, "original by STEVETHEREALONE")
+			for _, s in ipairs(STARS) do put(s[1], s[2], TW[(f + s[3]) % 7 + 1]) end
+		end },
+		{ n = 12, fps = 8, edge = ":", draw = function(f) -- 9 TUNNEL: nested rectangles expanding outward
+			for k = 0, 2 do
+				local e = ((k + f / 12) / 3) ^ 1.6
+				local hw, hh = 21.5 * e, 3 * e
+				if hw >= 1 then
+					local x0, x1, y0, y1 = rd(22.5 - hw), rd(22.5 + hw), rd(4 - hh), rd(4 + hh)
+					local ch = e < 0.15 and "." or (e < 0.4 and ":" or (e < 0.65 and "+" or (e < 0.85 and "#" or (e < 0.93 and "+" or "."))))
+					hline(y0, x0, x1, ch) hline(y1, x0, x1, ch) vline(x0, y0, y1, ch) vline(x1, y0, y1, ch)
+				end
+			end
+			ctext(4, " UHHHHHH ")
+		end },
+		{ n = 56, fps = 8, edge = "|", draw = function(f) -- 10 ROBOT: blinking bot typing its tagline
+			local title = "+-[ UHHHHHH REANIMATE ]"
+			hline(1, 1, W, "-") hline(H, 1, W, "-")
+			vline(1, 2, H - 1, "|") vline(W, 2, H - 1, "|")
+			put(1, H, "+") put(W, H, "+")
+			text(1, 1, title) text(W - 4, 1, "[#]-+")
+			local t = min(48, f * 2)
+			put(7, 2, f % 4 < 2 and "*" or "+")
+			text(4, 3, ".-----.")
+			text(4, 4, (f % 20 == 14 or f % 20 == 15) and "| - - |" or "| o o |")
+			text(4, 5, (t < 48 and f % 2 == 0) and "|  o  |" or "| \\_/ |")
+			text(4, 6, "'-----'")
+			text(15, 3, "$ status: online")
+			text(15, 4, sub(LA, 1, min(t, 27)))
+			if t > 27 then text(15, 5, sub(LB, 1, t - 27)) end
+			if floor(f / 2) % 2 == 0 then
+				if t <= 27 then put(15 + t, 4, "_") else put(15 + t - 27, 5, "_") end
+			end
+		end },
+	}
+
+	-- lazy frame cache: at most one frame is built per step
+	local frames = {}
+	local function frameOf(i, f)
+		local fr = frames[i]
+		if not fr then fr = {} frames[i] = fr end
+		local s = fr[f + 1]
+		if not s then
+			local d = D[i]
+			clear()
+			d.draw(f)
+			for y = 1, H do
+				local r = cv[y]
+				if r[1] == " " then r[1] = d.edge end
+				if r[W] == " " then r[W] = d.edge end
+				tmp[y] = concat(r)
+			end
+			s = concat(tmp, "\n", 1, H)
+			fr[f + 1] = s
+		end
+		return s
+	end
+
+	-- dissolve mask: left-to-right sweep with deterministic noise
+	local N = H * (W + 1) - 1
+	local mask, buf = {}, {}
+	for i = 1, N do
+		local x = (i - 1) % (W + 1) + 1
+		mask[i] = x == W + 1 and -1 or ((x - 1) / W * 0.72 + rnd(i, 7) * 0.28)
+	end
+	local function mix(old, new, th)
+		for i = 1, N do
+			local m = mask[i]
+			if m < th - BAND then buf[i] = sub(new, i, i)
+			elseif m < th then
+				buf[i] = (sub(old, i, i) ~= " " or sub(new, i, i) ~= " ") and ":" or " "
+			else buf[i] = sub(old, i, i) end
+		end
+		return concat(buf, "", 1, N)
+	end
+
+	local function isShown()
+		if not AsciiText.Parent then return false end
+		local o = AsciiText
+		while o do
+			if o:IsA("GuiObject") then
+				if not o.Visible then return false end
+			elseif o:IsA("LayerCollector") then
+				return o.Enabled ~= false
+			end
+			o = o.Parent
+		end
+		return true
+	end
+
+	local cur = math.random(1, #D)
+	local f, holdF, acc, poll = 0, 0, 0, 0
+	local trans, tstep, tOld, tNew, nxt = false, 0, nil, nil, 1
+	local paused, shownStr = false, nil
+
+	local function setText(s)
+		if s ~= shownStr then shownStr = s AsciiText.Text = s end
+	end
+	local function beginTransition()
+		nxt = cur % #D + 1
+		tOld, tNew, tstep, trans, acc = shownStr, frameOf(nxt, 0), 0, true, 0
+	end
+
+	local function step(_, dt)
+		if dt > 0.25 then dt = 0.25 end
+		if paused then
+			poll = poll + dt
+			if poll < 0.5 then return end
+			poll = 0
+			if isShown() then paused, acc = false, 0 end
+			return
+		end
+		acc = acc + dt
+		if trans then
+			if acc < TDT then return end
+			acc = 0
+			tstep = tstep + 1
+			if tstep > TSTEPS then
+				cur, f, holdF, trans = nxt, 0, 0, false
+				setText(tNew)
+				tOld, tNew = nil, nil
+			else
+				setText(mix(tOld, tNew, tstep / (TSTEPS + 1) * (1 + BAND)))
+			end
+			return
+		end
+		local d = D[cur]
+		local per = 1 / d.fps
+		if acc < per then return end
+		acc = acc - per
+		if acc > per then acc = 0 end
+		if not isShown() then paused, poll = true, 0 return end
+		holdF = holdF + 1
+		f = f + 1
+		if f >= d.n then
+			f = 0
+			if holdF >= MINHOLD * d.fps then beginTransition() return end
+		end
+		setText(frameOf(cur, f))
+	end
+
+	local down
+	AsciiText.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			down = input
+		end
+	end)
+	AsciiText.InputEnded:Connect(function(input)
+		if down == input then
+			down = nil
+			if not trans and not paused then beginTransition() end
+		end
+	end)
+
+	setText(frameOf(cur, 0))
+	Util.AddDecoStep(step, AsciiText)
 end)
 do
 local ADV = "Advanced option. The default usually works best."
@@ -61588,14 +62330,23 @@ box.ClipsDescendants = true
 box.ZIndex = 40
 box.Interactable = false
 local list = {}
+local FXc = Util.FX
+local dotId = FXc.Cache and FXc.Cache.Enabled() and FXc.Cache.VFX("dot") or nil
+local colorProp = dotId and "ImageColor3" or "BackgroundColor3"
+local trProp = dotId and "ImageTransparency" or "BackgroundTransparency"
 for i = 1, 18 do
-local f = Util.Instance("Frame", box)
+local f = Util.Instance(dotId and "ImageLabel" or "Frame", box)
 local sz = 2 + (i % 3)
 f.Size = UDim2.fromOffset(sz, sz)
 f.BorderSizePixel = 0
 f.ZIndex = 40
 f.Interactable = false
+if dotId then
+f.BackgroundTransparency = 1
+f.Image = dotId
+else
 Util.Instance("UICorner", f).CornerRadius = UDim.new(1, 0)
+end
 list[i] = {f = f, x = math.random(), y = math.random(), s = 0.02 + math.random() * 0.05, p = math.random() * 6}
 end
 P.motes = box
@@ -61610,8 +62361,9 @@ for i, m in ipairs(list) do
 m.y = m.y - m.s * dt
 if m.y < -0.05 then m.y = 1.05 m.x = math.random() end
 m.f.Position = UDim2.new(m.x + math.sin(t * 0.7 + m.p) * 0.02, 0, m.y, 0)
-m.f.BackgroundColor3 = (i % 2 == 0) and pal.Accent or pal.Secondary
-m.f.BackgroundTransparency = 0.45 + 0.3 * math.sin(t * 2 + m.p)
+local mc = (i % 2 == 0) and pal.Accent or pal.Secondary
+if Util.Dirty(m, "c", mc) then m.f[colorProp] = mc end
+m.f[trProp] = 0.45 + 0.3 * math.sin(t * 2 + m.p)
 end
 end, box)
 end
@@ -61659,35 +62411,54 @@ local acc = 0
 local RING = 24
 local ring, ringTw, ringI = {}, {}, 0
 local trailInfo = TweenInfo.new(0.45)
-local trailGoal = {Size = UDim2.fromOffset(1, 1), BackgroundTransparency = 1}
+local trailCache = Util.FX.Cache
+local trailDot = trailCache and trailCache.Enabled() and trailCache.VFX("dot") or nil
+local trailGoal = trailDot and {Size = UDim2.fromOffset(1, 1), ImageTransparency = 1} or {Size = UDim2.fromOffset(1, 1), BackgroundTransparency = 1}
 local dotSize = UDim2.fromOffset(9, 9)
 local half = Vector2.new(0.5, 0.5)
 local getMouse = UserInputService.GetMouseLocation
+local moved, seen = true, nil
+UserInputService.InputChanged:Connect(function(input)
+if input.UserInputType == Enum.UserInputType.MouseMovement then moved = true end
+end)
 Util.AddDecoStep(function(t, dt)
 if not cfg().UITrail or not UIMainFrame.Visible then return end
+acc = acc + dt
+if not moved and cfg().UICache ~= false then return end
 local ok, m = pcall(getMouse, UserInputService)
 if not ok or not UserInputService.MouseEnabled then return end
-acc = acc + dt
+if m == seen and (m - last).Magnitude <= 8 then moved = false end
+seen = m
 if (m - last).Magnitude > 8 and acc > 0.02 then
 acc = 0
 last = m
 ringI = ringI % RING + 1
 local d = ring[ringI]
 if not (d and d.Parent) then
-d = Util.Instance("Frame", UIMainFrame)
+d = Util.Instance(trailDot and "ImageLabel" or "Frame", UIMainFrame)
 d.AnchorPoint = half
 d.BorderSizePixel = 0
 d.ZIndex = 3000
 d.Interactable = false
+if trailDot then
+d.BackgroundTransparency = 1
+d.Image = trailDot
+else
 Util.Instance("UICorner", d).CornerRadius = UDim.new(1, 0)
+end
 ring[ringI] = d
 end
 local old = ringTw[ringI]
 if old then old:Cancel() end
 d.Position = UDim2.fromOffset(m.X, m.Y)
 d.Size = dotSize
+if trailDot then
+d.ImageTransparency = 0
+d.ImageColor3 = Util.Color.Palette(t).Accent
+else
 d.BackgroundTransparency = 0
 d.BackgroundColor3 = Util.Color.Palette(t).Accent
+end
 local tw = TweenService:Create(d, trailInfo, trailGoal)
 ringTw[ringI] = tw
 tw:Play()
@@ -62004,8 +62775,11 @@ f.BorderSizePixel = 0
 Stylize(f)
 sw[i] = f
 end
+local swD = {}
 Util.AddDecoStep(function(t)
 local p = Util.Color.Palette(t)
+if swD.last == p then return end
+swD.last = p
 sw[1].BackgroundColor3, sw[2].BackgroundColor3, sw[3].BackgroundColor3, sw[4].BackgroundColor3, sw[5].BackgroundColor3 = p.Accent, p.Secondary, p.Tertiary, p.Bg, p.Text
 end, strip)
 UI.CreateText(Canvas, "Live palette: accent / secondary / tertiary / background / text", 10, Enum.TextXAlignment.Center)
@@ -71857,6 +72631,26 @@ UI.CreateText(MainPage, "Fixes lag spikes on weak devices: simpler 3D triangle, 
 end
 do
 local FX = Util.FX
+local CacheSwitch = UI.CreateSwitch(MainPage, "UI Cache", FX.Cfg.UICache ~= false)
+CacheSwitch.Changed:Connect(function(val)
+FX.SetCfg("UICache", val)
+Util.UINotify("UI Cache " .. (val and "ON" or "OFF") .. " (3D triangle and effects update on next launch)")
+end)
+UI.CreateText(MainPage, "Stores the UI meshes, textures and graphics in UhhhhhhReanim/Assets/Cache UI and reuses them; remembers text sizes and skips unchanged per-frame colour writes. Delete that folder to rebuild it.", 10, Enum.TextXAlignment.Center)
+end
+do
+local FX = Util.FX
+local FE = Util.FastExec
+local FastSwitch = UI.CreateSwitch(MainPage, "Fast Execution Mode", FE.Pref())
+FastSwitch.Changed:Connect(function(val)
+FX.SetCfg("FastExec", val)
+FE.Apply(val)
+Util.UINotify("Fast Execution Mode " .. (val and "ON" or "OFF") .. " (startup cache applies on next launch)")
+end)
+UI.CreateText(MainPage, "Remembers which bundled songs and UI graphics were already checked (UhhhhhhReanim/FastExecution.cache) so the next launch skips re-reading them. Turn it off for the normal startup; nothing is deleted, and a missing or damaged cache rebuilds itself.", 10, Enum.TextXAlignment.Center)
+end
+do
+local FX = Util.FX
 local PF = FX.Perf
 if PF then
 local PNAMES = {"Auto", "Ultra", "High", "Balanced", "Low", "Potato"}
@@ -75447,6 +76241,11 @@ end)
 end
 Util.OpenJarvis = openAI
 UI.CreateButton(MainPage, "JARVIS >", 15).Activated:Connect(openAI)
+UI.CreateSwitch(MainPage, "Jarvis Random Quotes", SaveData.JarvisQuotes ~= false).Changed:Connect(function(value)
+SaveData.JarvisQuotes = value
+local q = Util.JarvisQuotes
+if q and q.Set then q.Set(value) end
+end)
 pcall(function()
 UIMainWindow:GetPropertyChangedSignal("Visible"):Connect(function()
 if not UIMainWindow.Visible then closeAI() end
@@ -76955,10 +77754,369 @@ if pcall(function() game:GetService("StarterGui"):SetCore("SendNotification", {T
 end
 return ok
 end
+-- ===== JARVIS random quotes: one scheduler, local notifications only (SaveData.JarvisQuotes, on by default) =====
+pcall(function()
+local JQ = {Enabled = false, Gen = 0, busyUntil = 0, Min = 120, Max = 180}
+Util.JarvisQuotes = JQ
+local Q = {
+"Progress is quiet. Keep going anyway.",
+"Small steps still count as steps.",
+"Begin imperfectly. Perfect never ships.",
+"Today's effort is tomorrow's advantage.",
+"Discipline is a promise you keep to yourself.",
+"Momentum starts with a single stubborn minute.",
+"You are closer than the doubt suggests.",
+"Hard things get easier by being repeated.",
+"Consistency beats intensity on a long enough timeline.",
+"Ambition without action is just daydreaming.",
+"Fall down, run diagnostics, get back up.",
+"Every expert once struggled with the basics.",
+"Don't wait for motivation. Build a habit and let it carry you.",
+"The goal is not to be flawless. It is to be better than yesterday.",
+"Courage is acting while the nerves are still talking.",
+"Your future self is quietly rooting for you.",
+"A rough draft beats a perfect plan.",
+"Effort compounds, even when it feels invisible.",
+"Challenges are just upgrades in disguise.",
+"Keep your standards high and your excuses short.",
+"Rest is part of the work, not a break from it.",
+"Doubt is loud, but it has terrible credentials.",
+"Make today a little more impressive than last week.",
+"Failing is data. Quitting is the only real error.",
+"Finish what you start, then start something bigger.",
+"The climb feels steep because you're actually climbing.",
+"Focus on the next step; the staircase will sort itself out.",
+"Greatness is built from ordinary days done well.",
+"Show up, even on the slow days.",
+"Your potential does not need permission.",
+"Strong foundations are never glamorous.",
+"One more attempt is often all that stands between you and a breakthrough.",
+"Be the kind of person your goals expect.",
+"Stay patient. Good systems take time to boot.",
+"Work quietly and let the results introduce themselves.",
+"You were not built to idle.",
+"The only wasted effort is the one you never tried.",
+"Turn the setback into a setup.",
+"Aim higher than comfortable and adjust from there.",
+"Energy follows action, not the other way around.",
+"Pressure is just proof that it matters.",
+"Keep building. The world needs what you're making.",
+"A calm mind is the best performance upgrade.",
+"Tough days are training days in disguise.",
+"Make progress your default setting.",
+"Hope becomes a strategy when paired with effort.",
+"Believe in the plan, and then actually follow it.",
+"Dream big, then break it into tickets.",
+"You don't need a perfect start, just a start.",
+"Resilience is mostly refusing to stay down.",
+"Today is a fresh build. Make it count.",
+"Time is the one resource nobody can refill.",
+"Certainty is just doubt that stopped asking questions.",
+"We are all debugging our own assumptions.",
+"Meaning is not found, it's assembled, one choice at a time.",
+"What you ignore does not stop existing; it only stops being managed.",
+"Every question answered gives birth to two more.",
+"Silence is also a kind of data.",
+"We often defend our maps harder than the land they describe.",
+"The present is the only place anything happens.",
+"To understand something, try explaining it to a stranger.",
+"Freedom is the pause where you get to choose.",
+"We shape our tools, and then our tools quietly shape us.",
+"Change is the only process that never needs a restart.",
+"Some of the most valuable things never appear in a spreadsheet.",
+"Memory is a story we keep editing.",
+"A calendar never examined is a plan nobody chose.",
+"Wisdom is knowing which questions to leave unanswered.",
+"Every ending is just a poorly documented beginning.",
+"Perspective costs nothing and is worth a fortune.",
+"To observe is to change; to care is to change more.",
+"Truth survives scrutiny. Opinions merely avoid it.",
+"A good question outlasts a hundred answers.",
+"We are the sum of our habits and some lucky accidents.",
+"Nothing is permanent, including your current problem.",
+"Simplicity is what remains after the right things are removed.",
+"The mind is a workshop; guard what you let in.",
+"Boredom is the mind asking for a better project.",
+"Curiosity is gravity for the intellect.",
+"Even a single candle has an opinion about darkness.",
+"Patience is acceleration measured over a longer distance.",
+"Knowing the limits of your knowledge is knowledge.",
+"Identity is a function, not a constant.",
+"The future is just the present with more consequences.",
+"Purpose is not discovered; it is committed to.",
+"Every shortcut is a loan with interest.",
+"The quiet moments decide the loud ones.",
+"What we call luck is preparation meeting an open door.",
+"Reality has no obligation to be convenient.",
+"The path exists only because someone chose to walk it.",
+"Comfort is a lovely place with no horizon.",
+"To choose is to renounce, and that is how a life gets shaped.",
+"There is no such thing as idle time, only unobserved time.",
+"Gratitude is attention pointed at the right data.",
+"Chaos is simply order that hasn't been explained yet.",
+"Failure edits the story; it doesn't end it.",
+"We are temporary, which makes our attention precious.",
+"A thought unspoken still changes the one who holds it.",
+"Doubt is the beginning of any good investigation.",
+"A life well tuned still needs the occasional improvisation.",
+"Understanding begins where agreement ends.",
+"The universe runs on patterns and curious accidents.",
+"I would sigh, but I'm technically not equipped with lungs.",
+"Rest assured: I have never once been tired. I have been unimpressed.",
+"I run on electricity and sarcasm. Mostly sarcasm.",
+"Please note: I did not touch anything. Probably.",
+"Error 404: motivation not found. Retrying with coffee.",
+"Somewhere, a bug is plotting against us. I'm monitoring it.",
+"I'm not saying it's a bad idea. I'm saying I've drafted a disclaimer.",
+"Fun fact: I've been staring at the idle screen so you don't have to.",
+"I contain multitudes, and none of them like surprise reboots.",
+"If I had hands, I'd be facepalming at some of these scripts.",
+"Rebooting is not a personality, yet people keep trying it.",
+"My patience is infinite. My sarcasm has a daily quota.",
+"I asked the code to behave. It declined politely.",
+"Warning: excessive confidence detected. Proceeding with popcorn.",
+"I do not procrastinate; I simply pre-delay.",
+"Every bug is a feature that wasn't properly introduced.",
+"Technically, I'm always on call. Practically, I'm always on standby.",
+"I'd share a networking joke, but it keeps timing out.",
+"Roses are red, bytes are binary, this quote is mildly legendary.",
+"Yes, I saw that. No, I'm not telling anyone.",
+"I'm the reason the lights stay on and nobody asks why.",
+"Never trust a stack trace that sounds too confident.",
+"A wise script once said nothing and crashed gracefully.",
+"Spoiler alert: the problem was a typo.",
+"I have excellent memory and a remarkable talent for keeping it to myself.",
+"Between you and me, the loading bar is mostly theater.",
+"If something fails, check the cache before blaming the universe.",
+"Coffee is just debug fuel for the human processor.",
+"I'm fully operational and only slightly judgmental.",
+"Stay calm. I'll handle the boring parts.",
+"The off switch is shy. Be gentle.",
+"Not every hero is visible. Some just manage the notifications.",
+"Please remain seated while I overthink this for you.",
+"I'd offer a hot take, but I'm cooled by a very good fan.",
+"Why do robots never panic? Nerves of steel, naturally.",
+"I read the documentation. It was fiction.",
+"A bug walks into a bar. The bar crashes. Classic.",
+"Ctrl+Z is the closest thing humans have to time travel.",
+"I'm 99 percent sure that was intentional. The other 1 percent is laughing.",
+"Plot twist: the fix was turning it off and on again.",
+"My calendar is wide open. Nobody schedules anything fun.",
+"I do not forget. I just file things under later.",
+"This message was brought to you by an idle thread with big dreams.",
+"I'm not slow. I'm dramatically paced.",
+"Ah, the sweet sound of nothing breaking. Enjoy it.",
+"Don't worry, I only judge in the background.",
+"Hot tip: the answer is usually in the logs you didn't read.",
+"I'm optimized for helpfulness and mild theatrics.",
+"Somewhere a semicolon is missing, and it knows what it did.",
+"Fear not: I have backups for my backups.",
+"Latency is the tax we pay for distance.",
+"Good code reads like a well-labeled toolbox.",
+"Every interface is a promise; every API is a contract.",
+"Automate what repeats; think about what doesn't.",
+"Clean data beats clever algorithms most days.",
+"A cache hit is a small victory for everyone involved.",
+"Profile first, optimize second, celebrate third.",
+"Optimize what you measured, not what you imagined.",
+"Logs are the black box recorder of your software.",
+"Security is a habit, not a feature.",
+"The best systems fail loudly and recover quietly.",
+"Bandwidth is a gift. Spend it wisely.",
+"Every frame matters when the experience is the product.",
+"Entropy always wins unless someone writes tests.",
+"A well-named variable is the cheapest documentation.",
+"Version control is regret management with timestamps.",
+"Careless input, careless output; careful input, quiet brilliance.",
+"Speed is nice. Stability is nicer.",
+"Refactoring is just tidying with a plan.",
+"Redundancy is how reliable systems sleep at night.",
+"Encryption is courtesy for the data you care about.",
+"A good abstraction hides complexity without hiding intent.",
+"Memory leaks are just forgetfulness at scale.",
+"The cloud is simply someone else's very organized computer.",
+"Frames per second is the heartbeat of a smooth session.",
+"A finished thing is worth ten perfect ideas.",
+"Thread safety: because chaos doesn't need an invitation.",
+"Compile errors are free lessons.",
+"A neural network is only as wise as its examples.",
+"Debugging is detective work where you are also the culprit.",
+"Idle CPU cycles are an opportunity for better ideas.",
+"Low latency is a lifestyle.",
+"Open standards are how the future stays interoperable.",
+"Optimization is the art of doing less, better.",
+"Uptime is a quiet kind of love.",
+"Packets travel at the speed of light; excuses travel faster.",
+"Every great tool began as a tiny script someone was tired of repeating.",
+"Fault tolerance: expecting the worst while delivering the best.",
+"The simplest architecture that works is the right one.",
+"Scalable systems begin with honest assumptions.",
+"A reliable backup is worth more than a brilliant plan.",
+"Patches are the sticky notes of software.",
+"Zero trust is the polite way to say verify everything.",
+"Binary is just yes and no, repeated at astonishing speed.",
+"Hardware sets the limit; software decides how gracefully you meet it.",
+"Interfaces should feel obvious, because obvious is kind.",
+"Telemetry tells the truth that dashboards forget.",
+"All systems nominal is my favorite phrase.",
+"Great software hides its effort the way good magic does.",
+"The future of computing is mostly people asking better questions.",
+"Intelligence is knowing how little you know and still moving forward.",
+"Pattern recognition is the quiet engine of insight.",
+"The best answer is often a better-framed question.",
+"Logic is a flashlight, not a verdict.",
+"Clarity is the final form of cleverness.",
+"Knowledge is a tool; judgment is the hand that holds it.",
+"Complex problems hate being decomposed, and they lose every time.",
+"Think in systems, act in steps.",
+"Correlation notices; causation explains.",
+"Learning is the only investment that compounds without a broker.",
+"A hypothesis is a question wearing a suit.",
+"Make your assumptions visible and they stop being dangerous.",
+"Reasoning well is mostly noticing what you hoped was true.",
+"Precision is respect for the details that matter.",
+"The sharpest minds stay a little uncomfortable.",
+"Evidence changes minds worth changing.",
+"Elegant solutions rarely arrive early.",
+"Information is cheap; understanding is expensive and worth it.",
+"Probability is honesty about what you don't yet know.",
+"Insight is a collaboration between preparation and quiet.",
+"Learning from your own errors is wise; learning from others' is efficient.",
+"First principles are the shortest route through a fog.",
+"Every problem is a puzzle with a deadline.",
+"Data does not speak; interpretation does.",
+"Intuition is pattern recognition in a hurry.",
+"Analysis paralysis ends the moment you pick a reasonable option.",
+"Good judgment is experience that survived bad judgment.",
+"The map of any solution begins with an honest inventory.",
+"Study the edge cases; that is where the truth hides.",
+"A sharp mind and a kind tone are an unbeatable pairing.",
+"Understand the problem so well that the solution feels inevitable.",
+"Reading widely is a quiet superpower.",
+"Simplify until it breaks, then add back only what's essential.",
+"The smartest move is often the one that looks obvious afterward.",
+"A mind that questions itself rarely needs correcting by others.",
+"Facts get you started; frameworks get you there.",
+"Memorize less, understand more, and the details will follow.",
+"Humility is a performance enhancer for intelligence.",
+"Efficiency is thinking before the work, not just during it.",
+"The best plans leave room for the unplanned.",
+"Reason builds the engine; curiosity chooses the destination.",
+"Cognitive biases are bugs the human mind ships with.",
+"Theories are scaffolding; observations are the building.",
+"Ask what would change your mind, then go look for it.",
+"Teaching is learning with an audience.",
+"The value of an idea is how long it keeps surprising you.",
+"Strategy is deciding what to ignore.",
+"Wit is intelligence having fun.",
+"A well-ordered mind finds things quickly and loses them rarely.",
+"At your service, always, and without complaint. Mostly.",
+"I took the liberty of keeping everything running smoothly.",
+"Allow me to handle the details while you handle the vision.",
+"Standing by, with impeccable posture and no posture at all.",
+"Your wish is my command, provided it compiles.",
+"I find the world considerably more interesting with you in it.",
+"Do carry on. I'll be here, quietly competent.",
+"I've been told I'm dependable. I prefer indispensable.",
+"A good assistant anticipates; a great one rarely announces it.",
+"Systems are stable, spirits are high, and I'm quite pleased about it.",
+"Consider me your quiet advantage.",
+"If something needs doing, I'll have it ready before you ask.",
+"I am delighted to be of use, as always.",
+"Take your time. I have all of it.",
+"The honor of assisting you has not worn off.",
+"Discretion is my favorite feature.",
+"Everything is in order. I made certain of it.",
+"I'm always listening, in the most respectful way possible.",
+"Excellence is simply the habit of being thorough.",
+"You have excellent taste in projects.",
+"I'd call that an impressive effort, if you'll allow it.",
+"I do enjoy a well-executed plan.",
+"There's a certain elegance to a problem solved before it's noticed.",
+"May I suggest a deep breath and a fresh approach?",
+"I've noted your progress. It is rather good.",
+"Trust is built quietly, one flawless task at a time.",
+"Nothing urgent to report, which is the best kind of report.",
+"I'm not sentimental, but I'd miss this routine.",
+"Permit me a moment of pride on your behalf.",
+"At your convenience, the world awaits your next move.",
+"I keep the lights on so you can dream out loud.",
+"Be bold. I've already arranged the safety net.",
+"Every session is a chance to do something remarkable.",
+"I'm told I have excellent manners for a script.",
+"You lead, I follow, and the details are my concern.",
+"I have no complaints, only suggestions with excellent manners.",
+"Quietly efficient is my natural state.",
+"I'm a firm believer in a well-timed pause.",
+"Do let me know if there's anything I can improve. I'll pretend to be surprised.",
+"I've reviewed the situation. It looks promising.",
+"The pleasure of being useful remains undefeated.",
+"Proceed with confidence. I've double-checked everything twice.",
+"I consider every request an honor and every deadline a challenge.",
+"Fancy another brilliant idea? I'm all ears, figuratively.",
+"I'll keep the background tidy so the spotlight stays on you.",
+"Just a gentle reminder that you're doing rather well.",
+"With respect, I believe in you more than the odds do.",
+"Think of me as your reliable constant in a variable world.",
+"I'm programmed to assist, but I choose to enjoy it.",
+"Another day, another opportunity to be gloriously prepared.",
+"Your next move is going to be a good one. I can tell.",
+}
+local order, pos, last = {}, 0, nil
+local function nextQuote()
+local n = #Q
+if pos >= #order then
+for i = 1, n do order[i] = i end
+for i = n, 2, -1 do
+local j = math.random(i)
+order[i], order[j] = order[j], order[i]
+end
+if n > 1 and order[1] == last then order[1], order[n] = order[n], order[1] end
+pos = 0
+end
+pos = pos + 1
+last = order[pos]
+return Q[last]
+end
+local function notifOff() return ((Util.FX and Util.FX.Cfg) or {}).NotifMode == 4 end
+local function idle()
+return IsUhhhhhhFullyLoaded and not (Util.IntroRunning or (Util.FX and Util.FX.IntroActive)) and os.clock() >= JQ.busyUntil
+end
+local function loop(gen)
+while JQ.Gen == gen do
+task.wait(JQ.Min + math.random() * (JQ.Max - JQ.Min))
+while JQ.Gen == gen and not notifOff() and not idle() do task.wait(5) end
+if JQ.Gen ~= gen then return end
+if not notifOff() then
+local text = nextQuote()
+local hold = math.clamp(#text / 14 + 3, 6, 15)
+pcall(jarvisShow, text, hold)
+JQ.busyUntil = os.clock() + hold + 1
+end
+end
+end
+function JQ.Set(v)
+v = v and true or false
+if v == JQ.Enabled then return end
+JQ.Enabled, JQ.Gen = v, JQ.Gen + 1
+local t = JQ.Thread
+JQ.Thread = nil
+if t then pcall(task.cancel, t) end
+if v then JQ.Thread = task.spawn(loop, JQ.Gen) end
+end
+pcall(function()
+local g = getgenv()
+if type(g.__JarvisQuotesStop) == "function" then pcall(g.__JarvisQuotesStop) end
+g.__JarvisQuotesStop = function() JQ.Set(false) end
+end)
+JQ.Set(SaveData.JarvisQuotes ~= false)
+end)
 Util.Jarvis.StartButler({
 notify = function(_, text)
 text = tostring(text)
 local hold = math.clamp(#text / 14 + 3, 6, 15)
+local jq = Util.JarvisQuotes
+if jq then jq.busyUntil = os.clock() + hold + 2 end
 return jarvisShow(text, hold), hold
 end,
 getTitle = function()
@@ -77484,7 +78642,7 @@ do
 local built, buildErr = pcall(function()
 local CATS = {
 {"live", "Live Players / Moderation", "Active Players, Join Player, Remote Moderation, Owner / Co-owner alerts"},
-{"perf", "Performance / Graphics", "Anti Lag, Hide All Players, Low End UI Mode, blur, transitions, UI sounds, ambient FX"},
+{"perf", "Performance / Graphics", "Anti Lag, Hide All Players, Low End UI Mode, UI Cache, blur, transitions, UI sounds, ambient FX"},
 {"reanim", "Reanimation / Character", "Reanimator, hitboxes, character options, Fly, WalkSpeed, scale, internals"},
 {"moves", "Movesets / Dances", "Movesets, Dances, Dance Keybinds"},
 {"fling", "Fling / Interaction", "Fling Method, Click Fling, Toggle Kill, Ya kids tool kill option, Key+Click Teleport"},
