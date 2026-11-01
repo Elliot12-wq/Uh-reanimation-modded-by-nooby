@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/1000061189.jpg" width="200" alt="Logo">
+</p>
+
 **Nooby's uh modded reanimation v1.1.1**
 
 Heavily modded fork of **Uhhhhhh** by **STEVETHEREALONE** (original creator + code).  
