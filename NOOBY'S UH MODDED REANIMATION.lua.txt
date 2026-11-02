@@ -23629,6 +23629,7 @@ local success, err = _native_pcall(function() registration[1](table.unpack(argum
 if not success then cmd._lastError = tostring(err); return false, cmd._lastError end
 return true
 end
+Util.UhCmd = {cmds = Commands, aliases = Aliases, run = cmd.run}
 lib = {}
 lib.wrap = function(f)
 return coroutine.wrap(f)()
@@ -74031,6 +74032,2470 @@ hubBusy = false
 end)
 end
 do
+-- ===== JARVIS LIVE INTELLIGENCE: typed-command panel (no live microphone) + Google TTS voice + natural-language executor over the script's REAL controls (Util.Search.Entries) and Uh Admin commands (Util.UhCmd) =====
+Util.JarvisLive = (function()
+local Live = {t = 0, en = 0, fpsAvg = 60, onCount = 0}
+local Players, RunService, TweenService = game:GetService("Players"), game:GetService("RunService"), game:GetService("TweenService")
+local HttpService, SoundService, LogService, Stats = game:GetService("HttpService"), game:GetService("SoundService"), game:GetService("LogService"), game:GetService("Stats")
+local lp = Players.LocalPlayer
+local DIR = "NoobyAI"
+local TTS_DIR = DIR .. "/jarvis_tts"
+local MAX_MSG = 14
+Live.onLog = function() end
+Live.onVoiceFail = nil
+
+-- ---------- small helpers ----------
+local function genv()
+local ok, g = pcall(function() return getgenv and getgenv() end)
+return (ok and type(g) == "table") and g or _G
+end
+local function fn(name)
+local v = genv()[name]
+if type(v) ~= "function" then v = _G[name] end
+return type(v) == "function" and v or nil
+end
+local function safe(f, ...)
+local ok, v = pcall(f, ...)
+if ok then return v end
+return nil
+end
+local function trim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
+local function pick(t) return t[math.random(1, #t)] end
+local function lowEnd()
+local ok, v = pcall(function() return Util.FX.IsLowEnd() end)
+return ok and v == true
+end
+local function accent()
+local gt = Util.UhAdmin and Util.UhAdmin.GetTheme
+if gt then
+local ok, c = pcall(gt, os.clock())
+if ok and typeof(c) == "Color3" then return c end
+end
+return Color3.fromRGB(110, 190, 255)
+end
+local function esc(s) return (tostring(s or ""):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")) end
+local function plain(s)
+s = tostring(s or "")
+s = s:gsub("<[^>]*>", "")
+s = s:gsub("%*%*", ""):gsub("`", ""):gsub("%*", "")
+s = s:gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&amp;", "&")
+s = s:gsub("\r", "")
+return trim(s)
+end
+local function spoken(s)
+s = plain(s)
+s = s:gsub("\n%s*%-%s+", ". "):gsub("^%s*%-%s+", ""):gsub("\n+", ". ")
+s = s:gsub("(%d)%s*MB", "%1 megabytes"):gsub("(%d)%s*ms", "%1 milliseconds"):gsub("FPS", "F P S")
+s = s:gsub("[%[%]{}|\\^~=<>#@]", " "):gsub("&", " and "):gsub("%s+", " ")
+return trim(s)
+end
+local function norm(s)
+s = tostring(s or ""):lower()
+s = s:gsub("<[^>]*>", " ")
+s = s:gsub("&lt;", " "):gsub("&gt;", " "):gsub("&amp;", " and ")
+s = s:gsub("[^%w%s%.%%]", " ")
+s = s:gsub("%.(%D)", " %1"):gsub("(%D)%.", "%1 ")
+s = s:gsub("%s+", " ")
+return trim(s)
+end
+local function has(t, list)
+local p = " " .. t .. " "
+for _, ph in ipairs(list) do
+if p:find(" " .. ph .. " ", 1, true) then return ph end
+end
+return nil
+end
+local function cut(t, ph)
+return trim((" " .. t .. " "):gsub(" " .. ph .. " ", " "))
+end
+local function setOf(str)
+local s = {}
+for w in str:gmatch("%S+") do s[w] = true end
+return s
+end
+
+-- ---------- error / warning ring buffer (event-driven, one connection) ----------
+local Logs = {}
+pcall(function()
+LogService.MessageOut:Connect(function(msg, kind)
+if kind ~= Enum.MessageType.MessageError and kind ~= Enum.MessageType.MessageWarning then return end
+if type(msg) ~= "string" or msg:find("[JARVIS", 1, true) then return end
+Logs[#Logs + 1] = {t = os.clock(), m = msg:sub(1, 220), e = kind == Enum.MessageType.MessageError}
+if #Logs > 30 then table.remove(Logs, 1) end
+Live.onLog()
+end)
+end)
+
+-- =====================================================================
+-- TTS  (1: Edge neural en-GB male (Ryan) via your Worker; 2: keyless British male 'Brian'; 3: last resort, Google's keyless en-GB voice pitched down)
+-- =====================================================================
+local TTS = {gen = 0, speaking = false, sound = nil, onState = nil}
+-- The real British-male Jarvis voice comes from the Cloud TTS Worker (jarvis_tts_worker.js).
+-- Google's keyless Translate voice only has one female-sounding register, so when it is the fallback it is pitched down (Octave 1 = unchanged, 0.5 = one octave lower).
+local FALLBACK_OCTAVE = 0.76
+local BRIAN_OCTAVE = 0.93
+local function hash(s)
+local h1, h2 = 2166136261, 5381
+for i = 1, #s do
+local b = s:byte(i)
+h1 = (bit32.bxor(h1, b) * 16777619) % 4294967296
+h2 = (h2 * 33 + b) % 4294967296
+end
+return string.format("%08x%08x", h1, h2)
+end
+local function ensureDir()
+local mf, isf = fn("makefolder"), fn("isfolder")
+if mf and isf then
+pcall(function()
+if not isf(DIR) then mf(DIR) end
+if not isf(TTS_DIR) then mf(TTS_DIR) end
+end)
+end
+end
+local function touch(key)
+local idx = SaveData.JarvisTTSIdx
+if type(idx) ~= "table" then idx = {} SaveData.JarvisTTSIdx = idx end
+for i = #idx, 1, -1 do
+if idx[i] == key then table.remove(idx, i) end
+end
+idx[#idx + 1] = key
+while #idx > 40 do
+local old = table.remove(idx, 1)
+local d = fn("delfile")
+if d then pcall(d, TTS_DIR .. "/" .. old .. ".mp3") end
+end
+end
+local TTS_DEFAULT = "https://jarvis-tts.elliptmal.workers.dev"
+local TTS_REPO = {"https://raw.githubusercontent.com/Elliot12-wq/Jarvis-tts/main/README.md", "https://raw.githubusercontent.com/Elliot12-wq/Jarvis-tts/main/wrangler.toml"}
+local function endpoint()
+local u = SaveData.JarvisTTSUrl
+if type(u) == "string" and u:match("^https?://") then return (u:gsub("/+$", "")) end
+return TTS.autoUrl or TTS_DEFAULT
+end
+local function validMp3(b) return type(b) == "string" and #b > 600 and (b:sub(1, 3) == "ID3" or b:byte(1) == 255) end
+local function httpGet(url)
+local rq = fn("request") or fn("http_request") or (type(syn) == "table" and syn.request) or nil
+if not rq then return nil end
+local ok, res = pcall(rq, {Url = url, Method = "GET", Headers = {["User-Agent"] = "Mozilla/5.0"}})
+if ok and type(res) == "table" then
+local st = res.StatusCode or res.Status
+if st == 200 and type(res.Body) == "string" then return res.Body, st, nil, res.Headers end
+return nil, st, type(res.Body) == "string" and res.Body or nil, res.Headers
+end
+return nil
+end
+local function discover()
+local mu = SaveData.JarvisTTSUrl
+if type(mu) == "string" and mu:match("^https?://") then return end
+if TTS.discovering then
+local t0 = os.clock()
+while TTS.discovering and os.clock() - t0 < 8 do task.wait(0.05) end
+return
+end
+TTS.discovering = true
+TTS.dAt = os.clock()
+for _, url in ipairs(TTS_REPO) do
+local body = httpGet(url)
+local found = type(body) == "string" and body:match("https://[%w%-%.]+%.workers%.dev")
+if found then TTS.autoUrl = found break end
+end
+TTS.discovering = false
+end
+task.spawn(discover)
+local function resolve(seg)
+local isf, wf = fn("isfile"), fn("writefile")
+if not (isf and wf) then return nil, "files" end
+ensureDir()
+if not endpoint() and (not TTS.dAt or os.clock() - TTS.dAt > 60) then discover() end
+local ep = endpoint()
+local srcs = {}
+if ep then srcs[#srcs + 1] = {"gc", ep .. "/?t=" .. HttpService:UrlEncode(seg)} end
+srcs[#srcs + 1] = {"se", "https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=" .. HttpService:UrlEncode(seg)}
+srcs[#srcs + 1] = {"gt", "https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en-GB&q=" .. HttpService:UrlEncode(seg:sub(1, 190))}
+for _, s in ipairs(srcs) do
+local key = hash(s[1] .. "|j6|" .. seg)
+local path = TTS_DIR .. "/" .. key .. ".mp3"
+if safe(isf, path) then touch(key) return path, s[1] end
+local body, st, eb, hd = httpGet(s[2])
+local eng
+if s[1] == "gc" and type(hd) == "table" then for k, v in pairs(hd) do if tostring(k):lower() == "x-jarvis-engine" then eng = tostring(v):lower() end end end
+local good = validMp3(body) or (eng == "edge" and type(body) == "string" and #body > 600)
+if s[1] == "gc" and not good then
+local extra = ""
+if type(eb) == "string" and eb ~= "" then extra = ": " .. eb:sub(1, 90)
+elseif type(body) == "string" then extra = " bad audio, " .. #body .. " bytes, starts " .. body:sub(1, 4):gsub(".", function(c) return string.format("%02x ", c:byte()) end) end
+TTS.gcErr = tostring(st or "no response") .. extra
+end
+if good then
+if s[1] == "gc" then
+TTS.gcEngine = eng
+if eng and eng ~= "edge" then key = key .. "_f" path = TTS_DIR .. "/" .. key .. ".mp3" end
+end
+if pcall(wf, path, body) then touch(key) return path, s[1] end
+end
+end
+return nil, "net"
+end
+local function noteSource(tag)
+local fb = tag == "gc" and TTS.gcEngine and TTS.gcEngine ~= "edge"
+local tk = fb and "gcf" or tag
+if TTS.lastTag == tk then return end
+TTS.lastTag = tk
+local m
+if fb then m = "Voice: your server answered with its plain " .. TTS.gcEngine .. " fallback, not the Edge butler voice."
+elseif tag == "gc" then m = "Voice: your Edge TTS voice server (British butler)."
+else
+local why = endpoint() and (" Your voice server failed: " .. tostring(TTS.gcErr or "no response") .. ".") or " No voice server is set; add one for the real butler voice."
+if tag == "se" then m = "Voice: keyless British male (Brian)." .. why
+else m = "Voice: last-resort pitched-down Google voice." .. why end
+end
+if Live.onVoiceSource then pcall(Live.onVoiceSource, m) end
+end
+local function splitSpeech(text, B, L)
+B = B or 170 L = L or 190
+local out, buf = {}, ""
+for sent in text:gmatch("[^%.%!%?]+[%.%!%?]*%s*") do
+sent = trim(sent)
+if sent ~= "" then
+if buf ~= "" and #buf + #sent + 1 > B then out[#out + 1] = buf buf = sent
+else buf = (buf == "") and sent or (buf .. " " .. sent) end
+end
+end
+if buf ~= "" then out[#out + 1] = buf end
+local res = {}
+for _, s in ipairs(out) do
+while #s > L do
+local cutAt = s:sub(1, L):match("^.*()%s") or L
+res[#res + 1] = trim(s:sub(1, cutAt))
+s = trim(s:sub(cutAt + 1))
+end
+if s ~= "" then res[#res + 1] = s end
+end
+while #res > 3 do table.remove(res) end
+return res
+end
+local function ensureSound()
+if TTS.sound and TTS.sound.Parent then return TTS.sound end
+local s = Util.Instance("Sound", SoundService)
+s.Name = "JarvisVoice"
+s.Volume = 1
+TTS.sound = s
+return s
+end
+local function applyVoiceFx(s, tag)
+local oct = (tag == "gt" and FALLBACK_OCTAVE) or (tag == "se" and BRIAN_OCTAVE) or 1
+local deep = oct ~= 1
+pcall(function()
+local ps = s:FindFirstChild("JarvisPitch")
+if not ps then
+if not deep then return end
+ps = Util.Instance("PitchShiftSoundEffect", s)
+ps.Name = "JarvisPitch"
+end
+ps.Octave = oct
+ps.Enabled = deep
+end)
+pcall(function()
+local eq = s:FindFirstChild("JarvisEQ")
+if not eq then
+if not deep then return end
+eq = Util.Instance("EqualizerSoundEffect", s)
+eq.Name = "JarvisEQ"
+end
+if tag == "se" then eq.LowGain, eq.MidGain, eq.HighGain = 3, 0, -2 else eq.LowGain, eq.MidGain, eq.HighGain = 5, -1, -4 end
+eq.Enabled = deep
+end)
+end
+local function play(path, gen, tag)
+local ga = fn("getcustomasset") or fn("getsynasset")
+if not ga then return false, "assets" end
+local ok, id = pcall(ga, path)
+if not ok or not id then return false, "assets" end
+local s = ensureSound()
+s:Stop()
+applyVoiceFx(s, tag)
+s.SoundId = id
+local t0 = os.clock()
+while not s.IsLoaded and os.clock() - t0 < 6 and TTS.gen == gen do task.wait(0.05) end
+if TTS.gen ~= gen then return true end
+if not s.IsLoaded then return false, "load" end
+s.TimePosition = 0
+s:Play()
+local done = false
+local c = s.Ended:Connect(function() done = true end)
+local limit = os.clock() + math.max(2, s.TimeLength) + 3
+while not done and TTS.gen == gen and os.clock() < limit do task.wait(0.05) end
+c:Disconnect()
+return true
+end
+function TTS.Stop()
+TTS.gen += 1
+if TTS.sound then pcall(function() TTS.sound:Stop() end) end
+if TTS.speaking then
+TTS.speaking = false
+if TTS.onState then pcall(TTS.onState, false) end
+end
+end
+function TTS.Speak(text)
+if SaveData.JarvisVoice == false then return end
+local segs = endpoint() and splitSpeech(spoken(text), 300, 420) or splitSpeech(spoken(text))
+if #segs == 0 then return end
+TTS.Stop()
+local gen = TTS.gen
+TTS.speaking = true
+if TTS.onState then pcall(TTS.onState, true) end
+task.spawn(function()
+local paths, tags = {}, {}
+local function prep(i)
+if i > #segs or paths[i] ~= nil then return end
+paths[i] = false
+task.spawn(function()
+local p, why = resolve(segs[i])
+if p then tags[i] = why noteSource(why) end
+paths[i] = p or ("!" .. tostring(why))
+end)
+end
+prep(1) prep(2)
+local fail
+for i = 1, #segs do
+local t0 = os.clock()
+while paths[i] == false and TTS.gen == gen and os.clock() - t0 < 14 do task.wait(0.05) end
+if TTS.gen ~= gen then return end
+local p = paths[i]
+if type(p) ~= "string" or p:sub(1, 1) == "!" then fail = (type(p) == "string") and p or "!net" break end
+prep(i + 1)
+local ok, why = play(p, gen, tags[i])
+if TTS.gen ~= gen then return end
+if not ok then fail = "!" .. tostring(why) break end
+end
+if TTS.gen == gen then
+TTS.speaking = false
+if TTS.onState then pcall(TTS.onState, false) end
+if fail and Live.onVoiceFail then Live.onVoiceFail(fail) end
+end
+end)
+end
+
+-- =====================================================================
+-- LIVE SCRIPT AWARENESS
+-- =====================================================================
+local function S() return Util.Search end
+local function alive(e)
+local ok, r = pcall(function() return e.Obj:IsDescendantOf(UIMainFrame) end)
+return ok and r == true
+end
+local function whereOf(e)
+local page
+local p = e.Parent
+local g = 0
+local titles = S() and S().Titles or {}
+while p ~= nil and p ~= UIMainFrame and g < 40 do
+local t = titles[p]
+if t then page = t end
+p = p.Parent
+g += 1
+end
+local sec = e.Section
+if page and sec and sec ~= page then return page .. " > " .. sec end
+return sec or page or "Settings"
+end
+local function labelOf(e) return safe(e.GetName) or "" end
+local function entries()
+local list = {}
+for _, e in ipairs(S() and S().Entries or {}) do
+if alive(e) then list[#list + 1] = e end
+end
+return list
+end
+local function switchOn(e) return safe(function() return e.Lever.Value end) == true end
+local function onSwitches()
+local out = {}
+for _, e in ipairs(entries()) do
+if e.Kind == "switch" and switchOn(e) then out[#out + 1] = e end
+end
+return out
+end
+local HEAVY = {"particle", "glow", "sheen", "trail", "liquid", "glass", "bloom", "blur", "shadow", "dance", "hitbox", "monitor", "esp"}
+local function snapshot(full)
+local s = {}
+local ps = safe(function() return Util.FX.Perf.Status() end)
+s.fps = (ps and ps.FPS) or Live.fpsAvg
+s.profile = ps and ps.Name or nil
+s.manual = ps and ps.Mode == "manual"
+s.mem = safe(function() return Stats:GetTotalMemoryUsageMb() end)
+s.ping = safe(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+local now, errs, warns = os.clock(), 0, 0
+for _, l in ipairs(Logs) do
+if now - l.t < 90 then if l.e then errs += 1 else warns += 1 end end
+end
+s.errs, s.warns = errs, warns
+if full then
+local on = onSwitches()
+s.on = on
+Live.onCount = #on
+s.heavy = {}
+for _, e in ipairs(on) do
+local l = labelOf(e):lower()
+for _, h in ipairs(HEAVY) do
+if l:find(h, 1, true) then s.heavy[#s.heavy + 1] = e break end
+end
+end
+local hum = lp and lp.Character and lp.Character:FindFirstChildOfClass("Humanoid")
+if hum then
+s.char = {hp = math.floor(hum.Health), maxhp = math.floor(hum.MaxHealth), speed = math.floor(hum.WalkSpeed), state = tostring(hum:GetState()):gsub("Enum.HumanoidStateType.", "")}
+end
+s.players = #Players:GetPlayers()
+s.status = safe(Util.GetModuleStatus)
+end
+return s
+end
+local function findByLabel(...)
+local want = {...}
+for _, e in ipairs(entries()) do
+local l = labelOf(e):lower()
+local okAll = true
+for _, w in ipairs(want) do if not l:find(w, 1, true) then okAll = false break end end
+if okAll then return e end
+end
+return nil
+end
+local function names(list, n)
+local out = {}
+for i, e in ipairs(list) do
+if i > n then out[#out + 1] = "and " .. (#list - n) .. " more" break end
+out[#out + 1] = labelOf(e)
+end
+return table.concat(out, ", ")
+end
+local ERRMAP = {
+{"attempt to index nil", "a script tried to use something that doesn't exist yet - usually a game object that hasn't loaded or was removed"},
+{"attempt to call a nil", "a function the script expected isn't available - often an executor feature or a module that failed to load"},
+{"attempt to compare", "a value had an unexpected type during a comparison - usually harmless once the data loads"},
+{"is not a valid member", "the game doesn't have an object the script looked for - likely a game-specific difference"},
+{"infinite yield", "something is waiting for an object that never appears in this game"},
+{"http 429", "a web service is rate-limiting requests - waiting a minute usually fixes it"},
+{"http 403", "a web service refused the request - possibly blocked or needs authorisation"},
+{"http 404", "a file or page wasn't found online - the link may have moved"},
+{"httpservice", "a web request failed - check your connection or whether HTTP is allowed here"},
+{"failed to load", "an asset couldn't be loaded - the asset may be unavailable or your connection is slow"},
+{"loadstring", "a downloaded script couldn't be compiled - it may be corrupt or your executor blocks loadstring"},
+{"timeout", "an operation took too long - usually a slow connection"},
+}
+local function explainLog(m)
+local l = m:lower()
+for _, p in ipairs(ERRMAP) do
+if l:find(p[1], 1, true) then return p[2] end
+end
+return nil
+end
+local function diagnose()
+local s = snapshot(true)
+local parts = {}
+local fps = s.fps
+local verdict
+if fps and fps >= 50 then verdict = "Frame rate looks healthy at about " .. math.floor(fps) .. " FPS."
+elseif fps and fps >= 30 then verdict = "Frame rate is moderate at about " .. math.floor(fps) .. " FPS."
+elseif fps then verdict = "Frame rate is low at about " .. math.floor(fps) .. " FPS."
+else verdict = "I can't read the frame rate right now." end
+parts[#parts + 1] = verdict
+local causes = {}
+if s.ping and s.ping > 200 then causes[#causes + 1] = "your connection to the server is slow (ping " .. math.floor(s.ping) .. " ms), which causes lag no setting here can fix" end
+if s.mem and s.mem > 1800 then causes[#causes + 1] = "memory use is high at " .. math.floor(s.mem) .. " MB, which strains weaker devices" end
+if #s.heavy > 0 then causes[#causes + 1] = #s.heavy .. " visual feature" .. (#s.heavy > 1 and "s are" or " is") .. " running (" .. names(s.heavy, 4) .. ")" end
+if s.errs >= 5 then causes[#causes + 1] = s.errs .. " script errors in the last minute may be stalling things" end
+if #causes == 0 then
+parts[#parts + 1] = (fps and fps < 30) and "I don't see an obvious script-side cause, so the game itself or the device is the likely bottleneck." or "I don't see anything unusual in the script."
+else
+parts[#parts + 1] = "Likely causes: " .. table.concat(causes, "; ") .. "."
+end
+if s.profile then parts[#parts + 1] = "Performance profile: " .. tostring(s.profile) .. (s.manual and " (manual)." or " (auto).") end
+if (fps and fps < 45) or #s.heavy > 0 then parts[#parts + 1] = "Say \"optimize\" and I'll propose what to switch off." end
+return table.concat(parts, " ")
+end
+local pending, undoStack = nil, {}
+local function pushUndo(label, f)
+undoStack[#undoStack + 1] = {label = label, f = f}
+if #undoStack > 10 then table.remove(undoStack, 1) end
+end
+local function setSwitch(e, want)
+local lever = e.Lever
+if lever.Value == want then return "same" end
+local old = lever.Value
+lever.Value = want
+task.wait(0.15)
+if lever.Value ~= want then return "failed" end
+pushUndo(labelOf(e), function() lever.Value = old end)
+return "ok"
+end
+local function optimizePlan()
+local s = snapshot(true)
+local plan = {}
+local lo = findByLabel("low end ui mode")
+if lo and lo.Kind == "switch" and not switchOn(lo) and ((s.fps and s.fps < 45) or (s.mem and s.mem > 1500) or #s.heavy > 0) then plan[#plan + 1] = {e = lo, want = true} end
+for _, e in ipairs(s.heavy) do
+local l = labelOf(e):lower()
+if not l:find("fast", 1, true) and not l:find("monitor", 1, true) and #plan < 6 then plan[#plan + 1] = {e = e, want = false} end
+end
+return plan, s
+end
+
+-- =====================================================================
+-- NATURAL LANGUAGE UNDERSTANDING
+-- =====================================================================
+local STOPW = setOf("the a an my me i please jarvis hey ok okay can could would will you your to for of it its this that these those now just some then so and with in at by is are be does did really kindly also maybe might should up down thanks thank want need like")
+local VERBS = {
+{"off", {"turn off", "switch off", "shut off", "power off", "turn it off", "disable", "deactivate", "disengage", "stop", "hide", "remove", "get rid of"}},
+{"on", {"turn on", "switch on", "power on", "turn it on", "enable", "activate", "engage"}},
+{"toggle", {"toggle", "flip"}},
+{"set", {"set", "change", "adjust", "make", "switch to", "select", "choose", "put", "go with", "switch back to"}},
+{"open", {"open", "go to", "take me to", "show me", "show", "bring up", "pull up", "navigate to", "navigate", "visit", "head to"}},
+{"run", {"run", "press", "click on", "click", "tap", "hit", "execute", "perform", "trigger", "start", "begin", "launch", "fire", "use"}},
+}
+local GROUPS = {
+{trig = {"visual effects", "visual effect", "visuals", "fancy effects", "eye candy", "graphical effects", "effects"}, any = {"particle", "glow", "sheen", "trail", "liquid", "glass", "bloom", "blur"}, multi = true},
+{trig = {"lite mode", "light mode", "lightweight mode", "low end mode", "low spec mode", "potato mode", "performance mode", "lite", "lightweight"}, phrase = "low end ui mode", state = true},
+{trig = {"normal mode", "full mode", "full quality", "high quality mode", "ultra mode"}, phrase = "low end ui mode", state = false},
+{trig = {"settings", "options", "preferences", "configuration", "customize", "customise"}, any = {"settings", "customization", "options", "config"}},
+}
+local YES = setOf("yes yeah yep yup confirm confirmed proceed sure affirmative absolutely")
+local NO = setOf("no nope cancel abort negative nah")
+local function near(a, b)
+if a == b then return 3 end
+local la, lb = #a, #b
+if la < 4 or lb < 4 then return 0 end
+local m = math.min(la, lb)
+if m >= 5 and a:sub(1, m) == b:sub(1, m) and math.abs(la - lb) <= 3 then return 2 end
+if math.abs(la - lb) > 1 or la < 5 then return 0 end
+local i = 1
+while i <= la and i <= lb and a:byte(i) == b:byte(i) do i += 1 end
+if la == lb then return (a:sub(i + 1) == b:sub(i + 1)) and 2 or 0
+elseif la > lb then return (a:sub(i + 1) == b:sub(i)) and 2 or 0
+else return (b:sub(i + 1) == a:sub(i)) and 2 or 0 end
+end
+local function stem(w)
+if #w > 3 and w:sub(-1) == "s" and w:sub(-2) ~= "ss" then w = w:sub(1, -2) end
+return w
+end
+local function toks(str)
+local out, seen = {}, {}
+for w in str:gmatch("%S+") do
+w = stem(w:gsub("%.+$", ""))
+if w ~= "" and not seen[w] then seen[w] = true out[#out + 1] = w end
+end
+return out
+end
+local function parse(t)
+local verb
+for _, grp in ipairs(VERBS) do
+local ph = has(t, grp[2])
+if ph then verb = grp[1] t = cut(t, ph) break end
+end
+local state
+local number
+do
+local probe = t
+if not verb then
+if has(probe, {"off"}) then probe = cut(probe, "off") elseif has(probe, {"on"}) then probe = cut(probe, "on") end
+end
+number = tonumber(probe:match("%-?%d+%.?%d*"))
+end
+for gi, g in ipairs(GROUPS) do
+local ph = has(t, g.trig)
+if ph then
+state = g.state
+t = cut(t, ph) .. (g.phrase and (" " .. g.phrase) or (" zzg" .. gi))
+break
+end
+end
+if not verb then
+if has(t, {"off"}) then verb = "off" t = cut(t, "off")
+elseif has(t, {"on"}) then verb = "on" t = cut(t, "on") end
+end
+local slots = {}
+for _, w in ipairs(toks(t)) do
+if not STOPW[w] and not w:match("^%d") then
+local gi = w:match("^zzg(%d+)$")
+if gi then
+local g = GROUPS[tonumber(gi)]
+slots[#slots + 1] = {alts = g.any, group = g}
+else
+slots[#slots + 1] = {alts = {w}}
+end
+end
+end
+return verb, slots, number, state, t
+end
+local function kindOk(e, verb)
+local k = e.Kind
+if verb == "on" or verb == "off" or verb == "toggle" then return k == "switch" end
+if verb == "set" then return k == "dropdown" or k == "input" or k == "switch" end
+if verb == "open" then return k == "button" or k == "item" end
+if verb == "run" then return k == "button" or k == "item" or k == "switch" end
+return true
+end
+local function labelToks(e)
+local l = labelOf(e)
+local c = e._jl
+if c and c.l == l then return c end
+c = {l = l, n = norm(l), t = toks(norm(l))}
+local ok, raw = pcall(function() return e.Obj.Text end)
+c.navy = ok and type(raw) == "string" and (raw:find("&gt;%s*$") ~= nil or raw:find(">%s*$") ~= nil)
+e._jl = c
+return c
+end
+local function findEntries(slots, verb, list)
+if #slots == 0 then return {} end
+local joined = {}
+for _, s in ipairs(slots) do joined[#joined + 1] = s.alts[1] end
+local q = table.concat(joined, " ")
+local out = {}
+for _, e in ipairs(list) do
+if kindOk(e, verb) then
+local m = labelToks(e)
+if m.n ~= "" then
+local hit = 0
+for _, s in ipairs(slots) do
+local got = 0
+for _, a in ipairs(s.alts) do
+for _, lt in ipairs(m.t) do
+local n = near(a, lt)
+if n > got then got = n end
+end
+end
+if got > 0 then hit += (got == 3) and 1 or 0.85 end
+end
+local cov = hit / #slots
+local need = (#slots <= 2) and 1 or 0.6
+if hit > 0 and cov >= need - 0.001 then
+local sc = cov * 2 + ((m.n == q) and 1 or 0) + ((m.navy and verb == "open") and 0.3 or 0) - 0.04 * math.max(0, #m.t - hit)
+out[#out + 1] = {e = e, score = sc, label = m.l}
+end
+end
+end
+end
+table.sort(out, function(a, b) return a.score > b.score end)
+return out
+end
+local function closest(slots, list)
+local out = {}
+for _, e in ipairs(list) do
+local m = labelToks(e)
+local hit = 0
+for _, s in ipairs(slots) do
+for _, a in ipairs(s.alts) do
+for _, lt in ipairs(m.t) do if near(a, lt) > 0 then hit += 1 end end
+end
+end
+if hit > 0 then out[#out + 1] = {label = m.l, hit = hit} end
+end
+table.sort(out, function(a, b) return a.hit > b.hit end)
+local names2, seen = {}, {}
+for _, o in ipairs(out) do
+if not seen[o.label] and #names2 < 3 then seen[o.label] = true names2[#names2 + 1] = o.label end
+end
+return names2
+end
+local function fire(signal, ...)
+local args = table.pack(...)
+local fs = fn("firesignal")
+if fs and pcall(fs, signal, table.unpack(args, 1, args.n)) then return true end
+local gc = fn("getconnections")
+if gc then
+local ok, conns = pcall(gc, signal)
+if ok and type(conns) == "table" then
+local fired = false
+for _, c in ipairs(conns) do
+if pcall(function() c:Fire(table.unpack(args, 1, args.n)) end) then fired = true end
+end
+return fired
+end
+end
+return false
+end
+local RISKY = {"clear all", "delete", "reset", "kill all", "server hop", "rejoin", "run all", "respawn", "buy", "purchase", "uninstall", "wipe", "redownload", "reload", "format"}
+local function isRisky(label)
+local l = label:lower()
+local list = RISKY
+if S() and type(S().Risky) == "table" then list = S().Risky end
+for _, w in ipairs(list) do if l:find(w, 1, true) then return true end end
+for _, w in ipairs(RISKY) do if l:find(w, 1, true) then return true end end
+return false
+end
+local OKW = {"Certainly.", "Right away.", "Done.", "Of course.", "Consider it done."}
+local function onoff(v) return v and "on" or "off" end
+
+-- ---------- execution of one UI entry ----------
+local function applyEntry(e, verb, number, state, raw)
+local label = labelOf(e)
+local k = e.Kind
+if k == "switch" then
+local want
+if verb == "on" or verb == "run" then want = true
+elseif verb == "off" then want = false
+elseif verb == "toggle" then want = not switchOn(e)
+elseif verb == "set" then if state ~= nil then want = state else want = true end
+else
+return {text = label .. " is currently " .. onoff(switchOn(e)) .. ". Tell me to enable or disable it."}
+end
+local r = setSwitch(e, want)
+if r == "same" then return {text = label .. " is already " .. onoff(want) .. "."} end
+if r == "failed" then return {text = "I tried to switch " .. label .. " " .. onoff(want) .. ", but it didn't stay that way. The script may have reverted it."} end
+return {text = pick(OKW) .. " " .. label .. " is now " .. onoff(want) .. "."}
+elseif k == "button" or k == "item" then
+if verb == "off" or verb == "on" or verb == "toggle" then
+return {text = label .. " is a button, not a switch. Say \"run " .. label:lower() .. "\" to press it."}
+end
+local navy = labelToks(e).navy
+local okF
+if k == "item" and e.Use then okF = pcall(e.Use) else okF = fire(e.Button.Activated) end
+if not okF then return {text = "I couldn't press " .. label .. ": your executor needs firesignal or getconnections for that."} end
+if navy then return {text = "Opening " .. label:gsub("%s*>%s*$", "") .. ".", closeAfter = true} end
+return {text = pick(OKW) .. " I pressed " .. label .. "."}
+elseif k == "dropdown" then
+local sel, opts = e.Select, e.Options
+local n = #opts
+if n == 0 then return {text = label .. " has no options."} end
+local idx
+local rt = " " .. norm(raw) .. " "
+local bestLen = 0
+for i, o in ipairs(opts) do
+local on = norm(o)
+if on ~= "" and rt:find(" " .. on .. " ", 1, true) and #on > bestLen then idx, bestLen = i, #on end
+end
+if not idx then return {text = label .. " is set to " .. tostring(opts[sel.Value]) .. ". Options: " .. table.concat((function() local c = {} for i2, o2 in ipairs(opts) do if i2 <= 8 then c[#c + 1] = tostring(o2) end end return c end)(), ", ") .. "."} end
+local old = sel.Value
+if old == idx then return {text = label .. " is already " .. tostring(opts[idx]) .. "."} end
+sel.Value = idx
+task.wait(0.15)
+if sel.Value ~= idx then return {text = "I tried to set " .. label .. " to " .. tostring(opts[idx]) .. ", but it didn't hold."} end
+pushUndo(label, function() sel.Value = old end)
+return {text = pick(OKW) .. " " .. label .. " is now " .. tostring(opts[idx]) .. "."}
+elseif k == "input" then
+if e.Sub == "slider" then
+local n = number
+if not n then
+local w = " " .. norm(raw) .. " "
+if w:find(" max ", 1, true) or w:find(" maximum ", 1, true) then n = e.Max elseif w:find(" min ", 1, true) or w:find(" minimum ", 1, true) then n = e.Min end
+end
+if not n then return {text = label .. " is " .. tostring(e.Select.Value) .. " (range " .. tostring(e.Min) .. " to " .. tostring(e.Max) .. "). Tell me a number to set it."} end
+if raw:find("%%") or norm(raw):find("percent", 1, true) then n = e.Min + (e.Max - e.Min) * n / 100 end
+if e.Step and e.Step > 0 then n = e.Min + math.round((n - e.Min) / e.Step) * e.Step end
+n = math.clamp(n, e.Min, e.Max)
+local old = e.Select.Value
+e.Select.Value = n
+task.wait(0.15)
+if math.abs(e.Select.Value - n) > 1e-6 then return {text = "I tried to set " .. label .. " to " .. tostring(n) .. ", but it didn't hold."} end
+pushUndo(label, function() e.Select.Value = old end)
+return {text = pick(OKW) .. " " .. label .. " is now " .. tostring(n) .. "."}
+else
+local val = raw:match("%f[%a][Tt][Oo]%s+(.+)$")
+if not val then return {text = "Tell me what to put in " .. label .. ", for example: set " .. label:lower() .. " to something."} end
+local old = e.Box.Text
+e.Box.Text = trim(val)
+if not fire(e.Box.FocusLost, true) then return {text = "I typed it into " .. label .. " but couldn't submit it: your executor needs firesignal or getconnections."} end
+pushUndo(label, function() e.Box.Text = old fire(e.Box.FocusLost, true) end)
+return {text = pick(OKW) .. " I entered that into " .. label .. "."}
+end
+end
+return {text = "I don't know how to operate " .. label .. "."}
+end
+
+-- ---------- Uh Admin commands ----------
+local CMD_RISKY = {"kill", "fling", "rejoin", "serverhop", "reset", "respawn", "crash", "reload", "shutdown", "exit", "destroy"}
+local function findCmd(name)
+local U = Util.UhCmd
+if not U then return nil end
+local key = name:lower()
+if U.cmds[key] then return key, U.cmds[key] end
+if U.aliases[key] then
+local reg = U.aliases[key]
+for k, v in pairs(U.cmds) do if v == reg then return k, reg end end
+return key, reg
+end
+return nil
+end
+local function runCommand(name, args, why)
+local U = Util.UhCmd
+local list = {name}
+for _, a in ipairs(args) do list[#list + 1] = a end
+local ok, err = U.run(list)
+if ok then return {text = pick(OKW) .. " I ran the command " .. name .. (#args > 0 and (" " .. table.concat(args, " ")) or "") .. "."} end
+return {text = "The command " .. name .. " failed: " .. tostring(err or "unknown error") .. "."}
+end
+
+-- =====================================================================
+-- PROCESS ONE UTTERANCE  ->  reply table, or nil to hand over to the conversational core
+-- =====================================================================
+local QW = setOf("what why how is are am does do did can could where which who when tell explain any anything")
+local SIL = setOf("stop quiet silence hush enough")
+local function confirmReply(desc, f)
+pending = {t = os.clock(), run = f}
+return {text = desc .. " Say yes to confirm, or no to cancel."}
+end
+
+-- =====================================================================
+-- UH ADMIN INTEGRATION + UI / PLAYER / SCRIPT AWARENESS
+-- Everything is discovered live at call time: Util.UhCmd registry (names, aliases, usage, description), Util.Search entries (real UI instances),
+-- the Delta GUI, Util.UhAdmin and the Players service. Nothing here is a hardcoded command or control list; SYNG only bridges vocabulary.
+-- =====================================================================
+local K = {choice = nil, last = nil, DC = {t = 0}, CI = {sig = ""}, DG = {}, TGT = {}}
+Live.Know = K
+K.SYNG = {
+{"ui", "gui", "interface", "menu", "window", "screen", "hud", "panel", "overlay"},
+{"hide", "disappear", "vanish", "invisible", "conceal", "hidden", "toggle"},
+{"show", "appear", "reveal", "visible", "display", "unhide"},
+{"music", "song", "audio", "sound", "tune", "radio", "track", "playlist", "jukebox"},
+{"animation", "animate", "anim", "motion", "animated"},
+{"reanimate", "reanimation", "reanim", "reanimator"},
+{"fly", "flight", "flying", "flies", "hover", "float", "levitate"},
+{"speed", "fast", "faster", "sprint", "velocity", "walkspeed"},
+{"jump", "hop", "leap", "jumppower"},
+{"teleport", "warp", "goto", "tele", "tp"},
+{"kill", "eliminate", "murder", "slay"},
+{"bring", "summon", "fetch", "pull"},
+{"noclip", "ghost", "phase", "clip"},
+{"god", "godmode", "invincible", "immortal", "invulnerable"},
+{"light", "lighting", "bright", "brightness", "fullbright", "lamp"},
+{"game", "minigame", "arcade"},
+{"plugin", "addon", "extension", "mod"},
+{"setting", "option", "preference", "config", "configuration", "customize", "customise", "customization"},
+{"command", "cmd", "admin"},
+{"script", "code", "executor", "exec", "execute"},
+{"console", "log", "output", "terminal"},
+{"volume", "loudness", "louder", "quieter"},
+{"color", "colour", "theme", "accent", "palette"},
+{"size", "scale", "big", "bigger", "small", "smaller", "tiny", "huge", "giant"},
+{"spin", "rotate", "rotation", "twirl", "orbit"},
+{"view", "spectate", "watch", "camera", "cam"},
+{"respawn", "reset", "refresh"},
+{"rejoin", "reconnect", "rj"},
+{"sit", "seat"},
+{"chat", "message", "say", "talk"},
+{"freeze", "anchor", "frozen"},
+{"dance", "emote"},
+{"lag", "laggy", "stutter"},
+}
+K.SYN = {}
+for gi, g in ipairs(K.SYNG) do for _, w in ipairs(g) do K.SYN[w] = K.SYN[w] or {} K.SYN[w][gi] = true end end
+K.FILL = setOf("thing things feature features option options setting settings button tab page menu section stuff one something command commands cmd cmds really bit little again")
+K.QFILL = setOf("what where how who which when why do does is are can i find get access open use usage list show all any there tell explain describe info information about meaning purpose happen happens work works mean means feature features setting settings command commands cmd cmds tool tools thing things stuff one something tab page menu section button toggle switch option options anything")
+K.NOTNAME = setOf("the a an and or to of in on at for with from by is are was be it its this that these those please now just some then so my your his her their our not no yes player players person people guy guys dude user users someone anyone everyone everybody else other others all random nearest closest nearby farthest furthest cursor crosshair mouse pointing looking named called username display name userid id team health hp speed tool away near far")
+K.PLN = setOf("player players person people guy guys dude user users one someone")
+K.ARGDOC = {player = "a player (name, display name, UserId, nearest, random or me)", pos = "a player or X,Y,Z coordinates", number = "a number", text = "text"}
+K.WORDNUM = {one = 1, two = 2, three = 3, four = 4, five = 5, six = 6, seven = 7, eight = 8, nine = 9, ten = 10, twenty = 20, thirty = 30, fifty = 50, hundred = 100}
+K.ORD = {["1"] = 1, first = 1, one = 1, ["2"] = 2, second = 2, two = 2, ["3"] = 3, third = 3, three = 3, ["4"] = 4, fourth = 4, four = 4}
+K.VERBW = {}
+for _, g in ipairs(VERBS) do for _, ph in ipairs(g[2]) do for w in ph:gmatch("%S+") do K.VERBW[w] = true end end end
+
+-- ---------- fuzzy vocabulary ----------
+function K.synMatch(a, b)
+local ga, gb = K.SYN[a], K.SYN[b]
+if not ga or not gb then return false end
+for k in pairs(ga) do if gb[k] then return true end end
+return false
+end
+function K.swapped(a, b)
+if #a ~= #b then return false end
+for i = 1, #a - 1 do
+if a:sub(1, i - 1) .. a:sub(i + 1, i + 1) .. a:sub(i, i) .. a:sub(i + 2) == b then return true end
+end
+return false
+end
+function K.lev(a, b)
+local la, lb = #a, #b
+if la == 0 then return lb end
+if lb == 0 then return la end
+if math.abs(la - lb) > 2 then return 3 end
+local prev, cur = {}, {}
+for j = 0, lb do prev[j] = j end
+for i = 1, la do
+cur[0] = i
+local ai = a:byte(i)
+for j = 1, lb do
+local cost = (ai == b:byte(j)) and 0 or 1
+cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+end
+prev, cur = cur, prev
+end
+return prev[lb]
+end
+-- similarity of two lowercase word stems: exact, stem, synonym, abbreviation (prefix), transposition, typo
+function K.sim(a, b)
+if a == b then return 1 end
+local sa, sb = stem(a), stem(b)
+if sa == sb then return 0.95 end
+if K.synMatch(a, b) or K.synMatch(sa, sb) then return 0.85 end
+local la, lb = #a, #b
+local sh, lg = math.min(la, lb), math.max(la, lb)
+if sh >= 3 and sh < lg and a:sub(1, sh) == b:sub(1, sh) then
+local suf = (la > lb and a or b):sub(sh + 1)
+if suf == "ing" or suf == "ed" or suf == "er" or suf == "es" then return 0.9 end
+if sh / lg >= 0.4 then return (sh / lg >= 0.6) and 0.75 or 0.62 end
+end
+if lg >= 4 and K.swapped(a, b) then return 0.8 end
+if lg >= 5 and math.abs(la - lb) <= 1 and K.lev(a, b) <= 1 then return 0.8 end
+if lg >= 8 and math.abs(la - lb) <= 2 and K.lev(a, b) <= 2 then return 0.7 end
+return 0
+end
+function K.camel(s) return (tostring(s or ""):gsub("(%l)(%u)", "%1 %2"):gsub("(%u)(%u%l)", "%1 %2")) end
+function K.qt(str, extra)
+local out, seen = {}, {}
+for w in norm(K.camel(str)):gmatch("%S+") do
+if not STOPW[w] and not (extra and extra[w]) and not w:match("^%-?%d") and not w:match("^zzg%d") then
+local s = stem(w)
+if not seen[s] then seen[s] = true out[#out + 1] = s end
+end
+end
+return out
+end
+function K.sq(s) return (tostring(s or ""):lower():gsub("[^%w]", "")) end
+function K.toks(raw)
+local r = {}
+for w in tostring(raw):gmatch("%S+") do r[#r + 1] = w end
+return r
+end
+function K.prefix()
+local rf = fn("readfile")
+local p = rf and safe(rf, "UhhhhhhReanim/prefix.txt") or nil
+p = type(p) == "string" and p:gsub("%s", "") or nil
+if p and p ~= "" then return p end
+return "."
+end
+function K.confirm(desc, f)
+K.choice = nil
+return confirmReply(desc, f)
+end
+function K.ask(prompt, opts)
+pending = nil
+K.choice = {t = os.clock(), opts = opts}
+local lines = {}
+for i, o in ipairs(opts) do lines[#lines + 1] = i .. ") " .. o.label end
+return {text = prompt .. " " .. table.concat(lines, "  ") .. ". Which one?"}
+end
+
+-- ---------- PLAYER AWARENESS (live Roblox data only) ----------
+function K.char(p) return p and p.Character end
+function K.hum(p) local c = K.char(p) return c and c:FindFirstChildOfClass("Humanoid") or nil end
+function K.root(p) local c = K.char(p) return c and (c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart) or nil end
+function K.dist(p)
+local a, b = K.root(lp), K.root(p)
+if a and b then return (a.Position - b.Position).Magnitude end
+return nil
+end
+function K.others()
+local out = {}
+for _, p in ipairs(Players:GetPlayers()) do if p ~= lp then out[#out + 1] = p end end
+return out
+end
+function K.pname(p)
+if p.DisplayName ~= "" and p.DisplayName ~= p.Name then return p.DisplayName .. " (@" .. p.Name .. ")" end
+return p.Name
+end
+function K.nearest(far)
+local best, bd
+for _, p in ipairs(K.others()) do
+local d = K.dist(p)
+if d and (not bd or (far and d > bd) or (not far and d < bd)) then best, bd = p, d end
+end
+return best, bd
+end
+function K.mouseTarget()
+local m = safe(function() return lp:GetMouse() end)
+local tgt = m and m.Target
+local mdl = tgt and tgt:FindFirstAncestorOfClass("Model")
+local pl = mdl and Players:GetPlayerFromCharacter(mdl)
+if pl and pl ~= lp then return pl end
+return nil
+end
+function K.info(p)
+local h = K.hum(p)
+local c = K.char(p)
+local tool = c and c:FindFirstChildOfClass("Tool")
+return {
+p = p, name = p.Name, display = p.DisplayName, id = p.UserId, me = p == lp,
+char = c ~= nil, hp = h and math.floor(h.Health) or nil, maxhp = h and math.floor(h.MaxHealth) or nil,
+speed = h and math.floor(h.WalkSpeed) or nil, team = p.Team and p.Team.Name or nil,
+age = p.AccountAge, tool = tool and tool.Name or nil, dist = (p ~= lp) and K.dist(p) or nil,
+}
+end
+function K.nameScore(g, p)
+local sn, sd = K.sq(p.Name), K.sq(p.DisplayName)
+if g == sn then return 100 end
+if g == sd then return 98 end
+if #g >= 3 then
+if sn:sub(1, #g) == g then return 80 + math.min(10, 10 * #g / math.max(#sn, 1)) end
+if sd:sub(1, #g) == g then return 78 + math.min(10, 10 * #g / math.max(#sd, 1)) end
+if #g >= 4 then
+if sn:find(g, 1, true) then return 60 end
+if sd:find(g, 1, true) then return 58 end
+end
+if #g >= 5 then
+if math.abs(#sn - #g) <= 1 and K.lev(g, sn) <= 1 then return 50 end
+if math.abs(#sd - #g) <= 1 and K.lev(g, sd) <= 1 then return 48 end
+end
+end
+return 0
+end
+function K.isCmd(w)
+local U = Util.UhCmd
+return U ~= nil and (U.cmds[w] ~= nil or U.aliases[w] ~= nil)
+end
+-- resolves player references in a token list: names, display names, UserIds, me, nearest/farthest, random, all/others, "that player"/him/her/them, cursor target
+-- strict = only definite references (used to decide whether a request is about players at all)
+function K.targets(rtoks, used, strict, t)
+local R = {list = {}, set = {}, special = nil, amb = nil, note = nil}
+local n = #rtoks
+local lows = {}
+for i = 1, n do lows[i] = (rtoks[i]:lower():gsub("^[@%p]+", ""):gsub("%p+$", "")) end
+local PLS = Players:GetPlayers()
+local function add(p) if p and not R.set[p] then R.set[p] = true R.list[#R.list + 1] = p end end
+local function skipNoun(i) if K.PLN[lows[i + 1] or ""] then used[i + 1] = true end end
+local i = 1
+while i <= n do
+local w, nx = lows[i], lows[i + 1] or ""
+local step = 1
+if used[i] or w == "" then
+elseif w == "me" or w == "myself" then
+add(lp) used[i] = true R.self = true
+elseif w == "everyone" or w == "everybody" or w == "others" or ((w == "all" or w == "every") and (K.PLN[nx] or nx == "else" or (not strict and i == n))) then
+R.special = (w == "others" or nx == "else") and "others" or "all"
+used[i] = true
+if K.PLN[nx] or nx == "else" then used[i + 1] = true end
+elseif w == "random" and (K.PLN[nx] or not strict) then
+R.special = "random" used[i] = true skipNoun(i)
+elseif w == "nearest" or w == "closest" or w == "nearby" or w == "farthest" or w == "furthest" then
+used[i] = true skipNoun(i)
+local np = K.nearest(w:sub(1, 3) == "far" or w:sub(1, 3) == "fur")
+if np then add(np) else R.note = "I can't measure distances right now: no other character is loaded." end
+elseif w == "him" or w == "her" or w == "them" or w == "himself" or w == "herself" or ((w == "that" or w == "this" or w == "same") and K.PLN[nx] and nx ~= "players" and nx ~= "people") then
+used[i] = true skipNoun(i)
+local lastp = K.last
+if not (lastp and lastp.Parent == Players) then lastp = K.mouseTarget() end
+if lastp then add(lastp) else R.note = "I don't know which player you mean yet. Tell me their name." end
+elseif w:match("^%d%d%d%d%d+$") then
+local id, hit = tonumber(w), nil
+for _, p in ipairs(PLS) do if p.UserId == id then hit = p end end
+if hit then add(hit) used[i] = true end
+else
+local best, bestN, bestPs, bestG = 0, 1, nil, nil
+for len = math.min(3, n - i + 1), 1, -1 do
+local parts, ok = {}, true
+for k = i, i + len - 1 do
+if used[k] or lows[k] == "" then ok = false break end
+parts[#parts + 1] = lows[k]
+end
+if ok then
+local g = K.sq(table.concat(parts))
+local skip = g == "" or (len == 1 and (K.NOTNAME[g] or STOPW[g] or K.VERBW[g] or K.isCmd(g)))
+if not skip then
+local top, ps = 0, {}
+for _, p in ipairs(PLS) do
+local sc = K.nameScore(g, p)
+if sc > top then top, ps = sc, {p} elseif sc == top and sc > 0 then ps[#ps + 1] = p end
+end
+if top > best and ((not strict and top > 0) or top >= 98 or (top >= 80 and #g >= 5)) then best, bestN, bestPs, bestG = top, len, ps, g end
+end
+end
+end
+if best > 0 then
+for k = i, i + bestN - 1 do used[k] = true end
+if #bestPs == 1 then add(bestPs[1]) else R.amb = R.amb or {from = i, to = i + bestN - 1, players = bestPs, text = bestG} end
+step = bestN
+end
+end
+i += step
+end
+if t and #R.list == 0 and not R.special and has(t, {"under my cursor", "i am looking at", "i m looking at", "pointing at", "i am pointing at", "i m pointing at", "my cursor", "my mouse", "my crosshair"}) then
+local mt = K.mouseTarget()
+if mt then add(mt) else R.note = "You aren't pointing at another player right now." end
+end
+return R
+end
+function K.hasOtherRef(rtoks, t)
+local R = K.targets(rtoks, {}, true, t)
+if R.amb or R.special then return true end
+for _, p in ipairs(R.list) do if p ~= lp then return true end end
+return false
+end
+function K.playersReply()
+local ps = Players:GetPlayers()
+local parts = {}
+for i, p in ipairs(ps) do
+if i > 12 then parts[#parts + 1] = "and " .. (#ps - 12) .. " more" break end
+parts[#parts + 1] = K.pname(p) .. (p == lp and " (you)" or "")
+end
+return {text = #ps .. " player" .. (#ps == 1 and "" or "s") .. " in this server: " .. table.concat(parts, ", ") .. "."}
+end
+function K.playerReply(p, want)
+local I = K.info(p)
+local any = next(want) ~= nil
+local out = {}
+local who = K.pname(p) .. (I.me and " (you)" or "")
+if not any then out[#out + 1] = who .. ", UserId " .. I.id
+elseif want.name or want.id then out[#out + 1] = who .. ", UserId " .. I.id end
+if not any or want.hp then out[#out + 1] = I.hp and (I.hp .. " of " .. I.maxhp .. " health") or "no character loaded right now" end
+if not any or want.team then out[#out + 1] = I.team and ("on team " .. I.team) or "not on a team" end
+if not any or want.age then out[#out + 1] = "account age " .. tostring(I.age) .. " days" end
+if (not any or want.tool) and I.char then out[#out + 1] = I.tool and ("holding " .. I.tool) or "not holding anything" end
+if (not any or want.speed) and I.speed then out[#out + 1] = "walk speed " .. I.speed end
+if (not any or want.dist) and I.dist then out[#out + 1] = string.format("%d studs away", I.dist) end
+if want.char then out[#out + 1] = I.char and "has a character" or "has no character right now" end
+if p ~= lp then K.last = p end
+return {text = (any and (K.pname(p) .. ": ") or "") .. table.concat(out, "; ") .. "."}
+end
+
+-- ---------- COMMAND AWARENESS (live registry) ----------
+function K.argKind(name)
+local l = name:lower()
+if l:find("player", 1, true) or l:find("target", 1, true) or l:find("user", 1, true) or l:find("plr", 1, true) then
+if l:find("x,y,z", 1, true) or l:find("x y z", 1, true) or l:find("/x", 1, true) then return "pos" end
+return "player"
+end
+if l:find("%d") then return "number" end
+for _, w in ipairs({"speed", "power", "height", "size", "number", "amount", "time", "second", "count", "level", "fov", "volume", "distance", "offset", "damping", "length", "multiplier", "strength", "rate", "value"}) do
+if l:find(w, 1, true) then return "number" end
+end
+return "text"
+end
+function K.parseSpec(usage, set)
+local spec = {}
+local u = tostring(usage or ""):gsub("^%s*%S+", "", 1)
+for open, inner in u:gmatch("([<%[%(])([^>%]%)]*)[>%]%)]") do
+local nm = trim(inner)
+local skip = nm == ""
+if open == "(" then
+local all, any = true, false
+for w in nm:gmatch("[%w_]+") do any = true if not set[w:lower()] then all = false end end
+if all and any then skip = true end
+end
+if not skip then spec[#spec + 1] = {name = nm, req = open ~= "[", kind = K.argKind(nm)} end
+end
+return spec
+end
+function K.index()
+local U = Util.UhCmd
+local CI = K.CI
+if not U then return CI end
+local nc, na = 0, 0
+for _ in pairs(U.cmds) do nc += 1 end
+for _ in pairs(U.aliases) do na += 1 end
+local sig = nc .. ":" .. na
+if CI.sig == sig then return CI end
+CI.sig, CI.list, CI.byReg, CI.df, CI.N = sig, {}, {}, {}, 0
+for primary, reg in pairs(U.cmds) do
+local meta = type(reg) == "table" and type(reg[2]) == "table" and reg[2] or {}
+local usage, desc = tostring(meta[1] or primary), tostring(meta[2] or "")
+local names, set = {primary}, {[primary] = true}
+for _, a in ipairs(reg.aliases or {}) do if not set[a] then set[a] = true names[#names + 1] = a end end
+local c = {name = primary, names = names, set = set, usage = usage, desc = desc, reg = reg}
+c.spec = K.parseSpec(usage, set)
+c.toks = K.qt(desc)
+c.danger = primary == "script" or primary == "httpget"
+for _, a in ipairs(c.spec) do
+local l = a.name:lower()
+if l:find("source", 1, true) or l:find("code", 1, true) or l:find("url", 1, true) or l:find("link", 1, true) then c.danger = true end
+end
+local show = {}
+for _, a in ipairs(c.spec) do show[#show + 1] = a.req and a.name:upper() or ("[" .. a.name .. "]") end
+c.shown = primary .. (#show > 0 and (" " .. table.concat(show, " ")) or "")
+CI.list[#CI.list + 1] = c
+CI.byReg[reg] = c
+local seen = {}
+for _, w in ipairs(c.toks) do if not seen[w] then seen[w] = true CI.df[w] = (CI.df[w] or 0) + 1 end end
+for _, nm in ipairs(names) do local s = stem(nm) if not seen[s] then seen[s] = true CI.df[s] = (CI.df[s] or 0) + 1 end end
+end
+CI.N = #CI.list
+return CI
+end
+function K.idf(w)
+local CI = K.CI
+return math.log((CI.N + 1) / ((CI.df[w] or 0) + 1)) + 0.5
+end
+function K.score(c, Q)
+local tot, norm2, nameHit = 0, 0, 0
+for _, q in ipairs(Q) do
+local w = K.idf(q)
+norm2 += w
+local best = 0
+for _, nm in ipairs(c.names) do
+local s = K.sim(q, nm)
+if s > best then best = s end
+if s > nameHit then nameHit = s end
+end
+for _, d in ipairs(c.toks) do
+local s = K.sim(q, d) * 0.55
+if s > best then best = s end
+end
+tot += best * w
+end
+if norm2 == 0 then return 0, 0 end
+return tot / norm2, nameHit
+end
+function K.rank(Q)
+local ci = K.index()
+local out = {}
+if #Q == 0 then return out end
+for _, c in ipairs(ci.list) do
+local s, nh = K.score(c, Q)
+if s > 0.3 then out[#out + 1] = {c = c, s = s, nh = nh} end
+end
+table.sort(out, function(a, b) if a.s ~= b.s then return a.s > b.s end return a.c.name < b.c.name end)
+return out
+end
+-- explicit command words in the utterance (registry names and aliases); verbs like "run"/"show" never count as an alias hit
+function K.exact(rtoks)
+local U = Util.UhCmd
+local found, seen = {}, {}
+if not U then return found end
+for i, w0 in ipairs(rtoks) do
+local w = (w0:lower():gsub("^%p+", ""):gsub("%p+$", ""))
+if w ~= "" and (#w >= 3 or i == 1) and not STOPW[w] then
+local reg = U.cmds[w] or U.aliases[w]
+if reg and not (K.VERBW[w] and U.cmds[w] ~= reg) and not seen[reg] then
+seen[reg] = true
+found[#found + 1] = {i = i, reg = reg, w = w}
+end
+end
+end
+return found
+end
+function K.cmdInfo(c)
+local s = c.name .. ": " .. (c.desc ~= "" and c.desc or "no description") .. ". Type " .. K.prefix() .. c.shown .. " in the command bar."
+local al = {}
+for _, a in ipairs(c.names) do if a ~= c.name then al[#al + 1] = a end end
+if #al > 0 then s = s .. " Aliases: " .. table.concat(al, ", ") .. "."
+else s = s .. " It has no aliases." end
+for _, a in ipairs(c.spec) do s = s .. " " .. a.name .. (a.req and "" or " (optional)") .. " is " .. K.ARGDOC[a.kind] .. "." end
+for _, w in ipairs(CMD_RISKY) do if c.name:find(w, 1, true) then s = s .. " This one can be disruptive, so I ask before running it." break end end
+return s
+end
+function K.numbers(rtoks, used)
+local nums, pos = {}, nil
+for i = 1, #rtoks do
+if not used[i] then
+local w = (rtoks[i]:gsub("[;!?]+$", ""))
+if w:match("^%-?%d+%.?%d*,%-?%d+%.?%d*,%-?%d+%.?%d*$") then pos = w used[i] = true
+elseif w:match("^%-?%d+%.?%d*$") then nums[#nums + 1] = {i = i, v = w}
+elseif K.WORDNUM[w:lower()] then nums[#nums + 1] = {i = i, v = tostring(K.WORDNUM[w:lower()])} end
+end
+end
+return nums, pos
+end
+function K.askArg(c, rtoks, ctx, prompt)
+pending = nil
+K.choice = {t = os.clock(), free = function(txt)
+local nt = {}
+for _, w in ipairs(rtoks) do nt[#nt + 1] = w end
+for _, w in ipairs(K.toks(txt)) do nt[#nt + 1] = w end
+ctx.cmd = c
+return K.cmdRun(nt, ctx)
+end}
+return {text = prompt}
+end
+-- extracts this command's arguments (players -> exact usernames, numbers, coordinates, free text) from the utterance
+function K.buildArgs(c, rtoks, used, ctx)
+local spec = c.spec
+local n = #rtoks
+local pargs = 0
+for _, a in ipairs(spec) do if a.kind == "player" or a.kind == "pos" then pargs += 1 end end
+local T = pargs > 0 and K.targets(rtoks, used, false, ctx.t) or nil
+if T and T.amb then
+local opts = {}
+for _, p in ipairs(T.amb.players) do
+if #opts < 4 then
+opts[#opts + 1] = {label = K.pname(p), run = function()
+local nt = {}
+for i = 1, T.amb.from - 1 do nt[#nt + 1] = rtoks[i] end
+nt[#nt + 1] = p.Name
+for i = T.amb.to + 1, n do nt[#nt + 1] = rtoks[i] end
+ctx.cmd = c
+return K.cmdRun(nt, ctx)
+end}
+end
+end
+return {reply = K.ask("More than one player matches \"" .. T.amb.text .. "\".", opts)}
+end
+local nums, posStr = K.numbers(rtoks, used)
+local needPos = false
+for _, a in ipairs(spec) do if a.kind == "pos" then needPos = true end end
+if needPos and not posStr and #nums >= 3 and nums[2].i == nums[1].i + 1 and nums[3].i == nums[2].i + 1 then
+posStr = nums[1].v .. "," .. nums[2].v .. "," .. nums[3].v
+table.remove(nums, 1) table.remove(nums, 1) table.remove(nums, 1)
+end
+local textVal
+local hasNum, hasText = false, false
+for _, a in ipairs(spec) do if a.kind == "number" then hasNum = true elseif a.kind == "text" then hasText = true end end
+if hasText then
+local q = ctx.raw and ctx.raw:match('"([^"]+)"') or nil
+if q then textVal = q
+else
+local parts = {}
+for i = (ctx.viaIdx or 0) + 1, n do
+local w = rtoks[i]
+local isNum = hasNum and w:match("^%-?%d+%.?%d*$")
+if not used[i] and not isNum then parts[#parts + 1] = w end
+end
+if #parts > 0 then textVal = table.concat(parts, " ") end
+end
+end
+local targets = {}
+if T then
+for _, p in ipairs(T.list) do targets[#targets + 1] = p end
+if T.special == "all" or T.special == "others" then
+targets = K.others()
+if #targets == 0 then return {reply = {text = "There's nobody else in the server."}} end
+elseif T.special == "random" then
+local o = K.others()
+if #o == 0 then return {reply = {text = "There's nobody else in the server."}} end
+targets = {o[math.random(#o)]}
+end
+end
+local tmpl, pi, ni, usedPos = {}, 1, 1, false
+for _, a in ipairs(spec) do
+local v
+if a.kind == "player" or a.kind == "pos" then
+if a.kind == "pos" and posStr then v = posStr usedPos = true
+elseif pargs == 1 then v = (#targets > 0) and K.TGT or nil
+else v = targets[pi] and targets[pi].Name pi += 1 end
+elseif a.kind == "number" then
+if nums[ni] then v = nums[ni].v ni += 1 end
+else
+v = textVal textVal = nil
+end
+if v == nil then
+if a.req then
+if a.kind == "player" or a.kind == "pos" then
+local msg = (T and T.note) or ("Which player should I use for " .. c.name .. "? " .. K.playersReply().text)
+return {reply = K.askArg(c, rtoks, ctx, msg)}
+end
+return {reply = K.askArg(c, rtoks, ctx, "What should I use for " .. a.name .. " with " .. c.name .. "?")}
+end
+break
+end
+tmpl[#tmpl + 1] = v
+end
+if #spec == 0 then
+for _, x in ipairs(nums) do
+if #tmpl < 3 and rtoks[x.i]:match("^%-?%d") then tmpl[#tmpl + 1] = x.v end
+end
+end
+local A = {runs = {}, targets = targets, label = ""}
+if pargs == 1 and not usedPos then
+for k, p in ipairs(targets) do
+if k > 25 then break end
+local vals = {}
+for _, v in ipairs(tmpl) do vals[#vals + 1] = (v == K.TGT) and p.Name or v end
+A.runs[#A.runs + 1] = vals
+end
+local names = {}
+for k, p in ipairs(targets) do if k <= 3 then names[#names + 1] = K.pname(p) end end
+A.label = (#targets > 3) and (#targets .. " players") or table.concat(names, " and ")
+else
+A.runs[1] = tmpl
+local names = {}
+for _, p in ipairs(targets) do names[#names + 1] = K.pname(p) end
+A.label = table.concat(names, " and ")
+end
+return A
+end
+function K.exec(c, A)
+local last = A.targets and A.targets[#A.targets]
+if last and last ~= lp then K.last = last end
+local runs = A.runs
+if #runs <= 1 then return runCommand(c.name, runs[1] or {}) end
+local U = Util.UhCmd
+for _, a in ipairs(runs) do
+local list = {c.name}
+for _, x in ipairs(a) do list[#list + 1] = x end
+task.spawn(function() U.run(list) end)
+task.wait(0.12)
+end
+return {text = pick(OKW) .. " I ran " .. c.name .. " on " .. A.label .. "."}
+end
+-- one resolved command request: extracts the arguments, asks for anything missing, confirms risky / multi-target / code-running commands, then runs the existing command
+function K.cmdRun(rtoks, ctx)
+local U = Util.UhCmd
+local ci = K.index()
+if not U then return nil end
+local used = {}
+for i, w in ipairs(rtoks) do
+local l = (w:lower():gsub("%p+", ""))
+if l == "jarvis" or l == "hey" or l == "ok" or l == "okay" or l == "please" or l == "command" or l == "cmd" then used[i] = true end
+end
+local c = ctx.cmd
+if not c then
+local found = K.exact(rtoks)
+if #found > 1 then
+local opts = {}
+for _, f in ipairs(found) do
+local d = ci.byReg[f.reg]
+if d and #opts < 4 then opts[#opts + 1] = {label = d.name, run = function() ctx.cmd = d return K.cmdRun(rtoks, ctx) end} end
+end
+if #opts > 1 then return K.ask("That mentions more than one command.", opts) end
+end
+if found[1] then c = ci.byReg[found[1].reg] end
+end
+if not c then return nil end
+ctx.viaIdx = nil
+for i, w in ipairs(rtoks) do
+local l = (w:lower():gsub("^%p+", ""):gsub("%p+$", ""))
+if c.set[l] then used[i] = true ctx.viaIdx = ctx.viaIdx or i end
+end
+if ctx.verb == "off" and not c.name:find("^un") and not c.name:find("^no") then
+local inv
+for _, pre in ipairs({"un", "stop", "no"}) do
+local r = U.cmds[pre .. c.name]
+if r and ci.byReg[r] then inv = ci.byReg[r] break end
+end
+if not inv then return {text = "There's no command to turn off " .. c.name .. "."} end
+c = inv
+end
+if c.danger and not ctx.explicit then
+return {text = c.name .. " runs code you supply, so I only use it when you say it explicitly, for example \"command " .. c.name .. " ...\"."}
+end
+local A = K.buildArgs(c, rtoks, used, ctx)
+if A.reply then return A.reply end
+local risky = false
+for _, w in ipairs(CMD_RISKY) do if c.name:find(w, 1, true) then risky = true end end
+if risky or #A.runs > 1 or c.danger then
+local shown = {}
+for _, a in ipairs(A.runs[1] or {}) do shown[#shown + 1] = a end
+local what = "That runs the Uh Admin command " .. c.name .. (A.label ~= "" and (" on " .. A.label) or (#shown > 0 and (" " .. table.concat(shown, " ")) or "")) .. ", which can be disruptive."
+return K.confirm(what, function() return K.exec(c, A) end)
+end
+return K.exec(c, A)
+end
+function K.cmdFlow(rtoks, ctx, rest, number, state, exactOnly)
+local U = Util.UhCmd
+if not U then return nil end
+if #K.exact(rtoks) > 0 then
+local r = K.cmdRun(rtoks, ctx)
+if r then return r end
+end
+if ctx.t and not ctx.isQ and U.cmds["goto"] and K.hasOtherRef(rtoks, ctx.t) and has(ctx.t, {"go to", "take me to", "teleport me to", "teleport to", "tp to", "tp me to", "warp to", "warp me to", "walk to", "head to"}) then
+ctx.cmd = K.index().byReg[U.cmds["goto"]]
+ctx.verb = nil
+local r = K.cmdRun(rtoks, ctx)
+ctx.cmd = nil
+if r then return r end
+end
+if exactOnly or ctx.isQ then return nil end
+return K.semFlow(ctx.raw, ctx.t, rest, ctx.verb, number, state, false, rtoks, ctx, true)
+end
+
+-- ---------- UI AWARENESS (real instances: Util.Search entries, Delta sidebar/tabs, Uh Admin bar and list) ----------
+function K.kindWord(e)
+if not e then return "navigation tab open" end
+local k = e.Kind
+if k == "switch" then return "switch toggle enable disable" end
+if k == "button" then return "button press run" end
+if k == "dropdown" then return "dropdown option select choose" end
+if k == "input" then return e.Sub == "slider" and "slider value adjust" or "textbox input type" end
+return "item"
+end
+K.TABSET = {Home = true, Executor = true, Scripthub = true, Music = true, Console = true, Settings = true, JarvisAI = true, ToggleUI = true}
+function K.deltaGui()
+local DG = K.DG
+if DG.g and DG.g.Parent then return DG.g end
+DG.g = nil
+local roots = {}
+local okh, h = pcall(function() return gethui and gethui() end)
+if okh and h then roots[#roots + 1] = h end
+local okc, cg = pcall(game.GetService, game, "CoreGui")
+if okc and cg then roots[#roots + 1] = cg end
+local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+if pg then roots[#roots + 1] = pg end
+for _, r in ipairs(roots) do
+local ok, kids = pcall(function() return r:GetChildren() end)
+if ok then
+for _, g in ipairs(kids) do
+if g:IsA("ScreenGui") then
+local okf, hit = pcall(function() return g:FindFirstChild("Executor", true) and g:FindFirstChild("Scripthub", true) and g:FindFirstChild("Sidebar", true) end)
+if okf and hit then DG.g = g return g end
+end
+end
+end
+end
+return nil
+end
+function K.deltaDocs(out)
+local g = K.deltaGui()
+if not g then return end
+local ok, all = pcall(function() return g:GetDescendants() end)
+if not ok then return end
+local seen = {}
+for _, d in ipairs(all) do
+if d:IsA("GuiButton") and K.TABSET[d.Name] and not seen[d.Name] and d:FindFirstAncestor("Sidebar") then
+seen[d.Name] = true
+local texts = {}
+local frame = g:FindFirstChild(d.Name)
+if frame then
+local okd, ds = pcall(function() return frame:GetDescendants() end)
+if okd then
+for _, x in ipairs(ds) do
+if #texts >= 40 then break end
+if x:IsA("TextLabel") or x:IsA("TextButton") then
+local tx = plain(x.Text)
+if tx ~= "" and #tx <= 40 then texts[#texts + 1] = tx end
+end
+end
+end
+end
+local nm = K.camel(d.Name)
+local vis = d.Name == "ToggleUI"
+local say = vis and "ToggleUI is the sidebar button that hides or shows the whole Delta interface."
+or (nm .. " is a tab in the sidebar" .. (#texts > 0 and (". It contains: " .. table.concat(texts, ", "):sub(1, 200)) or "") .. ".")
+out[#out + 1] = {kind = "nav", label = nm, name = d.Name, where = "Sidebar", desc = table.concat(texts, " "), say = say, vis = vis,
+act = function() return fire(d.MouseButton1Click) or fire(d.Activated) end}
+end
+end
+end
+function K.adminDocs(out)
+local UA = Util.UhAdmin
+if not UA then return end
+local ui = UA.UI or {}
+if UA.OpenBar then
+local ph = ui.CmdInput and safe(function() return ui.CmdInput.PlaceholderText end) or ""
+out[#out + 1] = {kind = "nav", label = "Command bar", name = "cmdbar", where = "Uh Admin", vis = false, desc = "type admin commands run prefix enter autofill " .. tostring(ph or ""),
+say = "The command bar is where you type Uh Admin commands (prefix " .. K.prefix() .. ", then the command name and its arguments). It autofills command names as you type.",
+act = function() UA.OpenBar() return true end}
+end
+if UA.OpenList then
+out[#out + 1] = {kind = "nav", label = "Command list", name = "cmdlist", where = "Uh Admin", vis = false, desc = "all commands usage description filter browse search",
+say = "The command list shows every Uh Admin command with its usage and description, with a filter box to search it.",
+act = function() UA.OpenList() return true end}
+end
+if Util.UhCmd and Util.UhCmd.cmds["chatlogs"] then
+out[#out + 1] = {kind = "nav", label = "Chat logs", name = "chatlogs", where = "Uh Admin", vis = false, desc = "chat log messages history players said",
+say = "Chat logs shows the messages players have sent in this server.",
+act = function() return Util.UhCmd.run({"chatlogs"}) end}
+end
+end
+function K.docs()
+local DC = K.DC
+if DC.list and os.clock() - DC.t < 3 then return DC.list end
+local out = {}
+for _, e in ipairs(entries()) do
+local l = labelOf(e)
+if l ~= "" then
+local ds = e.GetDesc and safe(e.GetDesc) or ""
+local xt = e.GetExtra and safe(e.GetExtra) or ""
+out[#out + 1] = {kind = "ui", e = e, label = l, where = whereOf(e), desc = (tostring(ds or "") .. " " .. tostring(xt or "")):sub(1, 300)}
+end
+end
+safe(K.deltaDocs, out)
+safe(K.adminDocs, out)
+for _, d in ipairs(out) do
+d.lt = K.qt(d.label)
+d.wt = K.qt((d.where or "") .. " " .. K.kindWord(d.e))
+d.dt = K.qt(d.desc or "")
+end
+DC.list, DC.t = out, os.clock()
+return out
+end
+function K.docScore(d, Q)
+local tot, hits = 0, 0
+for _, q in ipairs(Q) do
+local best = 0
+for _, x in ipairs(d.lt) do local s = K.sim(q, x) if s > best then best = s end end
+for _, x in ipairs(d.wt) do local s = K.sim(q, x) * 0.5 if s > best then best = s end end
+for _, x in ipairs(d.dt) do local s = K.sim(q, x) * 0.4 if s > best then best = s end end
+tot += best
+end
+if #Q == 0 then return 0 end
+local cov = 0
+for _, x in ipairs(d.lt) do
+for _, q in ipairs(Q) do if K.sim(q, x) >= 0.7 then cov += 1 break end end
+end
+cov = (#d.lt > 0) and (cov / #d.lt) or 0
+return (tot / #Q) * (0.75 + 0.25 * cov)
+end
+function K.kindAllowed(d, verb)
+if d.kind == "ui" then return not verb or kindOk(d.e, verb) end
+if verb == "on" or verb == "off" or verb == "toggle" then return d.vis == true end
+return true
+end
+function K.describeDoc(d)
+if d.kind == "nav" then return d.say end
+local e = d.e
+local kw = e.Kind == "input" and (e.Sub == "slider" and "slider" or "text box") or (e.Kind == "switch" and "switch" or (e.Kind == "item" and "item" or e.Kind))
+local s = d.label .. " is a " .. kw .. " in " .. d.where .. "."
+if e.Kind == "switch" then s = s .. " It is currently " .. (switchOn(e) and "on" or "off") .. "."
+elseif e.Kind == "dropdown" then
+local v = safe(function() return tostring(e.Options[e.Select.Value]) end)
+if v then s = s .. " It is set to " .. v .. "." end
+elseif e.Sub == "slider" then
+s = s .. " It is at " .. tostring(safe(function() return e.Select.Value end)) .. " (range " .. tostring(e.Min) .. " to " .. tostring(e.Max) .. ")."
+end
+local ds = trim(plain(d.desc or ""))
+if ds ~= "" and #ds <= 140 and e.Kind ~= "switch" then s = s .. " " .. ds end
+return s
+end
+function K.runDoc(d, verb, number, state, raw)
+if d.kind == "nav" then
+local okF = d.act and d.act()
+if not okF then return {text = "I couldn't press " .. d.label .. ": your executor needs firesignal or getconnections for that."} end
+return {text = d.vis and ("Toggling the interface via " .. d.label .. ".") or ("Opening " .. d.label .. "."), closeAfter = true}
+end
+local e = d.e
+if isRisky(d.label) and (e.Kind == "button" or e.Kind == "item") then
+return K.confirm("That presses " .. d.label .. ", which can be disruptive.", function() return applyEntry(e, verb or "open", number, state, raw) end)
+end
+return applyEntry(e, verb or ((e.Kind == "button" or e.Kind == "item") and "open" or nil), number, state, raw)
+end
+-- semantic fallback over live UI elements AND registry commands; asks instead of guessing when it is not confident
+function K.semFlow(raw, t, rest, verb, number, state, isQ, rtoks, ctx, onlyCmd)
+local usedP = {}
+K.targets(rtoks, usedP, true, nil)
+local skip = {}
+for i, w in ipairs(rtoks) do if usedP[i] then skip[K.sq(w)] = true end end
+local kept = {}
+for w in rest:gmatch("%S+") do if not skip[K.sq(w)] then kept[#kept + 1] = w end end
+local rq = table.concat(kept, " ")
+local Q = K.qt(rq, K.FILL)
+if #Q == 0 then Q = K.qt(rq) end
+if #Q == 0 then return nil end
+local cand = {}
+if not isQ then
+for _, r in ipairs(K.rank(Q)) do cand[#cand + 1] = {kind = "cmd", c = r.c, s = r.s, nh = r.nh, label = r.c.name} end
+end
+if not onlyCmd then
+for _, d in ipairs(K.docs()) do
+if K.kindAllowed(d, verb) then
+local s = K.docScore(d, Q)
+if s >= 0.45 then cand[#cand + 1] = {kind = "ui", d = d, s = s, label = d.label} end
+end
+end
+end
+table.sort(cand, function(a, b) return a.s > b.s end)
+local top, second = cand[1], nil
+if not top then return nil end
+for i = 2, #cand do
+if cand[i].label:lower() ~= top.label:lower() then second = cand[i] break end
+end
+local words = 0
+for _ in t:gmatch("%S+") do words += 1 end
+local function run(x)
+if x.kind == "cmd" then
+local c2 = {t = ctx.t, raw = ctx.raw, verb = verb, isQ = false, explicit = ctx.explicit, cmd = x.c}
+return K.cmdRun(rtoks, c2)
+end
+return K.runDoc(x.d, verb, number, state, raw)
+end
+local ok = top.s >= 0.72 and (top.kind ~= "cmd" or top.nh >= 0.7 or top.s >= 0.85) and verb ~= nil
+if ok and second and second.s >= top.s - 0.08 then ok = false end
+if ok then return run(top) end
+if top.s < 0.5 or (not verb and words > 4) then return nil end
+local opts, seen = {}, {}
+for _, x in ipairs(cand) do
+local key = x.label:lower()
+if not seen[key] and #opts < 3 and x.s >= 0.45 then
+seen[key] = true
+opts[#opts + 1] = {label = (x.kind == "cmd" and ("command " .. x.label) or x.label), run = function() return run(x) end}
+end
+end
+if onlyCmd and #opts == 0 then return nil end
+return K.ask("I'm not sure which one you mean.", opts)
+end
+function K.choiceReply(t, raw)
+local ch = K.choice
+if not ch then return nil end
+if os.clock() - ch.t > 40 then K.choice = nil return nil end
+local first = t:match("^(%a+)") or ""
+if NO[t] or NO[first] or t == "never mind" or t == "do not" or t == "don t" then K.choice = nil return {text = "Understood. Cancelled."} end
+if ch.free then
+local nw = 0
+for _ in t:gmatch("%S+") do nw += 1 end
+K.choice = nil
+if nw > 6 or #K.exact(K.toks(raw)) > 0 then return nil end
+return ch.free(raw)
+end
+local idx = K.ORD[t] or K.ORD[first]
+if not idx then
+local rt = " " .. t .. " "
+for i, o in ipairs(ch.opts) do
+local on = norm(o.label)
+if on ~= "" and (rt:find(" " .. on .. " ", 1, true) or t == on) then idx = i break end
+end
+end
+K.choice = nil
+if idx and ch.opts[idx] then return ch.opts[idx].run() end
+return nil
+end
+
+-- ---------- QUESTIONS ABOUT THE SCRIPT, THE UI AND THE SERVER ----------
+function K.topic(Q, limit)
+local cmds, uis = {}, {}
+for i, r in ipairs(K.rank(Q)) do if i <= limit and r.s >= 0.55 then cmds[#cmds + 1] = r.c end end
+local sc = {}
+for _, d in ipairs(K.docs()) do
+local s = K.docScore(d, Q)
+if s >= 0.55 then sc[#sc + 1] = {d = d, s = s} end
+end
+table.sort(sc, function(a, b) return a.s > b.s end)
+for i, x in ipairs(sc) do if i <= 4 then uis[#uis + 1] = x.d end end
+return cmds, uis
+end
+function K.know(raw, t, words, isQ, verb)
+local ci = K.index()
+local rtoks = K.toks(raw)
+if has(t, {"who is in the server", "who s in the server", "who is here", "who s here", "who is online", "who is playing", "list players", "list the players", "player list", "players in the server", "who else is here", "show players", "how many players", "how many people", "who is in this server"}) then
+return K.playersReply()
+end
+if has(t, {"how many commands", "number of commands", "how many admin commands"}) then
+local na = 0
+for _ in pairs(Util.UhCmd and Util.UhCmd.aliases or {}) do na += 1 end
+return {text = "I know " .. #ci.list .. " Uh Admin commands and " .. na .. " aliases, read live from the command registry. Ask for \"commands for\" a topic, or say \"open command list\"."}
+end
+if words <= 9 and has(t, {"what is this script", "what is uh admin", "tell me about this script", "tell me about uh admin", "what can this script do", "what does this script do", "what features does this have", "script overview", "overview of the script", "what is this admin"}) then
+local nSw, nBt, nOth, pages = 0, 0, 0, {}
+for _, e in ipairs(entries()) do
+if e.Kind == "switch" then nSw += 1 elseif e.Kind == "button" or e.Kind == "item" then nBt += 1 else nOth += 1 end
+end
+for _, d in ipairs(K.docs()) do if d.kind == "nav" and d.where == "Sidebar" then pages[#pages + 1] = d.label end end
+local ms = safe(Util.GetModuleStatus)
+local pf, np = fn("listfiles"), nil
+if pf then local l = safe(pf, "UhhhhhhReanim/AdminPlugins") if type(l) == "table" then np = #l end end
+return {text = ("This script is an Uh Admin command system with a settings UI. I currently see %d commands, %d switches, %d buttons and %d sliders, dropdowns or text boxes%s%s%s. Ask me about any of them, for example \"what does a command do\", \"where is the music thing\" or \"commands for reanimation\"."):format(#ci.list, nSw, nBt, nOth, #pages > 0 and (", plus the sidebar tabs " .. table.concat(pages, ", ")) or "", np and (", and " .. np .. " admin plugin file" .. (np == 1 and "" or "s")) or "", (ms and ms ~= "") and (". Modules: " .. plain(tostring(ms))) or "")}
+end
+local qlike = isQ or has(t, {"tell me about", "info on", "information on", "explain", "describe", "list"})
+if not qlike then return nil end
+
+-- command information: "what does bring do", "how do I use goto", "aliases of fly"
+local found = K.exact(rtoks)
+local what = has(t, {"what does", "what do", "what is", "what s", "what are", "explain", "describe", "tell me about", "how do i use", "how to use", "how does", "usage of", "usage", "meaning of", "info on", "information on", "what happens", "aliases", "alias"})
+if found[1] and what and not has(t, {"setting", "switch", "toggle", "slider", "tab"}) then
+local out = {}
+for i, f in ipairs(found) do
+local c = ci.byReg[f.reg]
+if c and i <= 2 then out[#out + 1] = K.cmdInfo(c) end
+end
+if #out > 0 then return {text = table.concat(out, " ")} end
+end
+
+-- players: attributes, nearest/farthest, "tell me about <player>"
+local ATTR = {health = "hp", hp = "hp", alive = "hp", dead = "hp", team = "team", userid = "id", id = "id", age = "age", distance = "dist", far = "dist", close = "dist", tool = "tool", holding = "tool", speed = "speed", walkspeed = "speed", name = "name", display = "name", username = "name", character = "char"}
+local want, anyAttr = {}, false
+for w in t:gmatch("%S+") do if ATTR[w] then want[ATTR[w]] = true anyAttr = true end end
+local whoPh = has(t, {"who is", "who s", "tell me about", "info on", "information on", "about player", "nearest", "closest", "farthest", "furthest", "nearby", "describe"})
+local factQ = has(t, {"what is", "what s", "how much", "how far", "how old", "who is", "who s", "tell me", "show me", "do i have", "does he have", "does she have", "what team", "which team", "is alive", "is dead"})
+if ((anyAttr and factQ) or whoPh) and not (found[1] and what) then
+local T = K.targets(rtoks, {}, false, t)
+if T.amb then
+local opts = {}
+for _, p in ipairs(T.amb.players) do
+if #opts < 4 then opts[#opts + 1] = {label = K.pname(p), run = function() return K.playerReply(p, want) end} end
+end
+return K.ask("More than one player matches \"" .. T.amb.text .. "\".", opts)
+end
+local list = T.list
+if #list == 0 and T.special == "random" then local o = K.others() if #o > 0 then list = {o[math.random(#o)]} end end
+if #list == 0 and T.special == "others" then return K.playersReply() end
+if #list == 0 and anyAttr and (has(t, {"my", "i have", "am i", "do i"})) then list = {lp} end
+if #list > 0 then
+local parts = {}
+for i, p in ipairs(list) do if i <= 3 then parts[#parts + 1] = K.playerReply(p, want).text end end
+return {text = table.concat(parts, " ")}
+end
+if T.note then return {text = T.note} end
+end
+
+-- where / how do I find: UI elements, tabs and commands
+local where = has(t, {"where is", "where are", "where s", "where can i find", "where do i find", "where to find", "how do i find", "how do i get to", "how do i open", "how do i access", "how can i open", "how can i access", "how to open", "how to access", "where do i", "where can i", "how do i get"})
+local ptoks = norm(t)
+local subj = K.qt(ptoks, K.QFILL)
+local QF2 = setmetatable({admin = true, uh = true}, {__index = K.QFILL})
+if where and #K.qt(ptoks, QF2) == 0 and has(t, {"command", "commands", "cmd", "cmds", "admin", "uh admin"}) then
+return {text = "Uh Admin commands run from the command bar (type " .. K.prefix() .. " then the command name) and are all listed in the command list. Say \"open command bar\" or \"open command list\" and I'll bring it up."}
+end
+if #subj == 0 then return nil end
+
+-- command lists for a topic: "commands for music", "which commands do X"
+if has(t, {"commands for", "commands about", "commands related to", "commands that", "what commands", "which commands", "list commands", "list the commands", "any commands", "commands to", "list all commands", "are there commands"}) then
+local cmds, uis = K.topic(subj, 8)
+if #cmds == 0 and #uis == 0 then return {text = "I couldn't find any commands or controls matching that. Say \"open command list\" to browse them all."} end
+local parts = {}
+for _, c in ipairs(cmds) do parts[#parts + 1] = c.shown .. (c.desc ~= "" and (" (" .. c.desc:sub(1, 60) .. ")") or "") end
+local ui = {}
+for _, d in ipairs(uis) do ui[#ui + 1] = d.label .. " in " .. (d.where or "the UI") end
+return {text = (#parts > 0 and ("Commands: " .. table.concat(parts, "; ") .. ". ") or "") .. (#ui > 0 and ("Related controls: " .. table.concat(ui, "; ") .. ".") or "")}
+end
+
+-- generic "what is X / where is X / how do I X" over live UI + commands
+if where or what or isQ then
+local cand = {}
+for _, r in ipairs(K.rank(subj)) do cand[#cand + 1] = {kind = "cmd", c = r.c, s = r.s, nh = r.nh} end
+for _, d in ipairs(K.docs()) do
+local s = K.docScore(d, subj)
+if s >= 0.5 then cand[#cand + 1] = {kind = "ui", d = d, s = s} end
+end
+table.sort(cand, function(a, b) return a.s > b.s end)
+local top = cand[1]
+if top and top.s >= 0.72 and (top.kind ~= "cmd" or top.nh >= 0.7 or top.s >= 0.85) then
+if top.kind == "cmd" then
+return {text = K.cmdInfo(top.c)}
+end
+local s = K.describeDoc(top.d)
+if where and top.d.kind == "nav" then s = s .. " Say \"open " .. top.d.label:lower() .. "\" and I'll go there." end
+if where and top.d.kind == "ui" then s = s .. " To go there, open " .. top.d.where .. " in the UI." end
+return {text = s}
+end
+end
+return nil
+end
+
+local function process(raw)
+local t = norm(raw)
+t = cut(cut(cut(t, "hey jarvis"), "ok jarvis"), "jarvis")
+if t == "" then return {text = "Yes? I'm here."} end
+local chr = K.choiceReply(t, raw)
+if chr then return chr end
+if pending then
+if os.clock() - pending.t > 25 then pending = nil
+else
+local first = t:match("^(%a+)") or ""
+if YES[t] or YES[first] or t == "go ahead" or t == "do it" then local p = pending pending = nil return p.run() end
+if NO[t] or NO[first] or t == "never mind" or t == "do not" or t == "don t" then pending = nil return {text = "Understood. Cancelled."} end
+pending = nil
+end
+end
+local words = 0
+for _ in t:gmatch("%S+") do words += 1 end
+if SIL[t] or t == "stop talking" or t == "stop speaking" or t == "be quiet" or t == "shut up" then TTS.Stop() return {text = "Quiet it is.", silent = true} end
+if has(t, {"mute voice", "voice off", "mute yourself", "text only", "disable voice", "turn off voice", "turn off your voice"}) then
+SaveData.JarvisVoice = false TTS.Stop() Live.syncVoiceBtn()
+return {text = "Voice output is off. I'll reply in text.", silent = true}
+end
+if has(t, {"unmute", "voice on", "speak again", "talk again", "enable voice", "turn on voice", "turn on your voice", "speak to me", "talk to me"}) then
+SaveData.JarvisVoice = true Live.syncVoiceBtn()
+return {text = "Voice output is on."}
+end
+local url = raw:match("https?://[%w%-%._~:/%?#%[%]@!%$&'%(%)%*%+,;=%%]+")
+if url and (t:find("voice") or t:find("server") or t:find("backend") or t:find("endpoint") or t:find("tts")) then
+url = url:gsub("[%.,;]+$", "")
+SaveData.JarvisTTSUrl = url
+return {text = "Voice server saved. My next spoken reply will use it."}
+end
+if has(t, {"default voice", "clear voice server", "reset voice server", "remove voice server"}) then
+SaveData.JarvisTTSUrl = nil
+return {text = "Voice server cleared. I'll use the keyless British male voice until you set one."}
+end
+if has(t, {"voice status", "which voice", "what voice", "voice server", "voice backend"}) then
+local ep = endpoint()
+return {text = (SaveData.JarvisVoice == false and "Voice output is off. " or "Voice output is on. ") .. (ep and ("Using your Edge TTS voice server: " .. ep .. ".") or "No voice server is set, so I'm using the keyless British male voice (Brian), or a pitched-down Google voice if that is unreachable. Say \"set voice server\" followed by your Worker URL for the Edge British butler voice.")}
+end
+if has(t, {"mic status", "microphone status", "is my mic working", "is my microphone working", "mic not working", "microphone not working", "can you hear me"}) then
+return {text = "I can't listen through the microphone any more. To talk to me, use your keyboard's text-to-speech instead, then send what it types."}
+end
+if t == "undo" or has(t, {"undo that", "revert that", "put it back", "take that back", "undo it"}) then
+local u = table.remove(undoStack)
+if not u then return {text = "There's nothing I can undo."} end
+local ok = pcall(u.f)
+return {text = ok and ("Reverted " .. u.label .. ".") or ("I couldn't revert " .. u.label .. ".")}
+end
+if t == "close" or t == "dismiss" or t == "go away" or t == "close jarvis" or t == "hide jarvis" or has(t, {"that will be all", "that is all", "that s all", "thats all"}) then
+return {text = "Very good.", closeAfter = true}
+end
+if has(t, {"help", "what can you do", "what can i say", "what are your commands", "capabilities", "what are your capabilities", "how do you work"}) and words <= 8 then
+local nSw, nBt, nOther = 0, 0, 0
+for _, e in ipairs(entries()) do
+if e.Kind == "switch" then nSw += 1 elseif e.Kind == "button" then nBt += 1 else nOther += 1 end
+end
+local nc = 0
+if Util.UhCmd then for _ in pairs(Util.UhCmd.cmds) do nc += 1 end end
+return {text = ("I can control %d switches, %d buttons and %d other controls in this script plus %d Uh Admin commands. Try: \"reanimate me\", \"enable the visual effects\", \"switch to lite mode\", \"open the settings\", \"set triangle size to 1.2\", \"what's running?\", \"why am I lagging?\", \"optimize my performance\", \"any errors?\", or \"undo\". Admin commands work in plain words too, with players by name, display name, UserId, \"nearest\" or \"him\": \"make bob fly\", \"bring the nearest player\", \"what does goto do?\". I also know the players here (\"who is in the server?\", \"how much health does bob have?\") and where things are (\"where is the music thing?\"). Anything else I'll answer conversationally."):format(nSw, nBt, nOther, nc)}
+end
+
+local verb, slots, number, state, rest = parse(t)
+local first = t:match("^(%a+)") or ""
+local isQ = QW[first] or raw:find("%?") ~= nil
+
+if has(t, {"optimize", "optimise", "optimization", "speed up", "boost performance", "improve performance", "fix lag", "fix my lag", "reduce lag", "make it faster", "make this faster", "improve my fps", "boost my fps"}) then
+local plan, s = optimizePlan()
+if #plan == 0 then
+return {text = "I can't find any further safe optimisations: no heavy visual features are running and Low End UI Mode " .. ((findByLabel("low end ui mode") and switchOn(findByLabel("low end ui mode"))) and "is already on" or "isn't needed right now") .. ". For more, you could try Anti Lag or Hide All Players manually."}
+end
+local desc = {}
+for _, p in ipairs(plan) do desc[#desc + 1] = (p.want and "enable " or "disable ") .. labelOf(p.e) end
+return confirmReply("I'd " .. table.concat(desc, ", ") .. ". Your other settings stay untouched, and I can undo it afterwards.", function()
+local done, failed = {}, {}
+local group = {}
+for _, p in ipairs(plan) do
+local r = setSwitch(p.e, p.want)
+if r == "failed" then failed[#failed + 1] = labelOf(p.e) elseif r == "ok" then done[#done + 1] = labelOf(p.e) table.insert(group, table.remove(undoStack)) end
+end
+if #group > 0 then pushUndo("optimisation", function() for i = #group, 1, -1 do pcall(group[i].f) end end) end
+local msg = #done > 0 and ("Applied: " .. table.concat(done, ", ") .. ".") or "Nothing needed changing."
+if #failed > 0 then msg = msg .. " These didn't take effect: " .. table.concat(failed, ", ") .. "." end
+return {text = msg}
+end)
+end
+if (not verb or isQ) and has(t, {"lag", "laggy", "lagging", "slow", "stutter", "stuttering", "fps", "freezing", "choppy", "performance", "frame rate", "framerate", "ping", "memory usage", "ram"}) then
+return {text = diagnose()}
+end
+if words <= 7 and has(t, {"what features are running", "what features are currently running", "which features are running", "what is running", "what s running", "whats running", "what is active", "what s active", "features running", "features active", "active features", "running features", "system status", "status report", "status", "report", "what s happening", "whats happening", "what is happening", "what are you monitoring", "what are you seeing"}) then
+local s = snapshot(true)
+local lines = {}
+lines[#lines + 1] = (#s.on > 0) and (#s.on .. " feature" .. (#s.on > 1 and "s are" or " is") .. " switched on: " .. names(s.on, 10) .. ".") or "No optional switches are currently on."
+lines[#lines + 1] = ("Performance: %d FPS%s%s."):format(math.floor(s.fps or 0), s.mem and (", " .. math.floor(s.mem) .. " MB") or "", s.ping and (", ping " .. math.floor(s.ping) .. " ms") or "")
+if s.profile then lines[#lines + 1] = "Profile: " .. tostring(s.profile) .. "." end
+if s.char then lines[#lines + 1] = ("Your character: %d of %d health, walk speed %d, state %s."):format(s.char.hp, s.char.maxhp, s.char.speed, tostring(s.char.state)) else lines[#lines + 1] = "You have no active character right now." end
+lines[#lines + 1] = (s.errs + s.warns == 0) and "No recent errors." or (s.errs .. " error" .. (s.errs == 1 and "" or "s") .. " and " .. s.warns .. " warning" .. (s.warns == 1 and "" or "s") .. " in the last minute.")
+if s.status and s.status ~= "" then lines[#lines + 1] = "Modules: " .. plain(tostring(s.status)) .. "." end
+return {text = table.concat(lines, " ")}
+end
+if verb ~= "open" and has(t, {"error", "errors", "warning", "warnings", "exception", "crash", "crashed", "bug", "bugs"}) and (isQ or not verb) and words <= 9 then
+if #Logs == 0 then return {text = "I haven't recorded any errors or warnings this session."} end
+local out, seen = {}, {}
+for i = #Logs, 1, -1 do
+local l = Logs[i]
+local key = l.m:sub(1, 60)
+if not seen[key] and #out < 3 then
+seen[key] = true
+local why = explainLog(l.m)
+out[#out + 1] = (l.e and "Error: " or "Warning: ") .. l.m:sub(1, 110) .. (why and (" - " .. why .. ".") or "")
+end
+end
+return {text = "Most recent issues: " .. table.concat(out, " | ")}
+end
+if verb == "open" then
+if has(t, {"command bar", "admin bar", "uh admin", "command line"}) and Util.UhAdmin and Util.UhAdmin.OpenBar then pcall(Util.UhAdmin.OpenBar) return {text = "Command bar opened.", closeAfter = true} end
+if has(t, {"command list", "commands list", "all commands", "commands"}) and Util.UhAdmin and Util.UhAdmin.OpenList then pcall(Util.UhAdmin.OpenList) return {text = "Command list opened.", closeAfter = true} end
+if has(t, {"chat", "text chat", "conversation", "history"}) and Util.OpenJarvisChat then Util.OpenJarvisChat() return {text = "Opening the chat window.", closeAfter = true} end
+end
+
+do local kr = K.know(raw, t, words, isQ, verb) if kr then return kr end end
+
+-- ----- Uh Admin command: explicit "command X", any request that names another player, or a registry command named in the request -----
+local list = entries()
+local explicit = has(t, {"command", "cmd"}) ~= nil
+local rtoks = K.toks(raw)
+local cctx = {t = t, raw = raw, verb = verb, isQ = isQ, words = words, explicit = explicit}
+local playerRef = K.hasOtherRef(rtoks, t)
+if explicit or playerRef then
+local r = K.cmdFlow(rtoks, cctx, rest, number, state)
+if r then return r end
+end
+
+-- ----- multi-target group: "enable the visual effects" -----
+for _, s in ipairs(slots) do
+if s.group and s.group.multi and (verb == "on" or verb == "off" or verb == "toggle" or verb == "set" or verb == "run") then
+local want
+if verb == "off" then want = false elseif verb == "toggle" then want = nil elseif state ~= nil then want = state else want = true end
+local hits = {}
+for _, e in ipairs(list) do
+if e.Kind == "switch" then
+local m = labelToks(e)
+local ok = false
+for _, a in ipairs(s.alts) do for _, lt in ipairs(m.t) do if near(a, lt) > 0 then ok = true end end end
+if ok and not m.n:find("fast", 1, true) and #hits < 8 then hits[#hits + 1] = e end
+end
+end
+if #hits == 0 then return {text = "I couldn't find any matching effect switches in this build."} end
+local changed, same, failed, group = {}, {}, {}, {}
+for _, e in ipairs(hits) do
+local w = want
+if w == nil then w = not switchOn(e) end
+local r = setSwitch(e, w)
+if r == "ok" then changed[#changed + 1] = labelOf(e) table.insert(group, table.remove(undoStack)) elseif r == "same" then same[#same + 1] = labelOf(e) else failed[#failed + 1] = labelOf(e) end
+end
+if #group > 0 then pushUndo("visual effects", function() for i = #group, 1, -1 do pcall(group[i].f) end end) end
+local msg = {}
+if #changed > 0 then msg[#msg + 1] = pick(OKW) .. " Switched " .. ((want == false) and "off" or (want and "on" or "")) .. " " .. names((function() local c = {} for _, n in ipairs(changed) do c[#c + 1] = {GetName = function() return n end} end return c end)(), 6) .. "." end
+if #same > 0 then msg[#msg + 1] = #same .. " already " .. ((want == false) and "off" or "on") .. "." end
+if #failed > 0 then msg[#msg + 1] = "These didn't change: " .. table.concat(failed, ", ") .. "." end
+return {text = table.concat(msg, " ")}
+end
+end
+
+-- ----- dropdown option phrases ("switch to hats reanimator") -----
+if verb == "set" or (not verb and words <= 5) then
+local rt = " " .. t .. " "
+local bestE, bestLen
+for _, e in ipairs(list) do
+if e.Kind == "dropdown" and type(e.Options) == "table" then
+local lt = labelToks(e)
+for _, o in ipairs(e.Options) do
+local on = norm(o)
+local ntok = 0
+for _ in on:gmatch("%S+") do ntok += 1 end
+if on ~= "" and rt:find(" " .. on .. " ", 1, true) then
+local labelHit = false
+for _, w in ipairs(lt.t) do if rt:find(w, 1, true) then labelHit = true end end
+if ntok >= 2 or labelHit then
+if not bestLen or #on > bestLen then bestE, bestLen = e, #on end
+end
+end
+end
+end
+end
+if bestE then return applyEntry(bestE, "set", number, state, raw) end
+end
+
+local cands = findEntries(slots, verb, list)
+if not verb and (isQ or (#cands > 0 and cands[1].score < 2.9)) then cands = {} end
+if not (cands[1] and cands[1].score >= 1.9) and not (explicit or playerRef) then
+local r = K.cmdFlow(rtoks, cctx, rest, number, state, true)
+if r then return r end
+end
+if #cands > 0 then
+local top = cands[1]
+if cands[2] and top.e ~= cands[2].e and cands[2].score >= top.score - 0.05 and cands[2].label:lower() == top.label:lower() then
+return {text = "I found more than one \"" .. top.label .. "\": " .. whereOf(top.e) .. " and " .. whereOf(cands[2].e) .. ". Which one did you mean?"}
+end
+local e = top.e
+if isRisky(labelOf(e)) and (e.Kind == "button" or e.Kind == "item") then
+return confirmReply("That presses " .. labelOf(e) .. ", which can be disruptive.", function() return applyEntry(e, verb, number, state, raw) end)
+end
+return applyEntry(e, verb, number, state, raw)
+end
+
+do local r = K.semFlow(raw, t, rest, verb, number, state, isQ, rtoks, cctx, false) if r then return r end end
+
+if verb and not isQ then
+local c = closest(slots, list)
+local what = {}
+for _, s in ipairs(slots) do what[#what + 1] = s.alts[1] end
+local w = table.concat(what, " ")
+if #c > 0 then return {text = "I couldn't find a control matching \"" .. w .. "\". The closest are: " .. table.concat(c, ", ") .. "."} end
+if w ~= "" then return {text = "I couldn't find anything in this script matching \"" .. w .. "\". I won't guess."} end
+end
+return nil
+end
+
+-- =====================================================================
+-- CONVERSATIONAL CORE (existing offline JARVIS modules, hosted off-screen)
+-- =====================================================================
+local P = {}
+local function coreReady() return Util.Jarvis and Util.Jarvis.IsReady and Util.Jarvis.IsReady() end
+local function warmCore()
+if coreReady() or Live.warming or not (Util.Jarvis and Util.Jarvis.Mount) then return end
+Live.warming = true
+if not (P.hidden and P.hidden.Parent) then
+P.hidden = Util.Instance("Frame", UIMainFrame)
+P.hidden.Visible = false
+P.hidden.Size = UDim2.fromOffset(320, 260)
+P.hidden.BackgroundTransparency = 1
+end
+Util.Jarvis.Mount(P.hidden, {onClose = function() Live.Close() end}, function(ok, err)
+Live.warming = false
+Live.coreErr = (not ok) and err or nil
+end)
+end
+local function askCore(text, cb)
+if not coreReady() then
+warmCore()
+local t0 = os.clock()
+while not coreReady() and Live.warming and os.clock() - t0 < 10 do task.wait(0.2) end
+end
+if not coreReady() or not (Util.Jarvis.H and Util.Jarvis.H.ask) then cb(nil) return end
+Util.Jarvis.H.ask(text, function(res) cb(type(res) == "table" and type(res.text) == "string" and res.text or nil) end)
+end
+
+-- =====================================================================
+-- UI
+-- =====================================================================
+local accents = {}
+local lastAcc
+local function G(class, parent, props)
+local o = Util.Instance(class, parent)
+for k, v in pairs(props or {}) do o[k] = v end
+return o
+end
+local Z = 62
+local function frame(parent, props)
+props = props or {}
+if props.BackgroundTransparency == nil then props.BackgroundTransparency = 1 end
+props.BorderSizePixel = 0
+props.ZIndex = props.ZIndex or Z
+return G("Frame", parent, props)
+end
+local function label(parent, props, class)
+props = props or {}
+props.BackgroundTransparency = props.BackgroundTransparency or 1
+props.BorderSizePixel = 0
+props.Font = props.Font or Enum.Font.Code
+props.TextColor3 = props.TextColor3 or Color3.new(1, 1, 1)
+props.TextSize = props.TextSize or 14
+props.ZIndex = props.ZIndex or Z
+if class == "TextButton" then props.AutoButtonColor = false props.Text = props.Text or "" end
+return G(class or "TextLabel", parent, props)
+end
+local function corner(o, r) return G("UICorner", o, {CornerRadius = r or UDim.new(0, 8)}) end
+local function stroke(o, th, tr)
+local s = G("UIStroke", o, {Thickness = th or 1, Transparency = tr or 0.4, ApplyStrokeMode = Enum.ApplyStrokeMode.Border})
+accents[#accents + 1] = {s, "Color"}
+s.Color = accent()
+return s
+end
+local function tint(o, prop) accents[#accents + 1] = {o, prop} o[prop] = accent() return o end
+local function button(parent, text, w, cb)
+local b = label(parent, {Text = text, TextSize = 11, Size = UDim2.fromOffset(w, 24), BackgroundTransparency = 0, BackgroundColor3 = Color3.fromRGB(20, 22, 32)}, "TextButton")
+corner(b, UDim.new(0, 6))
+stroke(b, 1, 0.5)
+b.Activated:Connect(cb)
+return b
+end
+
+local function addMsg(role, text)
+if not P.scroll then return end
+text = plain(text)
+if text == "" then return end
+local hex = accent():ToHex()
+local who
+if role == "you" then who = '<font transparency="0.45">YOU</font>  '
+elseif role == "jarvis" then who = '<font color="#' .. hex .. '"><b>JARVIS</b></font>  '
+else who = '<font transparency="0.55">SYS</font>  ' end
+local l = label(P.scroll, {RichText = true, Text = who .. esc(text), TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, TextSize = 12, LayoutOrder = (P.msgN or 0) + 1})
+P.msgN = (P.msgN or 0) + 1
+P.msgs = P.msgs or {}
+P.msgs[#P.msgs + 1] = l
+while #P.msgs > MAX_MSG do
+local old = table.remove(P.msgs, 1)
+pcall(function() old:Destroy() end)
+end
+if not lowEnd() then
+l.TextTransparency = 1
+TweenService:Create(l, TweenInfo.new(0.3), {TextTransparency = 0}):Play()
+end
+task.defer(function()
+pcall(function() P.scroll.CanvasPosition = Vector2.new(0, math.max(0, P.scroll.AbsoluteCanvasSize.Y)) end)
+end)
+end
+function Live.syncVoiceBtn()
+if P.voiceBtn then P.voiceBtn.Text = (SaveData.JarvisVoice == false) and "VOICE OFF" or "VOICE ON" end
+end
+function Live.state()
+if Live.busy then return "thinking" end
+if TTS.speaking then return "speaking" end
+return "idle"
+end
+
+local function deliver(reply)
+Live.busy = false
+local text = reply.text or ""
+addMsg("jarvis", text)
+if not reply.silent then TTS.Speak(text) end
+if reply.closeAfter then task.delay(1.1, function() Live.Close() end) end
+end
+function Live.Handle(raw, src)
+raw = trim(raw)
+if raw == "" then return end
+if Live.busy then return end
+addMsg("you", raw)
+TTS.Stop()
+Live.busy = true
+Live.req = (Live.req or 0) + 1
+local id = Live.req
+local function done(r)
+if Live.req ~= id or not Live.busy then return end
+deliver(r)
+end
+task.delay(30, function() done({text = "That took longer than expected, so I stopped waiting."}) end)
+task.spawn(function()
+local ok, r = pcall(process, raw)
+if not ok then done({text = "Something went wrong on my side: " .. tostring(r):match("^[^\n]*")}) return end
+if r then done(r) return end
+askCore(raw, function(text)
+if text and trim(plain(text)) ~= "" then done({text = text})
+else done({text = "My language core isn't available right now" .. (Live.coreErr and (" (" .. tostring(Live.coreErr):match("^[^\n]*") .. ")") or "") .. ". I can still run commands, report status and diagnose performance. Say \"help\" for examples."}) end
+end)
+end)
+end
+Live.onVoiceSource = function(m) addMsg("sys", m) end
+Live.onVoiceFail = function(why)
+if Live.warnedVoice == why then return end
+Live.warnedVoice = why
+local m = {["!files"] = "this executor has no file functions, so I can't cache or play speech", ["!assets"] = "this executor has no getcustomasset, so I can't play audio files", ["!net"] = "I couldn't reach Google's voice service (check your connection or your voice server URL)", ["!load"] = "the audio file wouldn't load"}
+addMsg("sys", "Voice output failed: " .. (m[why] or "unknown error") .. ". I'll keep replying in text.")
+end
+-- proactive, throttled suggestions (event-driven: Perf listener + error ring)
+local lastSuggest = 0
+function Live.suggest(text)
+if SaveData.JarvisProactive == false then return end
+if os.clock() - lastSuggest < 150 then return end
+lastSuggest = os.clock()
+if P.root and P.root.Visible then addMsg("jarvis", text) else pcall(Util.Notify, "JARVIS: " .. text) end
+end
+pcall(function()
+Util.FX.Perf.OnChange(function()
+local ps = safe(function() return Util.FX.Perf.Status() end)
+if ps and ps.FPS and ps.FPS < 24 then Live.suggest("Frame rate has dropped to " .. math.floor(ps.FPS) .. ". Say \"optimize\" and I'll propose what to switch off.") end
+end)
+end)
+Live.onLog = function()
+local now, n = os.clock(), 0
+for _, l in ipairs(Logs) do if l.e and now - l.t < 10 then n += 1 end end
+if n >= 6 then Live.suggest("I'm seeing a burst of script errors. Ask me \"any errors?\" for an explanation.") end
+end
+
+local function build()
+if P.root then return true end
+local ok, err = pcall(function()
+local root = G("Frame", UIMainFrame, {Name = "JarvisLive", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.new(1, -24, 1, -24),
+BackgroundColor3 = Color3.new(1, 1, 1), BackgroundTransparency = 0.03, BorderSizePixel = 0, Visible = false, ZIndex = 60, ClipsDescendants = true})
+G("UISizeConstraint", root, {MinSize = Vector2.new(300, 260), MaxSize = Vector2.new(900, 520)})
+G("UIGradient", root, {Color = ColorSequence.new(Color3.fromRGB(16, 19, 30), Color3.fromRGB(5, 6, 10)), Rotation = 90})
+corner(root, UDim.new(0, 14))
+stroke(root, 1.5, 0.2)
+P.root = root
+P.scale = G("UIScale", root, {Scale = 1})
+-- header
+local head = frame(root, {Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -24, 0, 28)})
+label(head, {Text = "J.A.R.V.I.S", TextSize = 18, Font = Enum.Font.Code, TextXAlignment = Enum.TextXAlignment.Left, Size = UDim2.new(0, 108, 1, 0)})
+label(head, {Text = "LIVE INTELLIGENCE", TextSize = 9, TextTransparency = 0.4, TextXAlignment = Enum.TextXAlignment.Left, Position = UDim2.fromOffset(110, 3), Size = UDim2.new(0, 120, 1, 0)})
+local bl = frame(head, {Size = UDim2.fromScale(1, 1)})
+G("UIListLayout", bl, {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Right, VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder})
+P.voiceBtn = button(bl, "VOICE ON", 70, function()
+SaveData.JarvisVoice = (SaveData.JarvisVoice == false)
+if SaveData.JarvisVoice == false then TTS.Stop() end
+Live.syncVoiceBtn()
+end)
+P.voiceBtn.LayoutOrder = 1
+local chat = button(bl, "CHAT", 50, function()
+Live.Close()
+if Util.OpenJarvisChat then Util.OpenJarvisChat() end
+end)
+chat.LayoutOrder = 2
+local x = button(bl, "X", 28, function() Live.Close() end)
+x.LayoutOrder = 3
+Live.syncVoiceBtn()
+-- body
+P.body = frame(root, {Position = UDim2.fromOffset(12, 40), Size = UDim2.new(1, -24, 1, -50)})
+P.stage = frame(P.body, {})
+P.right = frame(P.body, {})
+-- reactive rings behind the triangle
+P.rings = {}
+for i = 1, 3 do
+local r = frame(P.stage, {AnchorPoint = Vector2.new(0.5, 0.5), ZIndex = Z - 1})
+corner(r, UDim.new(1, 0))
+P.rings[i] = {f = r, s = stroke(r, 1.5, 0.8)}
+end
+P.triHolder = frame(P.stage, {AnchorPoint = Vector2.new(0.5, 0.5)})
+local okT, tri = pcall(Util.FX.NewTriangle3D, P.triHolder, {Interactive = false, ZIndex = Z + 1, Dance = false})
+if okT and tri then P.tri = tri
+else label(P.triHolder, {Text = "▲", TextScaled = true, Size = UDim2.fromScale(1, 1)}) end
+-- waveform
+P.barRow = frame(P.stage, {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(120, 14)})
+P.bars = {}
+for i = 1, 15 do
+local b = frame(P.barRow, {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, 4 + (i - 1) * 8, 0.5, 0), Size = UDim2.fromOffset(3, 3), BackgroundTransparency = 0.15})
+corner(b, UDim.new(1, 0))
+tint(b, "BackgroundColor3")
+P.bars[i] = b
+end
+P.stateLbl = label(P.stage, {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(200, 16), Text = "IDLE", TextSize = 12})
+-- note directly underneath the triangle (replaces the old microphone button)
+P.note = label(P.stage, {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(200, 52), Text = "to talk to Jarvis, use your keyboard's text-to-speech instead.", TextSize = 11, TextWrapped = true, TextTransparency = 0.2, TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center})
+-- right column
+P.intel = label(P.right, {RichText = true, Size = UDim2.new(1, 0, 0, 20), TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, Text = ""})
+P.chips = frame(P.right, {Size = UDim2.new(1, 0, 0, 26)})
+local quick = {{"What's running?", "what's running"}, {"Why lag?", "why am I lagging"}, {"Optimize", "optimize my performance"}, {"Lite mode", "switch to lite mode"}}
+P.chipBtns = {}
+for i, q in ipairs(quick) do
+local b = button(P.chips, q[1], 80, function() Live.Handle(q[2], "chip") end)
+b.TextSize = 10
+P.chipBtns[i] = b
+end
+P.scroll = G("ScrollingFrame", P.right, {BackgroundColor3 = Color3.fromRGB(10, 12, 18), BackgroundTransparency = 0.25, BorderSizePixel = 0, ScrollBarThickness = 3, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = Z})
+corner(P.scroll, UDim.new(0, 8))
+G("UIListLayout", P.scroll, {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder})
+G("UIPadding", P.scroll, {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6)})
+P.inRow = frame(P.right, {Size = UDim2.new(1, 0, 0, 30)})
+local box = G("TextBox", P.inRow, {Size = UDim2.new(1, -62, 1, 0), BackgroundColor3 = Color3.fromRGB(18, 20, 30), BackgroundTransparency = 0, BorderSizePixel = 0, Font = Enum.Font.Code, TextSize = 13, TextColor3 = Color3.new(1, 1, 1),
+PlaceholderText = "Type a command...", PlaceholderColor3 = Color3.fromRGB(130, 134, 150), Text = "", ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = Z})
+corner(box, UDim.new(0, 8)) stroke(box, 1, 0.55)
+G("UIPadding", box, {PaddingLeft = UDim.new(0, 8)})
+P.box = box
+local function send()
+local txt = box.Text
+box.Text = ""
+Live.Handle(txt, "text")
+end
+box.FocusLost:Connect(function(enter) if enter then send() end end)
+local sb = button(P.inRow, "SEND", 56, send)
+sb.AnchorPoint = Vector2.new(1, 0)
+sb.Position = UDim2.fromScale(1, 0)
+sb.Size = UDim2.new(0, 56, 1, 0)
+-- layout
+local function layout()
+local W, H = P.body.AbsoluteSize.X, P.body.AbsoluteSize.Y
+if W < 50 or H < 50 then return end
+local sx, sy, sw, sh, rx, ry, rw, rh
+if W >= 520 then
+sw = math.clamp(math.floor(W * 0.38), 170, 300) sh = H sx, sy = 0, 0
+rx, ry, rw, rh = sw + 10, 0, W - sw - 10, H
+else
+sw, sh, sx, sy = W, math.floor(H * 0.52), 0, 0
+rx, ry, rw, rh = 0, sh + 6, W, H - sh - 6
+end
+P.stage.Position, P.stage.Size = UDim2.fromOffset(sx, sy), UDim2.fromOffset(sw, sh)
+P.right.Position, P.right.Size = UDim2.fromOffset(rx, ry), UDim2.fromOffset(rw, rh)
+local ts = math.max(56, math.min(sw - 10, sh - 112))
+local y0 = math.max(0, math.floor((sh - (ts + 110)) / 2))
+local cx = sw / 2
+P.ts, P.cx, P.cy = ts, cx, y0 + ts / 2
+P.triHolder.Position, P.triHolder.Size = UDim2.fromOffset(cx, y0 + ts / 2), UDim2.fromOffset(ts, ts)
+P.barRow.Position = UDim2.fromOffset(cx, y0 + ts + 10)
+P.stateLbl.Position = UDim2.fromOffset(cx, y0 + ts + 28)
+P.note.Position = UDim2.fromOffset(cx, y0 + ts + 68)
+P.note.Size = UDim2.fromOffset(math.max(100, sw - 16), 52)
+for _, r in ipairs(P.rings) do r.f.Position = UDim2.fromOffset(cx, y0 + ts / 2) end
+local showChips = rh >= 150
+P.chips.Visible = showChips
+P.intel.Position = UDim2.fromOffset(0, 0)
+P.chips.Position = UDim2.fromOffset(0, 22)
+local cw = math.floor((rw - 12) / 4)
+for i, b in ipairs(P.chipBtns) do b.Size = UDim2.fromOffset(cw, 24) b.Position = UDim2.fromOffset((i - 1) * (cw + 4), 0) end
+local top = showChips and 52 or 24
+P.scroll.Position = UDim2.fromOffset(0, top)
+P.scroll.Size = UDim2.fromOffset(rw, math.max(30, rh - top - 36))
+P.inRow.Position = UDim2.fromOffset(0, rh - 30)
+P.inRow.Size = UDim2.fromOffset(rw, 30)
+end
+P.layout = layout
+P.body:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
+end)
+if not ok then
+warn("[JARVIS] Live panel failed to build: " .. tostring(err))
+pcall(function() if P.root then P.root:Destroy() end end)
+P.root = nil
+return false, tostring(err)
+end
+return true
+end
+
+-- render loop: only connected while the panel is visible
+local conn, accT, intelT, lowAcc = nil, 0, 0, 0
+local lastState
+local function step(dt)
+if lowEnd() then
+lowAcc += dt
+if lowAcc < 1 / 20 then return end
+dt, lowAcc = lowAcc, 0
+end
+Live.t += dt
+Live.fpsAvg = Live.fpsAvg * 0.92 + (1 / math.max(dt, 1e-3)) * 0.08
+local t = Live.t
+local st = Live.state()
+local en
+if st == "speaking" then en = math.clamp(((TTS.sound and TTS.sound.PlaybackLoudness) or 0) / 350, 0.18, 1)
+elseif st == "thinking" then en = 0.5 + 0.25 * math.sin(t * 9)
+else en = 0.07 + 0.03 * math.sin(t * 1.4) end
+Live.en = Live.en + (en - Live.en) * (1 - math.exp(-10 * dt))
+local e = Live.en
+accT += dt
+if accT > 0.12 then
+accT = 0
+local c = accent()
+if not lastAcc or math.abs(c.R - lastAcc.R) + math.abs(c.G - lastAcc.G) + math.abs(c.B - lastAcc.B) > 0.01 then
+lastAcc = c
+for i = #accents, 1, -1 do
+local a = accents[i]
+if a[1].Parent then a[1][a[2]] = c else table.remove(accents, i) end
+end
+end
+end
+if P.tri then
+P.tri.pulse = math.max(P.tri.pulse or 0, e * 0.7)
+if st == "thinking" then P.tri.yawVel = math.max(P.tri.yawVel or 0, 6)
+elseif st == "speaking" then P.tri.yawVel = math.max(P.tri.yawVel or 0, 2 + e * 5) end
+end
+local ts = P.ts or 100
+local active = st ~= "idle"
+for i, r in ipairs(P.rings) do
+local ph = (t * 0.45 + i / 3) % 1
+local sz = ts * (0.72 + 0.1 * i + (0.35 + e) * 0.3 * ph)
+r.f.Size = UDim2.fromOffset(sz, sz)
+r.s.Transparency = active and (0.4 + 0.6 * ph) or (0.88 + 0.12 * ph)
+end
+local bw = (P.barRow and 1) or 0
+for i, b in ipairs(P.bars) do
+local h = 3 + 11 * e * (0.3 + 0.7 * math.abs(math.sin(t * 6 + i * 0.7)))
+b.Size = UDim2.fromOffset(3, math.max(3, h))
+end
+if st ~= lastState then
+lastState = st
+P.stateLbl.Text = ({idle = "IDLE", thinking = "THINKING", speaking = "SPEAKING"})[st] or "IDLE"
+end
+intelT += dt
+if intelT > 1 then
+intelT = 0
+local s = snapshot(false)
+local function col(txtv, bad) return bad and ('<font color="#FF6B6B">' .. txtv .. "</font>") or txtv end
+P.intel.Text = table.concat({
+col("FPS " .. (s.fps and string.format("%d", s.fps) or "--"), s.fps and s.fps < 30),
+col("MEM " .. (s.mem and string.format("%d", s.mem) or "--") .. "MB", s.mem and s.mem > 1800),
+col("PING " .. (s.ping and string.format("%d", s.ping) or "--") .. "ms", s.ping and s.ping > 250),
+"ON " .. Live.onCount,
+col("ERR " .. s.errs, s.errs > 0)}, "  |  ")
+end
+end
+
+function Live.IsOpen() return P.root ~= nil and P.root.Visible end
+function Live.Open()
+local ok, err = build()
+if not ok then
+pcall(Util.Notify, "JARVIS Live failed to build: " .. tostring(err))
+if Util.OpenJarvisChat then Util.OpenJarvisChat() end
+return
+end
+if P.root.Visible then return end
+P.root.Visible = true
+pcall(function() if P.tri then P.tri:SetActive(true) end end)
+if P.layout then P.layout() task.defer(P.layout) end
+conn = RunService.RenderStepped:Connect(step)
+accT, intelT, lastState = 1, 1, nil
+Live.onCount = #onSwitches()
+if not lowEnd() then
+P.scale.Scale = 0.93
+TweenService:Create(P.scale, TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Scale = 1}):Play()
+end
+warmCore()
+if not Live.greeted then
+Live.greeted = true
+local h = tonumber(os.date("%H")) or 12
+local per = (h >= 5 and h < 12) and "morning" or (h >= 12 and h < 17) and "afternoon" or "evening"
+local name = lp and ((lp.DisplayName ~= "" and lp.DisplayName) or lp.Name) or "friend"
+local g = ("Good %s, %s. Live Intelligence is online. Type a command below."):format(per, name)
+addMsg("jarvis", g)
+TTS.Speak(("Good %s, %s. At your service."):format(per, name))
+end
+end
+function Live.Close()
+if not P.root or not P.root.Visible then return end
+TTS.Stop()
+P.root.Visible = false
+if conn then conn:Disconnect() conn = nil end
+pcall(function() if P.tri then P.tri:SetActive(false) end end)
+end
+Live.Speak = TTS.Speak
+Live.Process = process
+Live.TTS = TTS
+
+-- main-page settings (they register in Util.Search too, so JARVIS can drive them by voice)
+function Live.BuildSettings(page)
+local lever = UI.CreateSwitch(page, "Jarvis Voice (Google TTS)", SaveData.JarvisVoice ~= false)
+lever.Changed:Connect(function(v)
+SaveData.JarvisVoice = v
+if not v then TTS.Stop() end
+Live.syncVoiceBtn()
+end)
+local sw2 = UI.CreateSwitch(page, "Jarvis Proactive Suggestions", SaveData.JarvisProactive ~= false)
+sw2.Changed:Connect(function(v) SaveData.JarvisProactive = v end)
+local box = UI.CreateTextbox(page, "Jarvis voice server (Cloudflare Worker URL for the Edge butler voice)", "https://jarvis-tts.yourname.workers.dev", 12)
+pcall(function() box.Text = SaveData.JarvisTTSUrl or "" end)
+box.FocusLost:Connect(function()
+local u = trim(box.Text)
+if u == "" then SaveData.JarvisTTSUrl = nil
+elseif u:match("^https?://") then SaveData.JarvisTTSUrl = u
+else box.Text = SaveData.JarvisTTSUrl or "" pcall(Util.Notify, "JARVIS: the voice server must start with https://") end
+end)
+end
+return Live
+end)()
+
 local AIOverlay = Util.Instance("Frame", UIMainFrame)
 AIOverlay.AnchorPoint = Vector2.new(0.5, 0.5)
 AIOverlay.Position = UDim2.new(0.5, 0, 0.5, 0)
@@ -74072,8 +76537,14 @@ AIStatus.Visible = true
 end
 end)
 end
-Util.OpenJarvis = openAI
-UI.CreateButton(MainPage, "JARVIS >", 15).Activated:Connect(openAI)
+Util.OpenJarvisChat = openAI
+Util.OpenJarvis = function()
+local L = Util.JarvisLive
+if L then L.Open() else openAI() end
+end
+UI.CreateButton(MainPage, "JARVIS LIVE >", 15).Activated:Connect(function() Util.OpenJarvis() end)
+UI.CreateButton(MainPage, "JARVIS Chat (text) >", 15).Activated:Connect(openAI)
+pcall(Util.JarvisLive.BuildSettings, MainPage)
 UI.CreateSwitch(MainPage, "Jarvis Random Quotes", SaveData.JarvisQuotes ~= false).Changed:Connect(function(value)
 SaveData.JarvisQuotes = value
 local q = Util.JarvisQuotes
@@ -74081,7 +76552,7 @@ if q and q.Set then q.Set(value) end
 end)
 pcall(function()
 UIMainWindow:GetPropertyChangedSignal("Visible"):Connect(function()
-if not UIMainWindow.Visible then closeAI() end
+if not UIMainWindow.Visible then closeAI() pcall(Util.JarvisLive.Close) end
 end)
 end)
 end
