@@ -1015,6 +1015,7 @@ LiquidGlass = true, GlassClarity = 0.4, Haptics = true,
 PageTrans = 1, BtnAnim = 1,
 RbxIconTheme = true, RbxBarTheme = true, ChatStyle = true, ChatTextSize = 14, ChatBgTr = 0.3, ChatWinW = 1, ChatWinH = 1, BubbleDur = 15, BubbleDist = 100, BubbleTail = true,
 LowEnd = false, PerfProfile = 1, UICache = true, FastExec = true,
+AutoReport = true, CModOn = true, CModSay = true, CModConf = 2,
 DeltaLogo = true, DeltaMotion = true, DeltaBlur = true, DeltaIntro = true, DeltaSpeed = 1, DeltaSource = "", DeltaEnabled = true, DeltaExecHelpers = true, DeltaFastExec = true,
 MusicDance = true, MusicColor = true,
 }
@@ -1068,7 +1069,7 @@ if key == "PerfProfile" and FX.Perf then FX.Perf.Select(value) end
 end
 function FX.ResetCfg()
 for k, d in pairs(DEFAULT_CFG) do
-if k ~= "LowEnd" and k ~= "FastExec" then
+if k ~= "LowEnd" and k ~= "FastExec" and k ~= "AutoReport" and k ~= "CModOn" and k ~= "CModSay" and k ~= "CModConf" then
 FX.SetCfg(k, d)
 end
 end
@@ -1693,7 +1694,7 @@ end
 -- every UI customization key (theme, colours, font, scale, particles, trail, glow, intro / triangle / notification options ...) is mirrored to disk
 -- (debounced). It is only read back when the save holds NO customization at all (wiped / new save file), so it never overrides a live setting.
 Cache.UIRoot = "UhhhhhhReanim/Assets/UI ANIMATION CACHE"
-Cache.UISkip = {LowEnd = true, PerfProfile = true, FastExec = true}
+Cache.UISkip = {LowEnd = true, PerfProfile = true, FastExec = true, AutoReport = true, CModOn = true, CModSay = true, CModConf = true}
 function Cache.UIPath() return Cache.UIRoot .. "/UI/customization.json" end
 function Cache.UIFolders()
 if not fsOk() then return false end
@@ -66062,214 +66063,505 @@ end
 local BaseParts = {}
 local UnknownMotor6Ds = {}
 local Ragdoll = LimbReanimator.RagdollMode and true or false
-local RagdollParts, RagdollByPart, RGWC, RagdollWarned = {}, {}, {}, {}
+--[[RG-BEGIN]]
+local RagdollParts, RagdollByPart, RGWC, RGBusy, RGHum = {}, {}, {}, {}, {}
+local RGList, RGDirty, RagdollWarned, RGErrAt = {}, true, false, 0
 local RagdollZero = Vector3.zero
+local RG_MIN_DT, RG_MAX_DT = 0.003, 0.25
+local RG_SNAP, RG_JUMP = 8, 6
+local RG_VCAP, RG_WCAP = 400, 80
+local RG_LEADMAX, RG_ANGLEAD = 2, 0.6
+local function RGNum(n)
+	return n == n and n > -1e9 and n < 1e9
+end
 local function RagdollFinite(p)
-return p.X == p.X and p.Y == p.Y and p.Z == p.Z and math.abs(p.X) < 1e7 and math.abs(p.Y) < 1e7 and math.abs(p.Z) < 1e7
+	return p.X == p.X and p.Y == p.Y and p.Z == p.Z and math.abs(p.X) < 1e7 and math.abs(p.Y) < 1e7 and math.abs(p.Z) < 1e7
 end
 local function RagdollFiniteCF(cf)
-local x, y, z, a, b, c, d, e, f, g, h, i = cf:GetComponents()
-return math.abs(x) < 1e7 and math.abs(y) < 1e7 and math.abs(z) < 1e7 and math.abs(a) <= 1.01 and math.abs(b) <= 1.01 and math.abs(c) <= 1.01 and math.abs(d) <= 1.01 and math.abs(e) <= 1.01 and math.abs(f) <= 1.01 and math.abs(g) <= 1.01 and math.abs(h) <= 1.01 and math.abs(i) <= 1.01
+	local x, y, z, a, b, c, d, e, f, g, h, i = cf:GetComponents()
+	return math.abs(x) < 1e7 and math.abs(y) < 1e7 and math.abs(z) < 1e7 and math.abs(a) <= 1.01 and math.abs(b) <= 1.01 and math.abs(c) <= 1.01 and math.abs(d) <= 1.01 and math.abs(e) <= 1.01 and math.abs(f) <= 1.01 and math.abs(g) <= 1.01 and math.abs(h) <= 1.01 and math.abs(i) <= 1.01
 end
-local function RagdollJointPose(mv, rel)
-local c0, c1 = mv.C0, mv.C1
-return c0 * (c0:Inverse() * rel * c1).Rotation * c1:Inverse()
+-- Gram-Schmidt re-orthonormalisation; only rebuilds when drift exceeds 1e-4. Returns nil if degenerate.
+local function RagdollOrtho(cf)
+	local r, u = cf.RightVector, cf.UpVector
+	local rm, um = r.Magnitude, u.Magnitude
+	if math.abs(rm - 1) < 1e-4 and math.abs(um - 1) < 1e-4 and math.abs(r:Dot(u)) < 1e-4 then return cf end
+	if not (rm > 1e-6 and um > 1e-6) then return nil end
+	r = r / rm
+	u = u - r * r:Dot(u)
+	um = u.Magnitude
+	if not (um > 1e-6) then return nil end
+	u = u / um
+	return CFrame.fromMatrix(cf.Position, r, u, r:Cross(u))
+end
+-- Stiffness S (10..200, saved setting) -> physical limits. Cached; recomputed only when S or gravity change,
+-- so slider changes apply live. Responsiveness ~ 1/time-constant; force/torque caps scale with limb mass/inertia.
+local RGTune = {S = -1, G = -1}
+local function RagdollTune()
+	local s = tonumber(LimbReanimator.RagdollStiffness)
+	if not s or not RGNum(s) then s = 100 end
+	s = math.clamp(s, 10, 200)
+	local g = tonumber(workspace.Gravity)
+	if not g or not RGNum(g) then g = 196.2 end
+	g = math.clamp(g, 98.1, 1000)
+	local T = RGTune
+	if T.S ~= s or T.G ~= g then
+		T.S, T.G = s, g
+		T.RP, T.RO = s, s * 0.9
+		T.Lead = math.clamp(1 / s, 0.004, 0.06)
+		T.AMax = g * (2 + s / 20)
+		T.VMax = 100 + 2 * s
+		T.WMax = 20 + 0.4 * s
+		T.Alpha = 25 * s
+	end
+	return T
+end
+local function RagdollKill(o)
+	if o then pcall(o.Destroy, o) end
+end
+local function RagdollJointPose(mv, rel, rg)
+	local c0, c1 = mv.C0, mv.C1
+	local c0i, c1i
+	if rg and rg.JC0 == c0 and rg.JC1 == c1 then
+		c0i, c1i = rg.JC0i, rg.JC1i
+	else
+		if not (RagdollFiniteCF(c0) and RagdollFiniteCF(c1)) then return nil end
+		c0i, c1i = c0:Inverse(), c1:Inverse()
+		if rg then rg.JC0, rg.JC1, rg.JC0i, rg.JC1i = c0, c1, c0i, c1i end
+	end
+	local out = c0 * (c0i * rel * c1).Rotation * c1i
+	if RagdollFiniteCF(out) then return out end
+	return nil
 end
 local function RagdollRelease(map, restore)
-local rg = map.RG
-if not rg then return end
-map.RG, map.RT = nil, nil
-if rg.Conn then
-rg.Conn:Disconnect()
-rg.Conn = nil
-end
-for _,o in {rg.AP, rg.AO, rg.DA, rg.BS, rg.A0, rg.A1, rg.PX} do
-pcall(o.Destroy, o)
-end
-if RagdollByPart[rg.P1] == map then
-RagdollByPart[rg.P1] = nil
-RagdollParts[rg.P1] = nil
-end
-if restore and rg.Motor then
-pcall(function() rg.Motor.Enabled = true end)
-end
+	local rg = map.RG
+	if not rg then return end
+	map.RG, map.RT = nil, nil
+	if rg.Conn then
+		rg.Conn:Disconnect()
+		rg.Conn = nil
+	end
+	RagdollKill(rg.AP)
+	RagdollKill(rg.AO)
+	RagdollKill(rg.DA)
+	RagdollKill(rg.BS)
+	RagdollKill(rg.A0)
+	RagdollKill(rg.A1)
+	RagdollKill(rg.PX)
+	if RagdollByPart[rg.P1] == map then
+		RagdollByPart[rg.P1] = nil
+		RagdollParts[rg.P1] = nil
+	end
+	RGDirty = true
+	if restore and rg.Motor then
+		pcall(function() rg.Motor.Enabled = true end)
+	end
 end
 local function GameHasSocket(p0, p1)
-local model = p1.Parent
-if not model then return false end
-for _,d in model:GetDescendants() do
-if d:IsA("BallSocketConstraint") and d.Name ~= "RagdollSocket" then
-local a, b = d.Attachment0, d.Attachment1
-local x, y = a and a.Parent, b and b.Parent
-if (x == p0 and y == p1) or (x == p1 and y == p0) then return true end
-end
-end
-return false
+	local model = p1.Parent
+	if not model then return false end
+	for _,d in model:GetDescendants() do
+		if d:IsA("BallSocketConstraint") and d.Name ~= "RagdollSocket" then
+			local a, b = d.Attachment0, d.Attachment1
+			local x, y = a and a.Parent, b and b.Parent
+			if (x == p0 and y == p1) or (x == p1 and y == p0) then return true end
+		end
+	end
+	return false
 end
 local RagdollRoot
 local function RagdollFolder()
-if not (RagdollRoot and RagdollRoot.Parent) then
-RagdollRoot = Instance.new("Folder")
-RagdollRoot.Name = "RGP" .. math.random(100000, 999999)
-RagdollRoot.Parent = workspace
-end
-return RagdollRoot
+	if not (RagdollRoot and RagdollRoot.Parent) then
+		RagdollRoot = Instance.new("Folder")
+		RagdollRoot.Name = "RGP" .. math.random(100000, 999999)
+		RagdollRoot.Parent = workspace
+	end
+	return RagdollRoot
 end
 local function RagdollClean()
-if RagdollRoot then
-pcall(RagdollRoot.Destroy, RagdollRoot)
-RagdollRoot = nil
+	if RagdollRoot then
+		pcall(RagdollRoot.Destroy, RagdollRoot)
+		RagdollRoot = nil
+	end
+	for h, rn in pairs(RGHum) do
+		pcall(function() if h.Parent then h.RequiresNeck = rn end end)
+	end
+	table.clear(RGHum)
+	table.clear(RagdollParts)
+	table.clear(RagdollByPart)
+	table.clear(RGWC)
+	table.clear(RGBusy)
+	table.clear(RGList)
+	RGDirty = true
 end
+local function RagdollBuild(rg)
+	local px, T = rg.PX, RagdollTune()
+	local m = px.Mass
+	if not (RGNum(m) and m > 0) then m = 1 end
+	local sz = px.Size
+	local sx, sy, sz2 = sz.X * sz.X, sz.Y * sz.Y, sz.Z * sz.Z
+	rg.M = m
+	rg.I = m * math.max(sy + sz2, sx + sz2, sx + sy) / 12
+	rg.TS = T.S
+	local da = Instance.new("Attachment")
+	da.Name = "RagdollDrive"
+	da.Parent = px
+	rg.DA = da
+	local ap = Instance.new("AlignPosition")
+	ap.Name = "RagdollAP"
+	ap.Mode = Enum.PositionAlignmentMode.OneAttachment
+	ap.Attachment0 = da
+	ap.ApplyAtCenterOfMass = true
+	ap.RigidityEnabled = false
+	ap.MaxForce, ap.MaxVelocity = m * T.AMax, T.VMax
+	ap.Responsiveness = T.RP
+	ap.Position = px.Position
+	ap.Parent = px
+	rg.AP = ap
+	local ao = Instance.new("AlignOrientation")
+	ao.Name = "RagdollAO"
+	ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+	ao.Attachment0 = da
+	ao.RigidityEnabled = false
+	ao.MaxTorque, ao.MaxAngularVelocity = rg.I * T.Alpha, T.WMax
+	ao.Responsiveness = T.RO
+	ao.CFrame = px.CFrame
+	ao.Parent = px
+	rg.AO = ao
 end
 local function Ragdollize(map, v, kp0, kp1)
-local p0, p1 = kp0 or v.Part0, kp1 or v.Part1
-if not (p0 and p1) then return end
-local hum = p1.Parent and p1.Parent:FindFirstChildOfClass("Humanoid")
-if hum then
-hum.RequiresNeck = false
-hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+	local p0, p1 = kp0 or v.Part0, kp1 or v.Part1
+	if not (p0 and p1 and p1.Parent) then return end
+	local hum = p1.Parent:FindFirstChildOfClass("Humanoid")
+	if hum then
+		if RGHum[hum] == nil then RGHum[hum] = hum.RequiresNeck end
+		hum.RequiresNeck = false
+		hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+	end
+	local rg = map.RG
+	if rg and rg.P1 == p1 and rg.PX and rg.PX.Parent and rg.AP.Parent and rg.AO.Parent then
+		rg.Motor, rg.P0 = v, p0
+	else
+		if rg then RagdollRelease(map) end
+		local px = Instance.new("Part")
+		px.Name = "RagdollProxy"
+		px.Size = p1.Size
+		px.Transparency = 1
+		px.CanCollide, px.CanTouch, px.CanQuery = false, false, false
+		px.CFrame = p1.CFrame
+		px.Parent = RagdollFolder()
+		rg = {P0 = p0, P1 = p1, Motor = v, Fresh = true, PX = px, Born = os.clock()}
+		local ok, err = pcall(RagdollBuild, rg)
+		if not ok then
+			RagdollKill(px)
+			if not RagdollWarned then
+				RagdollWarned = true
+				warn("[Ragdoll Reanimator] proxy build failed: " .. tostring(err))
+			end
+			return
+		end
+		map.RG = rg
+	end
+	RagdollByPart[p1] = map
+	RGDirty = true
 end
-local rg = map.RG
-if rg and rg.P1 == p1 and rg.PX and rg.PX.Parent and rg.AP.Parent and rg.AO.Parent then
-rg.Motor, rg.P0 = v, p0
-else
-if rg then RagdollRelease(map) end
-rg = {P0 = p0, P1 = p1, Motor = v, Fresh = true}
-local px = Instance.new("Part")
-px.Name = "RagdollProxy"
-px.Size = p1.Size
-px.Transparency = 1
-px.CanCollide, px.CanTouch, px.CanQuery = false, false, false
-px.CFrame = p1.CFrame
-px.Parent = RagdollFolder()
-local da = Instance.new("Attachment")
-da.Name = "RagdollDrive"
-da.Parent = px
-local stiff = LimbReanimator.RagdollStiffness or 100
-local ap = Instance.new("AlignPosition")
-ap.Name = "RagdollAP"
-ap.Mode = Enum.PositionAlignmentMode.OneAttachment
-ap.Attachment0 = da
-ap.ApplyAtCenterOfMass = true
-ap.RigidityEnabled = false
-ap.MaxForce, ap.MaxVelocity = math.huge, math.huge
-ap.Responsiveness = stiff
-ap.Position = px.Position
-ap.Parent = px
-local ao = Instance.new("AlignOrientation")
-ao.Name = "RagdollAO"
-ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
-ao.Attachment0 = da
-ao.RigidityEnabled = false
-ao.MaxTorque, ao.MaxAngularVelocity = math.huge, math.huge
-ao.Responsiveness = stiff
-ao.CFrame = px.CFrame
-ao.Parent = px
-rg.PX, rg.DA, rg.AP, rg.AO = px, da, ap, ao
-map.RG = rg
-end
-RagdollByPart[p1] = map
-end
+-- Cached, cycle-safe target world CFrame (parent target chain * map.RT).
 local function RagdollWorld(part)
-local c = RGWC[part]
-if c then return c end
-local m = RagdollByPart[part]
-if m and m.RT and m.RG then
-c = RagdollWorld(m.RG.P0) * m.RT
-else
-c = part.CFrame
+	if not part then return nil end
+	local c = RGWC[part]
+	if c then return c end
+	local m = RagdollByPart[part]
+	local rg, rt = m and m.RG, m and m.RT
+	if rg and rt and RGBusy[part] == nil and RagdollFiniteCF(rt) then
+		RGBusy[part] = true
+		local pc = RagdollWorld(rg.P0)
+		RGBusy[part] = nil
+		if pc then c = pc * rt end
+	end
+	if not c then c = part.CFrame end
+	RGWC[part] = c
+	return c
 end
-RGWC[part] = c
-return c
+local function RGDepth(map, guard)
+	local rg = map.RG
+	local pm = rg and RagdollByPart[rg.P0]
+	if guard > 8 or not pm or pm == map or not pm.RG then return 1 end
+	return 1 + RGDepth(pm, guard + 1)
+end
+local function RGByDepth(a, b)
+	return a.RG.D < b.RG.D
+end
+-- Parent-before-child ordering; rebuilt only when the ragdoll set changes.
+local function RagdollOrder()
+	if not RGDirty then return RGList end
+	RGDirty = false
+	table.clear(RGList)
+	local n = 0
+	for _, map in pairs(LimbMapping) do
+		local rg = map.RG
+		if rg then
+			rg.D = RGDepth(map, 0)
+			n = n + 1
+			RGList[n] = map
+		end
+	end
+	table.sort(RGList, RGByDepth)
+	return RGList
 end
 local function RagdollSample(RootPart)
-local rc = RootPart.CFrame
-for _,map in LimbMapping do
-local rg = map.RG
-if rg then
-rg.Act = nil
-local px = rg.PX
-if px and px.Parent and map.Reference and not rg.Fresh then
-local pw
-if rg.P0 == RootPart then
-pw = rc
-else
-local pm = RagdollByPart[rg.P0]
-local ppx = pm and pm.RG and pm.RG.PX
-if ppx and ppx.Parent then pw = ppx.CFrame end
+	local rc = RootPart.CFrame
+	local rcOk = RagdollFiniteCF(rc)
+	local list = RagdollOrder()
+	for i = 1, #list do
+		local map = list[i]
+		local rg = map.RG
+		if rg then
+			rg.Act = nil
+			local px = rg.PX
+			if px and px.Parent and map.Reference and not rg.Fresh then
+				local pw
+				if rg.P0 == RootPart then
+					if rcOk then pw = rc end
+				else
+					local pm = RagdollByPart[rg.P0]
+					local ppx = pm and pm.RG and pm.RG.PX
+					if ppx and ppx.Parent then pw = ppx.CFrame end
+				end
+				if pw and RagdollFiniteCF(pw) then
+					local rel = pw:ToObjectSpace(px.CFrame)
+					rel = RagdollFiniteCF(rel) and RagdollOrtho(rel)
+					if rel then
+						local mv = rg.Motor
+						if rg.P0 ~= RootPart and mv and mv.Parent then rel = RagdollJointPose(mv, rel, rg) end
+						if rel and RagdollFiniteCF(rel) then rg.Act = rel end
+					end
+				end
+			end
+		end
+	end
 end
-if pw then
-local rel = pw:ToObjectSpace(px.CFrame)
-if RagdollFiniteCF(rel) then
-local mv = rg.Motor
-if rg.P0 ~= RootPart and mv and mv.Parent then rel = RagdollJointPose(mv, rel) end
-if RagdollFiniteCF(rel) then rg.Act = rel end
+-- Output pose written to the Motor6D: physical pose, low-passed with a residual-adaptive rate
+-- (strong at rest to kill jitter, ~instant when moving) using elapsed time, so it is frame-rate independent.
+local function RagdollOut(map, rg)
+	local now = os.clock()
+	local src, cur = rg.Act, rg.Out
+	if not (src and RagdollFiniteCF(src)) then
+		src = map.CFrame
+		if not (src and RagdollFiniteCF(src)) then return end
+	end
+	if not (cur and RagdollFiniteCF(cur)) then
+		rg.Out, rg.OT = src, now
+		return
+	end
+	local dt = now - (rg.OT or now)
+	rg.OT = now
+	if dt > RG_MAX_DT then dt = RG_MAX_DT end
+	if not (dt > 0) then return end
+	local d = cur:Inverse() * src
+	local pr = d.Position.Magnitude
+	local _, _, _, r00, _, _, _, r11, _, _, _, r22 = d:GetComponents()
+	local ar = math.acos(math.clamp((r00 + r11 + r22 - 1) * 0.5, -1, 1))
+	if not (pr == pr and ar == ar) or pr > 4 or ar > 2.5 then
+		rg.Out = src
+		return
+	end
+	rg.Out = cur:Lerp(src, 1 - math.exp(-(30 + 3000 * (pr + 0.5 * ar)) * dt))
 end
+-- Critically-damped alpha-beta gains with a time constant that shrinks as the residual grows.
+local function RGGain(dt, res, ref, fast, slow)
+	local q = res / ref
+	local a = 1 - math.exp(-dt / (fast + (slow - fast) / (1 + q * q)))
+	return a, a * a / (2 - a)
 end
+local function RagdollSeed(rg, w, now)
+	rg.TP, rg.TV, rg.TR, rg.TW, rg.TT = w.Position, RagdollZero, w.Rotation, RagdollZero, now
 end
+-- Alpha-beta tracker on the world target (position + orientation): smooths noise, estimates velocity.
+local function RagdollTrack(rg, w, now)
+	local t0 = rg.TT
+	if not t0 then return RagdollSeed(rg, w, now) end
+	local dt = now - t0
+	if dt < RG_MIN_DT then return end
+	if dt > RG_MAX_DT then return RagdollSeed(rg, w, now) end
+	rg.FD = math.max(dt, (rg.FD or 0) * 0.9)
+	local xp = rg.TP + rg.TV * dt
+	local r = w.Position - xp
+	local rm = r.Magnitude
+	if not RGNum(rm) or rm > RG_JUMP then return RagdollSeed(rg, w, now) end
+	local a, b = RGGain(dt, rm, 0.15, 0.008, 0.05)
+	local v = rg.TV + r * (b / dt)
+	local vm = v.Magnitude
+	if vm > RG_VCAP then v = v * (RG_VCAP / vm) end
+	rg.TP, rg.TV = xp + r * a, v
+	local rp, om = rg.TR, rg.TW
+	local ow = om.Magnitude
+	if ow > 1e-4 then rp = CFrame.fromAxisAngle(om / ow, ow * dt) * rp end
+	local ax, an = (w.Rotation * rp:Inverse()):ToAxisAngle()
+	if not (RGNum(an) and RagdollFinite(ax)) then return RagdollSeed(rg, w, now) end
+	if an > 1e-6 then
+		local a2, b2 = RGGain(dt, an, 0.35, 0.008, 0.05)
+		rg.TR = CFrame.fromAxisAngle(ax, an * a2) * rp
+		om = om + ax * (an * b2 / dt)
+	else
+		rg.TR = rp
+	end
+	local wm = om.Magnitude
+	if wm > RG_WCAP then om = om * (RG_WCAP / wm) end
+	rg.TW, rg.TT = om, now
 end
+-- Returns filtered target now, and the lead-compensated position/orientation to hand to the constraints.
+local function RagdollPredict(rg, now, lead)
+	local dt = now - rg.TT
+	if dt < 0 then dt = 0 elseif dt > RG_MAX_DT then dt = RG_MAX_DT end
+	lead = lead + 0.5 * math.min(rg.FD or 0, 0.1)
+	local v, om = rg.TV, rg.TW
+	local pos = rg.TP + v * dt
+	local off = v * lead
+	local om_ = off.Magnitude
+	if om_ > RG_LEADMAX then off = off * (RG_LEADMAX / om_) end
+	local rot = rg.TR
+	local ow = om.Magnitude
+	if ow > 1e-3 then
+		rot = CFrame.fromAxisAngle(om / ow, ow * dt + math.min(ow * lead, RG_ANGLEAD)) * rot
+	end
+	return pos, pos + off, rot
 end
+local function RGSet(rg, key, obj, prop, val)
+	local old = rg[key]
+	if not old or math.abs(val - old) > 0.05 * old then
+		rg[key] = val
+		obj[prop] = val
+	end
+end
+local function RagdollSocket(map, rg)
+	local pm = RagdollByPart[rg.P0]
+	local ppx = pm and pm.RG and pm.RG.PX
+	local mv = rg.Motor
+	if not (ppx and ppx.Parent and mv and mv.Parent) then return end
+	local c0, c1 = mv.C0, mv.C1
+	if not (RagdollFiniteCF(c0) and RagdollFiniteCF(c1)) then return end
+	RagdollKill(rg.A0)
+	RagdollKill(rg.A1)
+	RagdollKill(rg.BS)
+	rg.A0, rg.A1, rg.BS = nil, nil, nil
+	local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
+	a0.Name, a1.Name = "RagdollA0", "RagdollA1"
+	a0.CFrame, a1.CFrame = c0, c1
+	a0.Parent, a1.Parent = ppx, rg.PX
+	rg.A0, rg.A1 = a0, a1
+	local bs = Instance.new("BallSocketConstraint")
+	bs.Name = "RagdollSocket"
+	bs.LimitsEnabled = false
+	bs.TwistLimitsEnabled = false
+	bs.Attachment0, bs.Attachment1 = a0, a1
+	bs.Parent = rg.PX
+	rg.BS = bs
+end
+local function RagdollStep(map, rg, T, now)
+	local p1, px, mv = rg.P1, rg.PX, rg.Motor
+	if not (p1.Parent and mv and mv.Parent) then
+		rg.Gone = rg.Gone or now
+		if now - rg.Gone > 3 then RagdollRelease(map) end
+		return
+	end
+	rg.Gone = nil
+	if not (px.Parent and rg.AP.Parent and rg.AO.Parent) then
+		if now < (map.RGN or 0) then return end
+		local f = (map.RGF or 0) + 1
+		map.RGF = f
+		map.RGN = now + math.min(0.25 * 2 ^ (f - 1), 4)
+		local rt, rp0 = map.RT, rg.P0
+		RagdollRelease(map)
+		pcall(Ragdollize, map, mv, rp0, p1)
+		map.RT = rt
+		rg = map.RG
+		if not rg then return end
+		px = rg.PX
+	elseif map.RGF and now - rg.Born > 3 then
+		map.RGF, map.RGN = nil, nil
+	end
+	local w = RagdollWorld(p1)
+	if not (w and RagdollFiniteCF(w)) then return end
+	w = RagdollOrtho(w)
+	if not w then return end
+	RagdollTrack(rg, w, now)
+	local pm = RagdollByPart[rg.P0]
+	local prg = pm and pm.RG
+	if map.RPart0 ~= "ROOT" and now >= (rg.SockT or 0) and not (rg.BS and rg.BS.Parent and rg.A0.Parent and rg.A1.Parent) then
+		rg.SockT = now + 0.25
+		pcall(RagdollSocket, map, rg)
+	end
+	local pcf = px.CFrame
+	local wp = w.Position
+	if rg.Fresh or not RagdollFiniteCF(pcf) or (prg and prg.SnapT == now) or (pcf.Position - wp).Magnitude > RG_SNAP then
+		rg.Fresh = nil
+		rg.SnapT = now
+		px.CFrame = w
+		px.AssemblyLinearVelocity = RagdollZero
+		px.AssemblyAngularVelocity = RagdollZero
+		RagdollSeed(rg, w, now)
+		pcf = w
+	end
+	local cur, tpos, trot = RagdollPredict(rg, now, T.Lead)
+	if not (RagdollFinite(tpos) and RagdollFiniteCF(trot)) then
+		RagdollSeed(rg, w, now)
+		cur, tpos, trot = wp, wp, w.Rotation
+	end
+	if now - (rg.LT or 0) >= RG_MIN_DT then
+		rg.LT = now
+		local err = (pcf.Position - cur).Magnitude
+		local _, an = (pcf * trot:Inverse()):ToAxisAngle()
+		if not (RGNum(err) and RGNum(an)) then err, an = 0, 0 end
+		local bp = math.clamp((err - 1.5) / 3, 0, 1)
+		local ba = math.clamp((an - 0.6) / 1.2, 0, 1)
+		local ap, ao = rg.AP, rg.AO
+		RGSet(rg, "LV", ap, "MaxVelocity", math.clamp(rg.TV.Magnitude * 1.35 + err * T.RP * 0.5 + 12, 12, T.VMax * (1 + bp)))
+		RGSet(rg, "LF", ap, "MaxForce", rg.M * T.AMax * (1 + bp))
+		RGSet(rg, "LW", ao, "MaxAngularVelocity", math.clamp(rg.TW.Magnitude * 1.35 + an * T.RO * 0.5 + 3, 3, T.WMax * (1 + ba)))
+		RGSet(rg, "LT2", ao, "MaxTorque", rg.I * T.Alpha * (1 + ba))
+		if rg.TS ~= T.S then
+			rg.TS = T.S
+			ap.Responsiveness, ao.Responsiveness = T.RP, T.RO
+		end
+		local lv, av = px.AssemblyLinearVelocity, px.AssemblyAngularVelocity
+		local lm, am = lv.Magnitude, av.Magnitude
+		if not (RGNum(lm) and RGNum(am)) then
+			px.AssemblyLinearVelocity = RagdollZero
+			px.AssemblyAngularVelocity = RagdollZero
+		else
+			local vc, wc = T.VMax * 2.5, T.WMax * 2.5
+			if lm > vc then px.AssemblyLinearVelocity = lv * (vc / lm) end
+			if am > wc then px.AssemblyAngularVelocity = av * (wc / am) end
+		end
+	end
+	rg.AP.Position = tpos
+	rg.AO.CFrame = trot
 end
 local function RagdollDrive(RootPart)
-table.clear(RGWC)
-RGWC[RootPart] = RootPart.CFrame
-local now = os.clock()
-for _,map in LimbMapping do
-local rg = map.RG
-if rg and map.Reference then
-local p1 = rg.P1
-if not (rg.PX.Parent and rg.AP.Parent and rg.AO.Parent) and p1.Parent and rg.Motor and now - (rg.Rebuilt or 0) > 0.25 then
-local rp0, motor = rg.P0, rg.Motor
-RagdollRelease(map)
-pcall(Ragdollize, map, motor, rp0, p1)
-rg = map.RG
-if rg then rg.Rebuilt = now end
+	table.clear(RGWC)
+	table.clear(RGBusy)
+	local rcf = RootPart.CFrame
+	if not RagdollFiniteCF(rcf) then return end
+	RGWC[RootPart] = rcf
+	local now, T = os.clock(), RagdollTune()
+	local list = RagdollOrder()
+	for i = 1, #list do
+		local map = list[i]
+		local rg = map.RG
+		if rg and map.Reference then
+			local ok, err = pcall(RagdollStep, map, rg, T, now)
+			if not ok and now - RGErrAt > 5 then
+				RGErrAt = now
+				warn("[Ragdoll Reanimator] limb step failed: " .. tostring(err))
+			end
+		end
+	end
 end
-if rg and rg.PX.Parent and rg.AP.Parent and rg.AO.Parent then
-local px = rg.PX
-local w = RagdollWorld(p1)
-local pos = w.Position
-if RagdollFiniteCF(w) then
-if rg.Fresh then
-rg.Fresh = nil
-px.CFrame = w
-px.AssemblyLinearVelocity = RagdollZero
-px.AssemblyAngularVelocity = RagdollZero
+LimbReanimator._RagdollClean = function()
+	for _, map in pairs(LimbMapping) do RagdollRelease(map) end
+	RagdollClean()
 end
-if map.RPart0 ~= "ROOT" and not (rg.BS and rg.BS.Parent and rg.A0.Parent) then
-local pm = RagdollByPart[rg.P0]
-local ppx = pm and pm.RG and pm.RG.PX
-local mv = rg.Motor
-if ppx and ppx.Parent and mv and mv.Parent then
-for _,o in {rg.A0, rg.A1, rg.BS} do
-pcall(o.Destroy, o)
-end
-local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
-a0.Name, a1.Name = "RagdollA0", "RagdollA1"
-a0.CFrame, a1.CFrame = mv.C0, mv.C1
-a0.Parent, a1.Parent = ppx, px
-local bs = Instance.new("BallSocketConstraint")
-bs.Name = "RagdollSocket"
-bs.LimitsEnabled = false
-bs.TwistLimitsEnabled = false
-bs.Attachment0, bs.Attachment1 = a0, a1
-bs.Parent = px
-rg.A0, rg.A1, rg.BS = a0, a1, bs
-end
-end
-local pcf = px.CFrame
-if not RagdollFiniteCF(pcf) or (pcf.Position - pos).Magnitude > 8 then
-px.CFrame = w
-px.AssemblyLinearVelocity = RagdollZero
-px.AssemblyAngularVelocity = RagdollZero
-end
-rg.AP.Position = pos
-rg.AO.CFrame = w
-end
-end
-end
-end
-end
+--[[RG-END]]
 local CharOnDesc = function(v)
 if v:IsA("BasePart") then
 if not table.find(BaseParts, v) then
@@ -66362,13 +66654,14 @@ end)
 lastspawn = os.clock()
 table.clear(BaseParts)
 table.clear(UnknownMotor6Ds)
-table.clear(RagdollParts)
-table.clear(RagdollByPart)
 for _,map in LimbMapping do
 map.Reference = nil
 if map.RG then RagdollRelease(map) end
-map.RG, map.RT = nil, nil
+map.RG, map.RT, map.RGF, map.RGN = nil, nil, nil, nil
 end
+table.clear(RagdollParts)
+table.clear(RagdollByPart)
+RGDirty = true
 character.DescendantAdded:Connect(CharOnDesc)
 for _,v in character:GetDescendants() do
 task.spawn(CharOnDesc, v)
@@ -66469,8 +66762,7 @@ map.CFrame = cf
 end
 map.RT = map.CFrame
 local rg = map.RG
-if dorep or not rg.Out then rg.Out = rg.Act or map.CFrame end
-if rg.Out and not RagdollFiniteCF(rg.Out) then rg.Out = map.CFrame end
+if dorep or not rg.Out then RagdollOut(map, rg) end
 if rg.Out then pcall(Util.SetMotor6DOffset, v, rg.Out) end
 end
 elseif flingtarget then
@@ -66698,7 +66990,11 @@ Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
 end
 do
-SaveData.Reanimator.RagdollStiffness = SaveData.Reanimator.RagdollStiffness or 100
+do
+local sv = tonumber(SaveData.Reanimator.RagdollStiffness)
+if not sv or sv ~= sv then sv = 100 end
+SaveData.Reanimator.RagdollStiffness = math.clamp(sv, 10, 200)
+end
 LimbReanimator.RagdollStiffness = SaveData.Reanimator.RagdollStiffness
 local RagdollReanimator = setmetatable({Name = "Ragdoll"}, {__index = LimbReanimator})
 Reanimate.RagdollReanimator = RagdollReanimator
@@ -66711,13 +67007,14 @@ val = math.clamp(val, 10, 200)
 LimbReanimator.RagdollStiffness = val
 SaveData.Reanimator.RagdollStiffness = val
 end)
-UI.CreateText(parent, "^^^ how hard the ragdoll limbs are pulled to the pose (applies on the next Reanimate)", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "^^^ how hard the ragdoll limbs are pulled to the pose (force/torque limits scale with limb mass; applies live)", 10, Enum.TextXAlignment.Center)
 end
 function RagdollReanimator.Start()
 LimbReanimator.RagdollMode = true
 local ok, err = pcall(LimbReanimator.Start)
 LimbReanimator.RagdollMode = nil
 if not ok then
+pcall(LimbReanimator._RagdollClean or function() end)
 warn("[Ragdoll Reanimator] failed to start: " .. tostring(err))
 pcall(Util.Notify, "Ragdoll Reanimator failed to start (see console): " .. tostring(err))
 pcall(Reanimate.DestroyCharacter)
@@ -70442,6 +70739,849 @@ PlaceholderTransparencySlider.Value = val
 Reanimate.PlaceholderTransparency = val
 SaveData.PlaceholderTransparency = val
 end)
+-- ===== Jarvis chat moderation + Auto Report: public chat only, reminders rate-limited, cases prepared at 85%+ when AutoReport is enabled, every submission needs user confirmation =====
+Util.ChatMod = (function()
+local old = Util.ChatMod
+if old and old.Disable then pcall(old.Disable) end
+local CM = {Active = false, Conns = {}, Flags = {}, Cases = {}, CaseList = {}, Queue = {}, Seen = {}, SeenQ = {}, Strikes = {}, SayLog = {}, LastSay = -1e9, UI = {}}
+local FX = Util.FX
+local LEVELS = {0.85, 0.75, 0.65}
+CM.LevelNames = {"Strict (85%+)", "Balanced (75%+)", "Sensitive (65%+)"}
+local REPORT_MIN, EVID_MAX, FLAG_MAX, SEEN_MAX = 0.85, 5, 30, 96
+local REPORTABLE = {["Harassment"] = true, ["Threat"] = true, ["Sexual content"] = true, ["Hate speech"] = true}
+
+local function cfg(k) local ok, v = pcall(function() return FX.Cfg[k] end) if ok then return v end end
+local function notify(t) pcall(Util.UINotify, tostring(t)) end
+local function rt(s) return (tostring(s):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")) end
+CM.Esc = rt
+local function set(s) local t = {} for w in s:gmatch("%S+") do t[w] = true end return t end
+local function squeeze(w, keep)
+	local out, prev, run = {}, nil, 0
+	for c in w:gmatch(".") do
+		if c == prev then run = run + 1 else prev, run = c, 1 end
+		if run <= keep then out[#out + 1] = c end
+	end
+	return table.concat(out)
+end
+local function dd(w) return squeeze(w, 1) end
+local function squeeze3(w)
+	local out, i, n = {}, 1, #w
+	while i <= n do
+		local c, j = w:sub(i, i), i
+		while j < n and w:sub(j + 1, j + 1) == c do j = j + 1 end
+		local len = j - i + 1
+		out[#out + 1] = c:rep(len >= 3 and 1 or len)
+		i = j + 1
+	end
+	return table.concat(out)
+end
+local function clamp(v, a, b) return v < a and a or (v > b and b or v) end
+
+-- ---------- word data (hate stems are stored reversed on purpose) ----------
+local INS = {idiot = .35, idiots = .35, stupid = .35, dumb = .35, dumbass = .5, moron = .4, morons = .4, loser = .35, losers = .35, trash = .3, garbage = .3, ugly = .35, fat = .3,
+	worthless = .4, pathetic = .35, braindead = .4, bozo = .3, stfu = .45, dipshit = .55, shithead = .55, asshole = .5, bitch = .5, bastard = .4, scum = .4, jackass = .45,
+	nolife = .35, imbecile = .4, cunt = .7, twat = .5, prick = .4, wanker = .45, douche = .4, douchebag = .45, clown = .25, fuckyou = .75, fuckoff = .7, shutup = .3}
+local SEX = {porn = .6, porno = .6, pornhub = .6, nude = .5, nudes = .7, nsfw = .5, blowjob = .85, handjob = .85, boobs = .5, tits = .6, titties = .7, pussy = .7, dick = .5, dicks = .5,
+	cock = .4, cum = .5, horny = .6, onlyfans = .6, hentai = .5, sex = .4, sexy = .35, sexting = .8, sext = .8, erp = .5, slut = .6, slutty = .6, whore = .6, nipples = .5,
+	vagina = .5, penis = .45, anal = .4, fap = .6, orgasm = .6, naked = .45, dildo = .7, bdsm = .6, milf = .6}
+local function build(t) local d = {} for w, v in pairs(t) do d[dd(w)] = {w = v, len = #w, word = w} end return d end
+local INSDB, SEXDB = build(INS), build(SEX)
+local INSW, SEXW = {}, {}
+for w in pairs(INS) do if #w >= 5 then INSW[#INSW + 1] = w end end
+for w in pairs(SEX) do if #w >= 5 then SEXW[#SEXW + 1] = w end end
+local function exSub(words, t) for _, w in ipairs(words) do if t:find(w, 1, true) then return w end end end
+local HATE = {{"ekik", .9}, {"knihc", .85}, {"cips", .85}, {"koog", .85}, {"ikap", .8}, {"gaf", .7}, {"sgaf", .7}}
+local HATEDB = {}
+for _, h in ipairs(HATE) do HATEDB[dd(h[1]:reverse())] = {w = h[2], len = #h[1], word = h[1]:reverse()} end
+local STEMS = {{"ggin", .92}, {"toggaf", .92}, {"nnart", .85}, {"kcabtew", .9}, {"reanaeb", .85}, {"drater", .6, true}}
+for _, st in ipairs(STEMS) do st[1] = st[1]:reverse() end
+local GROUPS = set("blacks whites jews muslims christians hindus asians mexicans immigrants gays lesbians trans transgenders lgbt disabled")
+local HV1 = set("kill die gas burn hang deport exterminate")
+local HV2 = set("hate hating disgusting filthy dirty subhuman vermin trash")
+local PRON = {u = "you", ya = "you", yu = "you", youre = "you", ur = "you", ure = "you", your = "you", yours = "you", youll = "you", yall = "you", yourself = "yourself", urself = "yourself"}
+local LEET = {["0"] = "o", ["3"] = "e", ["4"] = "a", ["5"] = "s", ["7"] = "t", ["@"] = "a", ["$"] = "s", ["!"] = "i", ["+"] = "t", ["1"] = "i"}
+local SELF = set("i im me my myself we this that it game map server")
+local NEG = set("not isnt arent never dont no wasnt aint cant wont")
+local JOKE = set("lol lmao lmfao rofl xd jk haha hahaha hehe kek joking kidding joke jokes")
+local QUOTE = set("said says saying called calling calls quote quoted word slur meaning")
+local GAMECTX = set("game round match boss obby lobby tower map spawn arena battle fight duel pvp ranked hit gun sword server update lag ping")
+local REALCTX = set("irl school house home address family mom dad ip dox doxx swat find found live")
+local SUBJ = set("i ill im imma ima gonna gon will we going wanna")
+local VERBS = set("kill murder stab shoot hurt beat strangle choke rape bomb torture")
+local TGT = set("you yourself him her them")
+local DOXV = set("dox doxx doxxing doxed swat swatting swatted ddos ddosing")
+local HP = {{" fuck you ", .75}, {" fuck off ", .7}, {" fuck yourself ", .75}, {" shut the fuck up ", .6}, {" shut up ", .3}, {" you suck ", .5}, {" nobody likes you ", .6},
+	{" no one likes you ", .6}, {" nobody cares about you ", .6}, {" you have no life ", .55}, {" get a life ", .45}, {" you are nothing ", .55}, {" you mom ", .4}}
+local TP = {" kill yourself ", " kys ", " go die ", " hope you die ", " you should die ", " neck yourself ", " unalive yourself ", " off yourself ", " end yourself ",
+	" drink bleach ", " you deserve to die "}
+local TP2 = {{" know where you live ", .9}, {" find where you live ", .9}, {" i will find you ", .8}, {" ill find you ", .8}, {" got you ip ", .85}, {" dox you ", .85},
+	{" swat you ", .85}, {" ddos you ", .8}}
+local SP = {{" send nudes ", .9}, {" send nude ", .9}, {" wanna sex ", .85}, {" want sex ", .85}, {" have sex ", .8}, {" sex with me ", .9}, {" sex with you ", .9}, {" lets fuck ", .9},
+	{" wanna fuck ", .9}, {" suck my ", .85}, {" my dick ", .85}, {" my cock ", .85}}
+local SQ = {}
+local function sqa(list, cat, selfh)
+	for _, p in ipairs(list) do
+		local ph, v = p, .9
+		if type(p) == "table" then ph, v = p[1], p[2] end
+		SQ[(ph:gsub(" ", ""))] = {cat, v, selfh}
+	end
+end
+local HP2 = {{" heil hitler ", .85}, {" white power ", .8}, {" 1488 ", .85}, {" go back to you country ", .8}}
+sqa(HP, "Harassment") sqa(TP, "Threat", true) sqa(TP2, "Threat") sqa(SP, "Sexual content") sqa(HP2, "Hate speech")
+
+-- ---------- pure analyser: text -> category, confidence (0-0.99), flags ----------
+function CM.Analyze(raw, ctx)
+	ctx = ctx or {}
+	local R = {conf = 0, hits = {}}
+	local low = tostring(raw or ""):lower()
+	local s, n = low:gsub("\226\128[\139-\143]", "")
+	local evad = n > 0
+	s, n = s:gsub("\226\129\160", "") evad = evad or n > 0
+	s, n = s:gsub("\239\187\191", "") evad = evad or n > 0
+	local joke = s:find("\240\159\152\130", 1, true) or s:find("\240\159\164\163", 1, true) or s:find("\240\159\152\134", 1, true) or s:find("/j%f[%A]") or s:find("/s%f[%A]")
+	local _, nq = s:gsub('"', "")
+	local quote = nq >= 2 or s:find("\226\128\156", 1, true) ~= nil
+	s = s:gsub("\226\128\153", ""):gsub("'", ""):gsub("[\128-\255]", " ")
+	s = s:gsub("%S+", function(ch)
+		local core = ch:gsub("[%._%-%*]+$", "")
+		if #core >= 5 and #core % 2 == 1 then
+			for i = 1, #core do
+				local c = core:sub(i, i)
+				if i % 2 == 1 then if not c:find("%a") then return end elseif not c:find("[%._%-%*]") then return end
+			end
+			evad = true
+			return (core:gsub("[%._%-%*]", ""))
+		end
+	end)
+	s = s:gsub("[^%w%s@$!%+#]", " ")
+	local _, hn = s:gsub("#", "")
+	R.hash = hn >= 4 and hn / math.max(#s, 1) >= 0.3
+	local toks, alts, leeted = {}, {}, {}
+	for t in s:gmatch("%S+") do
+		t = t:gsub("^[!%+@#]+", ""):gsub("[!%+#@]+$", "")
+		if t ~= "" then
+			local lt, alt = t, nil
+			if t:find("%a") and t:find("[%d@$!%+]") then
+				lt = t:gsub("[%d@$!%+]", LEET)
+				if t:find("1", 1, true) then alt = t:gsub("[%d@$!%+]", function(c) return c == "1" and "l" or LEET[c] end) end
+			end
+			toks[#toks + 1], alts[#toks] = lt, alt
+			leeted[#toks] = lt ~= t
+		end
+	end
+	if #toks == 0 then return R end
+	-- spaced-out letters ("i d i o t", "f.u.c.k") become one extra token
+	local ex, exl, run = {}, {}, {}
+	local function flush() if #run >= 3 then ex[#ex + 1] = table.concat(run) end run = {} end
+	for i = 1, #toks do if #toks[i] == 1 and toks[i]:find("%w") then run[#run + 1] = toks[i] else flush() end end
+	flush()
+	local ct = {}
+	for i, t in ipairs(toks) do ct[i] = PRON[t] or squeeze3(t) end
+	local flat = " " .. table.concat(ct, " "):gsub(" you self ", " yourself ") .. " "
+	local mention
+	local function getMention() if mention == nil then mention = (ctx.names and ctx.names(low)) or false end return mention end
+	local function directed(i)
+		if getMention() then return true end
+		for j = math.max(1, i - 3), math.min(#ct, i + 3) do if ct[j] == "you" or ct[j] == "yourself" then return true end end
+		return false
+	end
+	local function before(i, st, k) for j = math.max(1, i - k), i - 1 do if st[ct[j]] then return true end end return false end
+	local sc = {Harassment = 0, Threat = 0, ["Sexual content"] = 0, ["Hate speech"] = 0}
+	local function bump(cat, v, why) if v > sc[cat] then sc[cat] = v end R.hits[#R.hits + 1] = why end
+	local function look(db, i)
+		local e = db[dd(toks[i])]
+		if e and #toks[i] >= e.len then return e, leeted[i] end
+		if alts[i] then e = db[dd(alts[i])] if e and #alts[i] >= e.len then return e, true end end
+	end
+	local function lookEx(db) for _, t in ipairs(ex) do local e = db[dd(t)] if e and #t >= e.len then return e end end end
+	local insN, sexN = 0, 0
+	local selfHarm = false
+	for i = 1, #toks do
+		local e, lv = look(INSDB, i)
+		if e then
+			local w = e.w
+			if directed(i) then w = w + .4 elseif before(i, SELF, 2) then w = w * .3 else w = w * .8 end
+			if before(i, NEG, 2) then w = w - .45 end
+			insN = insN + 1
+			if lv then evad = true end
+			bump("Harassment", w + (insN > 1 and math.min(.2, .1 * (insN - 1)) or 0), "insult:" .. e.word)
+		end
+		e, lv = look(SEXDB, i)
+		if e then
+			sexN = sexN + 1
+			if lv then evad = true end
+			bump("Sexual content", e.w + math.min(.3, .15 * (sexN - 1)) + (directed(i) and .25 or 0), "sexual:" .. e.word)
+		end
+		e, lv = look(HATEDB, i)
+		if e then
+			if lv then evad = true end
+			bump("Hate speech", e.w, "slur")
+		end
+		for _, st in ipairs(STEMS) do
+			local t = squeeze(toks[i], 2)
+			if t:sub(1, #st[1]) == st[1] and t:sub(1, 8) ~= "retardan" then bump("Hate speech", st[2] + (st[3] and directed(i) and .25 or 0), "slur") if leeted[i] then evad = true end break end
+		end
+		if GROUPS[ct[i]] then
+			for j = math.max(1, i - 4), math.min(#ct, i + 4) do
+				if HV1[ct[j]] and j ~= i then bump("Hate speech", before(j, NEG, 2) and .2 or .9, "group:" .. ct[j]) break end
+				if HV2[ct[j]] and j ~= i then bump("Hate speech", before(j, NEG, 2) and .2 or .8, "group:" .. ct[j]) break end
+			end
+		end
+		if VERBS[ct[i]] and before(i, SUBJ, 3) then
+			local hit = false
+			for j = i + 1, math.min(#ct, i + 4) do if TGT[ct[j]] then hit = true break end end
+			if hit or getMention() then
+				local v = .75
+				for _, w in ipairs(ct) do if REALCTX[w] then v = v + .2 break end end
+				for _, w in ipairs(ct) do if GAMECTX[w] then v = v - .25 break end end
+				bump("Threat", v, "threat:" .. ct[i])
+			end
+		end
+		if DOXV[ct[i]] and directed(i) then bump("Threat", .85, "dox") end
+	end
+	for _, t in ipairs(ex) do
+		local q = SQ[t]
+		if q then evad = true selfHarm = selfHarm or q[3] == true bump(q[1], q[2], "spaced-phrase") end
+	end
+	for _, t in ipairs(ex) do
+		local w = exSub(INSW, t)
+		if w then evad = true bump("Harassment", INS[w] + ((getMention() or flat:find(" you ", 1, true)) and .4 or .1), "insult-spaced") end
+		w = exSub(SEXW, t)
+		if w then evad = true bump("Sexual content", SEX[w], "sexual-spaced") end
+	end
+	local e = lookEx(HATEDB) if e then evad = true bump("Hate speech", e.w, "slur-spaced") end
+	for _, t in ipairs(ex) do
+		for _, st in ipairs(STEMS) do if t:sub(1, #st[1]) == st[1] then evad = true bump("Hate speech", st[2], "slur-spaced") break end end
+	end
+	for _, p in ipairs(HP) do if flat:find(p[1], 1, true) then bump("Harassment", p[2], "phrase") end end
+	for _, p in ipairs(TP) do if flat:find(p, 1, true) then selfHarm = true bump("Threat", .9, "selfharm") break end end
+	for _, p in ipairs(TP2) do if flat:find(p[1], 1, true) then bump("Threat", p[2], "threat-phrase") end end
+	for _, p in ipairs(SP) do if flat:find(p[1], 1, true) then bump("Sexual content", p[2], "solicit") end end
+	for _, p in ipairs(HP2) do if flat:find(p[1], 1, true) then bump("Hate speech", p[2], "hate-phrase") end end
+	-- context: quotes / discussion, jokes, game talk, questions
+	local hasQ, hasJ, hasG = quote, joke, false
+	for _, t in ipairs(ct) do
+		if QUOTE[t] then hasQ = true end
+		if JOKE[t] then hasJ = true end
+		if GAMECTX[t] then hasG = true end
+	end
+	local qmark = low:find("%?%s*$") and (ct[1] == "what" or ct[1] == "why" or ct[1] == "is" or ct[1] == "does" or ct[1] == "how" or ct[1] == "can" or ct[1] == "should" or ct[1] == "do")
+	local best, bcat = 0, nil
+	for cat, v in pairs(sc) do
+		if v > 0 then
+			if hasQ then v = v - ((cat == "Threat" and selfHarm) and .3 or .45) end
+			if hasJ then v = v - (cat == "Harassment" and .2 or (cat == "Threat" and .15 or .1)) end
+			if hasG and cat == "Harassment" and not directed(1) then v = v - .2 end
+			if qmark and cat ~= "Threat" then v = v - .15 end
+			if evad and v > .4 then v = v + .08 end
+			if v > best then best, bcat = v, cat end
+		end
+	end
+	R.cat, R.conf, R.evad = bcat, clamp(best, 0, .99), evad
+	R.target = mention or nil
+	return R
+end
+
+-- ---------- helpers ----------
+local function clean(text)
+	text = tostring(text or ""):gsub("&lt;", "<"):gsub("&gt;", ">"):gsub("&quot;", '"'):gsub("&apos;", "'"):gsub("&amp;", "&"):gsub("<[^>]+>", "")
+	return (text:gsub("^%s+", ""):gsub("%s+$", "")):sub(1, 300)
+end
+local function say(text)
+	local ok = false
+	local TCS = game:GetService("TextChatService")
+	if TCS.ChatVersion == Enum.ChatVersion.TextChatService then
+		local ch = TCS:FindFirstChild("TextChannels")
+		ch = ch and ch:FindFirstChild("RBXGeneral")
+		if ch then ok = pcall(function() ch:SendAsync(text) end) end
+	else
+		local ev = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+		local rq = ev and ev:FindFirstChild("SayMessageRequest")
+		if rq then ok = pcall(function() rq:FireServer(text, "All") end) end
+	end
+	return ok
+end
+local function clip(t)
+	local f = setclipboard or toclipboard
+	if f then return pcall(f, t) end
+	return false
+end
+local function names(speakerId)
+	return function(lowerText)
+		for _, pl in ipairs(Players:GetPlayers()) do
+			if pl.UserId ~= speakerId then
+				local a, b = pl.Name:lower(), pl.DisplayName:lower()
+				if (#a >= 4 and lowerText:find(a, 1, true)) or (#b >= 4 and lowerText:find(b, 1, true)) then return pl end
+			end
+		end
+	end
+end
+function CM.List()
+	local l = {}
+	for _, f in pairs(CM.Flags) do l[#l + 1] = f end
+	table.sort(l, function(a, b) return a.t > b.t end)
+	return l
+end
+function CM.Pending()
+	local c = 0
+	for _, x in ipairs(CM.Queue) do if x.status == "queued" then c = c + 1 end end
+	return c
+end
+function CM.Review()
+	local c = 0
+	for _, x in ipairs(CM.CaseList) do if x.status == "pending" then c = c + 1 end end
+	return c
+end
+function CM.Cur()
+	local f = CM.Sel and CM.Flags[CM.Sel]
+	if f then return f end
+	CM.Sel = nil
+	if next(CM.Flags) then return nil, "no player is selected - tap Next Flagged Player" end
+	return nil, "no players have been flagged yet"
+end
+function CM.Ordered()
+	local l = {}
+	for _, f in pairs(CM.Flags) do l[#l + 1] = f end
+	table.sort(l, function(a, b) return (a.seq or 0) < (b.seq or 0) end)
+	return l
+end
+function CM.Refresh()
+	pcall(function()
+		if CM.UI.AR then
+			local on = cfg("AutoReport") == true
+			CM.UI.AR.Text = on and ("Auto Report: <b>ON</b> - watching public chat. Violations at 85%+ become cases; nothing is sent until you confirm with Report With Jarvis." .. (CM.Review() > 0 and ("  <b>" .. CM.Review() .. " awaiting review.</b>") or "") .. (CM.Pending() > 0 and ("  <b>" .. CM.Pending() .. " queued.</b>") or ""))
+				or "Auto Report: <b>OFF</b> - no automatic report assistance."
+		end
+		if CM.UI.Status then
+			CM.UI.Status.Text = ("Monitoring: <b>%s</b> | Flagged: %d | Awaiting review: %d | Reports queued: %d"):format(CM.Active and "ON" or "OFF", #CM.List(), CM.Review(), CM.Pending())
+		end
+		if CM.UI.Show then CM.UI.Show() end
+	end)
+end
+
+-- ---------- evidence / reporting: every submission needs the user's confirmation; states: pending -> queued -> submitting -> submitted | failed | manual | left | duplicate | dismissed | cancelled ----------
+CM.Seq = CM.Seq or 0
+local TERMINAL = {submitted = true, failed = true, dismissed = true, left = true, duplicate = true, cancelled = true}
+CM.StatusText = {pending = "awaiting your confirmation", queued = "queued", submitting = "submitting", submitted = "submitted", failed = "failed (nothing sent)", manual = "finish it in the Roblox report menu", dismissed = "dismissed", left = "player left", duplicate = "already reported", cancelled = "cancelled"}
+local function stamp() return os.date("%Y-%m-%d %H:%M:%S") end
+local function pct(v) return type(v) == "number" and (tostring(math.floor(v * 100 + .5)) .. "%") or "n/a" end
+CM.Pct = pct
+local function snap(list, cat)
+	local out = {}
+	for _, e in ipairs(list or {}) do
+		if cat == nil or e.cat == nil or e.cat == cat then out[#out + 1] = {ts = e.ts, text = e.text, cat = e.cat, conf = e.conf} end
+	end
+	return out
+end
+local function newId() CM.Seq = CM.Seq + 1 return ("JV-%04d"):format(CM.Seq) end
+local function activeFor(uid)
+	for i = #CM.CaseList, 1, -1 do
+		local c = CM.CaseList[i]
+		if c.uid == uid and not TERMINAL[c.status] then return c end
+	end
+end
+CM.ActiveFor = activeFor
+CM.LastSubmit = CM.LastSubmit or -1e9
+CM.Reported = CM.Reported or {}
+CM.NextOK, CM.RateGap, CM.MaxTries = 0, 20, 3
+local REASON = {["Harassment"] = "Bullying", ["Threat"] = "Bullying", ["Sexual content"] = "Swearing", ["Hate speech"] = "Bullying"}
+local function evText(f, n)
+	local out = {}
+	for i = #f.ev, 1, -1 do
+		if f.ev[i].cat == nil or f.ev[i].cat == f.cat then out[#out + 1] = f.ev[i] end
+		if #out >= n then break end
+	end
+	return out
+end
+function CM.Ident(f)
+	local pl = Players:GetPlayerByUserId(f.uid)
+	local name = f.name
+	if name == nil or name == "" then name = pl and pl.Name end
+	if name == nil or name == "" then name = "User" .. tostring(f.uid) end
+	local disp = f.display
+	if disp == nil or disp == "" then disp = pl and pl.DisplayName end
+	if disp == nil or disp == "" then disp = name end
+	return tostring(name), tostring(disp)
+end
+local function trim()
+	local i = 1
+	while #CM.CaseList > 20 and i <= #CM.CaseList do
+		local d = CM.CaseList[i]
+		if TERMINAL[d.status] then
+			table.remove(CM.CaseList, i)
+			if CM.Cases[d.key] == d then CM.Cases[d.key] = nil end
+		else
+			i = i + 1
+		end
+	end
+end
+local function caseFor(f)
+	if f.key and f.id then return f end
+	local cat = tostring(f.cat or "Other")
+	local key = tostring(f.uid) .. ":" .. cat
+	local c = (not f.manual and activeFor(f.uid)) or CM.Cases[key]
+	if not c then
+		c = {key = key, id = newId(), uid = f.uid, cat = cat, conf = f.conf, status = "pending", tries = 0, t = os.clock(), stamp = stamp(), ev = snap(f.ev, cat)}
+		CM.Cases[key] = c
+		CM.CaseList[#CM.CaseList + 1] = c
+		trim()
+	end
+	c.name, c.display = CM.Ident(f)
+	if f.manual then c.manual = true end
+	if f.conf and (c.conf == nil or (c.status == "pending" and f.conf > c.conf)) then c.conf = f.conf end
+	if #c.ev == 0 and f.ev then c.ev = snap(f.ev, c.cat) end
+	return c
+end
+CM.CaseFor = caseFor
+function CM.CaseOf(f)
+	if f.key and f.id then return f end
+	return activeFor(f.uid) or CM.Cases[tostring(f.uid) .. ":" .. tostring(f.cat or "Other")]
+end
+local function reopen(c, f)
+	c.status, c.tries, c.user, c.confirmUntil, c.t = "pending", 0, nil, nil, os.clock()
+	c.id, c.stamp = newId(), stamp()
+	if f and not f.key and f.ev and #f.ev > 0 then c.ev = snap(f.ev, c.cat) end
+end
+local function dequeue(c)
+	for i = #CM.Queue, 1, -1 do if CM.Queue[i] == c then table.remove(CM.Queue, i) end end
+end
+local function enqueue(c, front)
+	for _, q in ipairs(CM.Queue) do
+		if q == c then return true end
+		if q.uid == c.uid and q.status == "queued" then return false, q end
+	end
+	if front then table.insert(CM.Queue, 1, c) else CM.Queue[#CM.Queue + 1] = c end
+	return true
+end
+function CM.Evidence(f)
+	local c = caseFor(f)
+	local name, disp = CM.Ident(c)
+	local out = {"Public chat evidence collected by Jarvis (visible chat only)",
+		("Case: %s | Status: %s | Detected: %s"):format(tostring(c.id), tostring(c.status), tostring(c.stamp)),
+		("Player: %s (@%s) UserId %s"):format(disp, name, tostring(c.uid)),
+		("Category: %s | Confidence: %s"):format(tostring(c.cat), pct(c.conf))}
+	for _, e in ipairs(c.ev) do out[#out + 1] = ("[%s] %s"):format(tostring(e.ts), tostring(e.text)) end
+	if #c.ev == 0 then out[#out + 1] = "(no public chat lines were recorded for this case)" end
+	return table.concat(out, "\n"), c
+end
+function CM.CopyEvidence(f)
+	if not f then notify("Chat Moderation: select a flagged player first") return false end
+	local text, c = CM.Evidence(f)
+	CM.LastEvidence = text
+	if clip(text) then
+		notify(("Evidence for %s (@%s) copied, case %s"):format(c.display, c.name, c.id))
+		return true
+	end
+	notify(("Chat Moderation: this executor cannot copy to the clipboard. Read the evidence for %s (@%s) in the flagged-player details above."):format(c.display, c.name))
+	return false
+end
+-- The Roblox menu is a supported, documented thing to open; the player-report screen is not. Jarvis opens the menu, verifies it, and guides the rest.
+function CM.OpenReport(f, prefix)
+	if not f then notify("Chat Moderation: select a flagged player first") return false end
+	local text, c = CM.Evidence(f)
+	CM.LastEvidence = text
+	CM.ReportTarget = {uid = c.uid, name = c.name, display = c.display, cat = c.cat, conf = c.conf, id = c.id}
+	local copied = clip(text) and true or false
+	local here = Players:GetPlayerByUserId(c.uid) ~= nil
+	task.spawn(function()
+		local okSet = pcall(function() GuiService:SetMenuIsOpen(true) end)
+		local state = nil
+		if okSet then
+			state = false
+			for _ = 1, 8 do
+				local okR, v = pcall(function() return GuiService.MenuIsOpen end)
+				if not okR then state = nil break end
+				if v == true then state = true break end
+				task.wait(0.1)
+			end
+		end
+		local lead = state == true and "The Roblox menu is open (it is the system menu, not the report screen)." or "Jarvis could not confirm that the Roblox menu opened - open it yourself (Esc, or the Roblox icon on mobile)."
+		notify((prefix and (prefix .. " ") or "") .. ("%s Then tap Report > choose %s (@%s) > pick the category (suggested: %s).%s%s Case %s."):format(lead, c.display, c.name, tostring(c.cat), copied and " Evidence copied." or " Evidence could not be copied - read it in the details above.", here and "" or " They already left, so Roblox may not list them.", c.id))
+	end)
+	return true
+end
+-- ---------- reporting queue: FIFO, one submission per rate-limit window ----------
+function CM.Wait()
+	return math.max(0, math.max(CM.LastSubmit + CM.RateGap, CM.NextOK) - os.clock())
+end
+local function attempt(c)
+	local pl = Players:GetPlayerByUserId(c.uid)
+	if not pl then return "left" end
+	local parts = {}
+	for _, e in ipairs(evText(c, 3)) do parts[#parts + 1] = "[" .. tostring(e.text) .. "]" end
+	local msg = ("Reported by user via Jarvis after review: %s%s%s"):format(tostring(c.cat), c.manual and "" or (" (flagged " .. pct(c.conf) .. ")"), #parts > 0 and (". Recent public chat: " .. table.concat(parts, " ")) or "")
+	msg = msg:sub(1, 280)
+	local err
+	for _, reason in ipairs({REASON[c.cat] or "Other", "Other"}) do
+		local ok, e = pcall(function() Players:ReportAbuse(pl, reason, msg) end)
+		if ok then return "sent" end
+		err = tostring(e)
+		local l = err:lower()
+		if l:find("rate", 1, true) or l:find("too many", 1, true) or l:find("429", 1, true) or l:find("retry", 1, true) or l:find("cooldown", 1, true) or l:find("throttl", 1, true) then break end
+	end
+	local l = (err or ""):lower()
+	local wait = tonumber(l:match("retry[^%d]*(%d+)") or l:match("wait[^%d]*(%d+)") or l:match("(%d+)%s*sec"))
+	if l:find("rate", 1, true) or l:find("too many", 1, true) or l:find("429", 1, true) or l:find("retry", 1, true) or l:find("cooldown", 1, true) or l:find("throttl", 1, true) then return "retry", wait, err end
+	if l:find("permission") or l:find("not allowed") or l:find("disabled") or l:find("cannot be called") or l:find("blocked") or l:find("capability") or l:find("security") or l:find("lacking") then return "blocked", nil, err end
+	return "retry", wait, err
+end
+function CM.Process(c)
+	local now = os.clock()
+	if not c.user then
+		CM.SetStatus(c, "pending")
+		notify(("Chat Moderation: %s (@%s) needs your confirmation first - nothing was sent"):format(c.display, c.name))
+		return false, "pending"
+	end
+	if CM.Reported[c.uid] and now - CM.Reported[c.uid] < 1800 then
+		CM.SetStatus(c, "duplicate")
+		notify(("Chat Moderation: %s (@%s) was already reported in the last 30 minutes, nothing was sent"):format(c.display, c.name))
+		return false, "dup"
+	end
+	CM.SetStatus(c, "submitting")
+	local okA, res, wait, err = pcall(attempt, c)
+	if not okA then res, wait, err = "retry", nil, res end
+	now = os.clock()
+	if res == "sent" then
+		CM.LastSubmit = now
+		CM.Reported[c.uid] = now
+		c.by = "jarvis"
+		CM.SetStatus(c, "submitted")
+		notify(("Report call for %s (@%s) completed without an error (case %s). Roblox gives scripts no confirmation, so Jarvis cannot verify it was accepted."):format(c.display, c.name, c.id))
+		return true
+	end
+	c.tries = (c.tries or 0) + 1
+	local short = (tostring(err or "unknown error"):gsub("%s+", " ")):sub(1, 90)
+	if res == "retry" and c.tries < CM.MaxTries then
+		local w = math.clamp(wait or 30 * c.tries, 1, 900)
+		CM.NextOK = now + w
+		CM.SetStatus(c, "queued")
+		enqueue(c, true)
+		notify(("Chat Moderation: report for %s (@%s) was not accepted (%s). It is queued and will retry in about %d seconds (attempt %d of %d)"):format(c.display, c.name, short, math.ceil(w), c.tries + 1, CM.MaxTries))
+		CM.Pump()
+		return false, "queued"
+	end
+	if res == "left" then
+		CM.SetStatus(c, "left")
+		notify(("Chat Moderation: %s (@%s) left before the report could be sent, nothing was sent"):format(c.display, c.name))
+		return false, "left"
+	end
+	if res == "blocked" then
+		CM.SetStatus(c, "manual")
+		CM.OpenReport(c, ("Roblox does not let scripts submit this report on this client (%s). Nothing was sent."):format(short))
+		return false, "manual"
+	end
+	CM.SetStatus(c, "failed")
+	CM.OpenReport(c, ("Report for %s (@%s) failed after %d attempts (%s). Nothing was sent."):format(c.display, c.name, c.tries, short))
+	return false, "failed"
+end
+local function nextCase()
+	for i, q in ipairs(CM.Queue) do
+		if q.status ~= "queued" or not q.user then table.remove(CM.Queue, i) return nextCase() end
+		return q, i
+	end
+end
+local function step()
+	local c, i = nextCase()
+	if not c then return false end
+	local w = CM.Wait()
+	if w > 0 then task.wait(math.min(w, 5) + 0.05) return true end
+	table.remove(CM.Queue, i)
+	local ok, err = pcall(CM.Process, c)
+	if not ok then
+		if c.status == "submitting" or c.status == "queued" then CM.SetStatus(c, "failed") end
+		notify(("Chat Moderation: the report for %s (@%s) hit an internal error (%s). Use Report With Jarvis to retry."):format(tostring(c.display), tostring(c.name), tostring(err):sub(1, 60)))
+	end
+	return true
+end
+function CM.Pump()
+	if CM.Pumping then return end
+	CM.Pumping = true
+	task.spawn(function()
+		local errs = 0
+		while true do
+			local ok, more = pcall(step)
+			if not ok then
+				local c = CM.Queue[1]
+				if not c then break end
+				errs = errs + 1
+				if errs >= 3 then
+					table.remove(CM.Queue, 1)
+					pcall(CM.SetStatus, c, "failed")
+					notify(("Chat Moderation: the queued report for %s (@%s) failed internally (%s). Use Report With Jarvis to retry."):format(tostring(c.display), tostring(c.name), tostring(more):sub(1, 60)))
+					errs = 0
+				end
+				task.wait(1)
+			elseif not more then
+				break
+			end
+		end
+		CM.Pumping = false
+		CM.Refresh()
+	end)
+end
+function CM.Left(uid)
+	for _, c in ipairs(CM.CaseList) do
+		if c.uid == uid and (c.status == "queued" or c.status == "pending" or c.status == "manual") then
+			CM.SetStatus(c, "left")
+			notify(("Chat Moderation: %s (@%s) left the server, so case %s was closed. The evidence is still available under Copy Evidence."):format(tostring(c.display), tostring(c.name), tostring(c.id)))
+		end
+	end
+end
+function CM.Submit(f, confirmed)
+	if not f then notify("Chat Moderation: select a flagged player first") return false, "none" end
+	if type(f.uid) ~= "number" then notify("Chat Moderation: this entry has no valid UserId, nothing was sent") return false, "invalid" end
+	local c = caseFor(f)
+	local who = ("%s (@%s)"):format(c.display, c.name)
+	if not Players:GetPlayerByUserId(c.uid) then
+		if not TERMINAL[c.status] then CM.SetStatus(c, "left") end
+		notify(("Chat Moderation: %s has left the server, nothing was sent. Copy Evidence still works."):format(who))
+		return false, "left"
+	end
+	local now = os.clock()
+	if c.status == "submitting" then notify(("Chat Moderation: the report for %s is already being submitted"):format(who)) return false, "queued" end
+	if c.status == "queued" then
+		c.user = true
+		notify(("Chat Moderation: the report for %s is already queued and will be sent when the rate limit allows"):format(who))
+		CM.Pump()
+		return false, "queued"
+	end
+	if CM.Reported[c.uid] and now - CM.Reported[c.uid] < 1800 then notify(("Chat Moderation: you already reported %s in the last 30 minutes, nothing was sent"):format(who)) return false, "dup" end
+	if TERMINAL[c.status] then reopen(c, f) end
+	if not confirmed then
+		if not (c.confirmUntil and now <= c.confirmUntil) then
+			c.confirmUntil = now + 20
+			notify(("Confirm report: %s | %s | %s confidence | %d chat line(s) | case %s. Press Report With Jarvis again within 20 seconds to submit, or Dismiss Case. Nothing has been sent yet."):format(who, tostring(c.cat), pct(c.conf), #c.ev, c.id))
+			CM.Refresh()
+			return false, "confirm"
+		end
+	end
+	c.confirmUntil = nil
+	c.user, c.tries = true, 0
+	local ahead = false
+	for _, q in ipairs(CM.Queue) do if q.status == "queued" and q.user then ahead = true break end end
+	if ahead or CM.Wait() > 0 then
+		local okq, other = enqueue(c)
+		if not okq then notify(("Chat Moderation: a report for %s is already queued"):format(who)) return false, "queued" end
+		CM.SetStatus(c, "queued")
+		notify(("Chat Moderation: report for %s is queued and will be sent when the rate limit allows (about %d seconds)"):format(who, math.ceil(CM.Wait())))
+		CM.Pump()
+		return false, "queued"
+	end
+	return CM.Process(c)
+end
+function CM.SetStatus(f, st)
+	if not f then notify("Chat Moderation: select a flagged player first") return end
+	local c = caseFor(f)
+	c.status, c.t = st, os.clock()
+	if st ~= "queued" then dequeue(c) end
+	CM.Refresh()
+	return c
+end
+function CM.Dismiss(f)
+	if not f then notify("Chat Moderation: select a flagged player first") return false end
+	local c = caseFor(f)
+	local who = ("%s (@%s)"):format(c.display, c.name)
+	if c.status == "submitting" then notify(("Chat Moderation: the report for %s is being submitted right now, it cannot be dismissed"):format(who)) return false end
+	if c.status == "submitted" then notify(("Chat Moderation: case %s is already marked submitted"):format(c.id)) return false end
+	if c.status == "dismissed" then notify(("Chat Moderation: case %s is already dismissed"):format(c.id)) return false end
+	c.confirmUntil = nil
+	CM.SetStatus(c, "dismissed")
+	notify(("Case %s dismissed: %s. Nothing was sent."):format(c.id, who))
+	return true
+end
+function CM.MarkSubmitted(f)
+	if not f then notify("Chat Moderation: select a flagged player first") return false end
+	local c = caseFor(f)
+	local who = ("%s (@%s)"):format(c.display, c.name)
+	if c.status == "submitted" then notify(("Chat Moderation: case %s is already marked submitted"):format(c.id)) return false end
+	if c.status == "submitting" then notify(("Chat Moderation: Jarvis is submitting the report for %s right now - wait for the result"):format(who)) return false end
+	c.by, c.user, c.confirmUntil = "user", true, nil
+	CM.Reported[c.uid] = os.clock()
+	CM.SetStatus(c, "submitted")
+	notify(("Case %s marked as submitted by you: %s. Roblox gives scripts no confirmation, so Jarvis cannot verify it."):format(c.id, who))
+	return true
+end
+function CM.SendManual(f)
+	local now = os.clock()
+	local t = CM.PendingSay
+	if not t and f then
+		local _, disp = CM.Ident(f)
+		t = "Jarvis: @" .. disp .. ", please keep the conversation respectful."
+	end
+	if not t then notify("Chat Moderation: no reminder is waiting and no player is selected") return false end
+	if now - CM.LastSay < 10 then notify(("Chat Moderation: wait %d more seconds before sending another reminder"):format(math.ceil(10 - (now - CM.LastSay)))) return false end
+	if say(t) then CM.PendingSay, CM.LastSay = nil, now notify("Reminder sent to public chat") return true end
+	clip(t)
+	notify("Chat is unavailable here; the reminder was copied instead")
+	return false
+end
+
+-- ---------- per-message handling (also the unit-test entry point) ----------
+local function remind(f)
+	if cfg("CModOn") ~= true or cfg("CModSay") ~= true then return end
+	local now = os.clock()
+	if now - CM.LastSay < 45 or (f.say and now - f.say < 300) then return end
+	local log, kept = CM.SayLog, {}
+	for _, t in ipairs(log) do if now - t < 600 then kept[#kept + 1] = t end end
+	CM.SayLog = kept
+	if #kept >= 5 then return end
+	local recent = 0
+	for _, t in ipairs(f.hist) do if now - t < 600 then recent = recent + 1 end end
+	local text = recent >= 3 and "Jarvis: Reminder: Harassment and inappropriate language are not acceptable here."
+		or (recent == 2 and ("Jarvis: @" .. f.display .. ", please keep the conversation respectful.") or "Jarvis: Please keep the chat respectful and appropriate for everyone.")
+	f.say, CM.LastSay = now, now
+	kept[#kept + 1] = now
+	CM.LastReminder = text
+	task.spawn(function()
+		if not say(text) then CM.PendingSay = text notify("Jarvis could not send the chat reminder. Use Chat Moderation > Send Reminder Manually.") end
+	end)
+end
+local function prompt(f, R)
+	if cfg("AutoReport") ~= true or R.conf + 1e-6 < REPORT_MIN or not REPORTABLE[R.cat] then return end
+	if not Players:GetPlayerByUserId(f.uid) then return end
+	local now = os.clock()
+	if CM.Reported[f.uid] and now - CM.Reported[f.uid] < 1800 then return end
+	if activeFor(f.uid) then return end
+	for _, q in ipairs(CM.Queue) do if q.uid == f.uid then return end end
+	local key = tostring(f.uid) .. ":" .. R.cat
+	local old = CM.Cases[key]
+	if old and TERMINAL[old.status] and old.status ~= "left" and now - old.t < 1800 then return end
+	if old then
+		for i = #CM.CaseList, 1, -1 do if CM.CaseList[i] == old then table.remove(CM.CaseList, i) end end
+		CM.Cases[key] = nil
+	end
+	local name, disp = CM.Ident(f)
+	local c = caseFor({uid = f.uid, name = name, display = disp, cat = R.cat, conf = R.conf, ev = f.ev})
+	if not CM.Cur() then CM.Sel = f.uid end
+	notify(("Auto Report: %s (@%s) flagged for %s (%d%% confidence), case %s. Nothing has been sent - select them under Chat Moderation and press Report With Jarvis to confirm."):format(disp, name, R.cat, math.floor(R.conf * 100 + .5), c.id))
+end
+function CM.Handle(uid, name, display, text, mid)
+	local key = mid or (uid .. ":" .. tostring(text))
+	if CM.Seen[key] then return end
+	CM.Seen[key] = true
+	local q = CM.SeenQ
+	q[#q + 1] = key
+	if #q > SEEN_MAX then CM.Seen[table.remove(q, 1)] = nil end
+	text = clean(text)
+	if #text < 2 or text:lower():sub(1, 7) == "jarvis:" then return end
+	local now = os.clock()
+	local R = CM.Analyze(text, {names = names(uid)})
+	local st = CM.Strikes[uid] or {}
+	local kept = {}
+	for _, x in ipairs(st) do if now - x.t < 180 then kept[#kept + 1] = x end end
+	CM.Strikes[uid] = kept
+	if R.hash and not R.cat then
+		kept[#kept + 1] = {t = now, hash = true}
+		local h = 0
+		for _, x in ipairs(kept) do if x.hash and now - x.t < 90 then h = h + 1 end end
+		if h >= 3 then R.cat, R.conf = "Filter bypass", .76 end
+	end
+	if not R.cat then return end
+	if R.cat ~= "Filter bypass" then
+		if R.conf >= .55 then
+			local prior = 0
+			for _, x in ipairs(kept) do if not x.hash then prior = prior + 1 end end
+			R.conf = math.min(.99, R.conf + math.min(.2, .07 * prior))
+			kept[#kept + 1] = {t = now, cat = R.cat}
+		end
+	end
+	if R.conf + 1e-6 < LEVELS[clamp(math.floor(tonumber(cfg("CModConf")) or 2), 1, 3)] then return end
+	local f = CM.Flags[uid]
+	if not f then
+		local c = 0
+		for _ in pairs(CM.Flags) do c = c + 1 end
+		if c >= FLAG_MAX then
+			local l = CM.List()
+			local drop
+			for i = #l, 1, -1 do if not activeFor(l[i].uid) then drop = l[i] break end end
+			drop = drop or l[#l]
+			if drop then CM.Flags[drop.uid] = nil end
+		end
+		CM.FlagSeq = (CM.FlagSeq or 0) + 1
+		f = {uid = uid, n = 0, ev = {}, hist = {}, seq = CM.FlagSeq}
+		CM.Flags[uid] = f
+	end
+	f.name, f.display, f.t, f.n = name, display, now, f.n + 1
+	if f.cat == nil or f.cat == R.cat then f.cat, f.conf = R.cat, math.max(f.conf or 0, R.conf)
+	elseif R.conf > (f.conf or 0) then f.cat, f.conf = R.cat, R.conf end
+	f.hist[#f.hist + 1] = now
+	if #f.hist > 8 then table.remove(f.hist, 1) end
+	local entry = {ts = os.date("%H:%M:%S"), text = text:sub(1, 160), cat = R.cat, conf = R.conf}
+	f.ev[#f.ev + 1] = entry
+	if #f.ev > EVID_MAX then table.remove(f.ev, 1) end
+	local pc = activeFor(uid)
+	if pc and pc.status == "pending" and pc.cat == R.cat then
+		pc.ev[#pc.ev + 1] = {ts = entry.ts, text = entry.text, cat = entry.cat, conf = entry.conf}
+		if #pc.ev > 8 then table.remove(pc.ev, 1) end
+		pc.conf = math.max(pc.conf or 0, R.conf)
+	end
+	remind(f)
+	prompt(f, R)
+	CM.Refresh()
+	return R
+end
+
+-- ---------- event wiring (single connection set, fully disconnected when both switches are off) ----------
+local function onTextChat(m)
+	local src = m.TextSource
+	if not src or src.UserId == Player.UserId or m.Status == Enum.TextChatMessageStatus.Sending then return end
+	local ch = m.TextChannel
+	if not ch or ch.Name ~= "RBXGeneral" then return end
+	local pl = Players:GetPlayerByUserId(src.UserId)
+	if pl then pcall(CM.Handle, pl.UserId, pl.Name, pl.DisplayName, m.Text, m.MessageId) end
+end
+function CM.Enable()
+	if CM.Active then return end
+	CM.Active = true
+	local cs = CM.Conns
+	if TextChatService.ChatVersion == Enum.ChatVersion.LegacyChatService then
+		local function hook(pl)
+			if pl == Player then return end
+			cs[#cs + 1] = pl.Chatted:Connect(function(msg, rcpt) if rcpt == nil then CM.LegacySeq = (CM.LegacySeq or 0) + 1 pcall(CM.Handle, pl.UserId, pl.Name, pl.DisplayName, msg, "L" .. CM.LegacySeq) end end)
+		end
+		for _, pl in ipairs(Players:GetPlayers()) do hook(pl) end
+		cs[#cs + 1] = Players.PlayerAdded:Connect(hook)
+	else
+		cs[#cs + 1] = TextChatService.MessageReceived:Connect(onTextChat)
+	end
+	cs[#cs + 1] = Players.PlayerRemoving:Connect(function(pl) CM.Strikes[pl.UserId] = nil pcall(CM.Left, pl.UserId) end)
+end
+function CM.Disable()
+	for _, c in ipairs(CM.Conns) do pcall(function() c:Disconnect() end) end
+	CM.Conns, CM.Seen, CM.SeenQ, CM.Strikes, CM.Active = {}, {}, {}, {}, false
+end
+function CM.Sync()
+	local want = cfg("CModOn") == true or cfg("AutoReport") == true
+	if want then CM.Enable() else CM.Disable() end
+	if cfg("AutoReport") == true then CM.Pump() end
+	CM.Refresh()
+end
+function CM.Announce()
+	if not CM.Active then return end
+	local on = function(k) return cfg(k) == true and "ON" or "OFF" end
+	local text = ("JARVIS: Chat moderation is active. Auto Report %s | Chat Monitoring %s | Public Reminders %s. Change them in Main > Performance."):format(on("AutoReport"), on("CModOn"), on("CModSay"))
+	notify(text)
+	pcall(function()
+		local TCS = game:GetService("TextChatService")
+		local ch = TCS.ChatVersion == Enum.ChatVersion.TextChatService and TCS:FindFirstChild("TextChannels")
+		ch = ch and ch:FindFirstChild("RBXGeneral")
+		if ch then ch:DisplaySystemMessage(text) else StarterGui:SetCore("ChatMakeSystemMessage", {Text = text}) end
+	end)
+end
+function CM.Clear()
+	local nf, nq, keep = 0, 0, {}
+	for _ in pairs(CM.Flags) do nf = nf + 1 end
+	for _, c in ipairs(CM.CaseList) do
+		if c.status == "queued" then c.status, nq = "cancelled", nq + 1 end
+		if c.status == "submitting" then keep[#keep + 1] = c end
+	end
+	CM.Queue, CM.Flags, CM.Cases, CM.CaseList, CM.Sel = {}, {}, {}, keep, nil
+	for _, c in ipairs(keep) do CM.Cases[c.key] = c end
+	CM.Refresh()
+	return nf, nq
+end
+return CM
+end)()
 Util.FCMark("perf")
 UI.CreateSeparator(MainPage)
 do
@@ -70677,6 +71817,97 @@ UI.CreateSwitch(MainPage, "Hide All Players", false).Changed:Connect(function(va
 PlayerHider.Set(val)
 Util.UINotify("Hide All Players " .. (val and "ON" or "OFF"))
 end)
+do
+local FX, CM = Util.FX, Util.ChatMod
+local ARSwitch = UI.CreateSwitch(MainPage, "Auto Report", FX.Cfg.AutoReport == true)
+CM.UI.AR = UI.CreateText(MainPage, "", 10, Enum.TextXAlignment.Center)
+ARSwitch.Changed:Connect(function(val)
+FX.SetCfg("AutoReport", val)
+CM.Sync()
+Util.UINotify("Auto Report " .. (val and "ON (Jarvis prepares cases for high-confidence violations; you confirm each report)" or "OFF"))
+end)
+CM.Sync()
+task.delay(4, function() pcall(CM.Announce) end)
+end
+UI.CreateSeparator(MainPage)
+end
+do
+local FX, CM = Util.FX, Util.ChatMod
+UI.CreateText(MainPage, "Chat Moderation", 15, Enum.TextXAlignment.Center)
+pcall(function() Util.Search.Section(MainPage, "Chat Moderation") end)
+UI.CreateSwitch(MainPage, "Chat Monitoring", FX.Cfg.CModOn == true).Changed:Connect(function(val)
+FX.SetCfg("CModOn", val)
+CM.Sync()
+Util.UINotify("Chat Monitoring " .. (val and "ON" or "OFF"))
+end)
+UI.CreateSwitch(MainPage, "Public Chat Reminders", FX.Cfg.CModSay == true).Changed:Connect(function(val)
+FX.SetCfg("CModSay", val)
+Util.UINotify("Public Chat Reminders " .. (val and "ON (only runs while Chat Monitoring is ON)" or "OFF"))
+end)
+UI.CreateDropdown(MainPage, "Detection Confidence", CM.LevelNames, math.clamp(math.floor(tonumber(FX.Cfg.CModConf) or 2), 1, 3)).Changed:Connect(function(v)
+FX.SetCfg("CModConf", v)
+end)
+UI.CreateText(MainPage, "Reads only public chat you can already see. Reminders are short, rate-limited and never quote anyone. Auto Report needs 85%+ to prepare a case; nothing is sent until you press Report With Jarvis and confirm.", 10, Enum.TextXAlignment.Center)
+CM.UI.Status = UI.CreateText(MainPage, "", 10, Enum.TextXAlignment.Center)
+local detail = UI.CreateText(MainPage, "No flagged players.", 10, Enum.TextXAlignment.Center)
+local function cur() return (CM.Cur()) end
+local function need()
+local f, why = CM.Cur()
+if not f then Util.UINotify("Chat Moderation: " .. why) end
+return f
+end
+CM.UI.Show = function()
+local f = cur()
+if not f then
+local n = #CM.List()
+detail.Text = n > 0 and ("No player selected. Tap Next Flagged Player (%d flagged)."):format(n) or "No flagged players."
+return
+end
+local c = CM.CaseOf(f)
+local name, disp = CM.Ident(f)
+local pos = 0
+for i, x in ipairs(CM.Ordered()) do if x.uid == f.uid then pos = i end end
+local ev = c and c.ev or f.ev
+local lines = {("<b>%s</b> (@%s) | UserId %s%s"):format(CM.Esc(disp), CM.Esc(name), tostring(f.uid), Players:GetPlayerByUserId(f.uid) and "" or " [left]"),
+("%s | %s | flags: %d | %d of %d"):format(CM.Esc(c and c.cat or f.cat), CM.Pct(c and c.conf or f.conf), f.n, pos, #CM.List()),
+("report: %s%s"):format(c and (CM.StatusText[c.status] or c.status) or "none yet", c and (" | case " .. c.id) or "")}
+for i = #ev, math.max(1, #ev - 2), -1 do lines[#lines + 1] = ("[%s] %s"):format(tostring(ev[i].ts), CM.Esc(ev[i].text)) end
+detail.Text = table.concat(lines, "\n")
+end
+local lastPress = {}
+local function btn(t, fn)
+UI.CreateButton(MainPage, t, 15).Activated:Connect(function()
+local now = os.clock()
+if lastPress[t] and now - lastPress[t] < 0.4 then return end
+lastPress[t] = now
+local ok, err = pcall(fn)
+if not ok then Util.UINotify("Chat Moderation: " .. t .. " failed (" .. tostring(err):sub(1, 80) .. ")") end
+pcall(CM.Refresh)
+end)
+end
+btn("Next Flagged Player", function()
+local l = CM.Ordered()
+if #l == 0 then Util.UINotify("Chat Moderation: no players have been flagged yet") return end
+local idx = 0
+for i, f in ipairs(l) do if f.uid == CM.Sel then idx = i end end
+local nf = l[idx % #l + 1]
+CM.Sel = nf.uid
+CM.UI.Show()
+local name, disp = CM.Ident(nf)
+Util.UINotify(("Selected %s (@%s) - %d of %d"):format(disp, name, idx % #l + 1, #l))
+end)
+btn("Report With Jarvis", function() local f = need() if f then CM.Submit(f) end end)
+btn("Open Roblox Report Menu", function() local f = need() if f then CM.OpenReport(f) end end)
+btn("Copy Evidence", function() local f = need() if f then CM.CopyEvidence(f) end end)
+btn("I Submitted The Report", function() local f = need() if f then CM.MarkSubmitted(f) end end)
+btn("Dismiss Case", function() local f = need() if f then CM.Dismiss(f) end end)
+btn("Send Reminder Manually", function() CM.SendManual(cur()) end)
+btn("Clear Flagged List", function()
+local nf, nq = CM.Clear()
+if nf == 0 and nq == 0 then Util.UINotify("Chat Moderation: the flagged list is already empty") return end
+Util.UINotify(("Flagged list cleared (%d player(s)%s)"):format(nf, nq > 0 and (", " .. nq .. " queued report(s) cancelled") or ""))
+end)
+CM.Refresh()
 UI.CreateSeparator(MainPage)
 end
 local function ReanimCharacterTeleport(pos)
@@ -75844,6 +77075,124 @@ end
 return nil
 end
 
+-- ---------- REPORT A PLAYER BY NAME: partial display name / username, asks which one when several match, then Jarvis asks the user for consent ----------
+K.REPPRON = {him = true, her = true, them = true, ["that player"] = true, ["this player"] = true, ["that guy"] = true, ["that person"] = true, ["that user"] = true}
+function K.reportReason(txt)
+local s = norm(txt or "")
+if s == "" then return "Other" end
+local function any(list) for _, w in ipairs(list) do if s:find(w, 1, true) then return true end end return false end
+if any({"username", "user name", "profile name"}) then return "Inappropriate Username" end
+if any({"swear", "cuss", "profan", "bad word"}) then return "Swearing" end
+if any({"bull", "harass", "toxic", "insult", "threat", "racis", "hate", "abus", "slur"}) then return "Bullying" end
+if any({"scam", "steal", "stole"}) then return "Scamming" end
+if any({"dating", "sexual", "sex", "nsfw", "inappropriate"}) then return "Dating" end
+if any({"link", "advert", "promot", "spam"}) then return "Offsite Links" end
+return "Other"
+end
+function K.reportScan(q, pool)
+local g = K.sq(q)
+local cand = {}
+if g == "" then return cand end
+for _, p in ipairs(pool or K.others()) do
+if p ~= lp and p.Parent == Players then
+local sc = K.nameScore(g, p)
+if sc == 0 and #g >= 2 then
+if K.sq(p.Name):sub(1, #g) == g or K.sq(p.DisplayName):sub(1, #g) == g then sc = 40 end
+end
+if sc > 0 then cand[#cand + 1] = {p = p, s = sc} end
+end
+end
+table.sort(cand, function(a, b) if a.s ~= b.s then return a.s > b.s end return a.p.Name:lower() < b.p.Name:lower() end)
+local exact = {}
+for _, c in ipairs(cand) do if c.s >= 98 then exact[#exact + 1] = c end end
+if #exact == 1 then return exact end
+return cand
+end
+function K.reportAsk(p, reasonText)
+local CM = Util.ChatMod
+if not (CM and CM.Submit) then return {text = "Chat moderation isn't loaded, so I can't file reports right now."} end
+if not (p and p.Parent == Players) then return {text = "That player has already left the server."} end
+local fl = (reasonText == nil or reasonText == "") and CM.Flags and CM.Flags[p.UserId] or nil
+local f
+if fl then
+f = {uid = p.UserId, name = p.Name, display = p.DisplayName, cat = fl.cat, conf = fl.conf, ev = fl.ev, manual = true}
+else
+f = {uid = p.UserId, name = p.Name, display = p.DisplayName, cat = K.reportReason(reasonText), ev = {}, manual = true}
+end
+local ok, how = CM.Submit(f, true)
+local who = (select(2, CM.Ident(f))) .. " (@" .. (CM.Ident(f)) .. ")"
+return {text = ok and ("The report call for %s completed without an error. Roblox gives scripts no confirmation, so Jarvis cannot verify acceptance."):format(who) or (how == "queued" and ("Report for %s is queued and will be sent automatically when the rate limit allows."):format(who) or ((how == "manual" or how == "failed") and ("Jarvis could not submit the report for %s directly. The evidence is prepared and the notification explains how to finish it in the Roblox report menu."):format(who) or ("Nothing was sent for %s. See the notification for details."):format(who))), closeAfter = true}
+end
+function K.reportFind(q, reasonText, pool)
+local function rearm(list)
+K.choice = {t = os.clock(), free = function(txt)
+local idx
+for w in norm(txt):gmatch("%S+") do
+local n = tonumber(w)
+if n and #w <= 2 and list[n] then idx = n break end
+if K.ORD[w] and list[K.ORD[w]] then idx = K.ORD[w] break end
+end
+if idx then return K.reportAsk(list[idx], reasonText) end
+return K.reportFind(txt, reasonText, list)
+end}
+end
+if K.REPPRON[norm(q)] then
+local lastp = K.last
+if not (lastp and lastp.Parent == Players and lastp ~= lp) then lastp = K.mouseTarget() end
+if lastp then return K.reportAsk(lastp, reasonText) end
+return {text = "I don't know which player you mean yet. Tell me their display name or username."}
+end
+if #K.sq(q) < 2 then
+rearm(pool or K.others())
+return {text = "Who should I report? Tell me their display name or username, even just part of it."}
+end
+local cand = K.reportScan(q, pool)
+if #cand == 0 then
+if pool then rearm(pool) end
+return {text = ("I can't find anyone matching \"%s\"%s. Try more of their display name or username."):format(plain(q), pool and " among those" or " in this server")}
+end
+if #cand == 1 then return K.reportAsk(cand[1].p, reasonText) end
+local list, lines = {}, {}
+for i, c in ipairs(cand) do
+if i > 6 then break end
+list[i] = c.p
+lines[i] = ("%d) %s"):format(i, K.pname(c.p))
+end
+rearm(list)
+return {text = ("I found %d players matching \"%s\": %s%s. Which one should I report? Say a number, or give me more of the name."):format(#cand, plain(q), table.concat(lines, "  "), #cand > #list and (" (and " .. (#cand - #list) .. " more)") or "")}
+end
+function K.reportCmd(t, words)
+if words > 14 or not t:find("report", 1, true) then return nil end
+local s = " " .. t .. " "
+for _ = 1, 2 do
+for _, f in ipairs({" please ", " can you ", " could you ", " would you ", " will you ", " i want to ", " i would like to ", " i d like to ", " id like to ", " i need to ", " i wanna ", " go ahead and ", " help me ", " lets ", " let s ", " you should ", " you can "}) do
+s = (s:gsub(f, " "))
+end
+end
+s = trim(s)
+local rest = s:match("^reporting%s+(.+)$") or s:match("^report%s+(.+)$")
+if not rest then
+local v, r = s:match("^(%a+) a report%s*(.*)$")
+if not r then v, r = s:match("^(%a+) report%s*(.*)$") end
+if v and (v == "file" or v == "submit" or v == "make" or v == "send" or v == "create" or v == "put") then rest = r end
+end
+if not rest then return nil end
+for _ = 1, 4 do
+rest = rest:gsub("^on ", ""):gsub("^against ", ""):gsub("^about ", ""):gsub("^for ", ""):gsub("^the ", ""):gsub("^a ", ""):gsub("^an ", ""):gsub("^player ", ""):gsub("^user ", ""):gsub("^person ", ""):gsub("^guy ", ""):gsub("^account ", "")
+end
+rest = trim(rest)
+local name, reasonText = rest, nil
+local a, b = rest:find(" for ", 1, true)
+if a then name, reasonText = rest:sub(1, a - 1), rest:sub(b + 1) end
+local a2, b2 = rest:find(" because ", 1, true)
+if a2 and (not a or a2 < a) then name, reasonText = rest:sub(1, a2 - 1), rest:sub(b2 + 1) end
+name = trim(name)
+if not reasonText and #K.reportScan(name) == 0 then
+local head, last = name:match("^(.-)%s*(%S+)$")
+if head and head ~= "" and K.reportReason(last) ~= "Other" then name, reasonText = trim(head), last end
+end
+return K.reportFind(name, reasonText)
+end
 local function process(raw)
 local t = norm(raw)
 t = cut(cut(cut(t, "hey jarvis"), "ok jarvis"), "jarvis")
@@ -75896,6 +77245,7 @@ end
 if t == "close" or t == "dismiss" or t == "go away" or t == "close jarvis" or t == "hide jarvis" or has(t, {"that will be all", "that is all", "that s all", "thats all"}) then
 return {text = "Very good.", closeAfter = true}
 end
+do local rq = K.reportCmd(t, words) if rq then return rq end end
 if has(t, {"help", "what can you do", "what can i say", "what are your commands", "capabilities", "what are your capabilities", "how do you work"}) and words <= 8 then
 local nSw, nBt, nOther = 0, 0, 0
 for _, e in ipairs(entries()) do
@@ -78963,7 +80313,7 @@ do
 local built, buildErr = pcall(function()
 local CATS = {
 {"live", "Live Players / Moderation", "Active Players, Join Player, Remote Moderation, Owner / Co-owner alerts"},
-{"perf", "Performance / Graphics", "Anti Lag, Hide All Players, Low End UI Mode, UI Cache, blur, transitions, UI sounds, ambient FX"},
+{"perf", "Performance / Graphics", "Anti Lag, Hide All Players, Auto Report, Low End UI Mode, UI Cache, blur, transitions, UI sounds, ambient FX"},
 {"reanim", "Reanimation / Character", "Reanimator, hitboxes, character options, Fly, WalkSpeed, scale, internals"},
 {"moves", "Movesets / Dances", "Movesets, Dances, Dance Keybinds"},
 {"fling", "Fling / Interaction", "Fling Method, Click Fling, Toggle Kill, Ya kids tool kill option, Key+Click Teleport"},
