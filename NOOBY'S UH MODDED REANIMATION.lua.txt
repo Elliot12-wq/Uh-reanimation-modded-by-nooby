@@ -23345,7 +23345,17 @@ sg.Parent = Players.LocalPlayer:WaitForChild("PlayerGui")
 end
 if not Util.UhAdmin.DiscordToastShown then
 Util.UhAdmin.DiscordToastShown = true
+;(function()
 local TS = game:GetService("TweenService")
+local cam = workspace.CurrentCamera
+local sc = (adminScale and adminScale.Scale) or 1
+local vx = cam and cam.ViewportSize.X or 800
+local W = math.clamp(math.floor(vx / sc) - 24, 290, 440)
+local H, VW, VH = 304, W - 32, 156
+local WHITE, BLUE = Color3.new(1, 1, 1), Color3.fromRGB(10, 132, 255)
+local function ti(t, style, dir, rep, rev)
+return TweenInfo.new(t, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out, rep or 0, rev or false)
+end
 local dc = uhNew("Frame", {
 Name = "DiscordIsland",
 AnchorPoint = Vector2.new(0.5, 0),
@@ -23359,15 +23369,16 @@ Visible = false,
 ZIndex = 40,
 }, sg)
 local corner = uhNew("UICorner", {CornerRadius = UDim.new(0, 17)}, dc)
-uhTag(uhNew("UIStroke", {Thickness = 1.2, Transparency = 0.35, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, dc), "accent")
+local stroke = uhNew("UIStroke", {Thickness = 1.5, Transparency = 0.35, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, dc)
+uhTag(stroke, "accent")
 local title = uhNew("TextLabel", {
 Name = "Title",
-Position = UDim2.new(0, 20, 0, 12),
-Size = UDim2.new(0, 270, 0, 34),
+Position = UDim2.fromOffset(20, 14),
+Size = UDim2.fromOffset(W - 72, 46),
 BackgroundTransparency = 1,
 Font = Enum.Font.GothamBold,
-TextSize = 13,
-TextColor3 = Color3.new(1, 1, 1),
+TextSize = 18,
+TextColor3 = WHITE,
 TextTransparency = 1,
 TextWrapped = true,
 TextXAlignment = Enum.TextXAlignment.Left,
@@ -23377,61 +23388,187 @@ ZIndex = 41,
 }, dc)
 local sub = uhNew("TextLabel", {
 Name = "Sub",
-Position = UDim2.new(0, 20, 0, 48),
-Size = UDim2.new(0, 290, 0, 14),
+Position = UDim2.fromOffset(20, 62),
+Size = UDim2.fromOffset(W - 72, 18),
 BackgroundTransparency = 1,
 Font = Enum.Font.Gotham,
-TextSize = 11,
+TextSize = 13,
 TextColor3 = Color3.fromRGB(190, 190, 195),
 TextTransparency = 1,
 TextXAlignment = Enum.TextXAlignment.Left,
 Text = "Updates, mods and good company.",
 ZIndex = 41,
 }, dc)
-local join = uhNew("TextButton", {
-Name = "Join",
-Position = UDim2.new(0, 20, 0, 68),
-Size = UDim2.new(0, 130, 0, 26),
-BackgroundColor3 = Color3.fromRGB(10, 132, 255),
+local x = uhNew("TextButton", {
+Name = "Close",
+Position = UDim2.fromOffset(W - 42, 12),
+Size = UDim2.fromOffset(30, 30),
+BackgroundColor3 = WHITE,
 BackgroundTransparency = 1,
 BorderSizePixel = 0,
 AutoButtonColor = false,
 Font = Enum.Font.GothamBold,
-TextSize = 12,
-TextColor3 = Color3.new(1, 1, 1),
-TextTransparency = 1,
-Text = "Copy Invite",
-ZIndex = 41,
-}, dc)
-uhTag(join, "accent")
-uhNew("UICorner", {CornerRadius = UDim.new(0, 13)}, join)
-local x = uhNew("TextButton", {
-Name = "Close",
-Position = UDim2.new(0, 304, 0, 10),
-Size = UDim2.new(0, 22, 0, 22),
-BackgroundTransparency = 1,
-Font = Enum.Font.GothamBold,
-TextSize = 13,
-TextColor3 = Color3.new(1, 1, 1),
+TextSize = 16,
+TextColor3 = WHITE,
 TextTransparency = 1,
 Text = "X",
-ZIndex = 42,
+ZIndex = 43,
 }, dc)
+uhNew("UICorner", {CornerRadius = UDim.new(1, 0)}, x)
+local join = uhNew("TextButton", {
+Name = "Join",
+Position = UDim2.fromOffset(W - 16 - 146, 256),
+Size = UDim2.fromOffset(146, 40),
+BackgroundColor3 = BLUE,
+BackgroundTransparency = 1,
+BorderSizePixel = 0,
+AutoButtonColor = false,
+Font = Enum.Font.GothamBold,
+TextSize = 15,
+TextColor3 = WHITE,
+TextTransparency = 1,
+Text = "Copy Invite",
+ZIndex = 43,
+}, dc)
+uhTag(join, "accent")
+uhNew("UICorner", {CornerRadius = UDim.new(0, 20)}, join)
+local jsc = uhNew("UIScale", {Scale = 1}, join)
+local xsc = uhNew("UIScale", {Scale = 1}, x)
+-- carousel (3 slides, ~20s each)
+local DATA = {
+{{
+" _____ \n|[o_o]|\n ''-'' ",
+" _____ \n|[-_-]|\n ''-'' ",
+" _____ \n|[O_O]|\n ''-'' ",
+" _____ \n|[^_^]|\n ''-'' ",
+}, "Jarvis", "Your built-in AI helper", {
+"Open Jarvis and just type what you want, like a normal chat.",
+"It can press the script's own buttons and run Uh Admin commands for you.",
+"It can speak replies and flag rude chat. You confirm every report.",
+}},
+{{
+" \\o/ \n  |  \n / \\ ",
+"  o  \n /|\\ \n | | ",
+" _o/ \n  |  \n / \\ ",
+"  o  \n /|\\ \n | | ",
+" \\o_ \n  |  \n / \\ ",
+}, "Reanimation", "Animate with your own character parts", {
+"Your real limbs, hats or tools follow a custom animated character.",
+"Choose a method on the Main page: Limbs, Hats, Tools or Ragdoll.",
+"Press Reanimate to start. Some methods only work in some games.",
+}},
+{{
+"+-----+\n|>_   |\n+-----+",
+"+-----+\n|>.   |\n+-----+",
+"+-----+\n|>.c_ |\n+-----+",
+"+-----+\n|>.cm_|\n+-----+",
+}, "UH Admin", "Command bar and command list", {
+"Type commands into the Command Bar. The default prefix is a dot ( . ).",
+"Tap the list button to search all commands. Tap to use, hold for info.",
+"It also has chat logs, a resizable window and colors that match your theme.",
+}},
+}
+local view = uhNew("Frame", {Name = "Carousel", Position = UDim2.fromOffset(16, 90), Size = UDim2.fromOffset(VW, VH), BackgroundTransparency = 1, ClipsDescendants = true, ZIndex = 41}, dc)
+local track = uhNew("Frame", {Name = "Track", Size = UDim2.fromOffset(VW * 3, VH), BackgroundTransparency = 1, ZIndex = 41}, view)
+local slides, badges = {}, {}
+for i, d in ipairs(DATA) do
+local sf = uhNew("Frame", {Name = "Slide" .. i, Position = UDim2.fromOffset((i - 1) * VW, 0), Size = UDim2.fromOffset(VW, VH), BackgroundTransparency = 1, ZIndex = 41}, track)
+local its = {}
+slides[i] = its
+local function add(o, shown, hidden, sx) its[#its + 1] = {o, shown, hidden, sx and o.Position or nil} end
+local badge = uhNew("TextLabel", {Size = UDim2.fromOffset(58, 46), BackgroundColor3 = BLUE, BackgroundTransparency = 1, BorderSizePixel = 0, Font = Enum.Font.Code, TextSize = 11, TextColor3 = WHITE, TextTransparency = 1, TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center, Text = d[1][1], ZIndex = 42}, sf)
+badges[i] = badge
+uhNew("UICorner", {CornerRadius = UDim.new(0, 11)}, badge)
+uhTag(badge, "accent")
+add(badge, {BackgroundTransparency = 0.6, TextTransparency = 0}, {BackgroundTransparency = 1, TextTransparency = 1})
+local h = uhNew("TextLabel", {Position = UDim2.fromOffset(68, 2), Size = UDim2.fromOffset(VW - 68, 21), BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 18, TextColor3 = WHITE, TextTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, Text = d[2], ZIndex = 42}, sf)
+add(h, {TextTransparency = 0}, {TextTransparency = 1})
+local tg = uhNew("TextLabel", {Position = UDim2.fromOffset(68, 24), Size = UDim2.fromOffset(VW - 68, 16), BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = Color3.fromRGB(190, 190, 195), TextTransparency = 1, TextXAlignment = Enum.TextXAlignment.Left, Text = d[3], ZIndex = 42}, sf)
+add(tg, {TextTransparency = 0.1}, {TextTransparency = 1})
+for b, line in ipairs(d[4]) do
+local y = 50 + (b - 1) * 35
+local dot = uhNew("Frame", {Position = UDim2.fromOffset(2, y + 5), Size = UDim2.fromOffset(6, 6), BackgroundColor3 = BLUE, BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 42}, sf)
+uhNew("UICorner", {CornerRadius = UDim.new(1, 0)}, dot)
+uhTag(dot, "accent")
+add(dot, {BackgroundTransparency = 0}, {BackgroundTransparency = 1}, true)
+local l = uhNew("TextLabel", {Position = UDim2.fromOffset(16, y), Size = UDim2.fromOffset(VW - 16, 32), BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 13, TextColor3 = WHITE, TextTransparency = 1, TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Text = line, ZIndex = 42}, sf)
+add(l, {TextTransparency = 0.05}, {TextTransparency = 1}, true)
+end
+end
+-- slide indicators + progress (each fill = 20s)
+local pillBox = uhNew("Frame", {Name = "Dots", Position = UDim2.fromOffset(20, 273), Size = UDim2.fromOffset(90, 6), BackgroundTransparency = 1, ZIndex = 41}, dc)
+uhNew("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder}, pillBox)
+local pills = {}
+for i = 1, 3 do
+local pb = uhNew("Frame", {Name = "Dot" .. i, LayoutOrder = i, Size = UDim2.fromOffset(i == 1 and 34 or 14, 6), BackgroundColor3 = WHITE, BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 42}, pillBox)
+uhNew("UICorner", {CornerRadius = UDim.new(1, 0)}, pb)
+local pf = uhNew("Frame", {Size = UDim2.fromScale(0, 1), BackgroundColor3 = BLUE, BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 43}, pb)
+uhNew("UICorner", {CornerRadius = UDim.new(1, 0)}, pf)
+uhTag(pf, "accent")
+pills[i] = {pb, pf}
+end
 local items = {
 {title, {TextTransparency = 0}, {TextTransparency = 1}},
 {sub, {TextTransparency = 0.1}, {TextTransparency = 1}},
+{x, {BackgroundTransparency = 0.85, TextTransparency = 0.15}, {BackgroundTransparency = 1, TextTransparency = 1}},
 {join, {BackgroundTransparency = 0, TextTransparency = 0}, {BackgroundTransparency = 1, TextTransparency = 1}},
-{x, {TextTransparency = 0.3}, {TextTransparency = 1}},
 }
-local closed = false
+for i = 1, 3 do
+items[#items + 1] = {pills[i][1], {BackgroundTransparency = 0.8}, {BackgroundTransparency = 1}}
+items[#items + 1] = {pills[i][2], {BackgroundTransparency = 0}, {BackgroundTransparency = 1}}
+end
+local closed, cur = false, 1
+local mainT, slideT, artT
+local tweens = {}
 local function fade(show, t)
-local info = TweenInfo.new(t or 0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
-for _, it in ipairs(items) do TS:Create(it[1], info, show and it[2] or it[3]):Play() end
+local info = ti(t or 0.3)
+for k, it in ipairs(items) do
+local function go() if dc.Parent then TS:Create(it[1], info, show and it[2] or it[3]):Play() end end
+if show then task.delay((k - 1) * 0.05, go) else go() end
+end
+end
+local function slideFade(i, show, base, t)
+local info = ti(t or 0.35)
+for k, it in ipairs(slides[i]) do
+local function go()
+if closed and show then return end
+if not dc.Parent then return end
+if show and it[4] then
+it[1].Position = it[4] + UDim2.fromOffset(18, 0)
+TS:Create(it[1], ti(0.45, Enum.EasingStyle.Quint), {Position = it[4]}):Play()
+end
+TS:Create(it[1], info, show and it[2] or it[3]):Play()
+end
+if show then task.delay(base + (k - 1) * 0.07, go) else go() end
+end
+end
+local function fillRun(i, dur)
+local tw = TS:Create(pills[i][2], TweenInfo.new(dur, Enum.EasingStyle.Linear), {Size = UDim2.fromScale(1, 1)})
+tweens[#tweens + 1] = tw
+tw:Play()
+end
+local function goTo(i)
+if closed or i == cur then return end
+local prev = cur
+cur = i
+slideFade(prev, false, 0, 0.25)
+TS:Create(track, ti(0.6, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {Position = UDim2.fromOffset(-(i - 1) * VW, 0)}):Play()
+slideFade(i, true, 0.3)
+for k, p in ipairs(pills) do
+TS:Create(p[1], ti(0.4, Enum.EasingStyle.Quint), {Size = UDim2.fromOffset(k == i and 34 or 14, 6)}):Play()
+end
+fillRun(i, 20)
 end
 local function dcHide()
 if closed or not dc.Parent then return end
 closed = true
+local me = coroutine.running()
+if mainT and mainT ~= me then pcall(task.cancel, mainT) end
+if slideT and slideT ~= me then pcall(task.cancel, slideT) end
+if artT and artT ~= me then pcall(task.cancel, artT) end
+for _, tw in ipairs(tweens) do pcall(function() tw:Cancel() end) end
 fade(false, 0.15)
+slideFade(cur, false, 0, 0.15)
 task.wait(0.12)
 TS:Create(dc, TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {Size = UDim2.new(0, 126, 0, 34)}):Play()
 TS:Create(corner, TweenInfo.new(0.45, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut), {CornerRadius = UDim.new(0, 17)}):Play()
@@ -23441,27 +23578,63 @@ task.wait(0.4)
 dc:Destroy()
 end
 x.MouseButton1Click:Connect(dcHide)
+x.MouseButton1Down:Connect(function() TS:Create(xsc, ti(0.08), {Scale = 0.88}):Play() end)
+local function xrel() TS:Create(xsc, ti(0.2, Enum.EasingStyle.Back), {Scale = 1}):Play() end
+x.MouseButton1Up:Connect(xrel)
+x.MouseLeave:Connect(xrel)
+join.MouseButton1Down:Connect(function() TS:Create(jsc, ti(0.08), {Scale = 0.93}):Play() end)
+local function jrel() TS:Create(jsc, ti(0.2, Enum.EasingStyle.Back), {Scale = 1}):Play() end
+join.MouseButton1Up:Connect(jrel)
+join.MouseLeave:Connect(jrel)
+local copyT
 join.MouseButton1Click:Connect(function()
 local ok, res = pcall(Util.OpenDiscord)
-if ok and res and type(setclipboard) == "function" then join.Text = "Link copied!" end
-task.delay(1.2, dcHide)
+if ok and res and type(setclipboard) == "function" then
+join.Text = "Link copied!"
+if copyT then pcall(task.cancel, copyT) end
+copyT = task.delay(1.6, function()
+if not closed and join.Parent then join.Text = "Copy Invite" end
+end)
+end
 end)
 task.delay(2.5, function()
 if closed or not dc.Parent then return end
 local okc, cfg = pcall(function() return Util.FX.Cfg end)
 if okc and type(cfg) == "table" and cfg.NotifMode == 4 then dc:Destroy() return end
 dc.Visible = true
-TS:Create(dc, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0, 12), Size = UDim2.new(0, 126, 0, 34)}):Play()
-task.wait(0.55)
+local t0 = os.clock()
+mainT = task.delay(60, dcHide)
+TS:Create(dc, TweenInfo.new(0.45, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Position = UDim2.new(0.5, 0, 0, 12), Size = UDim2.new(0, 126, 0, 34)}):Play()
+task.wait(0.5)
 if closed then return end
-TS:Create(dc, TweenInfo.new(0.7, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 330, 0, 106)}):Play()
-TS:Create(corner, TweenInfo.new(0.7, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {CornerRadius = UDim.new(0, 28)}):Play()
-task.wait(0.15)
+TS:Create(dc, TweenInfo.new(0.8, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, W, 0, H)}):Play()
+TS:Create(corner, TweenInfo.new(0.7, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {CornerRadius = UDim.new(0, 26)}):Play()
+task.wait(0.3)
 if closed then return end
 fade(true, 0.35)
-task.wait(12)
-dcHide()
+slideFade(1, true, 0.15)
+fillRun(1, math.max(1, 20 - (os.clock() - t0)))
+local glow = TS:Create(stroke, ti(1.6, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Transparency = 0.05})
+tweens[#tweens + 1] = glow
+glow:Play()
+artT = task.spawn(function()
+local n = 0
+while not closed and dc.Parent do
+task.wait(0.35)
+n = n + 1
+local fr = DATA[cur][1]
+badges[cur].Text = fr[(n - 1) % #fr + 1]
+end
 end)
+slideT = task.spawn(function()
+for i = 2, 3 do
+task.wait(math.max(0, t0 + 20 * (i - 1) - os.clock()))
+if closed then return end
+goTo(i)
+end
+end)
+end)
+end)()
 end
 Util.UhAdmin.UI = {
 ScreenGui = sg,
@@ -77994,94 +78167,368 @@ Util.ForceTextSize(UhhhhhhFire)
 UI.CreateText(CreditsPage, "Reanimate by STEVE :D", 15, Enum.TextXAlignment.Right)
 local UhhhhhhFiret = UI.CreateSlider(CreditsPage, "Transparency", 0.25, 0, 1, 0)
 local UhhhhhhFirep = {}
-for i=1, 64 do
-table.insert(UhhhhhhFirep, {i / 64, 0.98 + math.random() * 0.04, math.random(), math.random() - 0.5})
-end
-local UhhhhhhFirea = {
-"XX    XX XX      XX      XX      XX      XX      XX     ",
-"XX    XX XX      XX      XX      XX      XX      XX     ",
-"XX    XX XXXXXX  XXXXXX  XXXXXX  XXXXXX  XXXXXX  XXXXXX ",
-"XX    XX XX   XX XX   XX XX   XX XX   XX XX   XX XX   XX",
-"XXX  XXX XX   XX XX   XX XX   XX XX   XX XX   XX XX   XX",
-" XXXXXX  XX   XX XX   XX XX   XX XX   XX XX   XX XX   XX",
-}
-local UhhhhhhFirex = #UhhhhhhFirea[1]
-local UhhhhhhFirey = #UhhhhhhFirea
+-- artwork spec: "Uhhhhhh" drawn procedurally (rounded U / h glyphs) on a 57x15 cell grid, supersampled for smooth silhouettes
+local UhhhhhhFirea = {Word = "Uhhhhhh", Cols = 57, Rows = 15, Aspect = 1.75, Left = 1, Pitch = 8, Width = 7, Stroke = 2, Top = 4, Height = 8}
 do
-local radius = 0.1
-local ratio = (UhhhhhhFirey / UhhhhhhFirex) * 1.75
-local r2, depth = radius * radius, 1 + radius / ratio
-local rows, cols = UhhhhhhFirey, UhhhhhhFirex
-local pq = {}
-for i = 1, #UhhhhhhFirep do pq[i] = {0, 0, 0} end
-local X1, Y1, SP = {}, {}, {}
-for x = 1, cols do X1[x] = x / cols end
-for y = 1, rows do
-Y1[y] = y / rows
-local row = {}
-for x = 1, cols do row[x] = UhhhhhhFirea[y]:sub(x, x) == " " end
-SP[y] = row
+local function UhhhhhhFireInit(label, slider, pool, art)
+	local COLS, ROWS, ASP = art.Cols, art.Rows, art.Aspect
+	local N = COLS * ROWS
+	local floor, sin, cos, exp, rnd, min, max = math.floor, math.sin, math.cos, math.exp, math.random, math.min, math.max
+	local concat, fmt = table.concat, string.format
+	local NG = #art.Word
+
+	-- ===== static artwork (built once): glyph coverage, bevel lighting, fuel map, ember emitters =====
+	local GW, ST, GH = art.Width, art.Stroke, art.Height * ASP
+	local Ro = GW / 2
+	local Ri = Ro - ST
+local RiV = Ro - 2.5
+	local vcU = GH - Ro
+	local vxH = 3 * ASP
+	local vcH = vxH + Ro
+	local function inside(ch, u, v)
+		if u < 0 or u > GW or v < 0 or v > GH then return false end
+		if ch == "U" then
+			if v <= vcU then return u <= ST or u >= GW - ST end
+			local dx, dy = u - Ro, v - vcU
+			local d2 = dx * dx + dy * dy
+			return d2 <= Ro * Ro and d2 >= Ri * Ri
+		end
+		if u <= ST then return true end
+		if v < vxH then return false end
+		if v <= vcH then
+			local dx, dy = u - Ro, v - vcH
+			local d2 = dx * dx + dy * dy
+			return d2 <= Ro * Ro and dx * dx / (Ri * Ri) + dy * dy / (RiV * RiV) >= 1
+		end
+		return u >= GW - ST
+	end
+	local COV, BLUR, LIT, FUEL, GR, ENV, GCOL = {}, {}, {}, {}, {}, {}, {}
+	local SS = 4
+	for y = 1, ROWS do
+		for x = 1, COLS do
+			local hits = 0
+			for sj = 1, SS do
+				local v = ((y - 1) + (sj - 0.5) / SS - art.Top) * ASP
+				for si = 1, SS do
+					local px = (x - 1) + (si - 0.5) / SS - art.Left
+					local g = floor(px / art.Pitch) + 1
+					if g >= 1 and g <= NG and inside(art.Word:sub(g, g), px - (g - 1) * art.Pitch, v) then hits = hits + 1 end
+				end
+			end
+			COV[(y - 1) * COLS + x] = hits / (SS * SS)
+		end
+	end
+	for y = 1, ROWS do
+		for x = 1, COLS do
+			local sum = 0
+			for dy = -1, 1 do
+				local yy = min(max(y + dy, 1), ROWS)
+				for dx = -1, 1 do sum = sum + COV[(yy - 1) * COLS + min(max(x + dx, 1), COLS)] end
+			end
+			BLUR[(y - 1) * COLS + x] = sum / 9
+		end
+	end
+	local emx, emy, NE = {}, {}, 0
+	for y = 1, ROWS do
+		local ym, yp = min(max(y - 1, 1), ROWS), min(max(y + 1, 1), ROWS)
+		for x = 1, COLS do
+			local i = (y - 1) * COLS + x
+			local xm, xp = min(max(x - 1, 1), COLS), min(max(x + 1, 1), COLS)
+			local gx = (BLUR[(y - 1) * COLS + xp] - BLUR[(y - 1) * COLS + xm]) * 0.5
+			local gy = (BLUR[(yp - 1) * COLS + x] - BLUR[(ym - 1) * COLS + x]) / (2 * ASP)
+			local l = (gx * 0.62 + gy * 0.78) * 3.4
+			LIT[i] = l > 1 and 1 or (l < -1 and -1 or l)
+			local m = COV[i]
+			local a1 = y > 1 and COV[i - COLS] or 0
+			local a2 = y > 2 and COV[i - 2 * COLS] or 0
+			local top = m * (1 - a1)
+			FUEL[i] = top + m * a1 * (1 - a2) * 0.4 + m * 0.05
+			if top > 0.7 then NE = NE + 1 emx[NE], emy[NE] = x, y end
+			GR[i] = (((i * 7919) % 113) / 113 - 0.5) * 0.12
+		end
+	end
+	for x = 2, COLS - 1 do NE = NE + 1 emx[NE], emy[NE] = x, ROWS end
+	for x = 1, COLS do
+		local e = sin(3.14159265 * (x - 0.5) / COLS)
+		ENV[x] = 0.55 + 0.45 * e * e
+		local g = floor((x - 0.5 - art.Left + (art.Pitch - GW) / 2) / art.Pitch) + 1
+		GCOL[x] = g < 1 and 1 or (g > NG and NG or g)
+	end
+
+	-- ===== character ramp (15 density levels) + fire palettes =====
+	local RAMP = {[0] = " ", ".", ",", ":", ";", "-", "~", "+", "=", "*", "x", "X", "#", "%", "@"}
+	local LV = 14
+	local STOPS = {{0, 0.50, 0.08, 0.03}, {0.22, 0.82, 0.17, 0.05}, {0.48, 1, 0.42, 0.08}, {0.74, 1, 0.74, 0.22}, {1, 1, 0.95, 0.74}}
+	local function grad(u)
+		for k = 2, #STOPS do
+			local b = STOPS[k]
+			if u <= b[1] or k == #STOPS then
+				local a = STOPS[k - 1]
+				local f = (u - a[1]) / (b[1] - a[1])
+				f = f < 0 and 0 or (f > 1 and 1 or f)
+				return a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f, a[4] + (b[4] - a[4]) * f
+			end
+		end
+	end
+	local PAL, BK = {}, {}
+	for _, nb in ipairs({6, 4}) do
+		BK[nb] = {}
+		for lv = 1, LV do BK[nb][lv] = floor((lv - 1) * nb / LV) + 1 end
+	end
+	local function buildPalette(r, g, b)
+		local neutral = max(r, g, b) - min(r, g, b) < 0.22 and max(r, g, b) > 0.55
+		local dark = 0.3 * r + 0.59 * g + 0.11 * b < 0.45
+		for _, nb in ipairs({6, 4}) do
+			local t = {}
+			for k = 1, nb do
+				local u = (k - 0.5) / nb
+				local cr, cg, cb
+				if neutral then cr, cg, cb = grad(u)
+				elseif dark then
+					local f = (1 - u) * 0.6
+					cr, cg, cb = r + (1 - r) * f, g + (1 - g) * f, b + (1 - b) * f
+				else
+					local f = 0.38 + 0.62 * u
+					cr, cg, cb = r * f, g * f, b * f
+				end
+				t[k] = fmt('<font color="#%02x%02x%02x">', floor(cr * 255 + 0.5), floor(cg * 255 + 0.5), floor(cb * 255 + 0.5))
+			end
+			PAL[nb] = t
+		end
+	end
+	local tc = label.TextColor3
+	local pr, pg, pb = tc.R, tc.G, tc.B
+	buildPalette(pr, pg, pb)
+
+	-- ===== runtime state (all preallocated; nothing is created per frame) =====
+	local H, H2, SPK = {}, {}, {}
+	for i = 1, N do H[i], H2[i], SPK[i] = 0, 0, 0 end
+	local cRise, cCoal, cWig, sB, cB = {}, {}, {}, {}, {}
+	for x = 1, COLS do cRise[x], cCoal[x], cWig[x], sB[x], cB[x] = 0, 0, 0, sin(x * 0.23), cos(x * 0.23) end
+	local rWind, rDec, rFac, rAmp, sA, cA, nA, nC, nS, nT = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+	local xA, xC, xS, xT = {}, {}, {}, {}
+	for y = 1, ROWS do rFac[y] = (ROWS - y) / (ROWS - 1) rAmp[y], rWind[y], rDec[y], sA[y], cA[y] = 0.42 * rFac[y], 0, 1, 0, 1 end
+	local GF = {}
+	for g = 1, NG do GF[g] = 1 end
+	local PN = 36
+	for i = 1, PN do pool[i] = {x = 0, y = 0, vx = 0, vy = 0, age = 0, life = 1, ph = 0, fq = 1, k = 1, on = false} end
+	local PCAP, PRATE = {[1] = 12, [2] = 22, [3] = PN}, {[1] = 7, [2] = 11, [3] = 15}
+	local TM, burst, nextBurst, spawnAcc, wnow = 0, 0, 3 + rnd() * 2, 0, 0
+	local buf = {}
+
+	local function stepFire(dt, q)
+		TM = TM + dt
+		nextBurst = nextBurst - dt
+		if nextBurst <= 0 then burst, nextBurst = 1, 4 + rnd() * 5 end
+		burst = burst * exp(-2.2 * dt)
+		local inten = 0.94 + 0.07 * sin(TM * 0.9) + 0.05 * sin(TM * 2.3 + 1.3) + 0.38 * burst
+		for g = 1, NG do GF[g] = 0.72 + 0.28 * sin(TM * (4.6 + 0.8 * g) + g * 2.3) * (0.65 + 0.35 * sin(TM * 1.7 + g * 1.1)) end
+		local wb = 1.5 + 1.2 * sin(TM * 0.41) + 0.55 * sin(TM * 1.13 + 0.7)
+		wnow = wb
+		for y = 1, ROWS do
+			local f = rFac[y]
+			rWind[y] = wb * (0.2 + 0.8 * f) + 1.2 * f * sin(y * 0.62 - TM * 2.6)
+			rDec[y] = exp(-(0.25 + 0.7 * f) * dt)
+			local ph = y * 0.5 - TM * 2.2 + 0.8 * sin(TM * 0.6)
+			sA[y], cA[y] = sin(ph), cos(ph)
+			nA[y], nC[y], nS[y], nT[y] = sin(y * 0.6 + TM * 4.4), cos(y * 0.6 + TM * 4.4), sin(y * 0.3 - TM * 1.3), cos(y * 0.3 - TM * 1.3)
+		end
+		local cap = inten > 1 and 1 or inten
+		for x = 1, COLS do
+			local u = x * 0.83
+			local tg = 0.5 + 0.28 * sin(u + TM * 2.7) + 0.22 * sin(u * 0.47 - TM * 1.6 + 1.9)
+			cRise[x] = (7.5 + 3 * tg) * (0.9 + 0.1 * inten)
+			cCoal[x] = ENV[x] * cap * (0.88 + 0.12 * sin(x * 0.61 + TM * 2.3))
+			cWig[x] = sin(x * 0.71 + TM * 3.3)
+			xA[x], xC[x], xS[x], xT[x] = sin(x * 0.45), cos(x * 0.45), sin(x * 0.21 + TM * 0.9), cos(x * 0.21 + TM * 0.9)
+		end
+		-- flame field: semi-Lagrangian advection (rise + wind + turbulence), cooling, letter fuel
+		local src, dst, fg = H, H2, 16 * inten
+		for y = 1, ROWS do
+			local base, wy, dec, f = (y - 1) * COLS, rWind[y], rDec[y], rFac[y]
+			for x = 1, COLS do
+				local sx = x - (wy + 0.9 * f * cWig[x]) * dt
+				local sy = y + cRise[x] * dt
+				if sx < 1 then sx = 1 elseif sx > COLS then sx = COLS end
+				if sy > ROWS then sy = ROWS end
+				local x0, y0 = floor(sx), floor(sy)
+				local fx, fy = sx - x0, sy - y0
+				local r0 = (y0 - 1) * COLS
+				local r1 = y0 < ROWS and r0 + COLS or r0
+				local x1 = x0 < COLS and x0 + 1 or x0
+				local a, b, c, d = src[r0 + x0], src[r0 + x1], src[r1 + x0], src[r1 + x1]
+				local top = a + (b - a) * fx
+				local nz = 0.5 + 0.25 * (nA[y] * xC[x] + nC[y] * xA[x] + nS[y] * xT[x] + nT[y] * xS[x])
+				local h = (top + (c + (d - c) * fx - top) * fy) * dec - (1.2 - 0.9 * nz) * 1.3 * dt
+				local fu = FUEL[base + x]
+				if fu > 0 then h = h + fu * fg * GF[GCOL[x]] * dt end
+				if h < 0 then h = 0 elseif h > 1 then h = 1 end
+				dst[base + x] = h
+			end
+		end
+		local b1, b2 = (ROWS - 1) * COLS, (ROWS - 2) * COLS
+		for x = 1, COLS do
+			local c = cCoal[x]
+			if dst[b1 + x] < c then dst[b1 + x] = c end
+			if dst[b2 + x] < c * 0.7 then dst[b2 + x] = c * 0.7 end
+		end
+		H, H2 = dst, src
+
+		-- embers & sparks (fixed pool, recycled)
+		for i = 1, N do SPK[i] = 0 end
+		spawnAcc = spawnAcc + dt * PRATE[q] * (0.55 + 0.7 * inten) * (1 + 3 * burst)
+		local cp = PCAP[q]
+		while spawnAcc >= 1 do
+			spawnAcc = spawnAcc - 1
+			local p
+			for k = 1, cp do
+				if not pool[k].on then p = pool[k] break end
+			end
+			if not p then spawnAcc = 0 break end
+			local e = floor(rnd() * NE) + 1
+			local sp = rnd() < 0.3
+			p.x, p.y = emx[e] + (rnd() - 0.5), emy[e] - rnd() * 0.6
+			p.k = sp and 2 or 1
+			p.vy = sp and (7 + rnd() * 6) or (2.4 + rnd() * 3.2)
+			p.vx = (rnd() - 0.5) * (sp and 5 or 1.6)
+			p.life = sp and (0.6 + rnd() * 0.9) or (1.8 + rnd() * 2.4)
+			p.age, p.ph, p.fq, p.on = 0, rnd() * 6.283, 2.5 + rnd() * 3, true
+		end
+		for k = 1, PN do
+			local p = pool[k]
+			if p.on then
+				local age = p.age + dt
+				p.age = age
+				if age >= p.life then
+					p.on = false
+				else
+					p.vy = p.vy * (1 - 0.45 * dt)
+					local hf = (ROWS - p.y) / ROWS
+					p.x = p.x + (p.vx + wnow * (0.3 + 0.9 * hf) + sin(p.ph + TM * p.fq) * (p.k == 1 and 1.4 or 0.6)) * dt
+					p.y = p.y - p.vy * dt
+					local px, py = p.x, p.y
+					if py < 1 or px < 1 or px > COLS or py > ROWS then
+						p.on = false
+					else
+						local u = 1 - age / p.life
+						local amt = u * u * (0.75 + 0.25 * sin(TM * (9 + p.fq * 2) + p.ph)) * (p.k == 2 and 1 or 0.85)
+						local x0, y0 = floor(px), floor(py)
+						local fx, fy = px - x0, py - y0
+						local x1, y1 = x0 < COLS and x0 + 1 or x0, y0 < ROWS and y0 + 1 or y0
+						for n = 1, 4 do
+							local cx, cy, w
+							if n == 1 then cx, cy, w = x0, y0, (1 - fx) * (1 - fy)
+							elseif n == 2 then cx, cy, w = x1, y0, fx * (1 - fy)
+							elseif n == 3 then cx, cy, w = x0, y1, (1 - fx) * fy
+							else cx, cy, w = x1, y1, fx * fy end
+							w = w * 1.6
+							local s = amt * (w > 1 and 1 or w)
+							local idx = (cy - 1) * COLS + cx
+							if SPK[idx] < s then SPK[idx] = s end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local function render(q, tr)
+		local g0 = (tr - 0.1) / 0.9
+		local bgOn = g0 > 0
+		local gain = bgOn and g0 ^ 0.35 or 0
+		local sgain = bgOn and (0.45 + 0.55 * gain) or 0
+		local shim = q == 3 and 1 or (q == 2 and 0.55 or 0)
+		local nb = q == 3 and 6 or (q == 2 and 4 or 0)
+		local bk, tags = BK[nb], PAL[nb]
+		local Hh, S, cov, lit, gr = H, SPK, COV, LIT, GR
+		local bn = 0
+		for y = 1, ROWS do
+			local base = (y - 1) * COLS
+			local sa, ca, amp = sA[y], cA[y], rAmp[y] * shim
+			local cur = 0
+			for x = 1, COLS do
+				local i = base + x
+				local m, l
+				if shim > 0 then
+					local fx = x + amp * (sa * cB[x] + ca * sB[x])
+					if fx < 1 then fx = 1 elseif fx > COLS then fx = COLS end
+					local x0 = floor(fx)
+					local j = base + x0
+					local jn = x0 < COLS and j + 1 or j
+					local f = fx - x0
+					m = cov[j] + (cov[jn] - cov[j]) * f
+					l = lit[j] + (lit[jn] - lit[j]) * f
+				else
+					m, l = cov[i], lit[i]
+				end
+				local h, s = Hh[i], S[i]
+				local hb = h * (0.7 + 0.3 * h)
+				local b = 0
+				if bgOn then
+					local bg = hb * gain
+					b = bg + s * sgain * (1 - bg)
+				end
+				if m > 0.003 then
+					local lb = 0.72 + 0.26 * l + 0.16 * hb + 0.4 * s
+					if lb > 1 then lb = 1 end
+					b = b + (lb - b) * m
+				end
+				local lv = floor(b * LV + 0.15 + gr[i])
+				if lv > LV then lv = LV end
+				bn = bn + 1
+				if lv <= 0 then
+					buf[bn] = " "
+				else
+					if nb > 0 then
+						local cb = bk[lv]
+						if cb ~= cur then
+							if cur ~= 0 then buf[bn] = "</font>" bn = bn + 1 end
+							buf[bn] = tags[cb]
+							bn = bn + 1
+							cur = cb
+						end
+					end
+					buf[bn] = RAMP[lv]
+				end
+			end
+			if cur ~= 0 then bn = bn + 1 buf[bn] = "</font>" end
+			if y < ROWS then bn = bn + 1 buf[bn] = "\n" end
+		end
+		return concat(buf, "", 1, bn)
+	end
+
+	for _ = 1, 48 do stepFire(1 / 30, 3) end -- warm start so the flames are already burning when the page opens
+
+	-- no work while the Credits page is hidden; 30 fps (20 fps when low-end / governor-throttled); the label is only written when the text changes
+	local acc, lastText, palT = 0, nil, 0
+	Util.AddDecoStep(function(t, dt)
+		if not CreditsPage.Visible or not Util.IsGuiVisible(label) then return end
+		local FXg = Util.FX
+		local low = FXg.IsLowEnd()
+		local gov = FXg.Gov and FXg.Gov.Stride > 1
+		acc = acc + (dt or 0)
+		if acc < ((low or gov) and 1 / 20 or 1 / 30) - 0.002 then return end
+		dt, acc = acc, 0
+		if dt > 0.1 then dt = 0.1 end
+		local q = low and 1 or (gov and 2 or 3)
+		palT = palT - dt
+		if palT <= 0 then
+			palT = 0.5
+			local c = label.TextColor3
+			if c.R ~= pr or c.G ~= pg or c.B ~= pb then
+				pr, pg, pb = c.R, c.G, c.B
+				buildPalette(pr, pg, pb)
+				lastText = nil
+			end
+		end
+		stepFire(dt, q)
+		local tr = slider.Value
+		tr = tr < 0 and 0 or (tr > 1 and 1 or tr)
+		local s = render(q, tr)
+		if s ~= lastText then lastText = s label.Text = s end
+	end)
 end
-local cells, lines, lastText, fireAcc = {}, {}, nil, 0
--- same fire as before (identical per-cell result), but: no work while the Credits page is hidden, a particle that cannot reach a cell is skipped
--- before sqrt/pow, no per-frame table churn, and it runs at 30 fps (20 fps when the UI is stressed) instead of every render frame
-Util.AddDecoStep(function(t, dt)
-if not CreditsPage.Visible or not Util.IsGuiVisible(UhhhhhhFire) then return end
-local FXg = Util.FX
-fireAcc = fireAcc + (dt or 0)
-if fireAcc < ((FXg.IsLowEnd() or (FXg.Gov and FXg.Gov.Stride > 1)) and 1 / 20 or 1 / 30) then return end
-dt, fireAcc = fireAcc, 0
-local tr = math.clamp(UhhhhhhFiret.Value, 0, 1)
-local n = 0
-for _, v in UhhhhhhFirep do
-v[1] = v[1] + dt * v[2]
-if v[1] >= 1 then
-v[1], v[2], v[3], v[4] = 0, 0.98 + math.random() * 0.04, math.random(), math.random() - 0.5
-end
-n = n + 1
-local q = pq[n]
-q[1], q[2], q[3] = 1 - v[1], v[3] + v[4] * v[1] * 0.25, (1 - v[1]) * depth
-end
-for y = 1, rows do
-local y1, sp = Y1[y], SP[y]
-for x = 1, cols do
-local ch
-local isSp = sp[x]
-if isSp and tr < 0.1 then
-ch = " "
-else
-local bright, x1 = 0, X1[x]
-for i = 1, n do
-local q = pq[i]
-local x3 = q[2] - x1
-if x3 < radius and x3 > -radius then
-local y3 = (q[3] - y1) * ratio
-local d2 = x3 * x3 + y3 * y3
-if d2 < r2 then
-local a = (1 - math.sqrt(d2) / radius) * q[1]
-bright = bright + (1.0 - bright) * (a ^ 1.5)
-end
-end
-end
-if isSp then bright = bright * tr end
-if bright > 0.9 then ch = "Q"
-elseif bright > 0.8 then ch = "W"
-elseif bright > 0.7 then ch = "#"
-elseif bright > 0.6 then ch = "S"
-elseif bright > 0.5 then ch = "l"
-elseif bright > 0.4 then ch = "v"
-elseif bright > 0.3 then ch = "|"
-elseif bright > 0.2 then ch = ";"
-elseif bright > 0.1 then ch = "."
-else ch = " " end
-end
-cells[x] = ch
-end
-lines[y] = table.concat(cells, "", 1, cols)
-end
-local s = table.concat(lines, "\n", 1, rows)
-if s ~= lastText then lastText = s UhhhhhhFire.Text = s end
-end)
+UhhhhhhFireInit(UhhhhhhFire, UhhhhhhFiret, UhhhhhhFirep, UhhhhhhFirea)
 end
 UI.CreateSeparator(CreditsPage)
 UI.CreateText(CreditsPage, "<b>* Credits to *</b>", 15, Enum.TextXAlignment.Center)
@@ -78404,7 +78851,9 @@ do
 local built, sec = pcall(function()
 local Security = {
 Findings = {},
-Stats = {Scanned = 0, PassScanned = 0, Flagged = 0, Deleted = 0, Skipped = 0, Passes = 0},
+Errors = {},
+Skipped = {},
+Stats = {Scanned = 0, PassScanned = 0, Flagged = 0, Deleted = 0, Skipped = 0, Passes = 0, Errors = 0, Quarantined = 0},
 StatusText = "Security: starting...",
 OnStatus = nil,
 OnMalicious = nil,
@@ -78414,6 +78863,7 @@ _idle = false,
 _scanNow = false,
 _frame = 1 / 60,
 _conn = nil,
+_cache = {},
 }
 local Stats = Security.Stats
 local cfg = {
@@ -78423,11 +78873,31 @@ PassDelay = 300,
 ChunkSize = 65536,
 ChunkOverlap = 4096,
 LineWindow = 3000,
-MaxFileBytes = 3 * 1024 * 1024,
+LoaderWindow = 400,
+BlobMin = 300,
+MaxLoaderChecks = 3000,
+MaxFileBytes = 6 * 1024 * 1024,
+GateMaxBytes = 16 * 1024 * 1024,
 MaxFrameTime = 1 / 24,
+SliceBudget = 0.006,
 EscapeLimit = 400,
+EscapeRuns = 20,
+HexIdentLimit = 40,
+TinyJoinLimit = 40,
 MaliciousScore = 100,
 SuspiciousScore = 60,
+LowScore = 25,
+CategoryCap = 90,
+RestFactor = 0.5,
+SuspiciousPolicy = "warn",
+BlockOnScanError = false,
+BlockOversize = true,
+AutoDeleteMinConfidence = 0.75,
+MaxDepth = 12,
+MaxFiles = 30000,
+MaxFindings = 200,
+MaxLogged = 100,
+CacheFullRescanEvery = 6,
 Roots = {"UhhhhhhReanim/Modules", ""},
 SkipDirs = {
 "uhhhhhhreanim/content",
@@ -78439,28 +78909,40 @@ ReportOnlyDirs = {"uhhhhhhreanim/builtinmodules"},
 Extensions = {lua = true, luau = true, txt = true},
 QuarantineDir = "UhhhhhhReanim/Quarantine",
 }
-local function J(...) return table.concat({...}) end
-local SIGS = {
-{id = "cookie_header", w = 100, f = J("_|warning:-do-not-", "share-this"), desc = "contains a Roblox login-cookie header"},
-{id = "cookie_ref", w = 100, f = J("roblo", "security"), desc = "reads or sends the account login cookie"},
-{id = "webhook", w = 60, any = {J("/api/web", "hooks/"), J("webhook.", "lewisakura"), J("hooks.", "hyra.io")}, desc = "sends data to a Discord webhook"},
-{id = "buy_prompt", w = 60, p = true, f = J("prompt%a*", "purchase"), desc = "pops up Robux purchase prompts"},
-{id = "trade_api", w = 60, f = J("trades.", "roblox.com"), desc = "uses the Roblox trade API"},
-{id = "buy_api", w = 60, f = J("/purchases/", "products"), desc = "calls the Roblox purchase API directly"},
-{id = "auth_api", w = 60, any = {J("auth.", "roblox.com"), J("accountsettings.", "roblox.com"), J("billing.", "roblox.com")}, desc = "talks to the Roblox account/auth API"},
-{id = "payouts", w = 60, f = J("/pay", "outs"), desc = "touches group payout endpoints"},
-{id = "stealer_words", w = 60, any = {J("cookie", "logger"), J("cookie", "grabber"), J("token", "grabber"), J("robux", "stealer"), J("steal", "cookie"), J("grab", "ify"), J("ip", "logger")}, desc = "contains stealer / IP-logger keywords"},
-{id = "decode_exec", w = 40, f = J("loadstring(string.", "char("), desc = "runs a decoded string.char payload"},
-{id = "balance_api", w = 25, f = J("economy.", "roblox.com"), desc = "queries the Roblox economy API"},
-{id = "csrf", w = 25, f = J("x-csrf-", "token"), desc = "handles X-CSRF tokens"},
-{id = "obfuscator", w = 25, any = {J("moon", "sec"), J("lur", "aph"), J("iron", "brew")}, desc = "is hidden by a script obfuscator"},
-{id = "paste_host", w = 25, any = {J("pastebin.com/", "raw"), J("hast", "ebin"), J("rentry", ".co"), J("ghost", "bin"), J("paste", ".ee/r")}, desc = "loads code from an editable paste site"},
-}
-local SPAWNERS = {
-{J("task", ".spawn"), 100},
-{J("task", ".defer"), 60},
-{J("task", ".delay"), 60},
-{J("coroutine", ".wrap"), 60},
+Security.Config = cfg
+local function K(s) return (s:gsub("|", ""):lower()) end
+local function KL(t)
+local o = {}
+for i = 1, #t do o[i] = K(t[i]) end
+return o
+end
+local LS, HG, GA, HP, PA = K("load|string"), K("http|get"), K("get|async"), K("http|post"), K("post|async")
+local REQ = "request%w*%s*[%({]"
+local SPAWNERS = KL{"task|.spawn", "task|.defer", "task|.delay", "coroutine|.wrap"}
+local DECODERS = KL{"string.|char", "base|64", "b|64", "decod", "|reverse(", "from|hex", "utf8.|char", "bit32.|bxor"}
+local TRUSTED = KL{"raw.github|usercontent.com", "github.com", "gitlab.com", "roblox.com", "rbxcdn.com", "cdn.jsdelivr.net"}
+local OBF = {obfuscator = 2, esc_dense = 2, obf_ident = 2, concat_build = 2, env_exec = 2, decode_exec = 2, spawn_blob = 2, byte_array = 1, b64_payload = 1, embedded_exec = 1}
+local AX, WF, AF, LF, DF, DD, B64A = K("auto|exec"), K("write|file"), K("append|file"), K("list|files"), K("del|file%s*%("), K("del|folder%s*%("), K("01234|56789+/")
+local RULES = {
+{id = "cookie_header", cat = "cred", w = 100, crit = true, grp = "cookie", f = K("_|warning:-do-not-|share-this"), desc = "contains a Roblox login-cookie value"},
+{id = "cookie_ref", cat = "cred", w = 70, grp = "cookie", f = K("roblo|security"), desc = "reads or references the account login cookie"},
+{id = "cookie_hdr", cat = "cred", w = 45, p = "headers%s*=%s*{[^}]-cookie[\"']?%s*[=:]", desc = "attaches a Cookie header to a request"},
+{id = "webhook", cat = "exfil", w = 60, grp = "webhook", any = KL{"/api/web|hooks/", "webhook.|lewisakura", "hooks.|hyra.io"}, desc = "sends data to a Discord webhook"},
+{id = "ip_logger", cat = "exfil", w = 60, any = KL{"grabi|fy.link", "iplog|ger.org", "iplog|ger.com", "2n|o.co", "yi|p.su", "blas|ze.tk", "leancod|ing.co", "stop|ify.co"}, desc = "points at an IP-logger link"},
+{id = "ip_lookup", cat = "intel", w = 30, any = KL{"api.ip|ify.org", "ip-|api.com", "ipin|fo.io", "checkip.ama|zonaws.com", "icanhaz|ip.com", "ifconfig.|me", "ipa|pi.co", "wtfis|myip.com", "ident.|me"}, desc = "looks up the player's public IP address"},
+{id = "hwid", cat = "intel", w = 20, any = KL{"hw|id", "clientid"}, desc = "reads a hardware / client identifier"},
+{id = "acct_info", cat = "intel", w = 12, any = KL{"account|age", "membership|type"}, desc = "collects account age / membership"},
+{id = "stealer_words", cat = "kw", w = 50, any = KL{"cookie|logger", "cookie|grabber", "token|grabber", "robux|stealer", "steal|cookie", "gra|bify", "ip|logger"}, desc = "contains stealer / IP-logger keywords"},
+{id = "trade_api", cat = "acct", w = 60, f = K("trades.|roblox.com"), desc = "uses the Roblox trade API"},
+{id = "buy_api", cat = "acct", w = 60, f = K("/purchases/|products"), desc = "calls the Roblox purchase API directly"},
+{id = "auth_api", cat = "acct", w = 60, any = KL{"auth.|roblox.com", "accountsettings.|roblox.com", "billing.|roblox.com"}, desc = "talks to the Roblox account/auth API"},
+{id = "payouts", cat = "acct", w = 60, f = K("/pay|outs"), desc = "touches group payout endpoints"},
+{id = "buy_prompt", cat = "acct", w = 60, p = K("prompt%a*|purchase"), desc = "pops up Robux purchase prompts"},
+{id = "balance_api", cat = "acct", w = 15, f = K("economy.|roblox.com"), desc = "queries the Roblox economy API"},
+{id = "csrf", cat = "acct", w = 15, f = K("x-csrf-|token"), desc = "handles X-CSRF tokens"},
+{id = "obfuscator", cat = "obf", w = 25, any = KL{"moon|sec", "lur|aph", "iron|brew", "luaobfus|cator"}, desc = "is hidden by a script obfuscator"},
+{id = "paste_host", cat = "net", w = 25, any = KL{"pastebin.com/|raw", "hast|ebin", "rentry|.co", "ghost|bin", "paste|.ee/r", "paste|fy", "controlc|.com", "paste.|gg"}, desc = "loads code from an editable paste site"},
+{id = "env_exec", cat = "obf", w = 20, p = "[%[%(]%s*[\"']" .. K("load|string") .. "[\"']%s*[%]%)]", desc = "calls the code loader through an environment lookup to hide it"},
 }
 local function normalize(p) return (tostring(p):gsub("\\", "/")) end
 local function shortName(p) return normalize(p):match("([^/]+)$") or tostring(p) end
@@ -78475,14 +78957,19 @@ local function shouldScan(path)
 local ext = shortName(path):match("%.([%w_]+)$")
 return ext ~= nil and cfg.Extensions[ext:lower()] == true
 end
-local function lineOf(content, abs)
-if not abs then return nil end
-return select(2, content:sub(1, abs):gsub("\n", "")) + 1
+local function log(text)
+pcall(function() InitLogsText.Add("\n[SECURITY] " .. text) end)
 end
-local function addHit(state, content, id, weight, desc, abs)
-if state.hits[id] then return end
-state.hits[id] = {id = id, weight = weight, desc = desc, line = lineOf(content, abs)}
-state.score += weight
+local function notify(text)
+pcall(Util.UINotify, text)
+end
+local function status(prefix)
+local text = string.format("%s | scanned this pass: %d | flagged: %d | deleted: %d", prefix, Stats.PassScanned, Stats.Flagged, Stats.Deleted)
+if Stats.Errors > 0 or Stats.Skipped > 0 then
+text = text .. string.format(" | errors: %d | skipped: %d", Stats.Errors, Stats.Skipped)
+end
+Security.StatusText = text
+if Security.OnStatus then pcall(Security.OnStatus, text) end
 end
 local function reasonText(report, n)
 local out = {}
@@ -78492,141 +78979,595 @@ out[i] = r.desc .. (r.line and (" (line " .. r.line .. ")") or "")
 end
 return table.concat(out, "; ")
 end
-local function log(text)
-pcall(function() InitLogsText.Add("\n[SECURITY] " .. text) end)
+local function slice(state, gen)
+if not gen then return true end
+local budget = cfg.SliceBudget
+if Security._frame > cfg.MaxFrameTime then budget = budget * 0.5 end
+if os.clock() - state.t0 >= budget then
+task.wait()
+if Security._gen ~= gen then return false end
+state.t0 = os.clock()
 end
-local function notify(text)
-pcall(Util.UINotify, text)
+return true
 end
-local function status(prefix)
-local text = string.format("%s | scanned this pass: %d | flagged: %d | deleted: %d", prefix, Stats.PassScanned, Stats.Flagged, Stats.Deleted)
-Security.StatusText = text
-if Security.OnStatus then pcall(Security.OnStatus, text) end
+local function count(s, p)
+local _, n = s:gsub(p, "")
+return n
 end
-local function scanChunk(content, pos, state)
-local low = content:sub(pos, pos + cfg.ChunkSize + cfg.ChunkOverlap - 1):lower()
-local hits, flags = state.hits, state.flags
-for i = 1, #SIGS do
-local sig = SIGS[i]
-if not hits[sig.id] then
-local at
-if sig.any then
-for j = 1, #sig.any do
-at = low:find(sig.any[j], 1, true)
-if at then break end
+local function maskComments(content, state, gen)
+local parts, np, i, last, n, tick = {}, 0, 1, 1, #content, 0
+while true do
+local s = content:find("[%-\"'`%[]", i)
+if not s then break end
+local c = content:byte(s)
+if c == 45 then
+if content:byte(s + 1) == 45 then
+np += 1
+parts[np] = content:sub(last, s - 1)
+local lv = content:match("^%[(=*)%[", s + 2)
+local e
+if lv then
+local _, ce = content:find("]" .. lv .. "]", s + 4 + #lv, true)
+e = ce or n
+else
+local nl = content:find("\n", s + 2, true)
+e = nl and nl - 1 or n
+end
+local body = content:sub(s, e)
+if not state.banner and #body < 600 then
+local lb = body:lower()
+if lb:find(K("lur|aph"), 1, true) or lb:find(K("moon|sec"), 1, true) or lb:find(K("iron|brew"), 1, true) or lb:find("obfuscat", 1, true) then
+state.banner = s
+end
+end
+np += 1
+parts[np] = (body:gsub("[^\n]", " "))
+i = e + 1
+last = i
+else
+i = s + 1
+end
+elseif c == 91 then
+local lv = content:match("^%[(=*)%[", s)
+if lv then
+local _, ce = content:find("]" .. lv .. "]", s + 2 + #lv, true)
+i = (ce or n) + 1
+else
+i = s + 1
 end
 else
-at = low:find(sig.f, 1, not sig.p)
+local j = s + 1
+local stop = c == 34 and "[\\\"\n]" or (c == 39 and "[\\'\n]" or "[\\`]")
+while true do
+local k = content:find(stop, j)
+if not k then j = n + 1 break end
+local ch = content:byte(k)
+if ch == 92 then
+j = k + 2
+else
+j = k + 1
+break
 end
-if at then addHit(state, content, sig.id, sig.w, sig.desc, pos + at - 1) end
+end
+i = j
+end
+tick += 1
+if tick % 64 == 0 and not slice(state, gen) then return nil end
+end
+np += 1
+parts[np] = content:sub(last)
+return table.concat(parts)
+end
+local function hexRepl(h)
+local b = tonumber(h, 16)
+if b == 10 or b == 13 then return nil end
+return string.char(b)
+end
+local function decRepl(d)
+local b = tonumber(d)
+if b > 255 or b == 10 or b == 13 then return nil end
+return string.char(b)
+end
+local function foldRepl(_, w1, w2)
+return ((w1 .. w2):gsub("[^\n]", ""))
+end
+local RUNDEC = "\\%d%d?%d?\\%d%d?%d?\\%d%d?%d?\\%d%d?%d?"
+local RUNHEX = "\\x%x%x\\x%x%x\\x%x%x\\x%x%x"
+local TINYP = "[\"'][^\"'\n][^\"'\n]?[\"']%s*%.%.%s*[\"']"
+local ILP = string.rep("[il1]", 9)
+local function prepare(content, state, gen)
+local masked = maskComments(content, state, gen)
+if not masked then return nil end
+local n, out, no, pos = #masked, {}, 0, 1
+while pos <= n do
+local stop = pos + cfg.ChunkSize - 1
+if stop >= n then
+stop = n
+else
+local nl = masked:find("\n", stop, true)
+if nl and nl - stop <= 2048 then
+stop = nl
+else
+local br = masked:find("[%s,;%(%)]", stop)
+if br and br - stop <= 256 then stop = br end
+end
+end
+local blk = masked:sub(pos, stop)
+if stop < n and blk:find("%.%.%s*$") then
+local nl = masked:find("\n", stop + 1, true)
+if nl and nl - stop <= 2048 then
+stop = nl
+blk = masked:sub(pos, stop)
+end
+end
+blk = blk:gsub("\\\\", "\1\1")
+state.escRuns += count(blk, RUNDEC) + count(blk, RUNHEX)
+local x, d
+blk, x = blk:gsub("\\x(%x%x)", hexRepl)
+blk, d = blk:gsub("\\(%d%d?%d?)", decRepl)
+state.esc += x + d
+blk = blk:gsub("\1\1", "\\\\"):lower()
+state.tiny += count(blk, TINYP)
+blk = blk:gsub("([\"'`])(%s*)%.%.(%s*)([\"'`])", function(_, w1, w2) return foldRepl(nil, w1, w2) end)
+state.hexid += count(blk, "_0x%x%x%x%x") + count(blk, ILP)
+no += 1
+out[no] = blk
+pos = stop + 1
+if pos <= n and not slice(state, gen) then return nil end
+end
+return table.concat(out)
+end
+local function add(state, id, cat, w, desc, abs, o)
+local e = state.ev[id]
+if e then
+e.count += 1
+if w > e.weight then
+e.weight = w
+e.desc = desc
+end
+return e
+end
+e = {id = id, cat = cat, weight = w, desc = desc, abs = abs, count = 1}
+if o then
+e.crit = o.crit
+e.grp = o.grp
+end
+state.ev[id] = e
+return e
+end
+local function isPrivate(ip)
+if ip:find("^127%.") or ip:find("^10%.") or ip:find("^192%.168%.") or ip:find("^0%.") then return true end
+local b = tonumber(ip:match("^172%.(%d+)%."))
+return b ~= nil and b >= 16 and b <= 31
+end
+local function trusted(host)
+for i = 1, #TRUSTED do
+local t = TRUSTED[i]
+if host == t or host:sub(-#t - 1) == "." .. t then return true end
+end
+return false
+end
+local B64P = string.rep("[%w%+/]", 160)
+local NUMLIST = string.rep("%d+%s*,%s*", 20)
+local function scanChunk(state, seg, base, zone)
+local ev, fl = state.ev, state.flags
+for i = 1, #RULES do
+local r = RULES[i]
+if not ev[r.id] then
+local at
+if r.any then
+for j = 1, #r.any do
+local a = seg:find(r.any[j], 1, true)
+if a and (not at or a < at) then at = a end
+end
+elseif r.p then
+at = seg:find(r.p)
+else
+at = seg:find(r.f, 1, true)
+end
+if at and at <= zone then add(state, r.id, r.cat, r.w, r.desc, base + at - 1, r) end
+end
+end
+local init, cnt = 1, 0
+while cnt < cfg.MaxLoaderChecks do
+local s, e = seg:find(LS, init, true)
+if not s or s > zone then break end
+cnt += 1
+init = e + 1
+local abs = base + s - 1
+fl.ls = fl.ls or abs
+local w = seg:sub(e + 1, e + cfg.LoaderWindow)
+if w:find(HG, 1, true) or w:find(GA, 1, true) or w:find(REQ) then
+local host = w:match("https?://([%w%.%-_]+)")
+local wt, d
+if not host then
+wt, d = 15, "downloads and runs code from a computed address"
+elseif trusted(host) then
+wt, d = 8, "downloads and runs code from " .. host
+else
+wt, d = 28, "downloads and runs code from unrecognized host " .. host
+end
+add(state, "remote_exec", "rce", wt, d, abs)
+fl.remote = fl.remote or abs
+end
+local head = w:sub(1, 160)
+for j = 1, #DECODERS do
+if head:find(DECODERS[j], 1, true) then
+add(state, "decode_exec", "rce", 45, "executes a string that was decoded at runtime", abs)
+break
+end
+end
+local bs, be, eq = w:find("^[%s%(]*%[(=*)%[")
+if bs then
+local ce = seg:find("]" .. eq .. "]", e + be + 1, true)
+if ((ce and ce - e - be) or (#seg - e)) >= cfg.BlobMin then
+add(state, "embedded_exec", "obf", 20, "runs a large string blob embedded in the script", abs)
+end
 end
 end
 for i = 1, #SPAWNERS do
-local needle, weight = SPAWNERS[i][1], SPAWNERS[i][2]
-local id = "spawn_payload_" .. i
-if not hits[id] then
-local init = 1
-while true do
-local s, e = low:find(needle, init, true)
-if not s then break end
-local win = low:sub(e + 1, e + cfg.LineWindow)
+local needle = SPAWNERS[i]
+local ini, c = 1, 0
+while c < 200 do
+local s, e = seg:find(needle, ini, true)
+if not s or s > zone then break end
+c += 1
+ini = e + 1
+local win = seg:sub(e + 1, e + cfg.LineWindow)
 local nl = win:find("\n", 1, true)
 if nl then win = win:sub(1, nl - 1) end
-if win:find("%[=*%[") then
-addHit(state, content, id, weight, "hides a long-string payload right after " .. needle, pos + s - 1)
-break
+local bs, be, eq = win:find("%[(=*)%[")
+if bs then
+local ce = seg:find("]" .. eq .. "]", e + be + 1, true)
+if ((ce and ce - e - bs) or (#seg - e - bs)) >= cfg.BlobMin then
+if win:sub(1, bs):find(LS, 1, true) then
+add(state, "spawn_exec_blob", "rce", 95, "spawns a loader for a hidden long-string payload", base + s - 1)
+else
+add(state, "spawn_blob", "obf", 55, "hides a long-string payload right after " .. needle, base + s - 1)
 end
-init = e + 1
-end
-end
-end
-if not hits.raw_ip then
-for ip in low:gmatch("https?://(%d+%.%d+%.%d+%.%d+)") do
-if not (ip:find("^127%.") or ip:find("^10%.") or ip:find("^192%.168%.") or ip:find("^0%.")) then
-addHit(state, content, "raw_ip", 25, "talks to a bare IP address", nil)
 break
 end
 end
 end
-if not flags.ls and low:find("loadstring", 1, true) then flags.ls = true end
-if not flags.http and (low:find("httpget", 1, true) or low:find("httppost", 1, true) or low:find("getasync", 1, true) or low:find("postasync", 1, true)) then
-flags.http = true
 end
-if not flags.spawn and (low:find(SPAWNERS[1][1], 1, true) or low:find(SPAWNERS[4][1], 1, true)) then
-flags.spawn = true
+if not ev.raw_ip then
+local ini = 1
+while true do
+local s, e, ip = seg:find("https?://(%d+%.%d+%.%d+%.%d+)", ini)
+if not s or s > zone then break end
+ini = e + 1
+if not isPrivate(ip) then
+add(state, "raw_ip", "net", 25, "talks to a bare IP address", base + s - 1)
+break
 end
-state.esc += select(2, low:gsub("\\x%x%x", "")) + select(2, low:gsub("\\%d%d%d", ""))
 end
-function Security.Analyze(content, gen)
-local state = {score = 0, hits = {}, flags = {}, esc = 0}
-local n, pos = #content, 1
+end
+if not fl.get and (seg:find(HG, 1, true) or seg:find(GA, 1, true) or seg:find(REQ)) then fl.get = base end
+if not fl.send then
+if seg:find(HP, 1, true) or seg:find(PA, 1, true) then
+fl.send = base
+else
+local ini, c = 1, 0
+while c < 100 do
+local s, e = seg:find(REQ, ini)
+if not s or s > zone then break end
+c += 1
+ini = e + 1
+local m = seg:sub(e, e + 600):match("method[\"']?%s*[=:]%s*[\"'](%a+)")
+if m == "post" or m == "put" or m == "patch" then
+fl.send = base + s - 1
+break
+end
+end
+end
+end
+if not ev.autoexec_write then
+local ini, c = 1, 0
+while c < 20 do
+local s, e = seg:find(AX, ini, true)
+if not s or s > zone then break end
+c += 1
+ini = e + 1
+local w = seg:sub(math.max(1, s - 300), s + 300)
+if w:find(WF, 1, true) or w:find(AF, 1, true) then
+add(state, "autoexec_write", "persist", 55, "writes a script into the executor autoexec folder", base + s - 1)
+break
+end
+end
+end
+if not ev.bulk_delete then
+local ini, c = 1, 0
+while c < 20 do
+local s, e = seg:find(LF, ini, true)
+if not s or s > zone then break end
+c += 1
+ini = e + 1
+local w = seg:sub(e + 1, e + 500)
+if w:find(DF) or w:find(DD) then
+add(state, "bulk_delete", "destr", 55, "deletes files in a loop over the file list", base + s - 1)
+break
+end
+end
+end
+if not ev.wipe_workspace then
+local s = seg:find(K("del|folder") .. "%s*%(%s*[\"']%.?/?[\"']%s*%)") or seg:find(K("del|folder") .. "%s*%(%s*[\"']workspace/?[\"']%s*%)")
+if s and s <= zone then
+add(state, "wipe_workspace", "destr", 95, "deletes the entire workspace folder", base + s - 1, {crit = true})
+end
+end
+if not ev.byte_array then
+local s = seg:find(NUMLIST)
+if s and s <= zone then add(state, "byte_array", "obf", 20, "contains a large numeric byte array (encoded payload)", base + s - 1) end
+end
+if not fl.b64a and seg:find(B64A, 1, true) then fl.b64a = true end
+if not fl.b64b then
+local s = seg:find(B64P)
+if s and s <= zone then fl.b64b = base + s - 1 end
+end
+end
+local function scanView(view, state, gen)
+local n, pos = #view, 1
 while pos <= n do
-scanChunk(content, pos, state)
-pos += cfg.ChunkSize
-if gen and pos <= n then
-task.wait()
-if Security._gen ~= gen then return nil end
+local stop = pos + cfg.ChunkSize - 1
+if stop >= n then
+stop = n
+else
+local nl = view:find("\n", stop, true)
+if nl and nl - stop <= cfg.ChunkOverlap // 2 then stop = nl end
+end
+scanChunk(state, view:sub(pos, math.min(n, stop + cfg.ChunkOverlap)), pos, stop - pos + 1)
+pos = stop + 1
+if pos <= n and not slice(state, gen) then return false end
+end
+return true
+end
+local function lineOfAbs(state, abs)
+if not abs then return nil end
+local nl = state.nl
+if not nl then
+nl = {}
+local v, p, k = state.view, 1, 0
+while true do
+local s = v:find("\n", p, true)
+if not s then break end
+k += 1
+nl[k] = s
+p = s + 1
+end
+state.nl = nl
+end
+local lo, hi = 1, #nl + 1
+while lo < hi do
+local mid = (lo + hi) // 2
+if nl[mid] < abs then lo = mid + 1 else hi = mid end
+end
+return lo
+end
+local function byWeight(a, b)
+if a.weight ~= b.weight then return a.weight > b.weight end
+return a.id < b.id
+end
+local function evaluate(state)
+local ev, fl = state.ev, state.flags
+if state.esc >= cfg.EscapeLimit and state.escRuns >= cfg.EscapeRuns then
+add(state, "esc_dense", "obf", 30, "is packed with escape-sequence encoded strings")
+end
+if state.hexid >= cfg.HexIdentLimit then add(state, "obf_ident", "obf", 20, "uses machine-generated identifier names") end
+if state.tiny >= cfg.TinyJoinLimit then add(state, "concat_build", "obf", 20, "assembles strings from many tiny fragments") end
+if state.banner then add(state, "obfuscator", "obf", 25, "is hidden by a script obfuscator", state.banner) end
+if fl.b64a and fl.b64b then add(state, "b64_payload", "obf", 20, "bundles a base64 decoder with a large encoded blob", fl.b64b) end
+local list, best = {}, {}
+for _, e in pairs(ev) do
+if e.grp then
+local b = best[e.grp]
+if not b or e.weight > b.weight then best[e.grp] = e end
+else
+list[#list + 1] = e
 end
 end
-local f = state.flags
-if f.ls and f.http and f.spawn then
-addHit(state, content, "spawn_loader", 25, "spawns a remote loadstring loader", nil)
+for _, e in pairs(best) do list[#list + 1] = e end
+local obfCount = 0
+for id, wt in pairs(OBF) do
+if ev[id] then obfCount += wt end
 end
-if state.esc >= cfg.EscapeLimit then
-addHit(state, content, "escapes", 25, "is packed with escape-sequence obfuscation", nil)
+local function A(...)
+for _, id in ipairs({...}) do
+if ev[id] then return ev[id].abs end
 end
-local reasons = {}
-for _, h in pairs(state.hits) do table.insert(reasons, h) end
-table.sort(reasons, function(a, b) return a.weight > b.weight end)
+end
+local net = ev.webhook or ev.ip_logger or fl.send or fl.remote
+local combos = {}
+local function combo(id, w, desc, abs, crit)
+combos[#combos + 1] = {id = "combo:" .. id, cat = "combo", weight = w, desc = desc, abs = abs, crit = crit, count = 1}
+end
+if ev.cookie_ref and net then
+combo("cred_exfil", 50, "reads the login cookie and has a way to send it out", A("cookie_ref"), true)
+end
+if ev.webhook and (ev.ip_lookup or ev.hwid) then
+combo("webhook_ident", 45, "posts IP / hardware identifiers to a webhook", A("webhook"))
+end
+if ev.auth_api and ev.csrf and (ev.cookie_ref or ev.cookie_hdr) then
+combo("token_chain", 40, "auth API + CSRF + cookie: account-takeover chain", A("auth_api"))
+end
+if ev.stealer_words and (ev.webhook or fl.send) then
+combo("stealer_send", 35, "stealer keywords together with outbound data sending", A("stealer_words"))
+end
+if fl.ls and obfCount >= 3 then
+combo("obf_exec", 30, "hides code behind obfuscation and executes it", fl.ls)
+if obfCount >= 6 then combo("obf_layers", 25, "several layered obfuscation techniques feed an execution call", fl.ls) end
+end
+if ev.remote_exec and (ev.paste_host or ev.raw_ip) then
+combo("remote_untrusted", 25, "downloads and runs code from an editable paste or bare IP host", A("remote_exec"))
+end
+if ev.remote_exec and obfCount >= 2 then
+combo("remote_obf", 30, "obfuscated remote loader", A("remote_exec"))
+end
+if ev.autoexec_write and (fl.ls or ev.remote_exec) then
+combo("persist_loader", 30, "installs a loader that survives restarts", A("autoexec_write"))
+end
+local cats, crit = {}, false
+for _, e in ipairs(list) do
+local c = cats[e.cat]
+if not c then
+c = {top = 0, rest = 0}
+cats[e.cat] = c
+end
+if e.weight > c.top then
+c.rest += c.top
+c.top = e.weight
+else
+c.rest += e.weight
+end
+if e.crit then
+c.crit = true
+crit = true
+end
+end
+local total, ncat = 0, 0
+for _, c in pairs(cats) do
+local s = c.top + cfg.RestFactor * c.rest
+if not c.crit and s > cfg.CategoryCap then s = cfg.CategoryCap end
+if s >= 30 then ncat += 1 end
+total += s
+end
+for _, c in ipairs(combos) do
+total += c.weight
+list[#list + 1] = c
+if c.crit then crit = true end
+end
+table.sort(list, byWeight)
 local verdict = "CLEAN"
-if state.score >= cfg.MaliciousScore then
+if total >= cfg.MaliciousScore and (crit or #combos > 0 or ncat >= 2) then
 verdict = "MALICIOUS"
-elseif state.score >= cfg.SuspiciousScore then
+elseif total >= cfg.SuspiciousScore then
 verdict = "SUSPICIOUS"
 end
-return {verdict = verdict, score = state.score, reasons = reasons}
+local reasons = {}
+for i, e in ipairs(list) do
+reasons[i] = {id = e.id, cat = e.cat, weight = e.weight, desc = e.desc, line = lineOfAbs(state, e.abs), count = e.count, conf = math.min(0.99, 0.3 + e.weight / 150)}
+end
+local conf
+if verdict == "CLEAN" then
+conf = math.max(0.5, 1 - 0.5 * total / cfg.SuspiciousScore)
+else
+conf = 0.4 + 0.08 * math.min(#list, 5) + (#combos > 0 and 0.15 or 0) + (crit and 0.25 or 0)
+conf = verdict == "MALICIOUS" and math.min(0.99, math.max(conf, 0.6)) or math.min(0.9, conf - 0.1)
+end
+local severity = "none"
+if crit then
+severity = "critical"
+elseif verdict == "MALICIOUS" then
+severity = "high"
+elseif verdict == "SUSPICIOUS" then
+severity = "medium"
+elseif total >= cfg.LowScore then
+severity = "low"
+end
+return {verdict = verdict, score = math.floor(total + 0.5), confidence = conf, severity = severity, reasons = reasons}
+end
+function Security.Analyze(content, gen)
+if type(content) ~= "string" then error("Security.Analyze expects a string") end
+local state = {ev = {}, flags = {}, esc = 0, escRuns = 0, hexid = 0, tiny = 0, t0 = os.clock()}
+local view = prepare(content, state, gen)
+if not view then return nil end
+state.view = view
+if not scanView(view, state, gen) then return nil end
+return evaluate(state)
 end
 function Security.Enabled() return SaveData.SecurityScan ~= false end
 function Security.AutoDelete() return SaveData.SecurityAutoDelete == true end
-local function deleteFile(path, content)
-pcall(makefolder, cfg.QuarantineDir)
+local qSeq = 0
+local function quarantineName(path)
+qSeq += 1
 local safe = (normalize(path):gsub("[^%w%._%-]", "_"))
-local copied = pcall(writefile, cfg.QuarantineDir .. "/" .. safe .. "." .. os.time() .. ".quarantined", content)
+if #safe > 80 then safe = safe:sub(-80) end
+return string.format("%s/%s.%d.%d.quarantined", cfg.QuarantineDir, safe, os.time(), qSeq)
+end
+local function deleteFile(path, content)
+if type(writefile) ~= "function" or type(delfile) ~= "function" or type(readfile) ~= "function" or type(isfile) ~= "function" then
+return false, nil, "executor lacks the file functions needed for a safe quarantine"
+end
+pcall(makefolder, cfg.QuarantineDir)
+if type(isfolder) == "function" then
+local okF, isF = pcall(isfolder, cfg.QuarantineDir)
+if not (okF and isF) then return false, nil, "quarantine folder is unavailable" end
+end
+local target
+for _ = 1, 25 do
+local t = quarantineName(path)
+local okE, exists = pcall(isfile, t)
+if okE and not exists then
+target = t
+break
+end
+end
+if not target then return false, nil, "no free quarantine file name" end
+local okW, errW = pcall(writefile, target, content)
+if not okW then
+pcall(delfile, target)
+return false, nil, "quarantine write failed: " .. tostring(errW)
+end
+local okR, back = pcall(readfile, target)
+if not (okR and back == content) then
+pcall(delfile, target)
+return false, nil, "quarantine copy failed verification"
+end
+local okO, now = pcall(readfile, path)
+if not (okO and now == content) then return false, target, "file changed since the scan, kept in place" end
 pcall(delfile, path)
-local gone = false
-pcall(function() gone = not isfile(path) end)
-return gone, copied
+local okG, still = pcall(isfile, path)
+if not okG or still then return false, target, "delete did not remove the file" end
+return true, target
 end
 local reported, byKey = {}, {}
 local function respond(path, report, content, blocked)
-local key = normalize(path) .. "|" .. report.score .. "|" .. #content
+local key = normalize(path) .. "|" .. report.verdict .. "|" .. report.score .. "|" .. #content
 local first = not reported[key]
 reported[key] = true
 local why = reasonText(report)
 local name = shortName(path)
 local malicious = report.verdict == "MALICIOUS"
-local deleted, copied = false, false
-if malicious and Security.AutoDelete() and not under(path, cfg.ReportOnlyDirs) then
-deleted, copied = deleteFile(path, content)
+local deleted, qpath, dwhy = false, nil, nil
+local prior = byKey[key]
+if malicious and not (prior and prior.deleted) and Security.AutoDelete() and not under(path, cfg.ReportOnlyDirs) then
+if report.confidence >= cfg.AutoDeleteMinConfidence then
+deleted, qpath, dwhy = deleteFile(path, content)
+else
+dwhy = "confidence too low for auto-delete"
 end
+end
+if qpath then Stats.Quarantined += 1 end
 if first then
 Stats.Flagged += 1
-local finding = {path = path, verdict = report.verdict, score = report.score, why = why, deleted = deleted, time = os.time()}
+local ev, lines = {}, {}
+for i = 1, math.min(8, #report.reasons) do
+ev[i] = report.reasons[i]
+if report.reasons[i].line then lines[#lines + 1] = report.reasons[i].line end
+end
+local finding = {path = path, verdict = report.verdict, score = report.score, why = why, deleted = deleted, time = os.time(), confidence = report.confidence, severity = report.severity, evidence = ev, lines = lines, quarantined = qpath, note = dwhy}
 byKey[key] = finding
 table.insert(Security.Findings, finding)
-elseif deleted and byKey[key] then
-byKey[key].deleted = true
+if #Security.Findings > cfg.MaxFindings then table.remove(Security.Findings, 1) end
+elseif prior then
+if deleted then prior.deleted = true end
+if qpath then prior.quarantined = qpath end
+if dwhy then prior.note = dwhy end
 end
 if deleted then
 Stats.Deleted += 1
-log("DELETED " .. path .. " [score " .. report.score .. "]: " .. why .. (copied and (" (copy kept in " .. cfg.QuarantineDir .. ")") or ""))
+log("DELETED " .. path .. " [score " .. report.score .. "]: " .. why .. " (copy kept in " .. tostring(qpath) .. ")")
 notify("Auto-deleted " .. name .. ": " .. why)
-elseif first then
-log(report.verdict .. " " .. path .. " [score " .. report.score .. "]: " .. why)
+else
+if dwhy and malicious then log("KEPT " .. path .. ": " .. dwhy) end
+if first then
+log(report.verdict .. " " .. path .. string.format(" [score %d, confidence %.2f, %s]: ", report.score, report.confidence, report.severity) .. why)
 if malicious then
 notify((blocked and "Blocked malicious module " or "Malicious file found: ") .. name .. ": " .. why)
+elseif blocked then
+notify("Suspicious module needs review: " .. name .. " (details in Init Logs)")
 else
 notify("Suspicious file: " .. name .. " (details in Init Logs)")
+end
 end
 end
 if first and malicious and Security.OnMalicious then
@@ -78634,12 +79575,49 @@ pcall(Security.OnMalicious, path, report)
 end
 return deleted
 end
+local function keep(list, item)
+table.insert(list, item)
+if #list > cfg.MaxLogged then table.remove(list, 1) end
+end
+local noted = {}
+local function noteError(path, what, err)
+Stats.Errors += 1
+local key = tostring(path) .. "|" .. what
+if noted[key] then return end
+noted[key] = true
+keep(Security.Errors, {path = path, what = what, err = tostring(err), time = os.time()})
+log("ERROR " .. what .. ": " .. tostring(path) .. " (" .. tostring(err) .. ")")
+end
+local function noteSkip(path, reason)
+local key = tostring(path) .. "|skip|" .. reason
+if noted[key] then return end
+noted[key] = true
+Stats.Skipped += 1
+keep(Security.Skipped, {path = path, reason = reason, time = os.time()})
+log("SKIPPED " .. tostring(path) .. ": " .. reason)
+end
 function Security.GateModule(path, content)
 if not Security.Enabled() or type(content) ~= "string" then return nil end
+if #content > cfg.GateMaxBytes then
+local msg = "module is larger than " .. cfg.GateMaxBytes .. " bytes and cannot be scanned"
+noteSkip(path, msg)
+if cfg.BlockOversize then return msg end
+return nil
+end
 local ok, report = pcall(Security.Analyze, content)
-if not ok or not report or report.verdict == "CLEAN" then return nil end
+if not ok or type(report) ~= "table" then
+Stats.Errors += 1
+local msg = "security scan failed: " .. tostring(report)
+log("ERROR " .. tostring(path) .. ": " .. msg)
+report = {verdict = "SUSPICIOUS", score = cfg.SuspiciousScore, confidence = 0.2, severity = "medium", reasons = {{id = "scan_error", cat = "error", weight = 0, desc = msg, conf = 0}}}
+respond(path, report, content, true)
+if cfg.BlockOnScanError then return msg end
+return nil
+end
+if report.verdict == "CLEAN" then return nil end
 respond(path, report, content, true)
 if report.verdict == "MALICIOUS" then return reasonText(report) end
+if report.verdict == "SUSPICIOUS" and cfg.SuspiciousPolicy == "block" then return reasonText(report) end
 return nil
 end
 local function waitFrameHealthy(gen)
@@ -78649,30 +79627,71 @@ task.wait(0.25)
 waited += 0.25
 end
 end
+local function fingerprint(content)
+local n = #content
+local h = n
+local step = math.max(1, n // 48)
+for i = 1, n, step do
+local a, b, c, d = content:byte(i, i + 3)
+h = (h * 31 + (a or 0) * 7 + (b or 0) * 5 + (c or 0) * 3 + (d or 0)) % 2147483647
+end
+local t = content:sub(-16)
+for i = 1, #t do h = (h * 31 + t:byte(i)) % 2147483647 end
+return n .. ":" .. h
+end
 local function scanFile(path, gen)
 local ok, content = pcall(readfile, path)
-if not ok or type(content) ~= "string" or #content == 0 then return end
-if #content > cfg.MaxFileBytes then
-Stats.Skipped += 1
+if not ok or type(content) ~= "string" then
+noteError(path, "unreadable file", ok and ("readfile returned " .. type(content)) or content)
 return
 end
-local report = Security.Analyze(content, gen)
-if not report then return end
+local size = #content
+if size == 0 then
+Stats.Scanned += 1
+Stats.PassScanned += 1
+return
+end
+if size > cfg.MaxFileBytes then
+noteSkip(path, "larger than " .. cfg.MaxFileBytes .. " bytes (" .. size .. ")")
+return
+end
+local key, fp = normalize(path):lower(), fingerprint(content)
+local cached, report = Security._cache[key], nil
+if cached and cached.fp == fp and Stats.Passes - cached.pass < cfg.CacheFullRescanEvery then
+report = cached.report
+else
+local okA, res = pcall(Security.Analyze, content, gen)
+if not okA then
+noteError(path, "scan failed", res)
+return
+end
+if not res then return end
+report = res
+Security._cache[key] = {fp = fp, report = report, pass = Stats.Passes}
+end
 Stats.Scanned += 1
 Stats.PassScanned += 1
 if report.verdict ~= "CLEAN" then respond(path, report, content, false) end
 end
 local function runPass(gen)
-local queue, head, seen = {}, 1, {}
+local queue, head, tail, seen, nfiles, capped = {}, 1, 0, {}, 0, false
 for _, root in ipairs(cfg.Roots) do
 seen[normalize(root):lower()] = true
-table.insert(queue, {dir = true, path = root})
+tail += 1
+queue[tail] = {dir = true, path = root, depth = 0}
 end
-while head <= #queue do
+while head <= tail do
 if Security._gen ~= gen then return false end
 local item = queue[head]
+queue[head] = false
 head += 1
 if item.dir then
+local listable = true
+if item.path ~= "" then
+local okI, isF = pcall(isfolder, item.path)
+listable = not (okI and not isF)
+end
+if listable then
 local ok, list = pcall(listfiles, item.path)
 if ok and type(list) == "table" then
 for i, p in ipairs(list) do
@@ -78682,13 +79701,28 @@ seen[key] = true
 if not under(p, cfg.SkipDirs) then
 local okf, isdir = pcall(isfolder, p)
 if okf and isdir then
-table.insert(queue, {dir = true, path = p})
+if item.depth < cfg.MaxDepth then
+tail += 1
+queue[tail] = {dir = true, path = p, depth = item.depth + 1}
+else
+noteSkip(p, "folder deeper than " .. cfg.MaxDepth .. " levels")
+end
 elseif shouldScan(p) then
-table.insert(queue, {path = p})
+if nfiles < cfg.MaxFiles then
+nfiles += 1
+tail += 1
+queue[tail] = {path = p}
+elseif not capped then
+capped = true
+noteSkip(item.path, "file limit " .. cfg.MaxFiles .. " reached; remaining files not queued")
+end
 end
 end
 end
 if i % 40 == 0 then task.wait() end
+end
+else
+noteError(item.path, "cannot list folder", ok and "listfiles returned " .. type(list) or list)
 end
 end
 task.wait(cfg.ListDelay)
@@ -78696,7 +79730,8 @@ else
 waitFrameHealthy(gen)
 if Security._gen ~= gen then return false end
 status("Security: scanning " .. shortName(item.path))
-pcall(scanFile, item.path, gen)
+local okS, errS = pcall(scanFile, item.path, gen)
+if not okS then noteError(item.path, "scan crashed", errS) end
 task.wait(cfg.FileDelay)
 end
 end
@@ -78706,6 +79741,7 @@ local function loop(gen)
 while Security._gen == gen do
 Stats.PassScanned = 0
 if not runPass(gen) then return end
+if Security._gen ~= gen then return end
 Stats.Passes += 1
 if Stats.Passes == 1 then
 log("First full scan finished: " .. Stats.PassScanned .. " files checked, " .. Stats.Flagged .. " flagged.")
@@ -78731,7 +79767,8 @@ Security._frame = Security._frame * 0.9 + dt * 0.1
 end)
 status("Security: starting")
 task.spawn(function()
-pcall(loop, gen)
+local ok, err = pcall(loop, gen)
+if not ok then noteError("Security.loop", "background scan crashed", err) end
 end)
 end
 function Security.Stop()
@@ -78748,6 +79785,7 @@ function Security.ScanNow()
 if not Security._running then
 notify("Turn on Background Malware Scan first")
 elseif Security._idle then
+Security._cache = {}
 Security._scanNow = true
 notify("Starting a new security scan")
 else
