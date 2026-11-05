@@ -21133,6 +21133,7 @@ SCREENGUI.ClipToDeviceSafeArea = false
 SCREENGUI.ResetOnSpawn = false
 SCREENGUI.ScreenInsets = Enum.ScreenInsets.None
 SCREENGUI.DisplayOrder = 2147483647
+Util.TopGui = SCREENGUI
 if gethiddengui then
 SCREENGUI.Parent = gethiddengui()
 else
@@ -63124,8 +63125,12 @@ end))
 end
 Reanimate.Character = RC
 _G_Uhhhhhh.Character = RC
+local TEx = Reanimate.ToolExtras
+if TEx then task.defer(TEx.Sync) end
 end
 Reanimate.DestroyCharacter = function()
+local TEx = Reanimate.ToolExtras
+if TEx then pcall(TEx.Shutdown) end
 if Reanimate.Character then
 Reanimate.Character = Reanimate.Character:Destroy()
 _G_Uhhhhhh.Character = nil
@@ -63148,6 +63153,7 @@ Room = tostring(game.PlaceId) .. "-" .. tostring(game.JobId), Token = HttpServic
 GetColor = function() return FXcall("GetColor") end, GetBG = function() return FXcall("GetBG") end,
 IsLowEnd = function() return FXcall("IsLowEnd") == true end,
 GetLocalCharacter = function() return Reanimate.Character or Player.Character end,
+TopGui = function() return Util.TopGui end,
 NewTriangle = function(parent, o)
 local FX = Util.FX
 if not (FX and FX.NewTriangle3D) then return nil end
@@ -63607,7 +63613,9 @@ return function(Env)
 			Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = WHITE, BorderSizePixel = 0, ZIndex = 50}, root)
 		round(sb, UDim.new(1, 0))
 		local sbs = new("UIStroke", {Thickness = 1.5}, sb)
-		local panel = new("ScrollingFrame", {AnchorPoint = Vector2.new(0, 0.5), Size = UDim2.fromOffset(238, 340), BorderSizePixel = 0, ScrollBarThickness = 3,
+		sb.Visible = false -- the floating "Banner Style" pill is gone: the button now lives in the main UI under Performance
+		local togglePanel
+		local panel = new("ScrollingFrame", {AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(238, 340), BorderSizePixel = 0, ScrollBarThickness = 3,
 			CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y, Visible = false, ZIndex = 60}, root)
 		round(panel, UDim.new(0, 12))
 		local pst = new("UIStroke", {Thickness = 1.5}, panel)
@@ -63623,7 +63631,7 @@ return function(Env)
 		local function sync()
 			local p = btn.Position
 			sb.Position = UDim2.new(p.X.Scale, p.X.Offset, p.Y.Scale, p.Y.Offset + 36)
-			panel.Position = UDim2.new(p.X.Scale, p.X.Offset + 126, p.Y.Scale, p.Y.Offset + 18)
+			panel.Position = UDim2.fromScale(0.5, 0.5)
 		end
 		local function row(h) return z("Frame", {Size = UDim2.new(1, 0, 0, h), BackgroundTransparency = 1, BorderSizePixel = 0, LayoutOrder = nextOrder()}, panel) end
 		local function text(par, s, x, w, bold)
@@ -63643,6 +63651,8 @@ return function(Env)
 		text(hr, "Banner Style", 0, 120, true)
 		local reset = mkbtn(hr, "Reset", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(52, 22)})
 		reset.Activated:Connect(function() api.set(nil); load(); refreshAll() end)
+		local closeX = mkbtn(hr, "X", {AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -58, 0.5, 0), Size = UDim2.fromOffset(22, 22)})
+		closeX.Activated:Connect(function() if panel.Visible and togglePanel then togglePanel() end end)
 
 		-- theme presets
 		local pg = z("Frame", {Size = UDim2.new(1, 0, 0, 58), BackgroundTransparency = 1, BorderSizePixel = 0, LayoutOrder = nextOrder()}, panel)
@@ -63725,14 +63735,20 @@ return function(Env)
 			end)
 		end
 
-		sb.Activated:Connect(function()
+		togglePanel = function()
 			panel.Visible = not panel.Visible
 			if panel.Visible then
+				-- opened from the main UI (whose ScreenGui sits at the max DisplayOrder): draw the panel inside that ScreenGui, above everything
+				local top = Env.TopGui and Env.TopGui()
+				if top and panel.Parent ~= top then panel.Parent = top end
+				if top then panel.ZIndex = 2147483645 end
 				local cam = workspace.CurrentCamera
 				panel.Size = UDim2.fromOffset(238, math.clamp((cam and cam.ViewportSize.Y or 600) - 80, 220, 380))
 				load(); paint(); sync(); refreshAll()
 			end
-		end)
+		end
+		UI.StylePanel, UI.StyleToggle = panel, togglePanel
+		sb.Activated:Connect(togglePanel)
 		paint(); sync(); refreshAll()
 		return sync
 	end
@@ -63742,6 +63758,7 @@ return function(Env)
 	function UI.Toggle(enabled, onChange, styleApi)
 		if not Env.UserInputService then return function() end end
 		local par = host().Parent
+		pcall(function() if UI.StylePanel then UI.StylePanel:Destroy(); UI.StylePanel = nil end end)
 		pcall(function() if UI.Ctl then UI.Ctl:Destroy() end end)
 		for _, c in ipairs(UI.CtlConns or {}) do c:Disconnect() end
 		UI.CtlConns = {}
@@ -63750,7 +63767,7 @@ return function(Env)
 		else root = new("ScreenGui", {Name = HOST .. "Ctl", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 50, ZIndexBehavior = Enum.ZIndexBehavior.Sibling}, par) end
 		UI.Ctl = root
 		local btn = new("TextButton", {AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 8, 0.5, 0), Size = UDim2.fromOffset(118, 30),
-			AutoButtonColor = false, Text = "", BorderSizePixel = 0, ZIndex = 50}, root)
+			AutoButtonColor = false, Text = "", BorderSizePixel = 0, ZIndex = 50, Visible = false}, root) -- Visible = false: the on/off pill moved to Performance
 		round(btn, UDim.new(1, 0))
 		local stroke = new("UIStroke", {Thickness = 1.5}, btn)
 		local dot = new("Frame", {AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 11, 0.5, 0), Size = UDim2.fromOffset(10, 10), BorderSizePixel = 0, ZIndex = 51}, btn)
@@ -63791,6 +63808,7 @@ return function(Env)
 	end
 
 	function UI.Cleanup()
+		pcall(function() if UI.StylePanel then UI.StylePanel:Destroy(); UI.StylePanel = nil end end)
 		pcall(function() if UI.Ctl then UI.Ctl:Destroy(); UI.Ctl = nil end end)
 		for _, c in ipairs(UI.CtlConns or {}) do c:Disconnect() end
 		UI.CtlConns = {}
@@ -65513,6 +65531,8 @@ local my = styleTok
 task.delay(0.4, function() if my == styleTok and cur[1] ~= nil then api.Set(cur[1], cur[2], cur[3]) end end)
 end
 function api.Users() pcall(Receiver.OpenUsers) end
+function api.OpenStyle() if UI.StyleToggle then pcall(UI.StyleToggle) end end -- used by the Performance tab button
+function api.IsEnabled() return not SaveData.BannerOff end
 genv.UhBanner = api
 local function apply(on) if Receiver.SetHidden then Receiver.SetHidden(not on) end; SaveData.BannerOff = (not on) or nil end
 local styleApi = {get = function() return SaveData.BannerStyle end, set = function(st) api.SetStyle(st) end}
@@ -66062,6 +66082,623 @@ TweenService:Create(h, TweenInfo.new(5), {FillTransparency = 1, OutlineTranspare
 Debris:AddItem(h, 5)
 end
 return true
+end
+do
+-- Tool Reanimation as Extra (Hat only): Wings / Halo / Tail / Floating Aura built from real Tool handles.
+-- One shared controller, one Heartbeat connection. Every handle goes arm -> server grip -> server break -> free -> confirmed ownership -> live, and is only written while this client is the engine-confirmed simulator (otherwise nothing replicates).
+local TE = {}
+Reanimate.ToolExtras = TE
+local TAG = "_Uhhhhhh_ToolExtra"
+local EFFECTS = {"Wings", "Halo", "Tail", "Aura"}
+local NEED = {Wings = 6, Halo = 3, Tail = 4}
+local LABEL = {Wings = "Wings", Halo = "Halo", Tail = "Tail", Aura = "Floating Aura"}
+local RD = SaveData.Reanimator
+TE.Cfg = {}
+for _, key in {"Hat"} do
+local c = {Master = not not RD[key .. "ToolExtra"]}
+RD[key .. "ToolExtra"] = c.Master
+for _, e in EFFECTS do
+c[e] = not not RD[key .. "Tool" .. e]
+RD[key .. "Tool" .. e] = c[e]
+end
+TE.Cfg[key] = c
+end
+local sin, cos, clamp, exp = math.sin, math.cos, math.clamp, math.exp
+local CFnew, CFang = CFrame.new, CFrame.Angles
+local Claims = {}
+local Owner = setmetatable({}, {__mode = "k"})
+local OrderOf = setmetatable({}, {__mode = "k"})
+local BadUntil = setmetatable({}, {__mode = "k"})
+local nextOrder = 0
+local Conn, RemConn, AddConn = nil, nil, nil
+local Dirty, ActiveKey, LastScan, LastSig, ReadyAt = true, nil, 0, -1, nil
+local Told, Parts = {}, {}
+local sv = Vector3.zero
+local frame, acc, lastWarn = 0, 0, 0
+-- claim lifecycle (same contract as the Corpse Claim tool reanimator): arm -> server grip seen -> server break -> free -> engine-confirmed ownership -> live
+-- ARM_TIMEOUT: max wait for the grip | BREAK_GAP/MAX_BREAKS: server break retry backoff | OWN_TIMEOUT/OWN_GRACE: ownership wait / tolerated loss | MAX_CYCLES: re-detach rounds | BAD_FOR: cooldown for a failed tool
+local ARM_TIMEOUT, BREAK_GAP, MAX_BREAKS = 1.5, 0.4, 6
+local OWN_TIMEOUT, OWN_GRACE, MAX_CYCLES, BAD_FOR = 6, 3, 3, 8
+-- OwnConfirm: ownership must hold this long before a handle goes live | SoftGrace: live claims keep running this long while Hat reanimation is mid-reset instead of being handed back | CycleReset: stable-live seconds that forgive earlier re-detach rounds | WakeGap: min gap between ownership wake-ups
+TE.Tune = {OwnConfirm = 0.15, SoftGrace = 6, CycleReset = 20, WakeGap = 0.25}
+local NeedBreak = false
+local function Notify(k, text)
+if Told[k] then return end
+Told[k] = true
+pcall(Util.Notify, text)
+end
+local function CurKey()
+local cur = Reanimate.Current
+local n = cur and cur.Name
+if n == "Hats" then return "Hat" end
+return nil
+end
+local function AnyOn(key)
+local c = TE.Cfg[key]
+return c and c.Master and (c.Wings or c.Halo or c.Tail or c.Aura)
+end
+local function HandleOf(tool)
+local h = tool:FindFirstChild("Handle")
+if not (h and h:IsA("BasePart")) then h = tool:FindFirstChild("Handle", true) end
+if h and h:IsA("BasePart") then return h end
+return nil
+end
+local function OrderId(tool)
+local o = OrderOf[tool]
+if not o then
+nextOrder += 1
+o = nextOrder
+OrderOf[tool] = o
+end
+return o
+end
+local function Detach(h)
+for _, j in h:GetJoints() do pcall(j.Destroy, j) end
+for _, v in h:GetChildren() do
+if v:IsA("JointInstance") then pcall(v.Destroy, v) end
+if v:IsA("Constraint") then v.Enabled = false end
+end
+end
+-- PhysicsRepRootRef may only point at a part that exists for everyone; the reanimated rig is client-only, so a handle rooted on it gets its physics dropped by the server and other players see it fall
+local function RepRef(p)
+if typeof(p) ~= "Instance" or not p:IsA("BasePart") or not p:IsDescendantOf(workspace) then return nil end
+local rc = Reanimate.Character
+if rc and p:IsDescendantOf(rc) then return nil end
+return p
+end
+-- free = joined to nothing outside its own tool. The grip weld the server makes replicates down to us, so while it exists the handle is not free
+local function IsFree(c)
+local h = c.Handle
+if not h:IsDescendantOf(workspace) then return false end
+local ok, parts = pcall(h.GetConnectedParts, h, true)
+if not ok then return false end
+for _, p in parts do
+if p ~= h and not p:IsDescendantOf(c.Tool) then return false end
+end
+return true
+end
+-- engine-reported simulator only (not server-authoritative): only then do our writes reach the server and other players
+local function Owns(h)
+return h.Parent ~= nil and h.ReceiveAge == 0 and not h:IsGrounded()
+end
+-- Detach only frees the handle locally; the server has to break its grip weld too (and its removal replicating back is what confirms it)
+local LastBreak = 0
+local function ServerBreak()
+local now = os.clock()
+if now - LastBreak < 0.3 then return false end
+if not replicatesignal then return true end
+local hum = Player.Character and Player.Character:FindFirstChildOfClass("Humanoid")
+-- no live humanoid yet: keep the request pending instead of silently dropping it
+if not hum then return false end
+LastBreak = now
+pcall(replicatesignal, hum.ServerBreakJoints)
+return true
+end
+-- a local Detach makes IsFree true at once while the server weld may still exist; a requested break gets one network round trip before its result is trusted
+function TE.Settled(now)
+if not replicatesignal then return true end
+local ok, ping = pcall(Player.GetNetworkPing, Player)
+return now - LastBreak >= math.clamp((ok and tonumber(ping) or 0.1) * 2 + 0.2, 0.3, 1.2)
+end
+-- ask the engine to (re)assign this handle to us: throttled, never on a grounded assembly
+function TE.Wake(c, now)
+if now - (c.WakeAt or 0) < TE.Tune.WakeGap then return end
+c.WakeAt = now
+local h = c.Handle
+if h.Parent and not h:IsGrounded() then pcall(sethiddenproperty, h, "NetworkIsSleeping", false) end
+end
+-- release: restores PhysicsRepRootRef (only if this record still owns the handle), part/tool flags and the original parent
+local function Release(c)
+local h, tool = c.Handle, c.Tool
+if Owner[h] == c then
+Owner[h] = nil
+if h.Parent then pcall(sethiddenproperty, h, "PhysicsRepRootRef", RepRef(c.PrevRef)) end
+end
+pcall(function()
+if h.Parent then
+h.CanCollide = c.OrigCollide
+h.CanTouch = c.OrigTouch
+h.Massless = c.OrigMassless
+end
+end)
+pcall(function()
+if tool.Parent then
+tool:SetAttribute(TAG, nil)
+tool.Enabled = c.OrigEnabled
+tool.RequiresHandle = c.OrigReq
+if tool.Parent == Player.Character then
+local dest = (c.OrigParent and c.OrigParent.Parent) and c.OrigParent or Player:FindFirstChildOfClass("Backpack")
+if dest then tool.Parent = dest end
+end
+end
+end)
+c.Armed, c.Live = nil, false
+end
+local function ReleaseAll()
+for i = #Claims, 1, -1 do
+local c = Claims[i]
+Claims[i] = nil
+Release(c)
+end
+end
+-- (re)start the grip lifecycle: stage 1 waits for the server grip, 2 breaks it, 3 waits for ownership, 4 is live
+local function Rearm(c, now)
+c.Live, c.Stage, c.StageAt, c.NextAt, c.RetryAt, c.Tries, c.OwnLost, c.OwnSince = false, 1, now, now + 0.2, 0, 0, nil, nil
+end
+local function Arm(c, char)
+local tool, h = c.Tool, c.Handle
+c.OrigParent = tool.Parent
+c.OrigEnabled, c.OrigReq = tool.Enabled, tool.RequiresHandle
+c.OrigCollide, c.OrigTouch, c.OrigMassless = h.CanCollide, h.CanTouch, h.Massless
+local ok, prev = pcall(gethiddenproperty, h, "PhysicsRepRootRef")
+c.PrevRef = ok and prev or nil
+tool:SetAttribute(TAG, true)
+pcall(function()
+tool.Enabled = true
+tool.RequiresHandle = false
+end)
+pcall(function() tool.Parent = char end)
+if tool.Parent ~= char or not h:IsDescendantOf(tool) then
+pcall(function()
+tool:SetAttribute(TAG, nil)
+tool.Enabled = c.OrigEnabled
+tool.RequiresHandle = c.OrigReq
+if tool.Parent == char and c.OrigParent then tool.Parent = c.OrigParent end
+end)
+return false
+end
+-- the server makes the grip weld only now; breaking and driving wait for it (Advance) instead of racing it
+h.CanCollide = false
+h.CanTouch = false
+Owner[h] = c
+c.Armed, c.Cycles = true, 0
+Rearm(c, os.clock())
+return true
+end
+local function GoLive(c, now)
+c.Stage, c.Live, c.OwnLost, c.OwnSince, c.At, c.JointAt = 4, true, nil, nil, now, now
+pcall(function() c.Handle.Massless = true end)
+pcall(sethiddenproperty, c.Handle, "PhysicsRepRootRef", nil)
+end
+-- grip came back or ownership was lost: back to the break stage, bounded by MAX_CYCLES (false = give up on this tool)
+local function Demote(c, now)
+c.Live, c.Stage, c.StageAt, c.NextAt, c.RetryAt, c.Tries, c.OwnLost, c.OwnSince = false, 2, now, 0, 0, 0, nil, nil
+c.Cycles += 1
+pcall(sethiddenproperty, c.Handle, "PhysicsRepRootRef", nil)
+return c.Cycles <= MAX_CYCLES
+end
+-- one step of the claim lifecycle for a handle that is not live yet (polled at 10Hz); false = drop this claim
+local function Advance(c, now)
+if now < c.NextAt then return true end
+c.NextAt = now + 0.1
+if c.Stage == 1 then
+if IsFree(c) and now - c.StageAt <= ARM_TIMEOUT then return true end
+c.Stage, c.StageAt, c.Tries, c.RetryAt = 2, now, 0, 0
+end
+if c.Stage == 2 then
+local free = IsFree(c)
+if free and ((not NeedBreak and TE.Settled(now)) or now - c.StageAt > 3) then
+c.Stage, c.StageAt = 3, now
+elseif free then
+-- free locally, but a server break is still queued / in flight: wait for it to replicate before trusting "free"
+return true
+else
+if not c.Handle:IsDescendantOf(workspace) and now - c.StageAt > 2 then return false end
+if now < c.RetryAt then return true end
+c.Tries += 1
+if c.Tries > MAX_BREAKS then return false end
+-- first try only asks the server; retries also clear the grip locally
+if c.Tries > 1 then Detach(c.Handle) end
+NeedBreak = true
+c.RetryAt = now + math.min(BREAK_GAP * 2 ^ (c.Tries - 1), 3)
+return true
+end
+end
+if c.Stage == 3 then
+if Owns(c.Handle) then
+-- engine-confirmed ownership has to hold for OwnConfirm before the handle goes live (a single ReceiveAge 0 poll during a hand-off is not ownership)
+c.OwnSince = c.OwnSince or now
+if now - c.OwnSince >= TE.Tune.OwnConfirm then GoLive(c, now) end
+else
+c.OwnSince = nil
+TE.Wake(c, now)
+-- never got ownership: one more bounded re-detach round before giving up (giving up hands the tool back to the backpack)
+if now - c.StageAt > OWN_TIMEOUT then return Demote(c, now) end
+end
+end
+return true
+end
+local function Candidates(now)
+local list = {}
+local bp = Player:FindFirstChildOfClass("Backpack")
+for _, box in {bp or false} do
+for _, tool in (box and box:GetChildren() or {}) do
+if tool:IsA("Tool") and (BadUntil[tool] or 0) < now then
+local h = HandleOf(tool)
+if h and not Owner[h] then
+local ok, prev = pcall(gethiddenproperty, h, "PhysicsRepRootRef")
+if not (ok and prev ~= nil) or not h:IsDescendantOf(workspace) then list[#list + 1] = tool end
+end
+end
+end
+end
+table.sort(list, function(a, b) return OrderId(a) < OrderId(b) end)
+return list
+end
+local function Regroup()
+local cnt = {}
+for _, c in Claims do
+cnt[c.Effect] = (cnt[c.Effect] or 0) + 1
+c.Slot = cnt[c.Effect]
+end
+for _, c in Claims do c.GN = cnt[c.Effect] end
+end
+local function Rebalance(key, now)
+Dirty = false
+local cfg = TE.Cfg[key]
+local char = Player.Character
+if not char or not char:IsDescendantOf(workspace) then
+ReleaseAll()
+return
+end
+if not replicatesignal then Notify("nosig", "Tool Extras: this executor has no replicatesignal, so tool grips cannot be broken on the server and other players will not see the tools correctly.") end
+for i = #Claims, 1, -1 do
+local c = Claims[i]
+if c.Tool.Parent ~= char or not c.Handle:IsDescendantOf(c.Tool) then
+BadUntil[c.Tool] = now + 3
+table.remove(Claims, i)
+Release(c)
+end
+end
+local pool = {}
+for _, c in Claims do pool[#pool + 1] = c end
+for _, tool in Candidates(now) do
+pool[#pool + 1] = {Tool = tool, Handle = HandleOf(tool), Order = OrderId(tool)}
+end
+local total, idx, assigned = #pool, 1, {}
+for _, e in EFFECTS do
+if cfg[e] then
+local avail = total - idx + 1
+local need = NEED[e]
+local take = 0
+if need then
+if avail >= need then
+take = need
+else
+Notify(e .. need .. ":" .. avail, "Tool Extras: " .. LABEL[e] .. " needs " .. need .. " tools but only " .. math.max(avail, 0) .. " are available - skipped.")
+end
+else
+take = math.max(avail, 0)
+if take == 0 then Notify(e .. ":0", "Tool Extras: no spare tools left for " .. LABEL[e] .. " - skipped.") end
+end
+for i = idx, idx + take - 1 do assigned[pool[i]] = e end
+idx += take
+end
+end
+for i = #Claims, 1, -1 do
+local c = Claims[i]
+local e = assigned[c]
+if e then
+c.Effect = e
+else
+table.remove(Claims, i)
+Release(c)
+end
+end
+for i = 1, total do
+local c = pool[i]
+local e = assigned[c]
+if e and not c.Armed then
+if Arm(c, char) then
+c.Effect = e
+Claims[#Claims + 1] = c
+else
+BadUntil[c.Tool] = now + 10
+Dirty = true
+end
+end
+end
+Regroup()
+end
+local function GetPart(rc, name, alt)
+local p = Parts[name]
+if p and p.Parent == rc then return p end
+p = rc:FindFirstChild(name) or (alt and rc:FindFirstChild(alt))
+Parts[name] = p
+return p
+end
+local function Resolve()
+local rc = Reanimate.Character
+if not rc then return nil end
+if Parts.RC ~= rc then
+Parts = {RC = rc}
+end
+local hrp = GetPart(rc, "HumanoidRootPart")
+if not hrp then return nil end
+return hrp, GetPart(rc, "Torso", "UpperTorso") or hrp, GetPart(rc, "Head") or hrp
+end
+local function WingCF(c, now, tcf, sc, move)
+local side = c.Slot <= 3 and -1 or 1
+local n = ((c.Slot - 1) % 3) + 1
+local open = 0.5 + 0.5 * sin(now * 0.45)
+local rate = 2.3 + move * 2.4
+local flap = sin(now * rate) * (0.28 + 0.26 * move)
+local idle = sin(now * 1.3 + side) * 0.05
+local sweep = 0.45 + 0.2 * open - move * 0.2
+local J = tcf * CFnew(side * 0.55 * sc, 0.6 * sc, 0.62 * sc) * CFang(0, -side * sweep, 0)
+local segL = 1.7 * sc
+for k = 1, n do
+local a
+if k == 1 then
+a = 0.4 + 0.4 * open + flap + idle
+else
+a = 0.1 * open + sin(now * rate - (k - 1) * 0.7) * (0.16 + 0.12 * move)
+end
+J = J * CFang(0, 0, side * a)
+if k == n then
+return J * CFnew(side * segL * 0.5, 0, 0) * CFang(0, 0, -side * 1.5708)
+end
+J = J * CFnew(side * segL, 0, 0)
+end
+return tcf
+end
+local function HaloCF(c, now, hcf, sc)
+local center = hcf.Position + Vector3.new(0, (1.9 + sin(now * 1.6) * 0.1) * sc, 0)
+local a = now * 0.9 + (c.Slot - 1) * 6.28319 / c.GN
+local r = 1.5 * sc
+local pos = center + Vector3.new(cos(a) * r, sin(now * 1.1 + c.Slot) * 0.05 * sc, sin(a) * r)
+return CFrame.lookAt(pos, center) * CFang(0, 0, -1.5708) * CFang(sin(now * 1.7 + c.Slot * 2.1) * 0.25, now * (0.8 + 0.35 * c.Slot), sin(now * 1.3 + c.Slot * 1.4) * 0.25)
+end
+local function TailCF(c, now, tcf, sc, move, lag, lift)
+local n = c.Slot
+local J = tcf * CFnew(0, -0.85 * sc, 0.6 * sc)
+local segL = 1.5 * sc
+local swayAmt = 0.22 + 0.1 * move
+for k = 1, n do
+local yaw = sin(now * 1.9 - k * 0.75) * (swayAmt + 0.05 * k) + lag * k * 0.5
+local pitch = 0.45 + 0.06 * k - lift + sin(now * 1.2 - k * 0.55) * 0.14
+local roll = sin(now * 1.5 - k * 0.9) * 0.08
+J = J * CFang(pitch, yaw, roll)
+if k == n then
+return J * CFnew(0, 0, segL * 0.5) * CFang(1.5708, 0, 0) * CFang(0, sin(now * 2 + k * 1.3) * 0.35, 0)
+end
+J = J * CFnew(0, 0, segL)
+end
+return tcf
+end
+local function AuraCF(c, now, tcf, sc)
+local p = c.AuraP
+if not p then
+local rnd = Random.new(c.Order * 7919 + 17)
+p = {
+R = rnd:NextNumber(3.2, 7), H = rnd:NextNumber(-0.8, 3.2),
+W = rnd:NextNumber(0.4, 1.5) * (rnd:NextInteger(0, 1) == 0 and -1 or 1),
+Ph = rnd:NextNumber(0, 6.28319), Vert = rnd:NextNumber() < 0.45, Yaw = rnd:NextNumber(0, 6.28319),
+Bob = rnd:NextNumber(0.6, 1.6), BobA = rnd:NextNumber(0.1, 0.45),
+Sx = rnd:NextNumber(0.4, 2.2), Sy = rnd:NextNumber(0.4, 2.2), Sz = rnd:NextNumber(0.4, 2.2),
+}
+c.AuraP = p
+end
+local center = tcf.Position + Vector3.new(0, 0.3 * sc, 0)
+local a = now * p.W + p.Ph
+local pos
+if p.Vert then
+local rv = p.R * 0.6 * sc
+pos = (CFnew(center) * CFang(0, p.Yaw, 0) * CFnew(cos(a) * rv, sin(a) * rv + (1.4 + p.H * 0.3) * sc, sin(now * p.Bob) * p.BobA * sc)).Position
+else
+pos = center + Vector3.new(cos(a) * p.R * sc, (p.H + sin(now * p.Bob + p.Ph) * p.BobA) * sc, sin(a) * p.R * sc)
+end
+return CFnew(pos) * CFang(now * p.Sx + p.Ph, now * p.Sy, now * p.Sz)
+end
+-- only the engine-confirmed simulator (ReceiveAge 0) publishes a handle's CFrame/velocity to the server and other players; a non-owner write is local-only, so nothing is written until ownership is confirmed. false = ownership stayed lost past OWN_GRACE
+local function Apply(c, cf, now)
+local h = c.Handle
+-- a handle briefly out of the workspace (tool bounced to the backpack, respawn race) or not ours yet gets the same grace as lost ownership; nothing is written meanwhile
+if not h:IsDescendantOf(workspace) or h.ReceiveAge ~= 0 or h:IsGrounded() then
+c.OwnLost = c.OwnLost or now
+TE.Wake(c, now)
+return now - c.OwnLost <= OWN_GRACE
+end
+c.OwnLost = nil
+local ylim = (FallenPartsDestroyHeight or -500) + 5
+if cf.Y < ylim then cf += Vector3.new(0, ylim - cf.Y, 0) end
+h.CFrame = cf
+local netless = (Reanimate.NetlessVelocity or 25) + (sin(now * 0.5) + 1) / 2
+h.AssemblyLinearVelocity = Vector3.new(0, now - c.At < 0.5 and netless * 2 or netless, 0)
+h.AssemblyAngularVelocity = Vector3.new(sin(now * 14), sin(now * 15 + 1.0472), sin(now * 16 + 2.0944)) * 0.001
+return true
+end
+local function Drop(list, now)
+for _, c in list do
+local i = table.find(Claims, c)
+if i then table.remove(Claims, i) end
+BadUntil[c.Tool] = now + BAD_FOR
+Release(c)
+end
+Dirty = true
+end
+local function Step(dt)
+local key = CurKey()
+local cur = Reanimate.Current
+local st = cur and cur.Status
+local now = os.clock()
+-- extras only START on a finished Hat reanimation (while it is arming/respawning it moves tools itself). Hard stops (reanimation off/starting/stopping, no rig) hand every claim back at once; a mere state change (reset, re-claim) lets already-live claims keep running for SoftGrace instead of dropping every tool
+if not (key and cur and cur.Running and not Reanimate.Starting and not Reanimate.Stopping and Reanimate.Character) then
+ReadyAt, TE.SoftLostAt = nil, nil
+if #Claims > 0 then ReleaseAll() end
+return
+end
+local soft = not (st and st.ReanimState == "Done.")
+if soft then
+TE.SoftLostAt = TE.SoftLostAt or now
+if #Claims == 0 then
+ReadyAt = nil
+return
+end
+if now - TE.SoftLostAt > TE.Tune.SoftGrace then
+ReadyAt, TE.SoftLostAt = nil, nil
+ReleaseAll()
+return
+end
+else
+TE.SoftLostAt = nil
+end
+if key ~= ActiveKey then
+if #Claims > 0 then ReleaseAll() end
+ActiveKey, Dirty, Told = key, true, {}
+end
+ReadyAt = ReadyAt or now
+if now - ReadyAt < 1 then return end
+if now - LastScan > 1 then
+LastScan = now
+local char = Player.Character
+local n = #Candidates(now)
+for _, c in Claims do
+if char and c.Tool.Parent and c.Tool.Parent ~= char then
+pcall(function() c.Tool.Parent = char end)
+-- back in the body the server makes a fresh grip, so restart the lifecycle unless the handle is still a live, free workspace part
+if c.Tool.Parent == char and not (c.Live and c.Handle:IsDescendantOf(workspace) and IsFree(c)) then Rearm(c, now) end
+end
+if c.Tool.Parent ~= char or not c.Handle:IsDescendantOf(c.Tool) then Dirty = true end
+end
+local sig = n + #Claims * 1000 + (char and 100000 or 0)
+if sig ~= LastSig then
+LastSig = sig
+Dirty = true
+end
+end
+if Dirty and not soft then Rebalance(key, now) end
+if #Claims == 0 then return end
+local bad
+for _, c in Claims do
+if not c.Live and not Advance(c, now) then
+bad = bad or {}
+bad[#bad + 1] = c
+end
+end
+if NeedBreak and ServerBreak() then NeedBreak = false end
+frame += 1
+acc += dt
+local gov = Util.FX and Util.FX.Gov
+local stride = (gov and gov.Stride) or 1
+if frame % stride == 0 then
+local d = acc
+acc = 0
+local hrp, torso, head = Resolve()
+if hrp then
+local sc = Reanimate.CharacterScale or 1
+local tcf, hcf = torso.CFrame, head.CFrame
+sv = sv:Lerp(hrp.CFrame:VectorToObjectSpace(hrp.AssemblyLinearVelocity), 1 - exp(-8 * math.max(d, 0.001)))
+local move = clamp(sv.Magnitude / 16, 0, 1)
+local lag = clamp(-sv.X * 0.03, -0.5, 0.5)
+local lift = clamp(-sv.Z / 16, 0, 1) * 0.45
+for _, c in Claims do
+if c.Live then
+local ok = true
+-- the server may have re-made the grip (re-equip, respawn race): the handle is no longer free, so stop writing and break it again
+if now - c.JointAt > 0.5 then
+c.JointAt = now
+ok = IsFree(c)
+if ok then
+-- extras are their own physics roots: clear any stale ref (client-only rig part, leftover glue) so the server keeps simulating the handle for everyone
+local g, ref = pcall(gethiddenproperty, c.Handle, "PhysicsRepRootRef")
+if g and ref ~= nil then pcall(sethiddenproperty, c.Handle, "PhysicsRepRootRef", nil) end
+if c.Cycles > 0 and now - c.At > TE.Tune.CycleReset then c.Cycles = 0 end
+end
+end
+if ok then
+local e, cf = c.Effect, nil
+if e == "Wings" then
+cf = WingCF(c, now, tcf, sc, move)
+elseif e == "Halo" then
+cf = HaloCF(c, now, hcf, sc)
+elseif e == "Tail" then
+cf = TailCF(c, now, tcf, sc, move, lag, lift)
+else
+cf = AuraCF(c, now, tcf, sc)
+end
+ok = Apply(c, cf, now)
+end
+if not ok and not Demote(c, now) then
+bad = bad or {}
+bad[#bad + 1] = c
+end
+end
+end
+end
+end
+if bad then Drop(bad, now) end
+end
+function TE.Shutdown()
+if Conn then Conn:Disconnect() Conn = nil end
+if RemConn then RemConn:Disconnect() RemConn = nil end
+if AddConn then AddConn:Disconnect() AddConn = nil end
+ReleaseAll()
+TE.SoftLostAt = nil
+ActiveKey, Dirty, Told, Parts, LastSig, sv, ReadyAt, NeedBreak = nil, true, {}, {}, -1, Vector3.zero, nil, false
+end
+function TE.Sync()
+local key = CurKey()
+if not (key and AnyOn(key)) then
+if Conn or #Claims > 0 then TE.Shutdown() end
+return
+end
+Dirty = true
+if not Conn then
+Conn = RunService.Heartbeat:Connect(function(dt)
+local ok, err = pcall(Step, dt)
+if not ok and os.clock() - lastWarn > 10 then
+lastWarn = os.clock()
+warn("[Tool Extras] step failed: " .. tostring(err))
+end
+end)
+RemConn = Player.CharacterRemoving:Connect(function()
+ReleaseAll()
+Dirty = true
+end)
+AddConn = Player.CharacterAdded:Connect(function() Dirty = true end)
+end
+end
+function TE.BuildConfig(parent, key)
+local cfg = TE.Cfg[key]
+UI.CreateText(parent, "-=+ Tool Reanimation Extras +=-", 12, Enum.TextXAlignment.Center)
+UI.CreateSwitch(parent, "Add Tool Reanimation as Extra", cfg.Master).Changed:Connect(function(val)
+cfg.Master = val
+SaveData.Reanimator[key .. "ToolExtra"] = val
+TE.Sync()
+task.defer(function() pcall(Util.RefreshReanimatorConfig) end)
+end)
+if cfg.Master then
+UI.CreateText(parent, "cosmetic effects built from your spare Tool handles (never the ones in use).\nWings use 6 tools, Halo 3, Tail 4, Floating Aura gets all the tools that are left.", 10, Enum.TextXAlignment.Center)
+for _, e in EFFECTS do
+UI.CreateSwitch(parent, LABEL[e], cfg[e]).Changed:Connect(function(val)
+cfg[e] = val
+SaveData.Reanimator[key .. "Tool" .. e] = val
+TE.Sync()
+end)
+end
+end
+end
 end
 local LimbReanimator = {}
 LimbReanimator.Name = "Limbs"
@@ -67857,6 +68494,8 @@ UI.CreateText(parent, "^^^ if ur rig built wrong or u switched to a new rig ^^^\
 UI.CreateButton(parent, "Force Respawn Now", 20).Activated:Connect(function()
 HatReanimator.ForceRespawn("Manual force respawn.")
 end)
+UI.CreateSeparator(parent)
+pcall(Reanimate.ToolExtras.BuildConfig, parent, "Hat")
 end
 HatReanimator.LastForceRespawn = 0
 function HatReanimator.ForceRespawn(reason)
@@ -68640,7 +69279,7 @@ end
 end)
 end
 end
-elseif v:IsA("Tool") and v.Parent == Player.Character then
+elseif v:IsA("Tool") and v.Parent == Player.Character and not v:GetAttribute("_Uhhhhhh_ToolExtra") then
 if not table.find(CharTools, v) then
 table.insert(CharTools, v)
 local conn = nil
@@ -70070,7 +70709,9 @@ local Handling = setmetatable({}, {__mode = "k"})
 local CharConns = {}
 local nextretry, nextredrop, nextcommit = 0, {}, 0
 local MAX_TRIES, MAX_CYCLES = 6, 3
-local OWN_GRACE, OWN_TIMEOUT = 2, 8
+local OWN_GRACE, OWN_TIMEOUT = 3, 8
+-- OWN_CONFIRM: ownership must hold this long before a tool counts as claimed | REGRIP_GRACE: how long a re-attached grip is tolerated before demoting | REVIVE_AFTER/MAX_REVIVES: slow bounded second chances for tools marked failed | WAKE_GAP: min gap between ownership wake-ups
+local OWN_CONFIRM, REGRIP_GRACE, REVIVE_AFTER, MAX_REVIVES, WAKE_GAP = 0.15, 0.3, 6, 3, 0.25
 local PassError = nil
 ToolReanimator.HasPermadeath = false
 Status.Permadeath = "Not used by Corpse Claim"
@@ -70130,6 +70771,35 @@ return handle.ReceiveAge == 0 and not handle:IsGrounded()
 end
 local function Valid(c)
 return c.Tool:IsDescendantOf(game) and c.Handle:IsDescendantOf(game)
+end
+-- Server break bookkeeping. A local Detach / BreakJoints makes IsFree true at once while the server's grip weld may still exist (it is only really gone when its removal replicates back), so every break request is timestamped per tool and a tool only counts as detached after one network round trip since its last request.
+local gapAt, gapVal = 0, 0.5
+local function BreakGap()
+local now = os.clock()
+if now - gapAt > 1 then
+gapAt = now
+local ok, ping = pcall(Player.GetNetworkPing, Player)
+gapVal = math.clamp((ok and tonumber(ping) or 0.1) * 2 + 0.2, 0.3, 1.2)
+end
+return gapVal
+end
+local function SendBreak(hum)
+hum = hum or ClaimHum
+if replicatesignal and hum and hum.Parent then
+pcall(replicatesignal, hum.ServerBreakJoints)
+return true
+end
+return false
+end
+local function Settled(c, now)
+return not replicatesignal or not c.BreakAt or now - c.BreakAt >= BreakGap()
+end
+-- ask the engine to (re)assign this handle to us: throttled, never on a grounded assembly
+local function Wake(c, now)
+if now - (c.WakeAt or 0) < WAKE_GAP then return end
+c.WakeAt = now
+local h = c.Handle
+if h.Parent and not h:IsGrounded() then pcall(sethiddenproperty, h, "NetworkIsSleeping", false) end
 end
 -- Detach is confirmed separately from ownership: the handle must be in the workspace and free of every outside joint.
 local function Detached(c, fresh)
@@ -70252,7 +70922,7 @@ local function Promote(c, i, now)
 table.remove(pending, i)
 table.insert(claimed, c)
 c.Detached, c.Owned, c.Failed, c.FailReason = true, true, false, nil
-c.Tries, c.OwnLostAt, c.DetachedAt, c.ClaimedAt = 0, nil, nil, now
+c.Tries, c.OwnLostAt, c.DetachedAt, c.ClaimedAt, c.OwnSince, c.AttachedAt = 0, nil, nil, now, nil, nil
 nextredrop[c] = nil
 c.Handle.CanCollide = false
 ResetDrive(c)
@@ -70261,11 +70931,11 @@ local function Demote(c, i, why)
 table.remove(claimed, i)
 table.insert(pending, c)
 ResetDrive(c)
-c.Detached, c.Owned, c.OwnLostAt, c.DetachedAt, c.Tries = false, false, nil, nil, 0
+c.Detached, c.Owned, c.OwnLostAt, c.DetachedAt, c.Tries, c.OwnSince, c.AttachedAt = false, false, nil, nil, 0, nil, nil
 c.Cycles += 1
 nextredrop[c] = nil
 if c.Cycles > MAX_CYCLES then
-c.Failed, c.FailReason = true, why or "ownership keeps changing"
+c.Failed, c.FailReason, c.FailedAt = true, why or "ownership keeps changing", os.clock()
 end
 end
 local function Commit()
@@ -70273,19 +70943,27 @@ local now = os.clock()
 for i = #pending, 1, -1 do
 local c = pending[i]
 if Valid(c) then
-c.Detached = Detached(c, true)
+c.Detached = Detached(c, true) and Settled(c, now)
 c.Owned = c.Detached and Owns(c.Handle)
-if c.Detached and c.Owned then
+c.OwnSince = c.Owned and (c.OwnSince or now) or nil
+if c.Owned and now - c.OwnSince >= OWN_CONFIRM then
 Promote(c, i, now)
 else
 if c.Detached then
 c.DetachedAt = c.DetachedAt or now
+if not c.Owned then Wake(c, now) end
 if not c.Failed and now - c.DetachedAt > OWN_TIMEOUT then
-c.Failed, c.FailReason = true, "detached but the engine never gave this client ownership"
+c.Failed, c.FailReason, c.FailedAt = true, "detached but the engine never gave this client ownership", now
 end
 else
 c.DetachedAt = nil
 end
+end
+-- slow, bounded second chance for tools marked failed (a late server break or ownership hand-off can still make them usable)
+if c.Failed and c.FailedAt and now - c.FailedAt > REVIVE_AFTER and (c.Revives or 0) < MAX_REVIVES then
+c.Revives = (c.Revives or 0) + 1
+c.Failed, c.FailReason, c.FailedAt, c.Tries, c.Cycles, c.DetachedAt = false, nil, nil, 0, 0, nil
+nextredrop[c] = nil
 end
 else
 Forget(c)
@@ -70295,16 +70973,30 @@ end
 end
 -- Bounded retries with backoff: after MAX_TRIES the tool is marked failed (it stays pending and can still be promoted
 -- later if ownership arrives, but it is no longer re-dropped).
+-- the server may have moved the tool out of the body (unequip / respawn race): put it back so its grip can be broken again instead of re-dropping a tool that is not even in the character
+local function EquipBack(c)
+local char = Player.Character
+local tool = c.Tool
+if not (char and char:IsDescendantOf(workspace)) or tool.Parent == char or not tool:IsDescendantOf(game) then return end
+pcall(function()
+tool.Enabled = true
+tool.RequiresHandle = false
+tool.Parent = char
+end)
+end
 local function DropTool(c, now, bounce)
 if c.Failed or now < (nextredrop[c] or 0) then return end
 if c.Tries >= MAX_TRIES then
-c.Failed, c.FailReason = true, "still attached after " .. c.Tries .. " drops"
+c.Failed, c.FailReason, c.FailedAt = true, "still attached after " .. c.Tries .. " drops", now
 return
 end
 c.Tries += 1
-nextredrop[c] = now + math.min(0.5 * 2 ^ (c.Tries - 1), 4)
-pcall(Detach, c.Handle)
-if replicatesignal and ClaimHum and ClaimHum.Parent then pcall(replicatesignal, ClaimHum.ServerBreakJoints) end
+nextredrop[c] = now + math.max(math.min(0.5 * 2 ^ (c.Tries - 1), 4), BreakGap() + 0.2)
+EquipBack(c)
+-- the first try only asks the server (its removal replicating back is the real confirmation); retries, or no replicatesignal, also clear the grip locally
+if c.Tries > 1 or not replicatesignal then pcall(Detach, c.Handle) end
+c.BreakAt = now
+SendBreak()
 end
 local function ClaimTools(char, list)
 for _, tool in GetTools() do
@@ -70383,7 +71075,7 @@ if not (root and root:IsDescendantOf(workspace)) then return end
 local p, now = ClaimPosition(root), os.clock()
 for _, c in pending do
 local h = c.Handle
-if not c.Failed and (not c.Driven or now - c.Driven > 0.1) and h:IsDescendantOf(workspace) and h.ReceiveAge == 0 and IsFree(c) then
+if not c.Failed and (not c.Driven or now - c.Driven > 0.1) and h:IsDescendantOf(workspace) and h.ReceiveAge == 0 and IsFree(c) and Settled(c, now) then
 h.CanCollide = false
 h.CFrame = CFrame.new(p)
 h.AssemblyLinearVelocity = Vector3.new(0, 67, 0)
@@ -70513,8 +71205,9 @@ return limb.CFrame, limb.Velocity
 end
 local function SetRepRoot(c, part, now)
 local want = nil
-if typeof(part) == "Instance" and part:IsA("BasePart") and Util.Fling.UseGlue() then want = part end
-if c.RepRef ~= want or now - (c.RepRefAt or 0) > 0.5 then
+-- only a part that exists for everyone is a valid physics root: never the client-only reanimated rig, never our own handle, never something outside the workspace
+if typeof(part) == "Instance" and part:IsA("BasePart") and part ~= c.Handle and part:IsDescendantOf(workspace) and not (Reanimate.Character and part:IsDescendantOf(Reanimate.Character)) and Util.Fling.UseGlue() then want = part end
+if c.RepRef ~= want or c.RepRefAt == nil or (want ~= nil and now - c.RepRefAt > 0.5) or now - c.RepRefAt > 2 then
 c.RepRef, c.RepRefAt = want, now
 pcall(sethiddenproperty, c.Handle, "PhysicsRepRootRef", want)
 end
@@ -70560,12 +71253,26 @@ if ready < #list then task.wait(0.1) end
 until ready >= #list or os.clock() > armDeadline or not alive()
 if not alive() then return end
 Status.ReanimState = "Corpse Claim: detaching tools (client death + server joint break)"
-if replicatesignal then pcall(replicatesignal, hum.ServerBreakJoints) end
+do
+local sent = os.clock()
+SendBreak(hum)
+-- the first server break is the real detach: the first retry waits a round trip, and tool grips are left alone locally until then
+for _, c in list do
+c.BreakAt, c.Tries = sent, math.max(c.Tries, 1)
+nextredrop[c] = sent + BreakGap() + 0.2
+end
+end
 pcall(function()
 hum.EvaluateStateMachine = true
 hum.BreakJointsOnDeath = true
 if replicatesignal then
-pcall(function() character:BreakJoints() end)
+-- break the body locally but leave tool grips for the server break to remove (destroying them locally would make a handle look free while the server still welds it)
+for _, j in character:GetDescendants() do
+if j:IsA("JointInstance") then
+local p0, p1 = j.Part0, j.Part1
+if not ((p0 and p0:FindFirstAncestorWhichIsA("Tool")) or (p1 and p1:FindFirstAncestorWhichIsA("Tool"))) then pcall(j.Destroy, j) end
+end
+end
 hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
 hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
 hum:ChangeState(Enum.HumanoidStateType.Climbing)
@@ -70587,6 +71294,8 @@ c.Handle.CanTouch = false
 if not Detached(c, true) then
 DropTool(c, now, c.Tool.Parent == workspace)
 if not c.Failed then left += 1 end
+elseif not Settled(c, now) then
+left += 1
 end
 end
 end
@@ -70744,17 +71453,17 @@ c.RepRef = false
 elseif not Valid(c) then
 -- removed by Prune next frame
 elseif not Detached(c) then
--- grip came back / tool left the workspace: back to pending (bounded), never driven while attached
-Demote(c, i, "tool keeps getting re-attached")
+-- grip came back / tool left the workspace: never driven while attached, back to pending (bounded) only if it stays attached past REGRIP_GRACE
+c.AttachedAt = c.AttachedAt or t
+if t - c.AttachedAt > REGRIP_GRACE then Demote(c, i, "tool keeps getting re-attached") end
 elseif not Owns(handle) then
--- delayed replication / ownership change: stop driving, give it a grace period, then re-confirm from pending
+-- delayed replication / ownership change: stop driving, wake the handle (throttled), give it a grace period, then re-confirm from pending
+c.AttachedAt = nil
 c.OwnLostAt = c.OwnLostAt or t
-if not handle:IsGrounded() then
-pcall(sethiddenproperty, handle, "NetworkIsSleeping", false)
-end
+Wake(c, t)
 if t - c.OwnLostAt > OWN_GRACE then Demote(c, i, "ownership lost") end
 else
-c.OwnLostAt = nil
+c.OwnLostAt, c.AttachedAt = nil, nil
 if c.ClaimedAt and c.Cycles > 0 and t - c.ClaimedAt > 30 then c.Cycles = 0 end
 local map = ResolveMap(c, t)
 local limb = c.LimbPart
@@ -72477,6 +73186,45 @@ UI.CreateSeparator(MainPage)
 do
 UI.CreateText(MainPage, "Performance", 15, Enum.TextXAlignment.Center)
 pcall(function() Util.Search.Section(MainPage, "Performance") end)
+do
+UI.CreateText(MainPage, "Banner and Wheels", 13, Enum.TextXAlignment.Center)
+local function BannerAPI()
+local g = (getgenv and getgenv()) or _G
+return g.UhBanner
+end
+local function Loading() pcall(Util.UINotify, "Still loading, try again in a moment.") end
+local BannerSwitch = UI.CreateSwitch(MainPage, "Show Banners", not SaveData.BannerOff)
+BannerSwitch.Changed:Connect(function(val)
+local B = BannerAPI()
+if B and B.SetEnabled then
+B.SetEnabled(val)
+else
+SaveData.BannerOff = (not val) or nil
+end
+pcall(Util.UINotify, "Banners " .. (val and "ON" or "OFF") .. " (only on your screen)")
+end)
+UI.CreateText(MainPage, "Hides every banner on your screen only. Your own banner still shows for everyone else.", 10, Enum.TextXAlignment.Center)
+UI.CreateButton(MainPage, "Banner Style &gt;", 20).Activated:Connect(function()
+local B = BannerAPI()
+if B and B.OpenStyle then B.OpenStyle() else Loading() end
+end)
+UI.CreateButton(MainPage, "Dance Wheel", 20).Activated:Connect(function()
+if Util.ToggleWheel then Util.ToggleWheel("dance") else Loading() end
+end)
+UI.CreateButton(MainPage, "Moveset Wheel", 20).Activated:Connect(function()
+if Util.ToggleWheel then Util.ToggleWheel("moveset") else Loading() end
+end)
+local WheelFloat = UI.CreateSwitch(MainPage, "Floating Wheel Buttons", type(SaveData.WheelFavs) == "table" and SaveData.WheelFavs.float == true)
+WheelFloat.Changed:Connect(function(val)
+if Util.SetWheelFloat then
+Util.SetWheelFloat(val)
+else
+if type(SaveData.WheelFavs) ~= "table" then SaveData.WheelFavs = {} end
+SaveData.WheelFavs.float = val and true or nil
+end
+end)
+UI.CreateText(MainPage, "Wheels: the Dance / Moveset buttons above open them. On keyboard you can still hold N (dances) or Y (movesets). The floating DANCE / MOVE touch buttons are off by default; turn them on here to bring them back.", 10, Enum.TextXAlignment.Center)
+end
 do
 local FX = Util.FX
 local LowEndSwitch = UI.CreateSwitch(MainPage, "Low End UI Mode", FX.IsLowEnd())
@@ -75734,6 +76482,15 @@ if not cur then return end
 cur = nil
 pcall(box.ReleaseFocus, box)
 end
+-- hooks for the Performance tab buttons (the floating on-screen DANCE / MOVE buttons are now optional)
+Util.OpenWheel = function(k) if Kinds[k] then open(k) end end
+Util.CloseWheel = function() close() end
+Util.ToggleWheel = function(k)
+if not Kinds[k] then return end
+if cur == k then close() else open(k) end
+end
+Util.SetWheelFloat = function(v) WF.float = v and true or nil end
+Util.GetWheelFloat = function() return WF.float == true end
 local function flip(d)
 if cur then
 page = (page - 1 + d) % nPages + 1
@@ -75822,7 +76579,7 @@ stable = CurrentDance
 end
 local touch = UserInputService.TouchEnabled
 for _, mb in mob do
-mb.b.Visible = touch and not cur
+mb.b.Visible = touch and not cur and WF.float == true
 mb.st.Color = acc
 end
 anim = anim + ((cur and 1 or 0) - anim) * (1 - math.exp(-14 * dt))
