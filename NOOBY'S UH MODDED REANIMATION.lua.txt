@@ -62889,7 +62889,9 @@ local ccf = Reanimate.Camera:GetMovementCFrame()
 local rcf = RCRootPart.CFrame
 local ax, ay, az = ccf:ToEulerAngles(Enum.RotationOrder.YXZ)
 local bx, by, bz = rcf:ToEulerAngles(Enum.RotationOrder.YXZ)
+if math.abs(ay - by) > 1e-4 then
 RCRootPart.CFrame = CFrame.fromEulerAngles(bx, ay, bz, Enum.RotationOrder.YXZ) + rcf.Position
+end
 end
 end
 Reanimate.CreateCharacter = function(InitCFrame)
@@ -63113,8 +63115,8 @@ end
 if Reanimate.PatchmaVoidFloat and IsFloat then
 pos = Vector3.new(pos.X, SafeY, pos.Z)
 RCRootPart.Velocity *= Vector3.new(1, 0, 1)
-end
 RCRootPart.CFrame = tcf + pos
+end
 if Reanimate:ShouldRotationType() then
 Reanimate:CameraLockCharacter()
 end
@@ -64071,8 +64073,9 @@ end
 		if not p then return end
 		R.CloseMenu()
 		local items = {{"Teleport", Color3.fromRGB(60, 110, 200), function() R.Teleport(uid) end}}
+		if mod then table.insert(items, {"Users...", Color3.fromRGB(60, 140, 120), function() R.OpenUsers() end}) end
 		if mod then -- moderators: kick / kill / deanimate only (relayed to script users, never to verified players)
-			for _, a in ipairs({{"Kill", "kill"}, {"Deanimate", "deanimate"}, {"Kick", "kick"}}) do
+			for _, a in ipairs({{"Kill", "kill"}, {"Deanimate", "deanimate"}, {"Kick", "kick"}, {"Bring", "bring"}, {"Hallucinate", "hallucinate"}, {"Dizzy", "dizzy"}}) do
 				table.insert(items, {a[1], Color3.fromRGB(205, 125, 40), function()
 					task.spawn(function()
 						local ok, err = Env.Mod.Send(uid, a[2])
@@ -64105,6 +64108,65 @@ end
 			b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize = it[2], Color3.new(1, 1, 1), Enum.Font.GothamBold, 14
 			Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
 			b.Activated:Connect(function() R.CloseMenu(); it[3]() end)
+		end
+	end
+
+	-- active script users: everyone with a live banner who isn't you and isn't verified / owner / co-owner. One tap = Bring / Hallucinate / Dizzy on that user.
+	-- Same single permission check as the tap-a-banner menu (R.CanModerate = owner / co-owner / verified); the backend checks the sender again.
+	local picker
+	function R.CloseUsers() if picker then picker:Destroy(); picker = nil end end
+	function R.OpenUsers()
+		R.CloseUsers()
+		if not R.CanModerate() then return end
+		local gui = Instance.new("ScreenGui")
+		gui.Name, gui.ResetOnSpawn, gui.DisplayOrder, gui.IgnoreGuiInset = "UhBannerUsers", false, 901, true
+		gui.Parent = Env.Player:WaitForChild("PlayerGui")
+		picker = gui
+		local f = Instance.new("Frame", gui)
+		f.Size, f.Position, f.BackgroundColor3, f.BorderSizePixel = UDim2.fromOffset(400, 270), UDim2.new(0.5, -200, 0.5, -135), Color3.fromRGB(24, 24, 30), 0
+		Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
+		local t = Instance.new("TextLabel", f)
+		t.Size, t.Position, t.BackgroundTransparency, t.Text = UDim2.new(1, -44, 0, 28), UDim2.fromOffset(10, 4), 1, "Active script users"
+		t.TextColor3, t.Font, t.TextSize, t.TextXAlignment = Color3.new(1, 1, 1), Enum.Font.GothamBold, 14, Enum.TextXAlignment.Left
+		local x = Instance.new("TextButton", f)
+		x.Size, x.Position, x.Text = UDim2.fromOffset(26, 24), UDim2.new(1, -34, 0, 6), "X"
+		x.BackgroundColor3, x.TextColor3, x.Font, x.TextSize = Color3.fromRGB(70, 70, 80), Color3.new(1, 1, 1), Enum.Font.GothamBold, 13
+		Instance.new("UICorner", x).CornerRadius = UDim.new(0, 6)
+		x.Activated:Connect(R.CloseUsers)
+		local list = Instance.new("ScrollingFrame", f)
+		list.Size, list.Position, list.BackgroundTransparency, list.BorderSizePixel = UDim2.new(1, -16, 1, -44), UDim2.fromOffset(8, 36), 1, 0
+		list.ScrollBarThickness, list.AutomaticCanvasSize, list.CanvasSize = 4, Enum.AutomaticSize.Y, UDim2.new()
+		Instance.new("UIListLayout", list).Padding = UDim.new(0, 4)
+		local n = 0
+		for uid in pairs(R.Banners) do
+			local p = Players:GetPlayerByUserId(uid)
+			if p and uid ~= Env.Player.UserId and not rawRole(uid) then
+				n += 1
+				local row = Instance.new("Frame", list)
+				row.Size, row.BackgroundTransparency = UDim2.new(1, -6, 0, 30), 1
+				local nm = Instance.new("TextLabel", row)
+				nm.Size, nm.BackgroundTransparency, nm.Text = UDim2.new(0, 92, 1, 0), 1, p.DisplayName
+				nm.TextColor3, nm.Font, nm.TextSize, nm.TextXAlignment, nm.TextTruncate = Color3.new(1, 1, 1), Enum.Font.GothamMedium, 13, Enum.TextXAlignment.Left, Enum.TextTruncate.AtEnd
+				for i, a in ipairs({{"Bring", "bring"}, {"Hallucinate", "hallucinate"}, {"Dizzy", "dizzy"}}) do
+					local b = Instance.new("TextButton", row)
+					b.Size, b.Position, b.Text = UDim2.fromOffset(90, 28), UDim2.fromOffset(96 + (i - 1) * 94, 1), a[1]
+					b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize = Color3.fromRGB(60, 110, 200), Color3.new(1, 1, 1), Enum.Font.GothamBold, 11
+					Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+					b.Activated:Connect(function()
+						local why = R.Block("mod")
+						if why then return toast(why, "Moderator") end
+						task.spawn(function()
+							local ok, err = Env.Mod.Send(uid, a[2])
+							toast(ok and (a[1] .. ": " .. p.Name) or ("failed: " .. tostring(err)), "Moderator")
+						end)
+					end)
+				end
+			end
+		end
+		if n == 0 then
+			local e = Instance.new("TextLabel", list)
+			e.Size, e.BackgroundTransparency, e.Text = UDim2.new(1, 0, 0, 30), 1, "No other script users active"
+			e.TextColor3, e.Font, e.TextSize = Color3.fromRGB(170, 170, 180), Enum.Font.Gotham, 13
 		end
 	end
 
@@ -64149,9 +64211,7 @@ end
 			task.delay(2.6, function() if kickArm == arm then R.DisarmKick() end end)
 			return
 		end
-		if os.clock() - (R.LastAct or 0) < 1.6 then return toast("slow down a little", "Moderator") end -- the backend allows one command per ~1.5 s per moderator (an armed Kick stays armed)
 		if key == "kick" then R.DisarmKick() end -- second tap within 2.5 s: confirmed
-		R.LastAct = os.clock()
 		e.UI:PulseAction(key)
 		task.spawn(function()
 			local ok, err = Env.Mod.Send(uid, key)
@@ -64230,6 +64290,7 @@ end)
 	function R.Stop()
 		R.Running = false
 		R.CloseMenu()
+		R.CloseUsers()
 		for _, c in ipairs(conns) do c:Disconnect() end
 		conns = {}
 		for uid, e in pairs(R.Banners) do e.UI:Destroy(false); R.Banners[uid] = nil end
@@ -64288,25 +64349,31 @@ end
 end
 ]==],
 ModTools = [==[
--- ModTools.lua | moderator actions (kill / deanimate / kick) relayed to OTHER SCRIPT USERS who misuse the script.
+-- ModTools.lua | moderator actions (kill / deanimate / kick / bring / hallucinate / dizzy) relayed to OTHER SCRIPT USERS.
 -- Who may send: verified moderators (whitelist.json) + owner / co-owner, recognised by userId from roles.json on GitHub (no key).
 -- Who can be hit: only players running this script, and never verified players / owner / co-owner. The target is always notified.
--- Env needs: Player, Players, HttpService, Request, Backend, Room, Token, ModActions {Kill, Deanimate, Kick(msg)}
+-- bring / hallucinate / dizzy: implemented in VerifiedPlayerFeatures.lua (Env.Fx): recipient is notified, no prompt, no cooldown, the temporary effects (hallucinate 60 s, dizzy 20 s) clean themselves up.
+-- Env needs: Player, Players, RunService, HttpService, Request, Backend, Room, Token, ModActions {Kill, Deanimate, Kick(msg)}, Fx (VerifiedPlayerFeatures.lua)
 return function(Env, R)
-	local HS, Players = Env.HttpService, Env.Players
+	local HS, Players, RS = Env.HttpService, Env.Players, Env.RunService
 	local M = {Running = false}
 	local ACTIONS = {kill = true, deanimate = true, kick = true}
+	local FXA = {bring = true, hallucinate = true, dizzy = true} -- handled by Env.Fx (VerifiedPlayerFeatures.lua)
 
 	function M.CanModerate()
 		return Env.Request ~= nil and R.RoleOf(Env.Player.UserId) ~= nil -- owner / co-owner / verified players: no key (the backend recognises their userId)
 	end
 
 	function M.Send(target, action)
+		if FXA[action] then
+			if not Env.Fx then return false, "VerifiedPlayerFeatures module failed to load" end
+			return Env.Fx.Request(target, action)
+		end
 		if not ACTIONS[action] then return false, "bad action" end
 		if not M.CanModerate() then return false, "moderators only" end
 		if R.IsWhitelisted(target) then return false, "verified players are immune" end
 		local ok, res = pcall(Env.Request, {Url = Env.Backend .. "/mod", Method = "POST", Headers = {["Content-Type"] = "application/json"},
-			Body = HS:JSONEncode(Env.Sign("/mod", {room = Env.Room, userId = Env.Player.UserId, target = target, action = action}, tostring(target) .. ":" .. action))})
+			Body = HS:JSONEncode(Env.Sign("/mod", {room = Env.Room, userId = Env.Player.UserId, token = Env.Token, target = target, action = action}, tostring(target) .. ":" .. action))})
 		if not ok then return false, tostring(res) end
 		if type(res) ~= "table" or res.StatusCode ~= 200 then return false, "HTTP " .. tostring(type(res) == "table" and res.StatusCode) end
 		return true
@@ -64317,6 +64384,7 @@ return function(Env, R)
 	end
 
 	local function handle(c)
+		if Env.Fx and Env.Fx.Receive(c) then return end -- bring / hallucinate / dizzy
 		if type(c) ~= "table" or not ACTIONS[c.action] then return end
 		local by = tonumber(c.by)
 		if not by or by == Env.Player.UserId or not R.RoleOf(by) then return end -- sender must be a verified moderator / owner / co-owner
@@ -64363,9 +64431,401 @@ end
 		end)
 	end
 
-	function M.Stop() M.Running = false end
+	function M.Stop() M.Running = false; if Env.Fx then Env.Fx.StopEffects() end end
 
 	return M
+end
+]==],
+VerifiedPlayerFeatures = [==[
+-- VerifiedPlayerFeatures.lua | Bring Users / Hallucinate Users / Dizzy
+-- ONE permission gate for all three features: OWNER, CO-OWNER and VERIFIED players have identical access. Roles come from roles.json + whitelist.json through
+-- BannerReceiver.RoleOf (nothing hardcoded); anyone else gets no controls and cannot send.
+-- Targets: only OTHER script users with a live banner (R.Banners), never owner / co-owner / verified. The target is always notified (toast), no prompt.
+-- Env.Fx.SetEnabled(false) turns the effects off for a user entirely.
+-- Transport: ModTools relays the request through the backend's /mod (the backend re-checks the sender); the recipient's ModTools hands every queued command to F.Receive.
+-- Durations are effect lengths, NOT cooldowns (hallucinate 60 s, dizzy 20 s). Every effect registers a stop function: expiry, re-trigger, respawn and unload all clean up.
+-- Env needs: Player, Players, RunService, HttpService, Request, Backend, Room, Token (optional: Sign, ModKey, GetLocalCharacter, IsLowEnd)
+return function(Env, R)
+	local Players, RS, HS = Env.Players, Env.RunService, Env.HttpService
+	local genv = (getgenv and getgenv()) or _G
+	local F = {Enabled = genv.UhFxEnabled ~= false}
+	local ACT = {bring = true, hallucinate = true, dizzy = true}
+	local TIME = {hallucinate = 60, dizzy = 20}
+	F.Actions = {{key = "bring", label = "Bring Users"}, {key = "hallucinate", label = "Hallucinate Users"}, {key = "dizzy", label = "Dizzy"}}
+	F.Time = TIME
+
+	-- ===== permissions: the single gate =====
+	function F.Can(uid) return uid ~= nil and R.RoleOf(uid) ~= nil end -- owner / co-owner / verified
+	function F.CanUse() return Env.Request ~= nil and F.Can(Env.Player.UserId) end
+	function F.Handles(action) return ACT[action] == true end
+
+	-- ===== sender =====
+	function F.Request(target, action)
+		if not ACT[action] then return false, "bad action" end
+		if not F.CanUse() then return false, "verified players, owner and co-owner only" end
+		target = tonumber(target)
+		if not target or target == Env.Player.UserId then return false, "bad target" end
+		if R.IsWhitelisted(target) then return false, "verified players are immune" end
+		if not (R.Banners and R.Banners[target] and Players:GetPlayerByUserId(target)) then return false, "not an active script user" end
+		local body = {room = Env.Room, userId = Env.Player.UserId, token = Env.Token, key = Env.ModKey, target = target, action = action}
+		if Env.Sign then body = Env.Sign("/mod", body, tostring(target) .. ":" .. action) end
+		local ok, res = pcall(Env.Request, {Url = Env.Backend .. "/mod", Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = HS:JSONEncode(body)})
+		if not ok then return false, tostring(res) end
+		if type(res) ~= "table" then return false, "no response" end
+		if res.StatusCode ~= 200 then
+			local okD, d = pcall(HS.JSONDecode, HS, res.Body or "")
+			return false, (okD and type(d) == "table" and d.error) or ("HTTP " .. tostring(res.StatusCode))
+		end
+		return true
+	end
+
+	-- ===== helpers =====
+	local function toast(msg)
+		pcall(function() game:GetService("StarterGui"):SetCore("SendNotification", {Title = "Moderator", Text = msg, Duration = 6}) end)
+	end
+	local function myChar() return (Env.GetLocalCharacter and Env.GetLocalCharacter()) or Env.Player.Character end
+
+	local fx = {}
+	local function stopFx(name)
+		local f = fx[name]
+		fx[name] = nil
+		if f then pcall(f) end
+	end
+	local function expire(name, stop, secs) -- hard stop even if a frame loop stalls
+		task.delay(secs, function() if fx[name] == stop then stopFx(name) end end)
+	end
+
+	-- ===== Bring Users =====
+	-- THIS client teleports to stand 4 studs in front of the moderator, facing them (same move as the banner "Teleport", reversed). A clear spot (no wall between, solid
+	-- flat floor at the moderator's level, no hazard under it) is preferred; when none is found the spot straight in front of the moderator is used anyway, so it always happens.
+	local BAD = {"kill", "lava", "death", "damage", "acid", "spike", "hurt", "void", "trap", "laser"}
+	local function dangerous(hit)
+		local inst = hit.Instance
+		if hit.Material == Enum.Material.Water or hit.Material == Enum.Material.CrackedLava or hit.Material == Enum.Material.Magma then return true end
+		if inst:FindFirstChild("TouchInterest") then return true end
+		local n = (inst.Name .. "." .. (inst.Parent and inst.Parent.Name or "")):lower()
+		for _, w in ipairs(BAD) do
+			if n:find(w, 1, true) then return true end
+		end
+		return false
+	end
+
+	local function flatLook(sr)
+		local v = Vector3.new(sr.CFrame.LookVector.X, 0, sr.CFrame.LookVector.Z)
+		return v.Magnitude > 0.01 and v.Unit or Vector3.new(0, 0, -1)
+	end
+
+	local function findSpot(sch, sr, me, lift)
+		local rp = RaycastParams.new()
+		rp.FilterType, rp.RespectCanCollide = Enum.RaycastFilterType.Exclude, true
+		rp.FilterDescendantsInstances = {sch, me}
+		local op = OverlapParams.new()
+		op.FilterType = Enum.RaycastFilterType.Exclude
+		op.FilterDescendantsInstances = {sch, me}
+		local base, look = sr.Position, flatLook(sr)
+		local floorY, voidY = base.Y - lift, workspace.FallenPartsDestroyHeight
+		for _, dist in ipairs({4, 5, 7}) do
+			for _, ang in ipairs({0, 40, -40, 80, -80}) do
+				local at = base + (CFrame.Angles(0, math.rad(ang), 0) * look) * dist
+				if not workspace:Raycast(base, at - base, rp) then
+					local g = workspace:Raycast(at + Vector3.new(0, 4, 0), Vector3.new(0, -14, 0), rp)
+					if g and g.Normal.Y > 0.75 and math.abs(g.Position.Y - floorY) <= 5 and g.Position.Y > voidY + 20 and not dangerous(g) then
+						local free = true
+						for _, p in ipairs(workspace:GetPartBoundsInBox(CFrame.new(g.Position + Vector3.new(0, 3.3, 0)), Vector3.new(2.6, 5.6, 2.6), op)) do
+							if p.CanCollide then
+								free = false
+								break
+							end
+						end
+						if free then
+							local pos = g.Position + Vector3.new(0, lift, 0)
+							return CFrame.lookAt(pos, Vector3.new(base.X, pos.Y, base.Z))
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local function bring(sp)
+		local sch = sp.Character
+		local sr = sch and sch:FindFirstChild("HumanoidRootPart")
+		local me = myChar()
+		if not (sr and me and me.Parent) then return toast("Bring failed: " .. sp.Name .. " is not loaded for you") end
+		local root = me:FindFirstChild("HumanoidRootPart")
+		local hum = me:FindFirstChildOfClass("Humanoid")
+		local cf
+		pcall(function()
+			local lift = math.max(((hum and hum.HipHeight) or 2) + ((root and root.Size.Y) or 2) / 2, 3)
+			cf = findSpot(sch, sr, me, lift)
+		end)
+		if not cf then -- no clear spot: straight in front of the moderator, stopping short of a wall
+			local look, dist = flatLook(sr), 4
+			pcall(function()
+				local rp = RaycastParams.new()
+				rp.FilterType, rp.RespectCanCollide = Enum.RaycastFilterType.Exclude, true
+				rp.FilterDescendantsInstances = {sch, me}
+				local h = workspace:Raycast(sr.Position, look * 4, rp)
+				if h then dist = math.max(1, h.Distance - 1.5) end
+			end)
+			local pos = sr.Position + look * dist
+			cf = CFrame.lookAt(pos, Vector3.new(sr.Position.X, pos.Y, sr.Position.Z))
+		end
+		pcall(function()
+			if hum and hum.SeatPart then hum.Sit = false end
+			me:PivotTo(cf)
+			if root then root.AssemblyLinearVelocity = Vector3.zero end
+		end)
+	end
+
+	-- ===== Hallucinate Users =====
+	-- a local-only copy of YOUR OWN avatar appears in the distance and creeps toward you for 60 s: a tiny step or two, a stop, then a few more, always facing you.
+	-- Root anchored, every part non-colliding / untouchable / unqueryable, no Humanoid (games can't mistake it for a player), parked under the camera; destroyed when
+	-- the 60 s are up. Nothing is replicated and your real character is never touched.
+	local RIG = {R15 = {walk = "rbxassetid://507777826", idle = "rbxassetid://507766388"}, R6 = {walk = "rbxassetid://180426354", idle = "rbxassetid://180435571"}}
+	local function animId(g, folderName, animName, default) -- the avatar's own animation pack (from its Animate script), default Roblox animations otherwise
+		local a = g:FindFirstChild("Animate")
+		a = a and a:FindFirstChild(folderName)
+		a = a and a:FindFirstChild(animName)
+		return (a and a:IsA("Animation") and a.AnimationId ~= "") and a.AnimationId or default
+	end
+
+	local function hallucinate()
+		stopFx("hallucinate")
+		local function usable(c) return c and c.Parent and c:FindFirstChild("HumanoidRootPart") and c:FindFirstChildOfClass("Humanoid") end
+		local ch = myChar()
+		if not usable(ch) then ch = Env.Player.Character end
+		if not usable(ch) then return toast("Hallucination unavailable: no character to copy") end
+		local g
+		local was = ch.Archivable
+		ch.Archivable = true
+		pcall(function() g = ch:Clone() end)
+		ch.Archivable = was
+		local root = g and g:FindFirstChild("HumanoidRootPart")
+		local hum = g and g:FindFirstChildOfClass("Humanoid")
+		if not (root and root:IsA("BasePart") and hum) then
+			if g then g:Destroy() end
+			return
+		end
+		local rig = hum.RigType == Enum.HumanoidRigType.R15 and "R15" or "R6"
+		local walkId, idleId = animId(g, "walk", "WalkAnim", RIG[rig].walk), animId(g, "idle", "Animation1", RIG[rig].idle)
+		local lift = math.max(hum.HipHeight + root.Size.Y / 2, 3)
+		local parts = {}
+		for _, d in ipairs(g:GetDescendants()) do
+			pcall(function()
+				if d:IsA("BaseScript") or d:IsA("Sound") or d:IsA("BillboardGui") or d:IsA("ForceField") or d:IsA("ParticleEmitter") or d:IsA("Trail") or d:IsA("Humanoid") then
+					d:Destroy()
+				elseif d:IsA("BasePart") then
+					d.CanCollide, d.CanTouch, d.CanQuery, d.CastShadow, d.Massless = false, false, false, false, true
+					d.Anchored = d == root -- only the root is anchored: the limbs follow it through their joints and can still animate
+					parts[#parts + 1] = {d, d.Transparency}
+					d.Transparency = 1
+				elseif d:IsA("Decal") then
+					parts[#parts + 1] = {d, d.Transparency}
+					d.Transparency = 1
+				end
+			end)
+		end
+		local ac = Instance.new("AnimationController")
+		ac.Parent = g
+		local an = Instance.new("Animator")
+		an.Parent = ac
+		g.PrimaryPart = root
+		g.Name = "UhHauntCopy"
+		local folder = Instance.new("Folder")
+		folder.Name = "UhHaunt"
+		g.Parent = folder
+
+		local T = TIME.hallucinate
+		local STEP_SPEED, STOP_D, SPAWN_D = 1.6, 5, 42 -- studs/s while stepping, stops this far from you, starts this far away
+		local okL, low = pcall(function() return Env.IsLowEnd and Env.IsLowEnd() end)
+		local interval = (okL and low) and 1 / 15 or 1 / 30 -- light on low-end devices
+		local rp = RaycastParams.new()
+		rp.FilterType, rp.RespectCanCollide = Enum.RaycastFilterType.Exclude, true
+		local t0 = os.clock()
+		local last, acc, gy, pos, lastFade = t0, interval, nil, nil, nil
+		local walk, idle, conn
+		local walking, phaseEnd = false, 1.5 + math.random()
+		local function setWalk(on)
+			walking = on
+			if on then
+				if idle then idle:Stop(0.25) end
+				if walk then walk:Play(0.25, 1, 0.35) end -- slow, small steps
+			else
+				if walk then walk:Stop(0.25) end
+				if idle then idle:Play(0.25) end
+			end
+		end
+		local function stop()
+			if conn then conn:Disconnect() end
+			pcall(function()
+				if walk then walk:Stop(0) end
+				if idle then idle:Stop(0) end
+			end)
+			folder:Destroy()
+		end
+		fx.hallucinate = stop
+		expire("hallucinate", stop, T) -- hard stop at exactly 60 s even if the frame loop stalls
+
+		local function step()
+			local now = os.clock()
+			local t, dt = now - t0, math.min(now - last, 0.25)
+			last = now
+			if t >= T or not folder.Parent then return stopFx("hallucinate") end
+			local me = myChar()
+			local tr = me and me:FindFirstChild("HumanoidRootPart")
+			if not tr then return end
+			local c = tr.Position
+			if not pos or Vector3.new(pos.X - c.X, 0, pos.Z - c.Z).Magnitude > 70 then -- first frame, or you ran far off: appear ahead of you again
+				local cam = workspace.CurrentCamera
+				local lv = cam and cam.CFrame.LookVector or Vector3.new(0, 0, -1)
+				lv = Vector3.new(lv.X, 0, lv.Z)
+				lv = lv.Magnitude > 0.01 and lv.Unit or Vector3.new(0, 0, -1)
+				local d = (CFrame.Angles(0, math.rad(math.random(-25, 25)), 0) * lv) * SPAWN_D
+				pos = Vector3.new(c.X + d.X, c.Y, c.Z + d.Z)
+			end
+			local to = Vector3.new(c.X - pos.X, 0, c.Z - pos.Z)
+			local dist = to.Magnitude
+			if dist <= STOP_D then -- arrived: stands and watches
+				if walking then setWalk(false) end
+			elseif t >= phaseEnd then -- step / stop / step ...
+				if walking then
+					setWalk(false)
+					phaseEnd = t + 0.9 + math.random() * 0.9
+				else
+					setWalk(true)
+					phaseEnd = t + 0.8 + math.random() * 0.4
+				end
+			end
+			if walking and dist > STOP_D then pos += to.Unit * (STEP_SPEED * dt) end
+			rp.FilterDescendantsInstances = {folder, me, Env.Player.Character}
+			local hit = workspace:Raycast(Vector3.new(pos.X, c.Y + 8, pos.Z), Vector3.new(0, -40, 0), rp)
+			local y = hit and (hit.Position.Y + lift) or c.Y
+			gy = gy and (gy + (y - gy) * 0.25) or y
+			local at, here = Vector3.new(c.X, gy, c.Z), Vector3.new(pos.X, gy, pos.Z)
+			g:PivotTo(dist > 0.05 and CFrame.lookAt(here, at) or CFrame.new(here))
+			local fade = math.min(1, t / 3, (T - t) / 3) -- fade in 3 s, fade out the last 3 s
+			if fade ~= lastFade then
+				lastFade = fade
+				local amt = fade * 0.9
+				for _, pr in ipairs(parts) do
+					if pr[1].Parent then pr[1].Transparency = 1 - (1 - pr[2]) * amt end
+				end
+			end
+		end
+
+		folder.Parent = workspace.CurrentCamera or workspace
+		local function load(id, prio)
+			local a = Instance.new("Animation")
+			a.AnimationId = id
+			local ok, tr = pcall(function() return an:LoadAnimation(a) end)
+			if ok and tr then
+				tr.Looped, tr.Priority = true, prio
+				return tr
+			end
+		end
+		walk, idle = load(walkId, Enum.AnimationPriority.Movement), load(idleId, Enum.AnimationPriority.Idle)
+		if idle then idle:Play(0) end
+		step()
+		conn = RS.Heartbeat:Connect(function(dt)
+			acc += dt
+			if acc < interval then return end
+			acc = 0
+			if not pcall(step) then stopFx("hallucinate") end
+		end)
+	end
+
+	-- ===== Dizzy =====
+	-- camera sway + shake for 20 s, plus a mild walk-speed wobble. The camera offset is applied after the camera update and removed again before the next one, so the real
+	-- camera CFrame is never changed permanently; FieldOfView / WalkSpeed are restored on expiry, respawn, re-trigger and unload (only if nobody else changed them meanwhile).
+	local function dizzy()
+		stopFx("dizzy")
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		local DT = TIME.dizzy
+		local me = myChar()
+		local hum = me and me:FindFirstChildOfClass("Humanoid")
+		local fov, fovSet, speed, speedSet, applied, conn = cam.FieldOfView, nil, nil, nil, nil, nil
+		local t0 = os.clock()
+		local function undo()
+			if applied then
+				if cam.Parent then cam.CFrame = cam.CFrame * applied:Inverse() end
+				applied = nil
+			end
+		end
+		local function stop()
+			pcall(function() RS:UnbindFromRenderStep("UhFxDizzyPost") end)
+			pcall(function() RS:UnbindFromRenderStep("UhFxDizzyPre") end)
+			pcall(undo)
+			pcall(function() if fovSet and math.abs(cam.FieldOfView - fovSet) < 0.01 then cam.FieldOfView = fov end end)
+			pcall(function() if hum and speedSet and math.abs(hum.WalkSpeed - speedSet) < 0.01 then hum.WalkSpeed = speed end end)
+			if conn then conn:Disconnect() end
+		end
+		fx.dizzy = stop
+		expire("dizzy", stop, DT)
+		conn = Env.Player.CharacterAdded:Connect(function() stopFx("dizzy") end) -- respawn: back to normal at once
+		RS:BindToRenderStep("UhFxDizzyPre", Enum.RenderPriority.First.Value, function()
+			if not pcall(undo) then stopFx("dizzy") end
+		end)
+		RS:BindToRenderStep("UhFxDizzyPost", Enum.RenderPriority.Camera.Value + 1, function()
+			local ok = pcall(function()
+				local t = os.clock() - t0
+				if t >= DT or workspace.CurrentCamera ~= cam then return stopFx("dizzy") end
+				local e = math.min(1, t / 1.5, (DT - t) / 1.5) -- ease in / out
+				local nx, ny = math.noise(t * 8, 0.5, 0), math.noise(t * 8, 7.5, 0)
+				local off = CFrame.new(0.1 * math.sin(t * 2.3) + 0.05 * nx, 0.08 * math.sin(t * 3.1 + 1) + 0.05 * ny, 0)
+					* CFrame.Angles(math.rad(0.8) * math.sin(t * 2.1), math.rad(0.7) * math.sin(t * 1.4 + 2), math.rad(2.2) * math.sin(t * 1.7))
+				off = CFrame.identity:Lerp(off, e)
+				cam.CFrame = cam.CFrame * off
+				applied = off
+				if not fovSet or math.abs(cam.FieldOfView - fovSet) >= 0.01 then fov = cam.FieldOfView end
+				fovSet = fov + 1.5 * math.sin(t * 1.3) * e
+				cam.FieldOfView = fovSet
+				if hum and hum.Parent then
+					if not speedSet or math.abs(hum.WalkSpeed - speedSet) >= 0.01 then speed = hum.WalkSpeed end
+					speedSet = speed * (1 + 0.08 * math.sin(t * 1.7) * e)
+					hum.WalkSpeed = speedSet
+				end
+			end)
+			if not ok then stopFx("dizzy") end
+		end)
+	end
+
+	-- ===== recipient: entry point (called by ModTools for every queued command) =====
+	-- returns true when the command was one of the three effects (handled or rejected here), false for everything else
+	function F.Receive(c)
+		if type(c) ~= "table" or not ACT[c.action] then return false end
+		local by, action = tonumber(c.by), c.action
+		if not by or by == Env.Player.UserId or not F.Can(by) then return true end -- sender must be owner / co-owner / verified
+		if not F.Enabled or R.IsWhitelisted(Env.Player.UserId) then return true end -- switched off, or an immune role
+		local sp = Players:GetPlayerByUserId(by)
+		if not sp then return true end -- the sender must actually be in this server
+		if action == "bring" then
+			toast(sp.Name .. " is bringing you to them")
+			bring(sp)
+		elseif action == "hallucinate" then
+			toast(sp.Name .. " made you hallucinate (" .. TIME.hallucinate .. " s)")
+			hallucinate()
+		else
+			toast(sp.Name .. " made you dizzy (" .. TIME.dizzy .. " s)")
+			dizzy()
+		end
+		return true
+	end
+
+	function F.StopEffects()
+		local names = {}
+		for n in pairs(fx) do names[#names + 1] = n end
+		for _, n in ipairs(names) do stopFx(n) end
+	end
+	function F.SetEnabled(on)
+		F.Enabled = on ~= false
+		genv.UhFxEnabled = F.Enabled
+		if not F.Enabled then F.StopEffects() end
+	end
+	F.Stop = F.StopEffects
+
+	return F
 end
 ]==],
 Blacklist = [==[
@@ -65034,6 +65494,7 @@ local Sender = pull("BannerSender")(Env)
 local Receiver = pull("BannerReceiver")(Env, UI)
 Env.IsOwner = function() local r = Receiver.RoleOf(Player.UserId); return r ~= nil and r.tag ~= nil end
 do local okM, eM = pcall(function() Env.Mod = pull("ModTools")(Env, Receiver) end); if not okM then warn("[UhBanner] ModTools module failed: " .. tostring(eM)) end end
+do local okF, eF = pcall(function() Env.Fx = pull("VerifiedPlayerFeatures")(Env, Receiver) end); if not okF then warn("[UhBanner] VerifiedPlayerFeatures module failed: " .. tostring(eF)) end end
 do local okA, eA = pcall(function() Env.Alt = pull("AltFling")(Env) end); if not okA then warn("[UhBanner] AltFling module failed: " .. tostring(eA)) end end
 local api = {Stop = function() if not LocalOnly then Sender.Clear(); Sender.Stop() end; Receiver.Stop(); UI.Cleanup(); pcall(function() Env.Blacklist.Stop() end); pcall(function() Env.Mod.Stop() end); pcall(function() Env.Alt.Stop() end) end}
 local cur, styleTok = {}, 0
@@ -65051,6 +65512,7 @@ styleTok += 1
 local my = styleTok
 task.delay(0.4, function() if my == styleTok and cur[1] ~= nil then api.Set(cur[1], cur[2], cur[3]) end end)
 end
+function api.Users() pcall(Receiver.OpenUsers) end
 genv.UhBanner = api
 local function apply(on) if Receiver.SetHidden then Receiver.SetHidden(not on) end; SaveData.BannerOff = (not on) or nil end
 local styleApi = {get = function() return SaveData.BannerStyle end, set = function(st) api.SetStyle(st) end}
@@ -66443,7 +66905,6 @@ end
 local LimbMapping = loadstring(readfile("UhhhhhhReanim/BuiltinModules/d_limbmap.lua"))()
 local FakeTools = {}
 local function CreateFakeTool()
-local rc = Reanimate.Character
 local FakeTool = Instance.new("Tool")
 FakeTool.Name = "faketool"
 local FakeToolHandle = Instance.new("Part")
@@ -66453,11 +66914,11 @@ FakeToolHandle.Color = Color3.new(0, 0, 1)
 FakeToolHandle.CanCollide = false
 FakeToolHandle.Massless = true
 FakeToolHandle.Parent = FakeTool
-FakeTool.Parent = rc
+FakeTool.Parent = Reanimate.Character
 local RightGrip = Instance.new("Weld")
 RightGrip.Name = "RightGrip"
 RightGrip.Parent = FakeToolHandle
-RightGrip.Part0 = rc and rc:FindFirstChild("Right Arm")
+RightGrip.Part0 = Reanimate.Character and Reanimate.Character:FindFirstChild("Right Arm")
 RightGrip.Part1 = FakeToolHandle
 RightGrip.C0 = RIGHTGRIP_C0
 Util.LinkDestroyI2C(FakeTool, FakeTool:GetPropertyChangedSignal("Grip"):Connect(function()
@@ -66469,505 +66930,214 @@ end
 local BaseParts = {}
 local UnknownMotor6Ds = {}
 local Ragdoll = LimbReanimator.RagdollMode and true or false
---[[RG-BEGIN]]
-local RagdollParts, RagdollByPart, RGWC, RGBusy, RGHum = {}, {}, {}, {}, {}
-local RGList, RGDirty, RagdollWarned, RGErrAt = {}, true, false, 0
+local RagdollParts, RagdollByPart, RGWC, RagdollWarned = {}, {}, {}, {}
 local RagdollZero = Vector3.zero
-local RG_MIN_DT, RG_MAX_DT = 0.003, 0.25
-local RG_SNAP, RG_JUMP = 8, 6
-local RG_VCAP, RG_WCAP = 400, 80
-local RG_LEADMAX, RG_ANGLEAD = 2, 0.6
-local function RGNum(n)
-	return n == n and n > -1e9 and n < 1e9
-end
 local function RagdollFinite(p)
-	return p.X == p.X and p.Y == p.Y and p.Z == p.Z and math.abs(p.X) < 1e7 and math.abs(p.Y) < 1e7 and math.abs(p.Z) < 1e7
+return p.X == p.X and p.Y == p.Y and p.Z == p.Z and math.abs(p.X) < 1e7 and math.abs(p.Y) < 1e7 and math.abs(p.Z) < 1e7
 end
 local function RagdollFiniteCF(cf)
-	local x, y, z, a, b, c, d, e, f, g, h, i = cf:GetComponents()
-	return math.abs(x) < 1e7 and math.abs(y) < 1e7 and math.abs(z) < 1e7 and math.abs(a) <= 1.01 and math.abs(b) <= 1.01 and math.abs(c) <= 1.01 and math.abs(d) <= 1.01 and math.abs(e) <= 1.01 and math.abs(f) <= 1.01 and math.abs(g) <= 1.01 and math.abs(h) <= 1.01 and math.abs(i) <= 1.01
+local x, y, z, a, b, c, d, e, f, g, h, i = cf:GetComponents()
+return math.abs(x) < 1e7 and math.abs(y) < 1e7 and math.abs(z) < 1e7 and math.abs(a) <= 1.01 and math.abs(b) <= 1.01 and math.abs(c) <= 1.01 and math.abs(d) <= 1.01 and math.abs(e) <= 1.01 and math.abs(f) <= 1.01 and math.abs(g) <= 1.01 and math.abs(h) <= 1.01 and math.abs(i) <= 1.01
 end
--- Gram-Schmidt re-orthonormalisation; only rebuilds when drift exceeds 1e-4. Returns nil if degenerate.
-local function RagdollOrtho(cf)
-	local r, u = cf.RightVector, cf.UpVector
-	local rm, um = r.Magnitude, u.Magnitude
-	if math.abs(rm - 1) < 1e-4 and math.abs(um - 1) < 1e-4 and math.abs(r:Dot(u)) < 1e-4 then return cf end
-	if not (rm > 1e-6 and um > 1e-6) then return nil end
-	r = r / rm
-	u = u - r * r:Dot(u)
-	um = u.Magnitude
-	if not (um > 1e-6) then return nil end
-	u = u / um
-	return CFrame.fromMatrix(cf.Position, r, u, r:Cross(u))
-end
--- Stiffness S (10..200, saved setting) -> physical limits. Cached; recomputed only when S or gravity change,
--- so slider changes apply live. Responsiveness ~ 1/time-constant; force/torque caps scale with limb mass/inertia.
-local RGTune = {S = -1, G = -1}
-local function RagdollTune()
-	local s = tonumber(LimbReanimator.RagdollStiffness)
-	if not s or not RGNum(s) then s = 100 end
-	s = math.clamp(s, 10, 200)
-	local g = tonumber(workspace.Gravity)
-	if not g or not RGNum(g) then g = 196.2 end
-	g = math.clamp(g, 98.1, 1000)
-	local T = RGTune
-	if T.S ~= s or T.G ~= g then
-		T.S, T.G = s, g
-		T.RP, T.RO = s, s * 0.9
-		T.Lead = math.clamp(1 / s, 0.004, 0.06)
-		T.AMax = g * (2 + s / 20)
-		T.VMax = 100 + 2 * s
-		T.WMax = 20 + 0.4 * s
-		T.Alpha = 25 * s
-	end
-	return T
-end
-local function RagdollKill(o)
-	if o then pcall(o.Destroy, o) end
-end
-local function RagdollJointPose(mv, rel, rg)
-	local c0, c1 = mv.C0, mv.C1
-	local c0i, c1i
-	if rg and rg.JC0 == c0 and rg.JC1 == c1 then
-		c0i, c1i = rg.JC0i, rg.JC1i
-	else
-		if not (RagdollFiniteCF(c0) and RagdollFiniteCF(c1)) then return nil end
-		c0i, c1i = c0:Inverse(), c1:Inverse()
-		if rg then rg.JC0, rg.JC1, rg.JC0i, rg.JC1i = c0, c1, c0i, c1i end
-	end
-	local out = c0 * (c0i * rel * c1).Rotation * c1i
-	if RagdollFiniteCF(out) then return out end
-	return nil
+local function RagdollJointPose(mv, rel)
+local c0, c1 = mv.C0, mv.C1
+return c0 * (c0:Inverse() * rel * c1).Rotation * c1:Inverse()
 end
 local function RagdollRelease(map, restore)
-	local rg = map.RG
-	if not rg then return end
-	map.RG, map.RT = nil, nil
-	if rg.Conn then
-		rg.Conn:Disconnect()
-		rg.Conn = nil
-	end
-	RagdollKill(rg.AP)
-	RagdollKill(rg.AO)
-	RagdollKill(rg.DA)
-	RagdollKill(rg.BS)
-	RagdollKill(rg.A0)
-	RagdollKill(rg.A1)
-	RagdollKill(rg.PX)
-	if RagdollByPart[rg.P1] == map then
-		RagdollByPart[rg.P1] = nil
-		RagdollParts[rg.P1] = nil
-	end
-	RGDirty = true
-	if restore and rg.Motor then
-		pcall(function() rg.Motor.Enabled = true end)
-	end
+local rg = map.RG
+if not rg then return end
+map.RG, map.RT = nil, nil
+if rg.Conn then
+rg.Conn:Disconnect()
+rg.Conn = nil
+end
+for _,o in {rg.AP, rg.AO, rg.DA, rg.BS, rg.A0, rg.A1, rg.PX} do
+pcall(o.Destroy, o)
+end
+if RagdollByPart[rg.P1] == map then
+RagdollByPart[rg.P1] = nil
+RagdollParts[rg.P1] = nil
+end
+if restore and rg.Motor then
+pcall(function() rg.Motor.Enabled = true end)
+end
 end
 local function GameHasSocket(p0, p1)
-	local model = p1.Parent
-	if not model then return false end
-	for _,d in model:GetDescendants() do
-		if d:IsA("BallSocketConstraint") and d.Name ~= "RagdollSocket" then
-			local a, b = d.Attachment0, d.Attachment1
-			local x, y = a and a.Parent, b and b.Parent
-			if (x == p0 and y == p1) or (x == p1 and y == p0) then return true end
-		end
-	end
-	return false
+local model = p1.Parent
+if not model then return false end
+for _,d in model:GetDescendants() do
+if d:IsA("BallSocketConstraint") and d.Name ~= "RagdollSocket" then
+local a, b = d.Attachment0, d.Attachment1
+local x, y = a and a.Parent, b and b.Parent
+if (x == p0 and y == p1) or (x == p1 and y == p0) then return true end
+end
+end
+return false
 end
 local RagdollRoot
 local function RagdollFolder()
-	if not (RagdollRoot and RagdollRoot.Parent) then
-		RagdollRoot = Instance.new("Folder")
-		RagdollRoot.Name = "RGP" .. math.random(100000, 999999)
-		RagdollRoot.Parent = workspace
-	end
-	return RagdollRoot
+if not (RagdollRoot and RagdollRoot.Parent) then
+RagdollRoot = Instance.new("Folder")
+RagdollRoot.Name = "RGP" .. math.random(100000, 999999)
+RagdollRoot.Parent = workspace
+end
+return RagdollRoot
 end
 local function RagdollClean()
-	if RagdollRoot then
-		pcall(RagdollRoot.Destroy, RagdollRoot)
-		RagdollRoot = nil
-	end
-	for h, rn in pairs(RGHum) do
-		pcall(function() if h.Parent then h.RequiresNeck = rn end end)
-	end
-	table.clear(RGHum)
-	table.clear(RagdollParts)
-	table.clear(RagdollByPart)
-	table.clear(RGWC)
-	table.clear(RGBusy)
-	table.clear(RGList)
-	RGDirty = true
+if RagdollRoot then
+pcall(RagdollRoot.Destroy, RagdollRoot)
+RagdollRoot = nil
 end
-local function RagdollBuild(rg)
-	local px, T = rg.PX, RagdollTune()
-	local m = px.Mass
-	if not (RGNum(m) and m > 0) then m = 1 end
-	local sz = px.Size
-	local sx, sy, sz2 = sz.X * sz.X, sz.Y * sz.Y, sz.Z * sz.Z
-	rg.M = m
-	rg.I = m * math.max(sy + sz2, sx + sz2, sx + sy) / 12
-	rg.TS = T.S
-	local da = Instance.new("Attachment")
-	da.Name = "RagdollDrive"
-	da.Parent = px
-	rg.DA = da
-	local ap = Instance.new("AlignPosition")
-	ap.Name = "RagdollAP"
-	ap.Mode = Enum.PositionAlignmentMode.OneAttachment
-	ap.Attachment0 = da
-	ap.ApplyAtCenterOfMass = true
-	ap.RigidityEnabled = false
-	ap.MaxForce, ap.MaxVelocity = m * T.AMax, T.VMax
-	ap.Responsiveness = T.RP
-	ap.Position = px.Position
-	ap.Parent = px
-	rg.AP = ap
-	local ao = Instance.new("AlignOrientation")
-	ao.Name = "RagdollAO"
-	ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
-	ao.Attachment0 = da
-	ao.RigidityEnabled = false
-	ao.MaxTorque, ao.MaxAngularVelocity = rg.I * T.Alpha, T.WMax
-	ao.Responsiveness = T.RO
-	ao.CFrame = px.CFrame
-	ao.Parent = px
-	rg.AO = ao
 end
 local function Ragdollize(map, v, kp0, kp1)
-	local p0, p1 = kp0 or v.Part0, kp1 or v.Part1
-	if not (p0 and p1 and p1.Parent) then return end
-	local hum = p1.Parent:FindFirstChildOfClass("Humanoid")
-	if hum then
-		if RGHum[hum] == nil then RGHum[hum] = hum.RequiresNeck end
-		hum.RequiresNeck = false
-		hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-	end
-	local rg = map.RG
-	if rg and rg.P1 == p1 and rg.PX and rg.PX.Parent and rg.AP.Parent and rg.AO.Parent then
-		rg.Motor, rg.P0 = v, p0
-	else
-		if rg then RagdollRelease(map) end
-		local px = Instance.new("Part")
-		px.Name = "RagdollProxy"
-		px.Size = p1.Size
-		px.Transparency = 1
-		px.CanCollide, px.CanTouch, px.CanQuery = false, false, false
-		px.CFrame = p1.CFrame
-		px.Parent = RagdollFolder()
-		rg = {P0 = p0, P1 = p1, Motor = v, Fresh = true, PX = px, Born = os.clock()}
-		local ok, err = pcall(RagdollBuild, rg)
-		if not ok then
-			RagdollKill(px)
-			if not RagdollWarned then
-				RagdollWarned = true
-				warn("[Ragdoll Reanimator] proxy build failed: " .. tostring(err))
-			end
-			return
-		end
-		map.RG = rg
-	end
-	RagdollByPart[p1] = map
-	RGDirty = true
+local p0, p1 = kp0 or v.Part0, kp1 or v.Part1
+if not (p0 and p1) then return end
+local hum = p1.Parent and p1.Parent:FindFirstChildOfClass("Humanoid")
+if hum then
+hum.RequiresNeck = false
+hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
 end
--- Cached, cycle-safe target world CFrame (parent target chain * map.RT).
+local rg = map.RG
+if rg and rg.P1 == p1 and rg.PX and rg.PX.Parent and rg.AP.Parent and rg.AO.Parent then
+rg.Motor, rg.P0 = v, p0
+else
+if rg then RagdollRelease(map) end
+rg = {P0 = p0, P1 = p1, Motor = v, Fresh = true}
+local px = Instance.new("Part")
+px.Name = "RagdollProxy"
+px.Size = p1.Size
+px.Transparency = 1
+px.CanCollide, px.CanTouch, px.CanQuery = false, false, false
+px.CFrame = p1.CFrame
+px.Parent = RagdollFolder()
+local da = Instance.new("Attachment")
+da.Name = "RagdollDrive"
+da.Parent = px
+local stiff = LimbReanimator.RagdollStiffness or 100
+local ap = Instance.new("AlignPosition")
+ap.Name = "RagdollAP"
+ap.Mode = Enum.PositionAlignmentMode.OneAttachment
+ap.Attachment0 = da
+ap.ApplyAtCenterOfMass = true
+ap.RigidityEnabled = false
+ap.MaxForce, ap.MaxVelocity = math.huge, math.huge
+ap.Responsiveness = stiff
+ap.Position = px.Position
+ap.Parent = px
+local ao = Instance.new("AlignOrientation")
+ao.Name = "RagdollAO"
+ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+ao.Attachment0 = da
+ao.RigidityEnabled = false
+ao.MaxTorque, ao.MaxAngularVelocity = math.huge, math.huge
+ao.Responsiveness = stiff
+ao.CFrame = px.CFrame
+ao.Parent = px
+rg.PX, rg.DA, rg.AP, rg.AO = px, da, ap, ao
+map.RG = rg
+end
+RagdollByPart[p1] = map
+end
 local function RagdollWorld(part)
-	if not part then return nil end
-	local c = RGWC[part]
-	if c then return c end
-	local m = RagdollByPart[part]
-	local rg, rt = m and m.RG, m and m.RT
-	if rg and rt and RGBusy[part] == nil and RagdollFiniteCF(rt) then
-		RGBusy[part] = true
-		local pc = RagdollWorld(rg.P0)
-		RGBusy[part] = nil
-		if pc then c = pc * rt end
-	end
-	if not c then c = part.CFrame end
-	RGWC[part] = c
-	return c
+local c = RGWC[part]
+if c then return c end
+local m = RagdollByPart[part]
+if m and m.RT and m.RG then
+c = RagdollWorld(m.RG.P0) * m.RT
+else
+c = part.CFrame
 end
-local function RGDepth(map, guard)
-	local rg = map.RG
-	local pm = rg and RagdollByPart[rg.P0]
-	if guard > 8 or not pm or pm == map or not pm.RG then return 1 end
-	return 1 + RGDepth(pm, guard + 1)
-end
-local function RGByDepth(a, b)
-	return a.RG.D < b.RG.D
-end
--- Parent-before-child ordering; rebuilt only when the ragdoll set changes.
-local function RagdollOrder()
-	if not RGDirty then return RGList end
-	RGDirty = false
-	table.clear(RGList)
-	local n = 0
-	for _, map in pairs(LimbMapping) do
-		local rg = map.RG
-		if rg then
-			rg.D = RGDepth(map, 0)
-			n = n + 1
-			RGList[n] = map
-		end
-	end
-	table.sort(RGList, RGByDepth)
-	return RGList
+RGWC[part] = c
+return c
 end
 local function RagdollSample(RootPart)
-	local rc = RootPart.CFrame
-	local rcOk = RagdollFiniteCF(rc)
-	local list = RagdollOrder()
-	for i = 1, #list do
-		local map = list[i]
-		local rg = map.RG
-		if rg then
-			rg.Act = nil
-			local px = rg.PX
-			if px and px.Parent and map.Reference and not rg.Fresh then
-				local pw
-				if rg.P0 == RootPart then
-					if rcOk then pw = rc end
-				else
-					local pm = RagdollByPart[rg.P0]
-					local ppx = pm and pm.RG and pm.RG.PX
-					if ppx and ppx.Parent then pw = ppx.CFrame end
-				end
-				if pw and RagdollFiniteCF(pw) then
-					local rel = pw:ToObjectSpace(px.CFrame)
-					rel = RagdollFiniteCF(rel) and RagdollOrtho(rel)
-					if rel then
-						local mv = rg.Motor
-						if rg.P0 ~= RootPart and mv and mv.Parent then rel = RagdollJointPose(mv, rel, rg) end
-						if rel and RagdollFiniteCF(rel) then rg.Act = rel end
-					end
-				end
-			end
-		end
-	end
+local rc = RootPart.CFrame
+for _,map in LimbMapping do
+local rg = map.RG
+if rg then
+rg.Act = nil
+local px = rg.PX
+if px and px.Parent and map.Reference and not rg.Fresh then
+local pw
+if rg.P0 == RootPart then
+pw = rc
+else
+local pm = RagdollByPart[rg.P0]
+local ppx = pm and pm.RG and pm.RG.PX
+if ppx and ppx.Parent then pw = ppx.CFrame end
 end
--- Output pose written to the Motor6D: physical pose, low-passed with a residual-adaptive rate
--- (strong at rest to kill jitter, ~instant when moving) using elapsed time, so it is frame-rate independent.
-local function RagdollOut(map, rg)
-	local now = os.clock()
-	local src, cur = rg.Act, rg.Out
-	if not (src and RagdollFiniteCF(src)) then
-		src = map.CFrame
-		if not (src and RagdollFiniteCF(src)) then return end
-	end
-	if not (cur and RagdollFiniteCF(cur)) then
-		rg.Out, rg.OT = src, now
-		return
-	end
-	local dt = now - (rg.OT or now)
-	rg.OT = now
-	if dt > RG_MAX_DT then dt = RG_MAX_DT end
-	if not (dt > 0) then return end
-	local d = cur:Inverse() * src
-	local pr = d.Position.Magnitude
-	local _, _, _, r00, _, _, _, r11, _, _, _, r22 = d:GetComponents()
-	local ar = math.acos(math.clamp((r00 + r11 + r22 - 1) * 0.5, -1, 1))
-	if not (pr == pr and ar == ar) or pr > 4 or ar > 2.5 then
-		rg.Out = src
-		return
-	end
-	rg.Out = cur:Lerp(src, 1 - math.exp(-(30 + 3000 * (pr + 0.5 * ar)) * dt))
+if pw then
+local rel = pw:ToObjectSpace(px.CFrame)
+if RagdollFiniteCF(rel) then
+local mv = rg.Motor
+if rg.P0 ~= RootPart and mv and mv.Parent then rel = RagdollJointPose(mv, rel) end
+if RagdollFiniteCF(rel) then rg.Act = rel end
 end
--- Critically-damped alpha-beta gains with a time constant that shrinks as the residual grows.
-local function RGGain(dt, res, ref, fast, slow)
-	local q = res / ref
-	local a = 1 - math.exp(-dt / (fast + (slow - fast) / (1 + q * q)))
-	return a, a * a / (2 - a)
 end
-local function RagdollSeed(rg, w, now)
-	rg.TP, rg.TV, rg.TR, rg.TW, rg.TT = w.Position, RagdollZero, w.Rotation, RagdollZero, now
 end
--- Alpha-beta tracker on the world target (position + orientation): smooths noise, estimates velocity.
-local function RagdollTrack(rg, w, now)
-	local t0 = rg.TT
-	if not t0 then return RagdollSeed(rg, w, now) end
-	local dt = now - t0
-	if dt < RG_MIN_DT then return end
-	if dt > RG_MAX_DT then return RagdollSeed(rg, w, now) end
-	rg.FD = math.max(dt, (rg.FD or 0) * 0.9)
-	local xp = rg.TP + rg.TV * dt
-	local r = w.Position - xp
-	local rm = r.Magnitude
-	if not RGNum(rm) or rm > RG_JUMP then return RagdollSeed(rg, w, now) end
-	local a, b = RGGain(dt, rm, 0.15, 0.008, 0.05)
-	local v = rg.TV + r * (b / dt)
-	local vm = v.Magnitude
-	if vm > RG_VCAP then v = v * (RG_VCAP / vm) end
-	rg.TP, rg.TV = xp + r * a, v
-	local rp, om = rg.TR, rg.TW
-	local ow = om.Magnitude
-	if ow > 1e-4 then rp = CFrame.fromAxisAngle(om / ow, ow * dt) * rp end
-	local ax, an = (w.Rotation * rp:Inverse()):ToAxisAngle()
-	if not (RGNum(an) and RagdollFinite(ax)) then return RagdollSeed(rg, w, now) end
-	if an > 1e-6 then
-		local a2, b2 = RGGain(dt, an, 0.35, 0.008, 0.05)
-		rg.TR = CFrame.fromAxisAngle(ax, an * a2) * rp
-		om = om + ax * (an * b2 / dt)
-	else
-		rg.TR = rp
-	end
-	local wm = om.Magnitude
-	if wm > RG_WCAP then om = om * (RG_WCAP / wm) end
-	rg.TW, rg.TT = om, now
 end
--- Returns filtered target now, and the lead-compensated position/orientation to hand to the constraints.
-local function RagdollPredict(rg, now, lead)
-	local dt = now - rg.TT
-	if dt < 0 then dt = 0 elseif dt > RG_MAX_DT then dt = RG_MAX_DT end
-	lead = lead + 0.5 * math.min(rg.FD or 0, 0.1)
-	local v, om = rg.TV, rg.TW
-	local pos = rg.TP + v * dt
-	local off = v * lead
-	local om_ = off.Magnitude
-	if om_ > RG_LEADMAX then off = off * (RG_LEADMAX / om_) end
-	local rot = rg.TR
-	local ow = om.Magnitude
-	if ow > 1e-3 then
-		rot = CFrame.fromAxisAngle(om / ow, ow * dt + math.min(ow * lead, RG_ANGLEAD)) * rot
-	end
-	return pos, pos + off, rot
 end
-local function RGSet(rg, key, obj, prop, val)
-	local old = rg[key]
-	if not old or math.abs(val - old) > 0.05 * old then
-		rg[key] = val
-		obj[prop] = val
-	end
-end
-local function RagdollSocket(map, rg)
-	local pm = RagdollByPart[rg.P0]
-	local ppx = pm and pm.RG and pm.RG.PX
-	local mv = rg.Motor
-	if not (ppx and ppx.Parent and mv and mv.Parent) then return end
-	local c0, c1 = mv.C0, mv.C1
-	if not (RagdollFiniteCF(c0) and RagdollFiniteCF(c1)) then return end
-	RagdollKill(rg.A0)
-	RagdollKill(rg.A1)
-	RagdollKill(rg.BS)
-	rg.A0, rg.A1, rg.BS = nil, nil, nil
-	local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
-	a0.Name, a1.Name = "RagdollA0", "RagdollA1"
-	a0.CFrame, a1.CFrame = c0, c1
-	a0.Parent, a1.Parent = ppx, rg.PX
-	rg.A0, rg.A1 = a0, a1
-	local bs = Instance.new("BallSocketConstraint")
-	bs.Name = "RagdollSocket"
-	bs.LimitsEnabled = false
-	bs.TwistLimitsEnabled = false
-	bs.Attachment0, bs.Attachment1 = a0, a1
-	bs.Parent = rg.PX
-	rg.BS = bs
-end
-local function RagdollStep(map, rg, T, now)
-	local p1, px, mv = rg.P1, rg.PX, rg.Motor
-	if not (p1.Parent and mv and mv.Parent) then
-		rg.Gone = rg.Gone or now
-		if now - rg.Gone > 3 then RagdollRelease(map) end
-		return
-	end
-	rg.Gone = nil
-	if not (px.Parent and rg.AP.Parent and rg.AO.Parent) then
-		if now < (map.RGN or 0) then return end
-		local f = (map.RGF or 0) + 1
-		map.RGF = f
-		map.RGN = now + math.min(0.25 * 2 ^ (f - 1), 4)
-		local rt, rp0 = map.RT, rg.P0
-		RagdollRelease(map)
-		pcall(Ragdollize, map, mv, rp0, p1)
-		map.RT = rt
-		rg = map.RG
-		if not rg then return end
-		px = rg.PX
-	elseif map.RGF and now - rg.Born > 3 then
-		map.RGF, map.RGN = nil, nil
-	end
-	local w = RagdollWorld(p1)
-	if not (w and RagdollFiniteCF(w)) then return end
-	w = RagdollOrtho(w)
-	if not w then return end
-	RagdollTrack(rg, w, now)
-	local pm = RagdollByPart[rg.P0]
-	local prg = pm and pm.RG
-	if map.RPart0 ~= "ROOT" and now >= (rg.SockT or 0) and not (rg.BS and rg.BS.Parent and rg.A0.Parent and rg.A1.Parent) then
-		rg.SockT = now + 0.25
-		pcall(RagdollSocket, map, rg)
-	end
-	local pcf = px.CFrame
-	local wp = w.Position
-	if rg.Fresh or not RagdollFiniteCF(pcf) or (prg and prg.SnapT == now) or (pcf.Position - wp).Magnitude > RG_SNAP then
-		rg.Fresh = nil
-		rg.SnapT = now
-		px.CFrame = w
-		px.AssemblyLinearVelocity = RagdollZero
-		px.AssemblyAngularVelocity = RagdollZero
-		RagdollSeed(rg, w, now)
-		pcf = w
-	end
-	local cur, tpos, trot = RagdollPredict(rg, now, T.Lead)
-	if not (RagdollFinite(tpos) and RagdollFiniteCF(trot)) then
-		RagdollSeed(rg, w, now)
-		cur, tpos, trot = wp, wp, w.Rotation
-	end
-	if now - (rg.LT or 0) >= RG_MIN_DT then
-		rg.LT = now
-		local err = (pcf.Position - cur).Magnitude
-		local _, an = (pcf * trot:Inverse()):ToAxisAngle()
-		if not (RGNum(err) and RGNum(an)) then err, an = 0, 0 end
-		local bp = math.clamp((err - 1.5) / 3, 0, 1)
-		local ba = math.clamp((an - 0.6) / 1.2, 0, 1)
-		local ap, ao = rg.AP, rg.AO
-		RGSet(rg, "LV", ap, "MaxVelocity", math.clamp(rg.TV.Magnitude * 1.35 + err * T.RP * 0.5 + 12, 12, T.VMax * (1 + bp)))
-		RGSet(rg, "LF", ap, "MaxForce", rg.M * T.AMax * (1 + bp))
-		RGSet(rg, "LW", ao, "MaxAngularVelocity", math.clamp(rg.TW.Magnitude * 1.35 + an * T.RO * 0.5 + 3, 3, T.WMax * (1 + ba)))
-		RGSet(rg, "LT2", ao, "MaxTorque", rg.I * T.Alpha * (1 + ba))
-		if rg.TS ~= T.S then
-			rg.TS = T.S
-			ap.Responsiveness, ao.Responsiveness = T.RP, T.RO
-		end
-		local lv, av = px.AssemblyLinearVelocity, px.AssemblyAngularVelocity
-		local lm, am = lv.Magnitude, av.Magnitude
-		if not (RGNum(lm) and RGNum(am)) then
-			px.AssemblyLinearVelocity = RagdollZero
-			px.AssemblyAngularVelocity = RagdollZero
-		else
-			local vc, wc = T.VMax * 2.5, T.WMax * 2.5
-			if lm > vc then px.AssemblyLinearVelocity = lv * (vc / lm) end
-			if am > wc then px.AssemblyAngularVelocity = av * (wc / am) end
-		end
-	end
-	rg.AP.Position = tpos
-	rg.AO.CFrame = trot
 end
 local function RagdollDrive(RootPart)
-	table.clear(RGWC)
-	table.clear(RGBusy)
-	local rcf = RootPart.CFrame
-	if not RagdollFiniteCF(rcf) then return end
-	RGWC[RootPart] = rcf
-	local now, T = os.clock(), RagdollTune()
-	local list = RagdollOrder()
-	for i = 1, #list do
-		local map = list[i]
-		local rg = map.RG
-		if rg and map.Reference then
-			local ok, err = pcall(RagdollStep, map, rg, T, now)
-			if not ok and now - RGErrAt > 5 then
-				RGErrAt = now
-				warn("[Ragdoll Reanimator] limb step failed: " .. tostring(err))
-			end
-		end
-	end
+table.clear(RGWC)
+RGWC[RootPart] = RootPart.CFrame
+local now = os.clock()
+for _,map in LimbMapping do
+local rg = map.RG
+if rg and map.Reference then
+local p1 = rg.P1
+if not (rg.PX.Parent and rg.AP.Parent and rg.AO.Parent) and p1.Parent and rg.Motor and now - (rg.Rebuilt or 0) > 0.25 then
+local rp0, motor = rg.P0, rg.Motor
+RagdollRelease(map)
+pcall(Ragdollize, map, motor, rp0, p1)
+rg = map.RG
+if rg then rg.Rebuilt = now end
 end
-LimbReanimator._RagdollClean = function()
-	for _, map in pairs(LimbMapping) do RagdollRelease(map) end
-	RagdollClean()
+if rg and rg.PX.Parent and rg.AP.Parent and rg.AO.Parent then
+local px = rg.PX
+local w = RagdollWorld(p1)
+local pos = w.Position
+if RagdollFiniteCF(w) then
+if rg.Fresh then
+rg.Fresh = nil
+px.CFrame = w
+px.AssemblyLinearVelocity = RagdollZero
+px.AssemblyAngularVelocity = RagdollZero
 end
---[[RG-END]]
+if map.RPart0 ~= "ROOT" and not (rg.BS and rg.BS.Parent and rg.A0.Parent) then
+local pm = RagdollByPart[rg.P0]
+local ppx = pm and pm.RG and pm.RG.PX
+local mv = rg.Motor
+if ppx and ppx.Parent and mv and mv.Parent then
+for _,o in {rg.A0, rg.A1, rg.BS} do
+pcall(o.Destroy, o)
+end
+local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
+a0.Name, a1.Name = "RagdollA0", "RagdollA1"
+a0.CFrame, a1.CFrame = mv.C0, mv.C1
+a0.Parent, a1.Parent = ppx, px
+local bs = Instance.new("BallSocketConstraint")
+bs.Name = "RagdollSocket"
+bs.LimitsEnabled = false
+bs.TwistLimitsEnabled = false
+bs.Attachment0, bs.Attachment1 = a0, a1
+bs.Parent = px
+rg.A0, rg.A1, rg.BS = a0, a1, bs
+end
+end
+local pcf = px.CFrame
+if not RagdollFiniteCF(pcf) or (pcf.Position - pos).Magnitude > 8 then
+px.CFrame = w
+px.AssemblyLinearVelocity = RagdollZero
+px.AssemblyAngularVelocity = RagdollZero
+end
+rg.AP.Position = pos
+rg.AO.CFrame = w
+end
+end
+end
+end
+end
 local CharOnDesc = function(v)
 if v:IsA("BasePart") then
 if not table.find(BaseParts, v) then
@@ -67006,10 +67176,6 @@ elseif v:IsA("Tool") and v.Parent == Player.Character then
 if not FakeTools[v] then
 FakeTools[v] = true
 local fake = CreateFakeTool()
-FakeTools[v] = fake
-fake.Destroying:Once(function()
-if FakeTools[v] == fake then FakeTools[v] = nil end
-end)
 fake.Grip = v.Grip
 local h = v:FindFirstChild("Handle")
 if h ~= nil then
@@ -67055,10 +67221,7 @@ end
 end
 end
 local lastspawn = 0
-local DescConn, HandledLimbChar = nil, nil
 local OnLimbCharacter = function(character)
-if HandledLimbChar == character then return end
-HandledLimbChar = character
 local camcfr = Camera.CFrame
 RunService.PreRender:Once(function()
 RunService.PreAnimation:Wait()
@@ -67067,32 +67230,29 @@ end)
 lastspawn = os.clock()
 table.clear(BaseParts)
 table.clear(UnknownMotor6Ds)
+table.clear(RagdollParts)
+table.clear(RagdollByPart)
 for _,map in LimbMapping do
 map.Reference = nil
 if map.RG then RagdollRelease(map) end
-map.RG, map.RT, map.RGF, map.RGN = nil, nil, nil, nil
+map.RG, map.RT = nil, nil
 end
-table.clear(RagdollParts)
-table.clear(RagdollByPart)
-RGDirty = true
-if DescConn then DescConn:Disconnect() end
-DescConn = character.DescendantAdded:Connect(CharOnDesc)
+character.DescendantAdded:Connect(CharOnDesc)
 for _,v in character:GetDescendants() do
 task.spawn(CharOnDesc, v)
 end
 local humanoid = character:WaitForChild("Humanoid", 5)
-local stupid = humanoid and humanoid:FindFirstChildWhichIsA("Animator")
+local stupid = humanoid:FindFirstChildWhichIsA("Animator")
 if stupid then
 stupid:Destroy()
 end
 if not Reanimate.UseLoadAnimationHook then
 stupid = character:FindFirstChild("Animate")
-local animDeadline = os.clock() + 10
-while not stupid and HandledLimbChar == character and character:IsDescendantOf(game) and not Reanimate.Stopping and os.clock() < animDeadline do
-task.wait(0.1)
+while not stupid do
+character.ChildAdded:Wait()
 stupid = character:FindFirstChild("Animate")
 end
-if stupid then stupid:Destroy() end
+stupid:Destroy()
 end
 end
 local CharConn = Player.CharacterAdded:Connect(OnLimbCharacter)
@@ -67121,36 +67281,7 @@ limbs = {Head = true, Torso = true, ["Left Arm"] = true, ["Right Arm"] = true, [
 vz = Vector3.zero,
 refDirty = true,
 refAt = 0,
-mo = setmetatable({}, {__mode = "k"}),
-jit0 = Vector3.zero,
-jit1 = Vector3.new(0, 0, 0.005),
-rc0 = CFrame.new(rootposition),
-rc1 = CFrame.new(rootposition2),
-rc5 = CFrame.new(skyposition),
-rc6 = CFrame.new(veryskyposition),
-lastChar = nil,
-fakeAt = 0,
 }
-local MOT_REFRESH = 0.5
-local function MotorRec(motor)
-local m = LOPT.mo[motor]
-if not m then m = {at = 0} LOPT.mo[motor] = m end
-return m
-end
-local function ApplyTransform(motor, m, transform, now)
-if m.tf == transform and now - m.at < MOT_REFRESH then return end
-m.tf, m.at = transform, now
-Util.SetMotor6DTransform(motor, transform)
-end
-local function SetTransformC(motor, transform, now)
-ApplyTransform(motor, MotorRec(motor), transform, now)
-end
-local function SetOffsetC(motor, offset, now)
-local m = MotorRec(motor)
-local c0 = motor.C0
-if m.c0 ~= c0 then m.c0, m.c0i = c0, c0:Inverse() end
-ApplyTransform(motor, m, m.c0i * offset * motor.C1, now)
-end
 local function lookup(parent, key, isClass)
 local c = LOPT.lk[parent]
 if not c then c = {} LOPT.lk[parent] = c end
@@ -67161,22 +67292,18 @@ c[key] = o
 end
 return o
 end
-local function UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf, localpass)
-local now = os.clock()
+local function UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf)
 if not RootPart:IsGrounded() then
 if flingtarget then
 Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 LOPT.refDirty = true
 else
-if not localpass or (RootPart.Position - rootcf.Position).Magnitude > 0.05 then
-RootPart.CFrame = rootcf + (math.random(0, 1) == 1 and LOPT.jit1 or LOPT.jit0)
-end
-local vz = LOPT.vz
-if RootPart.Velocity ~= rootvel then RootPart.Velocity = rootvel end
-if RootPart.RotVelocity ~= vz then RootPart.RotVelocity = vz end
-if LOPT.refDirty or now - LOPT.refAt > 0.5 then
-LOPT.refDirty, LOPT.refAt = false, now
+RootPart.CFrame = rootcf + Vector3.new(0, 0, math.random(0, 1) * 0.005)
+RootPart.Velocity, RootPart.RotVelocity = rootvel, Vector3.zero
+local _rn = os.clock()
+if LOPT.refDirty or _rn - LOPT.refAt > 0.5 then
+LOPT.refDirty, LOPT.refAt = false, _rn
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", nil)
 end
 end
@@ -67184,47 +67311,50 @@ end
 local dorep = true
 if LimbReanimator.ReplicateFPS10 then
 dorep = false
-local a = now - lastrep
+local b = os.clock()
+local a = b - lastrep
 if a >= 1 / 10 then
 dorep = true
 a %= 1 / 10
-lastrep = now - a
-end
-end
-if not localpass then
-for i = #UnknownMotor6Ds, 1, -1 do
-if UnknownMotor6Ds[i].Parent == nil then table.remove(UnknownMotor6Ds, i) end
+lastrep = b - a
 end
 end
 for _,v in UnknownMotor6Ds do
-SetTransformC(v, CFrame.identity, now)
+Util.SetMotor6DTransform(v, CFrame.identity)
 end
 if Ragdoll then RagdollSample(RootPart) end
+local LimbPose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
 for _,map in LimbMapping do
 local v = map.Reference
-if v and v.Parent then
+if v then
 if map.RG then
 if flingtarget then
 map.RT = v.C0 * v.C1:Inverse()
 pcall(Util.SetMotor6DTransform, v, CFrame.identity)
 else
-local cf = Reanimate.LimbPoseCFrame(map, v, ReanimCharacter, RootPart)
-if cf ~= CFrame.identity and (dorep or not map.CFrame) then
+local mcf = map.CFrame
+if dorep or not mcf then
+local cf = LimbPose(map, v, ReanimCharacter, RootPart)
+if cf ~= idcf then
 map.CFrame = cf
+mcf = cf
 end
-map.RT = map.CFrame
+end
+map.RT = mcf
 local rg = map.RG
-if dorep or not rg.Out then RagdollOut(map, rg) end
+if dorep or not rg.Out then rg.Out = rg.Act or mcf end
+if rg.Out and not RagdollFiniteCF(rg.Out) then rg.Out = mcf end
 if rg.Out then pcall(Util.SetMotor6DOffset, v, rg.Out) end
 end
 elseif flingtarget then
-SetTransformC(v, CFrame.identity, now)
+Util.SetMotor6DTransform(v, CFrame.identity)
 else
-local cf = Reanimate.LimbPoseCFrame(map, v, ReanimCharacter, RootPart)
-if dorep or not map.CFrame then
-map.CFrame = cf
+local mcf = map.CFrame
+if dorep or not mcf then
+mcf = LimbPose(map, v, ReanimCharacter, RootPart)
+map.CFrame = mcf
 end
-SetOffsetC(v, (localpass and not dorep) and cf or map.CFrame, now)
+Util.SetMotor6DOffset(v, mcf)
 end
 end
 end
@@ -67234,9 +67364,7 @@ Reanimate.Starting = false
 local rebuildWindowStart, rebuildCount, lastRebuild, rebuildGaveUp = 0, 0, 0, false
 local function FrameStep()
 RunService.PreSimulation:Wait()
-if workspace.FallenPartsDestroyHeight == workspace.FallenPartsDestroyHeight then
 workspace.FallenPartsDestroyHeight = 0/0
-end
 do
 local rc = Reanimate.Character
 if rc and not rc:IsDescendantOf(workspace) then
@@ -67257,9 +67385,6 @@ end
 end
 local ReanimOkay = false
 local Character, Humanoid, RootPart = Player.Character, nil, nil
-if Character ~= LOPT.lastChar then
-LOPT.lastChar, LOPT.refDirty, lastrep = Character, true, 0
-end
 if Character then
 Humanoid = lookup(Character, "Humanoid", true)
 if Humanoid then
@@ -67271,18 +67396,13 @@ if Humanoid.JumpPower < 1 then
 Humanoid.JumpPower = 50
 end
 RootPart = Humanoid.RootPart
-if RootPart then
-local hst = Humanoid:GetState()
-if hst ~= Enum.HumanoidStateType.Dead then
-if hst ~= Enum.HumanoidStateType.Physics then
+if RootPart and Humanoid:GetState() ~= Enum.HumanoidStateType.Dead then
 Humanoid:ChangeState(Enum.HumanoidStateType.Physics)
-end
 ReanimOkay = LimbReanimator.FlingTargets[1] == nil
 end
 end
 end
-end
-local rootcf = LimbReanimator.Mode == 5 and LOPT.rc5 or LimbReanimator.Mode == 6 and LOPT.rc6 or LOPT.rc0
+local rootcf = CFrame.new(LimbReanimator.Mode == 5 and skyposition or LimbReanimator.Mode == 6 and veryskyposition or rootposition)
 local rootvel = Vector3.zero
 local ltm = Reanimate.LocalTransparencyModifier
 local ReanimCharacter = Reanimate.Character
@@ -67294,14 +67414,7 @@ if Camera and Camera.CameraSubject ~= RCHumanoid then
 Camera.CameraSubject = RCHumanoid
 end
 local nowc, fpb, vz, infoT = os.clock(), Reanimate.FirstPersonBody and true or false, LOPT.vz, LOPT.info
-for i = #BaseParts, 1, -1 do
-local v = BaseParts[i]
-if v.Parent == nil then
-BaseParts[i] = BaseParts[#BaseParts]
-BaseParts[#BaseParts] = nil
-infoT[v] = nil
-continue
-end
+for _,v in BaseParts do
 if v.CanCollide then v.CanCollide = false end
 if not RagdollParts[v] then
 if v.Velocity ~= vz then v.Velocity = vz end
@@ -67309,16 +67422,12 @@ if v.RotVelocity ~= vz then v.RotVelocity = vz end
 end
 local info = infoT[v]
 if not info or nowc - info.at > 1 or info.fpb ~= fpb then
-if info then
-info.at, info.fpb, info.tool, info.head = nowc, fpb, v:FindFirstAncestorWhichIsA("Tool") ~= nil, false
-else
 info = {at = nowc, fpb = fpb, tool = v:FindFirstAncestorWhichIsA("Tool") ~= nil, head = false}
-infoT[v] = info
-end
 if fpb and v.Name ~= "Head" then
 local lol = v:FindFirstChild("AccessoryWeld")
 info.head = (lol and lol:IsA("Weld") and lol.Part1 and lol.Part1.Name == "Head") and true or false
 end
+infoT[v] = info
 end
 if not info.tool then
 local lltm = ltm
@@ -67328,17 +67437,11 @@ end
 if v.LocalTransparencyModifier ~= lltm then v.LocalTransparencyModifier = lltm end
 end
 end
-if Character and nowc - LOPT.fakeAt > 0.5 then
-LOPT.fakeAt = nowc
-for _,ch in Character:GetChildren() do
-if ch:IsA("Tool") and not FakeTools[ch] then task.spawn(CharOnDesc, ch) end
-end
-end
 local wantT = ReanimOkay and 1 or Reanimate.PlaceholderTransparency
-for i = 1, #LimbNames do
-local lp = lookup(ReanimCharacter, LimbNames[i])
-if lp and lp.Transparency ~= wantT and lp:IsA("BasePart") then
-lp.Transparency = wantT
+local limbSet = LOPT.limbs
+for _,v in ReanimCharacter:GetChildren() do
+if limbSet[v.Name] and v:IsA("BasePart") and v.Transparency ~= wantT then
+v.Transparency = wantT
 end
 end
 if Character and Humanoid and RootPart then
@@ -67346,13 +67449,13 @@ RunService.Heartbeat:Wait()
 local t = os.clock()
 if RCRootPart and RCTorso then
 if LimbReanimator.Mode == 1 then
-rootcf = LOPT.rc1
+rootcf = CFrame.new(rootposition2)
 end
 if LimbReanimator.Mode == 5 then
-rootcf = LOPT.rc5
+rootcf = CFrame.new(skyposition)
 end
 if LimbReanimator.Mode == 6 then
-rootcf = LOPT.rc6
+rootcf = CFrame.new(veryskyposition)
 end
 if LimbReanimator.Mode == 2 or workspace.StreamingEnabled then
 rootcf = CFrame.new(RCRootPart.Position + Vector3.new(0, -16, 0))
@@ -67432,7 +67535,7 @@ if Reanimate:ShouldRotationType() then
 Reanimate:CameraLockCharacter()
 end
 if Character and Humanoid and RootPart then
-UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, nil, CFrame.identity, true)
+UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, nil, CFrame.identity)
 end
 end
 end
@@ -67443,7 +67546,6 @@ if stepOk then
 stepFails = 0
 else
 stepFails += 1
-if stepFails > 60 then task.wait(0.25) end
 stepErr = tostring(stepErr)
 if stepErr ~= lastStepErr or os.clock() - lastStepErrTime > 10 then
 lastStepErr, lastStepErrTime = stepErr, os.clock()
@@ -67455,10 +67557,6 @@ end
 table.clear(LimbReanimator.FlingTargets)
 table.clear(LimbReanimator._TempNotFling)
 CharConn:Disconnect()
-if DescConn then DescConn:Disconnect() DescConn = nil end
-HandledLimbChar = nil
-table.clear(BaseParts)
-table.clear(UnknownMotor6Ds)
 if Ragdoll then
 for _,map in LimbMapping do RagdollRelease(map) end
 RagdollClean()
@@ -67474,11 +67572,7 @@ Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
 end
 do
-do
-local sv = tonumber(SaveData.Reanimator.RagdollStiffness)
-if not sv or sv ~= sv then sv = 100 end
-SaveData.Reanimator.RagdollStiffness = math.clamp(sv, 10, 200)
-end
+SaveData.Reanimator.RagdollStiffness = SaveData.Reanimator.RagdollStiffness or 100
 LimbReanimator.RagdollStiffness = SaveData.Reanimator.RagdollStiffness
 local RagdollReanimator = setmetatable({Name = "Ragdoll"}, {__index = LimbReanimator})
 Reanimate.RagdollReanimator = RagdollReanimator
@@ -67491,14 +67585,13 @@ val = math.clamp(val, 10, 200)
 LimbReanimator.RagdollStiffness = val
 SaveData.Reanimator.RagdollStiffness = val
 end)
-UI.CreateText(parent, "^^^ how hard the ragdoll limbs are pulled to the pose (force/torque limits scale with limb mass; applies live)", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "^^^ how hard the ragdoll limbs are pulled to the pose (applies on the next Reanimate)", 10, Enum.TextXAlignment.Center)
 end
 function RagdollReanimator.Start()
 LimbReanimator.RagdollMode = true
 local ok, err = pcall(LimbReanimator.Start)
 LimbReanimator.RagdollMode = nil
 if not ok then
-pcall(LimbReanimator._RagdollClean or function() end)
 warn("[Ragdoll Reanimator] failed to start: " .. tostring(err))
 pcall(Util.Notify, "Ragdoll Reanimator failed to start (see console): " .. tostring(err))
 pcall(Reanimate.DestroyCharacter)
@@ -71208,14 +71301,13 @@ local RS = SaveData.Reanimator
 do
 local poseCache = setmetatable({}, {__mode = "k"})
 function Reanimate.LimbPoseCFrame(map, v, RC, RootPart)
-local cf = CFrame.identity
 local e = poseCache[map]
 if not e or e.RC ~= RC then
 e = {RC = RC}
 poseCache[map] = e
 end
 local n0, n1 = map.RPart0, map.RPart1
-local p0, p1
+local p0
 if n0 == "ROOT" then
 p0 = RootPart
 else
@@ -71225,20 +71317,16 @@ p0 = RC:FindFirstChild(n0)
 e.p0 = p0
 end
 end
-p1 = e.p1
+local p1 = e.p1
 if not p1 or p1.Parent ~= RC or p1.Name ~= n1 then
 p1 = RC:FindFirstChild(n1)
 e.p1 = p1
 end
-if p0 and p1 then
+if not (p0 and p1) then return CFrame.identity end
 local t = map.Type
 if t == 1 then
-cf = p0.CFrame:ToObjectSpace(p1.CFrame)
+return p0.CFrame:ToObjectSpace(p1.CFrame)
 elseif t == 2 then
-local offset = map.Offset or CFrame.identity
-if e.offSrc ~= offset then
-e.offSrc, e.offInv = offset, offset:Inverse()
-end
 local mc0, mc1 = map.C0, map.C1
 if e.c0Src ~= mc0 then
 e.c0Src, e.c0 = mc0, CFrame.new(mc0)
@@ -71246,11 +71334,21 @@ end
 if e.c1Src ~= mc1 then
 e.c1Src, e.c1 = mc1, CFrame.new(mc1)
 end
-local transform = offset * (p0.CFrame * e.c0):ToObjectSpace(p1.CFrame * e.c1) * e.offInv
-cf = v.C0 * transform * v.C1:Inverse()
+local transform = (p0.CFrame * e.c0):ToObjectSpace(p1.CFrame * e.c1)
+local offset = map.Offset
+if offset then
+if e.offSrc ~= offset then
+e.offSrc, e.offInv = offset, offset:Inverse()
 end
+transform = offset * transform * e.offInv
 end
-return cf
+local vc1 = v.C1
+if e.vc1Src ~= vc1 then
+e.vc1Src, e.vc1Inv = vc1, vc1:Inverse()
+end
+return v.C0 * transform * e.vc1Inv
+end
+return CFrame.identity
 end
 end
 end
