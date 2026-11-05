@@ -1,3 +1,5 @@
+if _G.UhhhhhhLoaded == "V10" then return end
+local UH_SRC = [============[
 --[[
  ...    :::::        ::        ::        ::        ::        ::        
  ;;     ;;;;;;       ;;;       ;;;       ;;;       ;;;       ;;;       
@@ -126,6 +128,7 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
        Custom mod (FAST EXECUTION MODE: Main page > Performance > "Fast Execution Mode" (default ON, SaveData.Custom.FastExec). A small self-validating
                 startup cache, UhhhhhhReanim/FastExecution.cache, remembers which bundled songs / UI graphics were already verified so the next launch
                 skips re-reading them; rebuilt automatically when missing / corrupt / outdated, never stores code or player data, OFF = normal startup)
+       Custom mod (v323: TELEPORT AUTO EXECUTE - the file / URL based Auto Execute is replaced by a queue_on_teleport manager (Util.TeleportAutoExec) that queues this script's own embedded source before every internal teleport; no file, link or manual execution needed)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -21155,6 +21158,85 @@ if kinds[o.ClassName] ~= nil then task.defer(round, o) end
 end)
 end
 local SaveData = {}
+Util.TeleportAutoExec = (function()
+local AE = {}
+local TOKEN = HttpService:GenerateGUID(false)
+local queued, cleared, told = false, false, {}
+local LB, RB = "[" .. string.rep("=", 12) .. "[", "]" .. string.rep("=", 12) .. "]"
+local function once(key, msg)
+if told[key] then return end
+told[key] = true
+pcall(Util.Notify, msg)
+end
+local function getQueue()
+local f = queue_on_teleport or queueonteleport or queueteleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
+return type(f) == "function" and f or nil
+end
+function AE.Check()
+if getQueue() then return true end
+once("unsupported", "Your executor has no teleport-queue support (queue_on_teleport), so UH Admin cannot auto execute after teleporting. Re-execute it manually.")
+return false
+end
+function AE.QueueRaw(code)
+local q = getQueue()
+if not q then AE.Check() return false end
+local ok, err = pcall(q, code)
+if not ok then
+once("queuefail", "Teleport queue failed: " .. tostring(err))
+return false
+end
+return true
+end
+local function payload(src)
+return table.concat({
+[=[local g=(getgenv and getgenv()) or _G if g.UhhhhhhTpToken==]=], ("%q"):format(TOKEN),
+[=[ then return end g.UhhhhhhTpToken=]=], ("%q"):format(TOKEN),
+[=[ local ok,d=pcall(readfile,"UhhhhhhReanim/tree.ehehetilde") if ok and type(d)=="string" and d:find('"ServerHopAutoExec":false',1,true) then return end ]=],
+[=[if not game:IsLoaded() then game.Loaded:Wait() end local P=game:GetService("Players") local lp=P.LocalPlayer while not lp do P:GetPropertyChangedSignal("LocalPlayer"):Wait() lp=P.LocalPlayer end lp:WaitForChild("PlayerGui",15) local t=os.clock() while not lp.Character and os.clock()-t<10 do task.wait() end local S=]=],
+LB, "\n", src, RB,
+[=[ g.UhhhhhhSource=S local f,e=loadstring(S) if f then f() else warn("UH Admin auto execute failed: "..tostring(e)) end]=],
+})
+end
+function AE.Enabled()
+return SaveData.ServerHopAutoExec ~= false
+end
+function AE.Arm()
+if not AE.Enabled() then return true end
+if not getQueue() then AE.Check() return false end
+if not queued then
+local okg, g = pcall(function() return (getgenv and getgenv()) or _G end)
+local src = okg and g and g.UhhhhhhSource
+if type(src) ~= "string" or #src == 0 then
+once("nosource", "Auto Execute could not read this script's source, nothing was queued.")
+return false
+end
+if not AE.QueueRaw(payload(src)) then return false end
+queued = true
+once("armed", "Auto Execute armed: UH Admin will run again after teleporting.")
+end
+if _G.UhhhhhhLoaded ~= nil then
+cleared = true
+_G.UhhhhhhLoaded = nil
+end
+return true
+end
+function AE.Abort()
+if cleared then
+cleared = false
+_G.UhhhhhhLoaded = UhhhhhhVersion
+end
+end
+pcall(function()
+Players.LocalPlayer.OnTeleport:Connect(function(state)
+if state == Enum.TeleportState.Failed then
+AE.Abort()
+elseif state == Enum.TeleportState.Started or state == Enum.TeleportState.RequestedFromServer then
+AE.Arm()
+end
+end)
+end)
+return AE
+end)()
 do
 pcall(makefolder, "UhhhhhhReanim")
 pcall(writefile, "UhhhhhhReanim/.nomedia", "")
@@ -23759,10 +23841,30 @@ local bringc = {}
 commandcount = 0
 cmd = {}
 cmd._lastError = nil
+cmd._conflicts = {}
+cmd._rejected = {}
+cmd._lastAdd = 0
+cmd._pending = false
+cmd._refresh = function()
+cmd._lastAdd = os.clock()
+if cmd._pending then return end
+local okG, G = pcall(function() return gui end)
+if not okG or type(G) ~= "table" or type(G.loadCommands) ~= "function" then return end
+cmd._pending = true
+task.spawn(function()
+while os.clock() - cmd._lastAdd < 0.5 do task.wait(0.25) end
+cmd._pending = false
+local okH, H = pcall(function() return gui end)
+if okH and type(H) == "table" and type(H.loadCommands) == "function" then pcall(H.loadCommands) end
+end)
+end
 cmd.add = function(...)
 local vars = {...}
 local aliases, info, func = vars[1], vars[2], vars[3]
-if type(aliases) ~= "table" or type(func) ~= "function" then return false end
+if type(aliases) ~= "table" or type(func) ~= "function" then
+cmd._rejected[#cmd._rejected + 1] = tostring(type(aliases) == "table" and aliases[1] or aliases)
+return false
+end
 local primary = aliases[1]
 if type(primary) ~= "string" or primary == "" then return false end
 if Util.UhAdmin.IsBlocked(aliases) then
@@ -23775,17 +23877,79 @@ if type(info) == "table" then for k, v in pairs(info) do meta[k] = v end end
 meta[1] = tostring(meta[1] or primary)
 meta[2] = tostring(meta[2] or "")
 primary = primary:lower()
+local old = Commands[primary]
 local registration = {func, meta, aliases = {}}
-if Commands[primary] == nil then commandcount = commandcount + 1 end
+local claim = {}
+for i = 2, #aliases do
+local a = aliases[i]
+if type(a) == "string" and a ~= "" then claim[a:lower()] = true end
+end
+local carry = {}
+if old then
+for _, a in ipairs(old.aliases or {}) do
+if Aliases[a] == old then
+if claim[a] then Aliases[a] = nil
+elseif old.proxy then carry[#carry + 1] = a
+else Aliases[a] = nil end
+end
+end
+else
+commandcount = commandcount + 1
+end
 Commands[primary] = registration
+local shadowed = Aliases[primary]
+if shadowed and shadowed ~= registration then
+Aliases[primary] = nil
+if shadowed.aliases then
+for i = #shadowed.aliases, 1, -1 do
+if shadowed.aliases[i] == primary then table.remove(shadowed.aliases, i) end
+end
+end
+end
+local function take(alias)
+if alias == primary then return false end
+if Commands[alias] and Commands[alias] ~= registration then
+cmd._conflicts[alias] = primary
+return false
+end
+local holder = Aliases[alias]
+if holder and holder ~= registration then
+if not holder.proxy and holder ~= old then
+cmd._conflicts[alias] = primary
+return false
+end
+if holder.aliases then
+for i = #holder.aliases, 1, -1 do
+if holder.aliases[i] == alias then table.remove(holder.aliases, i) end
+end
+end
+end
+Aliases[alias] = registration
+registration.aliases[#registration.aliases + 1] = alias
+return true
+end
 for i = 2, #aliases do
 local alias = aliases[i]
-if type(alias) == "string" and alias ~= "" then
-Aliases[alias:lower()] = registration
-registration.aliases[#registration.aliases + 1] = alias:lower()
+if type(alias) == "string" and alias ~= "" then take(alias:lower()) end
 end
-end
+for _, a in ipairs(carry) do take(a) end
+cmd._refresh()
 return true
+end
+cmd.has = function(name)
+name = tostring(name or ""):lower()
+return Commands[name] ~= nil or Aliases[name] ~= nil
+end
+cmd.list = function()
+local names = {}
+for name in pairs(Commands) do names[#names + 1] = name end
+table.sort(names)
+local out = {}
+for _, name in ipairs(names) do
+local reg = Commands[name]
+out[#out + 1] = {name = name, usage = reg[2][1], description = reg[2][2], aliases = reg.aliases or {}, proxy = reg.proxy == true}
+end
+return out
 end
 cmd.run = function(args)
 cmd._lastError = nil
@@ -23794,16 +23958,25 @@ local caller = type(args[1]) == "string" and args[1]:lower() or nil
 if not caller or caller == "" then cmd._lastError = "No command specified"; return false, cmd._lastError end
 local registration = Commands[caller] or Aliases[caller]
 if not registration then
-cmd._lastError = (cmd._blocked and cmd._blocked[caller]) and ("Command is disabled: " .. tostring(args[1])) or ("Unknown command: " .. tostring(args[1]))
+local na = Util.UhAdmin and Util.UhAdmin.NA
+local blocked = cmd._blocked and cmd._blocked[caller]
+if na and not blocked and type(na.Has) == "function" and type(na.Run) == "function" and not Util.UhAdmin.IsBlocked({caller}) and na.Has(caller) then
+local rest = {}
+for i = 2, #args do rest[#rest + 1] = args[i] end
+na.Run((type(na.Resolve) == "function" and na.Resolve(caller)) or caller, rest)
+return true
+end
+cmd._lastError = blocked and ("Command is disabled: " .. tostring(args[1])) or ("Unknown command: " .. tostring(args[1]))
 return false, cmd._lastError
 end
+if type(registration[1]) ~= "function" then cmd._lastError = "Command has no handler: " .. tostring(args[1]); return false, cmd._lastError end
 local arguments = {}
 for i = 2, #args do arguments[#arguments + 1] = args[i] end
 local success, err = _native_pcall(function() registration[1](table.unpack(arguments)) end)
 if not success then cmd._lastError = tostring(err); return false, cmd._lastError end
 return true
 end
-Util.UhCmd = {cmds = Commands, aliases = Aliases, run = cmd.run}
+Util.UhCmd = {cmds = Commands, aliases = Aliases, run = cmd.run, list = cmd.list, has = cmd.has}
 lib = {}
 lib.wrap = function(f)
 return coroutine.wrap(f)()
@@ -25515,20 +25688,22 @@ game.Players.LocalPlayer.Character.Humanoid.PlatformStand = false
 hiddenfling = false
 end)
 cmd.add({"rjre", "rejoinrefresh"}, {"rjre (rejoinrefresh)", "Rejoins and teleports you to the position where you were before"}, function()
-queueteleport = (syn and syn.queue_on_teleport) or queue_on_teleport or (fluxus and fluxus.queue_on_teleport)
 if not DONE then
 DONE = true
-local qot = print("a")
 local hrp = game.Players.LocalPlayer.Character and game.Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 if hrp then
-qot = "task.spawn(function() end) repeat wait() until game and game:IsLoaded() local lp = game:GetService('Players').LocalPlayer local char = lp.Character or lp.CharacterAdded:Wait() repeat char:WaitForChild('HumanoidRootPart').CFrame = CFrame.new("..tostring(hrp.CFrame)..") wait() until (Vector3.new("..tostring(hrp.Position)..") - char:WaitForChild('HumanoidRootPart').Position).Magnitude < 10"
+Util.TeleportAutoExec.QueueRaw("task.spawn(function() end) repeat wait() until game and game:IsLoaded() local lp = game:GetService('Players').LocalPlayer local char = lp.Character or lp.CharacterAdded:Wait() repeat char:WaitForChild('HumanoidRootPart').CFrame = CFrame.new("..tostring(hrp.CFrame)..") wait() until (Vector3.new("..tostring(hrp.Position)..") - char:WaitForChild('HumanoidRootPart').Position).Magnitude < 10")
 end
-queueteleport(qot)
 game:GetService("TeleportService"):TeleportCancel()
-game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, game.Players.LocalPlayer)
+Util.TeleportAutoExec.Arm()
+if not pcall(function() game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, game.Players.LocalPlayer) end) then
+DONE = false
+Util.TeleportAutoExec.Abort()
+end
 end
 end)
 cmd.add({"rejoin", "rj"}, {"rejoin (rj)", "Rejoin the game"}, function()
+Util.TeleportAutoExec.Arm()
 game:GetService("TeleportService"):Teleport(game.PlaceId)
 wait()
 wait();
@@ -28785,6 +28960,7 @@ Duration = 5;
 });
 end)
 cmd.add({"joinjobid", "jjobid"}, {"joinjobid <jobid> (jjid)", "Joins the job id you put in"}, function(id)
+Util.TeleportAutoExec.Arm()
 TeleportService:TeleportToPlaceInstance(game.PlaceId,id)
 end)
 cmd.add({"serverhop", "shop"}, {"serverhop (shop)", "Serverhop"}, function()
@@ -28810,6 +28986,7 @@ Description = "Searched, please wait while we are teleporting you";
 Title = "Nameless Admin";
 Duration = 5;
 });
+Util.TeleportAutoExec.Arm()
 game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, SomeSRVS[1])
 end
 end)
@@ -28819,6 +28996,7 @@ game.CoreGui:FindFirstChild("RobloxPromptGui"):FindFirstChild("promptOverlay").D
 if Err.Name == "ErrorTitle" then
 Err:GetPropertyChangedSignal("Text"):Connect(function()
 if Err.Text:sub(0, 12) == "Disconnected" then
+Util.TeleportAutoExec.Arm()
 if #Players:GetPlayers() <= 1 then
 Players.LocalPlayer:Kick("\nRejoining...")
 wait()
@@ -29200,16 +29378,22 @@ end
 coroutine.wrap(PRML_fake_script)()
 end)
 local flyPart
-cmd.add({"fly"}, {"fly [speed]", "Enable flight"}, function(speed)
-local humanoid=cmdlp.Character and cmdlp.Character:FindFirstChildOfClass("Humanoid")
-if humanoid then humanoid.PlatformStand=false end
-speedofthefly=math.clamp(tonumber(speed) or 2,1,200)
-sFLY(false,speedofthefly)
-Notify({Description="Fly enabled at "..tostring(speedofthefly),Title="Nameless Admin",Duration=3})
-end)
-cmd.add({"unfly"}, {"unfly", "Disable flight"}, function()
+Util.UhAdmin.NAFly = function(name, ...)
+local api = Util.UhAdmin.NA
+if not api or type(api.Run) ~= "function" then
+Notify({Description = "Nameless Admin bridge is not loaded", Title = "Nameless Admin", Duration = 4})
+return false
+end
+api.Run(name, {...})
+return true
+end
+cmd.add({"fly"}, {"fly [speed]", "Enable flight (Nameless Admin Fly)"}, function(...)
 pcall(unvfly)
-Notify({Description="Flight disabled",Title="Nameless Admin",Duration=3})
+Util.UhAdmin.NAFly("fly", ...)
+end)
+cmd.add({"unfly"}, {"unfly", "Disable flight (Nameless Admin Unfly)"}, function()
+Util.UhAdmin.NAFly("unfly")
+pcall(unvfly)
 end)
 cmd.add({"noclip", "nclip", "nc"}, {"noclip", "Disable your player's collision"}, function()
 if connections["noclip"] then lib.disconnect("noclip") return end
@@ -34613,7 +34797,12 @@ if not api or not api.exec then
 Notify({Description = "Nameless Admin bridge is not loaded", Title = "Nameless Admin", Duration = 4})
 return
 end
-api.exec(table.concat({...}, " "))
+local line = table.concat({...}, " ")
+if not line:find("%S") then
+Notify({Description = "Usage: na <command> [arguments]", Title = "Nameless Admin", Duration = 4})
+return
+end
+api.exec(line)
 end)
 cmd.add({"chatspy"}, {"chatspy", "Spies on chat, enables chat, spies whispers etc."}, function()
 wait();
@@ -36257,18 +36446,27 @@ gui.loadCommands = function()
 if not cmdAutofill or not cmdExample then
 error("UhAdmin UI is not initialized (CmdAutofill/CmdExample missing)")
 end
+local existing = {}
 for _, v in pairs(cmdAutofill:GetChildren()) do
-if v ~= cmdExample and v.Name ~= "UIListLayout" then v:Destroy() end
+if v ~= cmdExample and v.Name ~= "UIListLayout" then
+if Commands[v.Name] and not existing[v.Name] then existing[v.Name] = v else v:Destroy() end
+end
 end
 for name, tbl in pairs(Commands) do
 local info = tbl[2]
-local btn = cmdExample:Clone()
+local btn = existing[name]
+if not btn then
+btn = cmdExample:Clone()
 btn.Parent = cmdAutofill
 btn.Name = name
-btn.Input.Text = info[1]
 btn.Visible = false
 end
+btn.Input.Text = info[1]
+end
+if not gui._cmdListBuilt then
+gui._cmdListBuilt = true
 cmdAutofill.Visible = false
+end
 end
 gui.loadCommands()
 gui.barSelect = function(speed)
@@ -37948,12 +38146,17 @@ end
 return nil
 end
 local booting = false
+NA.IsLoaded = function()
+if NA.Loaded then return ready() ~= nil end
+if not booting and NA.Stage == "idle" then return ready() ~= nil end
+return false
+end
 function NA.Boot()
-if ready() then return true end
+if NA.IsLoaded() then return true end
 if booting then
 local t0 = os.clock()
 while booting and os.clock() - t0 < 100 do task.wait(0.2) end
-return ready() ~= nil
+return NA.IsLoaded()
 end
 booting = true
 NA.Stage = "downloading"
@@ -37970,16 +38173,23 @@ local fn, cerr = loader(E.Source, "@NamelessAdmin_Source")
 if type(fn) ~= "function" then error(cerr or "Source.lua failed to compile") end
 NA.Stage = "booting"
 NA.BootError = nil
+local loadDone = false
 task.spawn(function()
 local ok2, e2 = pcall(fn)
 if not ok2 then NA.BootError = tostring(e2) end
+loadDone = true
+NA.Loaded = ready() ~= nil
+if NA.Loaded and NA.SyncExtras then pcall(NA.SyncExtras) end
 end)
 local t0 = os.clock()
 while os.clock() - t0 < 90 do
-if ready() then return end
-if NA.BootError then error(NA.BootError) end
-task.wait(0.25)
+if loadDone then
+if ready() then NA.Loaded = true return end
+error(NA.BootError or "Nameless Admin finished loading without a command core")
 end
+task.wait(0.1)
+end
+if ready() then NA.Loaded = true return end
 error("timed out waiting for NA's command core")
 end)
 booting = false
@@ -37992,9 +38202,13 @@ pcall(Util.Notify, "Nameless Admin runtime failed to load (see console). v53 com
 return false
 end
 NA.Stage = "ready"
+NA.Loaded = true
 task.defer(function()
 if NA.SyncExtras then pcall(NA.SyncExtras) end
 end)
+for _, d in ipairs({4, 12, 30}) do
+task.delay(d, function() if NA.SyncExtras then pcall(NA.SyncExtras) end end)
+end
 task.spawn(function()
 for _ = 1, 40 do
 pcall(function()
@@ -38029,6 +38243,20 @@ local name = table.remove(parts, 1)
 if not name then return end
 NA.Run(byName[lower(name)] or lower(name), parts)
 end
+function NA.Resolve(name) return byName[lower(name)] end
+function NA.Has(name)
+name = lower(name)
+if name == "" then return false end
+if byName[name] then return true end
+local env = ready()
+if not env then return false end
+local ok, found = pcall(function()
+local store = env.cmds
+if type(store) ~= "table" then return false end
+return (type(store.Commands) == "table" and store.Commands[name] ~= nil) or (type(store.Aliases) == "table" and store.Aliases[name] ~= nil)
+end)
+return ok and found == true
+end
 local okJ, list = pcall(function() return game:GetService("HttpService"):JSONDecode(CATALOGUE) end)
 if not okJ or type(list) ~= "table" then
 NA.Error = tostring(list)
@@ -38057,6 +38285,7 @@ local reg = {
 function(...) return NA.Run(primary, { ... }) end,
 { usage, (e[4] and e[4] ~= "") and e[4] or "Nameless Admin command." },
 aliases = kept,
+proxy = true,
 }
 Commands[primary] = reg
 for _, key in ipairs(kept) do Aliases[key] = reg end
@@ -38104,6 +38333,7 @@ local reg = {
 function(...) return NA.Run(primary, { ... }) end,
 { usage, tostring(info[2] or "Nameless Admin command.") },
 aliases = kept,
+proxy = true,
 }
 Commands[primary] = reg
 byName[primary] = primary
@@ -38441,6 +38671,7 @@ end)
 task.wait(0.15)
 if TP.Token ~= token then return false end
 TP.Handoff()
+Util.TeleportAutoExec.Arm()
 local function call(m)
 return pcall(function() return TeleportService[m.method](TeleportService, table.unpack(m.args)) end)
 end
@@ -38450,6 +38681,7 @@ TP.Update(nil, spec.fallback.detail)
 ok, err = call(spec.fallback)
 end
 if not ok then
+Util.TeleportAutoExec.Abort()
 fail("Teleport error: " .. tostring(err))
 return false
 end
@@ -66211,6 +66443,7 @@ end
 local LimbMapping = loadstring(readfile("UhhhhhhReanim/BuiltinModules/d_limbmap.lua"))()
 local FakeTools = {}
 local function CreateFakeTool()
+local rc = Reanimate.Character
 local FakeTool = Instance.new("Tool")
 FakeTool.Name = "faketool"
 local FakeToolHandle = Instance.new("Part")
@@ -66220,11 +66453,11 @@ FakeToolHandle.Color = Color3.new(0, 0, 1)
 FakeToolHandle.CanCollide = false
 FakeToolHandle.Massless = true
 FakeToolHandle.Parent = FakeTool
-FakeTool.Parent = Reanimate.Character
+FakeTool.Parent = rc
 local RightGrip = Instance.new("Weld")
 RightGrip.Name = "RightGrip"
 RightGrip.Parent = FakeToolHandle
-RightGrip.Part0 = Reanimate.Character and Reanimate.Character:FindFirstChild("Right Arm")
+RightGrip.Part0 = rc and rc:FindFirstChild("Right Arm")
 RightGrip.Part1 = FakeToolHandle
 RightGrip.C0 = RIGHTGRIP_C0
 Util.LinkDestroyI2C(FakeTool, FakeTool:GetPropertyChangedSignal("Grip"):Connect(function()
@@ -66773,6 +67006,10 @@ elseif v:IsA("Tool") and v.Parent == Player.Character then
 if not FakeTools[v] then
 FakeTools[v] = true
 local fake = CreateFakeTool()
+FakeTools[v] = fake
+fake.Destroying:Once(function()
+if FakeTools[v] == fake then FakeTools[v] = nil end
+end)
 fake.Grip = v.Grip
 local h = v:FindFirstChild("Handle")
 if h ~= nil then
@@ -66818,7 +67055,10 @@ end
 end
 end
 local lastspawn = 0
+local DescConn, HandledLimbChar = nil, nil
 local OnLimbCharacter = function(character)
+if HandledLimbChar == character then return end
+HandledLimbChar = character
 local camcfr = Camera.CFrame
 RunService.PreRender:Once(function()
 RunService.PreAnimation:Wait()
@@ -66835,22 +67075,24 @@ end
 table.clear(RagdollParts)
 table.clear(RagdollByPart)
 RGDirty = true
-character.DescendantAdded:Connect(CharOnDesc)
+if DescConn then DescConn:Disconnect() end
+DescConn = character.DescendantAdded:Connect(CharOnDesc)
 for _,v in character:GetDescendants() do
 task.spawn(CharOnDesc, v)
 end
 local humanoid = character:WaitForChild("Humanoid", 5)
-local stupid = humanoid:FindFirstChildWhichIsA("Animator")
+local stupid = humanoid and humanoid:FindFirstChildWhichIsA("Animator")
 if stupid then
 stupid:Destroy()
 end
 if not Reanimate.UseLoadAnimationHook then
 stupid = character:FindFirstChild("Animate")
-while not stupid do
-character.ChildAdded:Wait()
+local animDeadline = os.clock() + 10
+while not stupid and HandledLimbChar == character and character:IsDescendantOf(game) and not Reanimate.Stopping and os.clock() < animDeadline do
+task.wait(0.1)
 stupid = character:FindFirstChild("Animate")
 end
-stupid:Destroy()
+if stupid then stupid:Destroy() end
 end
 end
 local CharConn = Player.CharacterAdded:Connect(OnLimbCharacter)
@@ -66879,7 +67121,36 @@ limbs = {Head = true, Torso = true, ["Left Arm"] = true, ["Right Arm"] = true, [
 vz = Vector3.zero,
 refDirty = true,
 refAt = 0,
+mo = setmetatable({}, {__mode = "k"}),
+jit0 = Vector3.zero,
+jit1 = Vector3.new(0, 0, 0.005),
+rc0 = CFrame.new(rootposition),
+rc1 = CFrame.new(rootposition2),
+rc5 = CFrame.new(skyposition),
+rc6 = CFrame.new(veryskyposition),
+lastChar = nil,
+fakeAt = 0,
 }
+local MOT_REFRESH = 0.5
+local function MotorRec(motor)
+local m = LOPT.mo[motor]
+if not m then m = {at = 0} LOPT.mo[motor] = m end
+return m
+end
+local function ApplyTransform(motor, m, transform, now)
+if m.tf == transform and now - m.at < MOT_REFRESH then return end
+m.tf, m.at = transform, now
+Util.SetMotor6DTransform(motor, transform)
+end
+local function SetTransformC(motor, transform, now)
+ApplyTransform(motor, MotorRec(motor), transform, now)
+end
+local function SetOffsetC(motor, offset, now)
+local m = MotorRec(motor)
+local c0 = motor.C0
+if m.c0 ~= c0 then m.c0, m.c0i = c0, c0:Inverse() end
+ApplyTransform(motor, m, m.c0i * offset * motor.C1, now)
+end
 local function lookup(parent, key, isClass)
 local c = LOPT.lk[parent]
 if not c then c = {} LOPT.lk[parent] = c end
@@ -66890,18 +67161,22 @@ c[key] = o
 end
 return o
 end
-local function UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf)
+local function UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf, localpass)
+local now = os.clock()
 if not RootPart:IsGrounded() then
 if flingtarget then
 Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 LOPT.refDirty = true
 else
-RootPart.CFrame = rootcf + Vector3.new(0, 0, math.random(0, 1) * 0.005)
-RootPart.Velocity, RootPart.RotVelocity = rootvel, Vector3.zero
-local _rn = os.clock()
-if LOPT.refDirty or _rn - LOPT.refAt > 0.5 then
-LOPT.refDirty, LOPT.refAt = false, _rn
+if not localpass or (RootPart.Position - rootcf.Position).Magnitude > 0.05 then
+RootPart.CFrame = rootcf + (math.random(0, 1) == 1 and LOPT.jit1 or LOPT.jit0)
+end
+local vz = LOPT.vz
+if RootPart.Velocity ~= rootvel then RootPart.Velocity = rootvel end
+if RootPart.RotVelocity ~= vz then RootPart.RotVelocity = vz end
+if LOPT.refDirty or now - LOPT.refAt > 0.5 then
+LOPT.refDirty, LOPT.refAt = false, now
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", nil)
 end
 end
@@ -66909,21 +67184,25 @@ end
 local dorep = true
 if LimbReanimator.ReplicateFPS10 then
 dorep = false
-local b = os.clock()
-local a = b - lastrep
+local a = now - lastrep
 if a >= 1 / 10 then
 dorep = true
 a %= 1 / 10
-lastrep = b - a
+lastrep = now - a
+end
+end
+if not localpass then
+for i = #UnknownMotor6Ds, 1, -1 do
+if UnknownMotor6Ds[i].Parent == nil then table.remove(UnknownMotor6Ds, i) end
 end
 end
 for _,v in UnknownMotor6Ds do
-Util.SetMotor6DTransform(v, CFrame.identity)
+SetTransformC(v, CFrame.identity, now)
 end
 if Ragdoll then RagdollSample(RootPart) end
 for _,map in LimbMapping do
 local v = map.Reference
-if v then
+if v and v.Parent then
 if map.RG then
 if flingtarget then
 map.RT = v.C0 * v.C1:Inverse()
@@ -66939,13 +67218,13 @@ if dorep or not rg.Out then RagdollOut(map, rg) end
 if rg.Out then pcall(Util.SetMotor6DOffset, v, rg.Out) end
 end
 elseif flingtarget then
-Util.SetMotor6DTransform(v, CFrame.identity)
+SetTransformC(v, CFrame.identity, now)
 else
 local cf = Reanimate.LimbPoseCFrame(map, v, ReanimCharacter, RootPart)
 if dorep or not map.CFrame then
 map.CFrame = cf
 end
-Util.SetMotor6DOffset(v, map.CFrame)
+SetOffsetC(v, (localpass and not dorep) and cf or map.CFrame, now)
 end
 end
 end
@@ -66955,7 +67234,9 @@ Reanimate.Starting = false
 local rebuildWindowStart, rebuildCount, lastRebuild, rebuildGaveUp = 0, 0, 0, false
 local function FrameStep()
 RunService.PreSimulation:Wait()
+if workspace.FallenPartsDestroyHeight == workspace.FallenPartsDestroyHeight then
 workspace.FallenPartsDestroyHeight = 0/0
+end
 do
 local rc = Reanimate.Character
 if rc and not rc:IsDescendantOf(workspace) then
@@ -66976,6 +67257,9 @@ end
 end
 local ReanimOkay = false
 local Character, Humanoid, RootPart = Player.Character, nil, nil
+if Character ~= LOPT.lastChar then
+LOPT.lastChar, LOPT.refDirty, lastrep = Character, true, 0
+end
 if Character then
 Humanoid = lookup(Character, "Humanoid", true)
 if Humanoid then
@@ -66987,13 +67271,18 @@ if Humanoid.JumpPower < 1 then
 Humanoid.JumpPower = 50
 end
 RootPart = Humanoid.RootPart
-if RootPart and Humanoid:GetState() ~= Enum.HumanoidStateType.Dead then
+if RootPart then
+local hst = Humanoid:GetState()
+if hst ~= Enum.HumanoidStateType.Dead then
+if hst ~= Enum.HumanoidStateType.Physics then
 Humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+end
 ReanimOkay = LimbReanimator.FlingTargets[1] == nil
 end
 end
 end
-local rootcf = CFrame.new(LimbReanimator.Mode == 5 and skyposition or LimbReanimator.Mode == 6 and veryskyposition or rootposition)
+end
+local rootcf = LimbReanimator.Mode == 5 and LOPT.rc5 or LimbReanimator.Mode == 6 and LOPT.rc6 or LOPT.rc0
 local rootvel = Vector3.zero
 local ltm = Reanimate.LocalTransparencyModifier
 local ReanimCharacter = Reanimate.Character
@@ -67005,7 +67294,14 @@ if Camera and Camera.CameraSubject ~= RCHumanoid then
 Camera.CameraSubject = RCHumanoid
 end
 local nowc, fpb, vz, infoT = os.clock(), Reanimate.FirstPersonBody and true or false, LOPT.vz, LOPT.info
-for _,v in BaseParts do
+for i = #BaseParts, 1, -1 do
+local v = BaseParts[i]
+if v.Parent == nil then
+BaseParts[i] = BaseParts[#BaseParts]
+BaseParts[#BaseParts] = nil
+infoT[v] = nil
+continue
+end
 if v.CanCollide then v.CanCollide = false end
 if not RagdollParts[v] then
 if v.Velocity ~= vz then v.Velocity = vz end
@@ -67013,12 +67309,16 @@ if v.RotVelocity ~= vz then v.RotVelocity = vz end
 end
 local info = infoT[v]
 if not info or nowc - info.at > 1 or info.fpb ~= fpb then
+if info then
+info.at, info.fpb, info.tool, info.head = nowc, fpb, v:FindFirstAncestorWhichIsA("Tool") ~= nil, false
+else
 info = {at = nowc, fpb = fpb, tool = v:FindFirstAncestorWhichIsA("Tool") ~= nil, head = false}
+infoT[v] = info
+end
 if fpb and v.Name ~= "Head" then
 local lol = v:FindFirstChild("AccessoryWeld")
 info.head = (lol and lol:IsA("Weld") and lol.Part1 and lol.Part1.Name == "Head") and true or false
 end
-infoT[v] = info
 end
 if not info.tool then
 local lltm = ltm
@@ -67028,11 +67328,17 @@ end
 if v.LocalTransparencyModifier ~= lltm then v.LocalTransparencyModifier = lltm end
 end
 end
+if Character and nowc - LOPT.fakeAt > 0.5 then
+LOPT.fakeAt = nowc
+for _,ch in Character:GetChildren() do
+if ch:IsA("Tool") and not FakeTools[ch] then task.spawn(CharOnDesc, ch) end
+end
+end
 local wantT = ReanimOkay and 1 or Reanimate.PlaceholderTransparency
-local limbSet = LOPT.limbs
-for _,v in ReanimCharacter:GetChildren() do
-if limbSet[v.Name] and v:IsA("BasePart") and v.Transparency ~= wantT then
-v.Transparency = wantT
+for i = 1, #LimbNames do
+local lp = lookup(ReanimCharacter, LimbNames[i])
+if lp and lp.Transparency ~= wantT and lp:IsA("BasePart") then
+lp.Transparency = wantT
 end
 end
 if Character and Humanoid and RootPart then
@@ -67040,13 +67346,13 @@ RunService.Heartbeat:Wait()
 local t = os.clock()
 if RCRootPart and RCTorso then
 if LimbReanimator.Mode == 1 then
-rootcf = CFrame.new(rootposition2)
+rootcf = LOPT.rc1
 end
 if LimbReanimator.Mode == 5 then
-rootcf = CFrame.new(skyposition)
+rootcf = LOPT.rc5
 end
 if LimbReanimator.Mode == 6 then
-rootcf = CFrame.new(veryskyposition)
+rootcf = LOPT.rc6
 end
 if LimbReanimator.Mode == 2 or workspace.StreamingEnabled then
 rootcf = CFrame.new(RCRootPart.Position + Vector3.new(0, -16, 0))
@@ -67126,7 +67432,7 @@ if Reanimate:ShouldRotationType() then
 Reanimate:CameraLockCharacter()
 end
 if Character and Humanoid and RootPart then
-UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, nil, CFrame.identity)
+UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, nil, CFrame.identity, true)
 end
 end
 end
@@ -67137,6 +67443,7 @@ if stepOk then
 stepFails = 0
 else
 stepFails += 1
+if stepFails > 60 then task.wait(0.25) end
 stepErr = tostring(stepErr)
 if stepErr ~= lastStepErr or os.clock() - lastStepErrTime > 10 then
 lastStepErr, lastStepErrTime = stepErr, os.clock()
@@ -67148,6 +67455,10 @@ end
 table.clear(LimbReanimator.FlingTargets)
 table.clear(LimbReanimator._TempNotFling)
 CharConn:Disconnect()
+if DescConn then DescConn:Disconnect() DescConn = nil end
+HandledLimbChar = nil
+table.clear(BaseParts)
+table.clear(UnknownMotor6Ds)
 if Ragdoll then
 for _,map in LimbMapping do RagdollRelease(map) end
 RagdollClean()
@@ -69532,7 +69843,7 @@ SaveData.Reanimator.ToolsMethod = SaveData.Reanimator.ToolsMethod == 3 and 3 or 
 ToolReanimator.Method = SaveData.Reanimator.ToolsMethod
 local ToolMethodInfo = {
 [1] = "Original: equips the tools, breaks the real character's joints server-side and uses the freed handles. Optional dolteddown's permadeath.",
-[3] = "Corpse Claim: every tool is armed at once, then the real character is killed so the server breaks all grips together. A dead humanoid cannot pick anything up, so each tool is moved into Workspace right away (before the corpse is removed). A tool is only driven once the server has really freed it and you own it; unconfirmed drops are resent. The respawned character is parked alive and touch-disabled. replicatesignal is only an optional helper.",
+[3] = "Corpse Claim: every tool is armed at once, then the character dies on the client, the server-side joint break is requested through the executor's replicatesignal when available (same as Original), and the tools are dropped out of the corpse (no RemoteEvents / RemoteFunctions). Claimed handles are driven like hats (same alignment routine, HatCFrameOverride by tool name, per-handle PhysicsRepRootRef). Client-side local claim only, never server-authoritative: a tool counts as claimed once it is detached AND the engine reports you as its simulator (ReceiveAge 0); other players see it only while the engine keeps you as network owner. Anything unconfirmed stays pending, with bounded retries. The respawned character is parked alive and touch-disabled.",
 }
 ToolReanimator.HasPermadeath = false
 ToolReanimator.Summary = "(no tools claimed yet...)"
@@ -69542,7 +69853,7 @@ ReanimState = "(no status)",
 }
 local LimbOrder = {"Torso", "Head", "Right Arm", "Left Arm", "Right Leg", "Left Leg"}
 function ToolReanimator.Config(parent)
-UI.CreateText(parent, "Every Tool you own (up to 6) becomes one R6 body part: Torso, Head, Right Arm, Left Arm, Right Leg, Left Leg - in that order.\nNeeds replicatesignal support from your executor (Original only).", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "Every Tool you own (up to 6) becomes one R6 body part: Torso, Head, Right Arm, Left Arm, Right Leg, Left Leg - in that order.\nOriginal needs replicatesignal support from your executor. Corpse Claim is fully client-side (no remotes, local claim only).", 10, Enum.TextXAlignment.Center)
 UI.CreateDropdown(parent, "Tool Method", {"Original", "Corpse Claim"}, ToolReanimator.Method == 3 and 2 or 1).Changed:Connect(function(val)
 val = val == 2 and 3 or 1
 ToolReanimator.Method = val
@@ -69659,12 +69970,33 @@ return HatReanimator.ForceRespawn(reason)
 end
 function ToolReanimator.StartAlt()
 local Status = ToolReanimator.Status
-local claimed = {}
+local claimed, pending, Registry = {}, {}, {}
 local Stopped, Busy = false, false
-local HandledChar, ParkConn = nil, nil
-local nextretry, nextredrop = 0, {}
+local HandledChar, ParkConn, BringConn = nil, nil, nil
+local Handling = setmetatable({}, {__mode = "k"})
+local CharConns = {}
+local nextretry, nextredrop, nextcommit = 0, {}, 0
+local MAX_TRIES, MAX_CYCLES = 6, 3
+local OWN_GRACE, OWN_TIMEOUT = 2, 8
+local PassError = nil
 ToolReanimator.HasPermadeath = false
 Status.Permadeath = "Not used by Corpse Claim"
+-- Replication contract: tools are never reparented client-side to workspace (that left a local-only ghost copy while the server
+--   destroyed its copy with the corpse, so only this client saw it). Tools stay inside the character, which is kept alive on the
+--   server (pd, same as Original) when replicatesignal exists; handle joints are broken locally and on the server, so the
+--   server-side handle is the same instance this client simulates and other players see it.
+local Corpses = setmetatable({}, {__mode = "k"})
+local ClaimHum = nil
+local function Detach(handle)
+for _, j in handle:GetJoints() do
+pcall(j.Destroy, j)
+end
+for _, v in handle:GetChildren() do
+if v:IsA("JointInstance") then v:Destroy() end
+if v:IsA("Constraint") then v.Enabled = false end
+end
+return #handle:GetJoints() == 0
+end
 local function GetTools()
 local tools = {}
 local char = Player.Character
@@ -69681,108 +70013,212 @@ end
 end
 return tools
 end
-local function IsFree(c)
+-- "Free" = the handle is connected to nothing outside its own tool. Cached for 0.1s unless fresh is requested.
+local function IsFree(c, fresh)
+local now = os.clock()
+if not fresh and c.FreeAt and now - c.FreeAt < 0.1 then return c.FreeVal end
 local okp, parts = pcall(c.Handle.GetConnectedParts, c.Handle, true)
-if not okp then return false end
+local free = okp
+if okp then
 for _, p in parts do
 if p ~= c.Handle and not p:IsDescendantOf(c.Tool) then
-return false
+free = false
+break
 end
 end
-return true
 end
-local ToolLimbRemote = game:GetService("ReplicatedStorage"):FindFirstChild("ToolLimbRequest")
-local MyUserId = game:GetService("Players").LocalPlayer.UserId
-local HasOwnerCheck = type(isnetworkowner) == "function"
+c.FreeAt, c.FreeVal = now, free
+return free
+end
+-- Local ownership only: the engine reports this client as the handle's simulator. Not server-authoritative.
 local function Owns(handle)
 if not handle.Parent then return false end
-if ToolLimbRemote then
-return handle:GetAttribute("ToolLimbOwner") == MyUserId and handle.ReceiveAge == 0
-end
-if HasOwnerCheck then
-local ok, res = pcall(isnetworkowner, handle)
-if ok and res ~= true then return false end
-end
-return handle.ReceiveAge == 0
-end
-local Holding, ParkRoot = false, nil
-local function UpdateSummary()
-local head = "[Corpse Claim] " .. (HasOwnerCheck and "" or "(ownership unverified: no isnetworkowner, movement may be client-only) ")
-if #claimed == 0 then
-ToolReanimator.Summary = head .. "No usable Tools found (a Tool needs a Handle part). Waiting..."
-return
-end
-local lines = {head .. "Tools claimed: " .. #claimed .. "/" .. #LimbOrder}
-for _, c in claimed do
-local note = ""
-if not IsFree(c) then
-note = " (still attached)"
-elseif not Owns(c.Handle) then
-note = " (not owned)"
-end
-table.insert(lines, c.Limb .. " <- " .. c.Tool.Name .. note)
-end
-ToolReanimator.Summary = table.concat(lines, "\n")
+return handle.ReceiveAge == 0 and not handle:IsGrounded()
 end
 local function Valid(c)
 return c.Tool:IsDescendantOf(game) and c.Handle:IsDescendantOf(game)
 end
-local function IsClaimed(tool, list)
-for _, c in claimed do
-if c.Tool == tool then return true end
+-- Detach is confirmed separately from ownership: the handle must be in the workspace and free of every outside joint.
+local function Detached(c, fresh)
+return c.Handle:IsDescendantOf(workspace) and IsFree(c, fresh)
 end
-if list then
+-- Corpse detection/tracking: when a watched character dies, every registered tool still inside that body is dropped out of it
+-- right away (before the body is removed on respawn) so the freed handles can be confirmed and tracked. Event driven, no polling.
+local function WatchCorpse(character, hum)
+if Corpses[character] then return end
+Corpses[character] = true
+table.insert(CharConns, hum.Died:Connect(function()
+for _, list in {claimed, pending} do
 for _, c in list do
-if c.Tool == tool then return true end
+if c.Tool.Parent == character then pcall(Detach, c.Handle) end
 end
+end
+end))
+end
+local Holding, ParkRoot = false, nil
+local function HasLivePending()
+for _, c in pending do
+if not c.Failed then return true end
 end
 return false
 end
-local function NextLimb(list)
+local function UpdateSummary()
+local head = "[Corpse Claim, client-side] "
+if #claimed + #pending == 0 then
+ToolReanimator.Summary = head .. "No usable Tools found (a Tool needs a Handle part). Waiting..."
+return
+end
+local lines = {head .. "Tools claimed: " .. #claimed .. "/" .. #LimbOrder .. (#pending > 0 and (", pending: " .. #pending) or "")}
+for _, c in claimed do
+table.insert(lines, c.Limb .. " <- " .. c.Tool.Name)
+end
+for _, c in pending do
+local note
+if c.Failed then
+note = " (unconfirmed: " .. (c.FailReason or "no confirmation") .. ")"
+elseif not c.Detached then
+note = " (pending: waiting to detach)"
+else
+note = " (pending: waiting for local ownership)"
+end
+table.insert(lines, c.Limb .. " <- " .. c.Tool.Name .. note)
+end
+table.insert(lines, "Tools stay in the server-side body; others see them while this client owns them.")
+ToolReanimator.Summary = table.concat(lines, "\n")
+end
+local function ResolveState()
+if Busy or PassError then return end
+if #claimed + #pending == 0 then return end
+if #pending == 0 then
+Status.ReanimState = "Done."
+elseif #claimed > 0 then
+Status.ReanimState = "Done (" .. #claimed .. " claimed, " .. #pending .. " still pending confirmation)."
+elseif HasLivePending() then
+Status.ReanimState = "Waiting for tool ownership (character stays at the claim spot)"
+else
+Status.ReanimState = "Unconfirmed: tools did not detach / this client never got ownership. Nothing is claimed (see the summary)."
+end
+end
+local function NextLimb()
 for _, limb in LimbOrder do
 local used = false
 for _, c in claimed do
 if c.Limb == limb then used = true break end
 end
-if not used and list then
-for _, c in list do
+if not used then
+for _, c in pending do
 if c.Limb == limb then used = true break end
 end
 end
 if not used then return limb end
 end
 end
-local function Prune()
-for i = #claimed, 1, -1 do
-local c = claimed[i]
+local function Forget(c)
+Registry[c.Tool] = nil
+nextredrop[c] = nil
+end
+local function PruneList(list)
+for i = #list, 1, -1 do
+local c = list[i]
 local tool = c.Tool
 local gone = not tool:IsDescendantOf(game)
 if not gone and c.Handle.Parent ~= tool then
 local h = tool:FindFirstChild("Handle")
-if h and h:IsA("BasePart") then c.Handle = h else gone = true end
+if h and h:IsA("BasePart") then
+c.Handle = h
+c.Detached, c.Owned, c.FreeAt, c.DetachedAt = false, false, nil, nil
+else
+gone = true
+end
 end
 if gone then
-nextredrop[c] = nil
-table.remove(claimed, i)
+Forget(c)
+table.remove(list, i)
 end
 end
 end
-local function Redrop(c, now, gap)
-nextredrop[c] = now + gap
-task.spawn(function()
-local bp = Player:FindFirstChildOfClass("Backpack")
-if bp then
-pcall(function() c.Tool.Parent = bp end)
-RunService.Heartbeat:Wait()
+local function Prune()
+PruneList(claimed)
+PruneList(pending)
 end
-pcall(function() c.Tool.Parent = workspace end)
+-- Clears the hat-style drive state of a handle (claim timer, last position, glue, physical properties) so the next
+-- claim starts clean and nothing stale is left on a handle we stop driving.
+local function ResetDrive(c)
+local h = c.Handle
+pcall(function()
+h:SetAttribute("_Uhhhhhh_ClaimTime", nil)
+h:SetAttribute("_Uhhhhhh_LastPosition", nil)
+h.CustomPhysicalProperties = c.OrigProps
+h.Massless = c.OrigMassless == true
 end)
+c.RepRef, c.Aligned = nil, false
+pcall(sethiddenproperty, h, "PhysicsRepRootRef", nil)
+end
+-- Promotion is the ONLY way a tool becomes claimed: detach AND local (engine-reported) ownership, both checked fresh.
+local function Promote(c, i, now)
+table.remove(pending, i)
+table.insert(claimed, c)
+c.Detached, c.Owned, c.Failed, c.FailReason = true, true, false, nil
+c.Tries, c.OwnLostAt, c.DetachedAt, c.ClaimedAt = 0, nil, nil, now
+nextredrop[c] = nil
+c.Handle.CanCollide = false
+ResetDrive(c)
+end
+local function Demote(c, i, why)
+table.remove(claimed, i)
+table.insert(pending, c)
+ResetDrive(c)
+c.Detached, c.Owned, c.OwnLostAt, c.DetachedAt, c.Tries = false, false, nil, nil, 0
+c.Cycles += 1
+nextredrop[c] = nil
+if c.Cycles > MAX_CYCLES then
+c.Failed, c.FailReason = true, why or "ownership keeps changing"
+end
+end
+local function Commit()
+local now = os.clock()
+for i = #pending, 1, -1 do
+local c = pending[i]
+if Valid(c) then
+c.Detached = Detached(c, true)
+c.Owned = c.Detached and Owns(c.Handle)
+if c.Detached and c.Owned then
+Promote(c, i, now)
+else
+if c.Detached then
+c.DetachedAt = c.DetachedAt or now
+if not c.Failed and now - c.DetachedAt > OWN_TIMEOUT then
+c.Failed, c.FailReason = true, "detached but the engine never gave this client ownership"
+end
+else
+c.DetachedAt = nil
+end
+end
+else
+Forget(c)
+table.remove(pending, i)
+end
+end
+end
+-- Bounded retries with backoff: after MAX_TRIES the tool is marked failed (it stays pending and can still be promoted
+-- later if ownership arrives, but it is no longer re-dropped).
+local function DropTool(c, now, bounce)
+if c.Failed or now < (nextredrop[c] or 0) then return end
+if c.Tries >= MAX_TRIES then
+c.Failed, c.FailReason = true, "still attached after " .. c.Tries .. " drops"
+return
+end
+c.Tries += 1
+nextredrop[c] = now + math.min(0.5 * 2 ^ (c.Tries - 1), 4)
+pcall(Detach, c.Handle)
+if replicatesignal and ClaimHum and ClaimHum.Parent then pcall(replicatesignal, ClaimHum.ServerBreakJoints) end
 end
 local function ClaimTools(char, list)
 for _, tool in GetTools() do
-local limb = NextLimb(list)
+local limb = NextLimb()
 if not limb then break end
-if not IsClaimed(tool, list) then
+if not Registry[tool] then
+local origRH, origEn = tool.RequiresHandle, tool.Enabled
 pcall(function()
 tool.Enabled = true
 tool.RequiresHandle = false
@@ -69790,7 +70226,22 @@ tool.Parent = char
 end)
 local handle = tool:FindFirstChild("Handle")
 if tool.Parent == char and handle and handle:IsA("BasePart") then
-table.insert(list, {Tool = tool, Handle = handle, Limb = limb})
+local c = {
+Tool = tool, Handle = handle, Limb = limb,
+Detached = false, Owned = false, Failed = false,
+Tries = 0, Cycles = 0,
+OrigRH = origRH, OrigEnabled = origEn,
+OrigCollide = handle.CanCollide, OrigTouch = handle.CanTouch, OrigMassless = handle.Massless,
+OrigProps = handle.CustomPhysicalProperties,
+}
+Registry[tool] = c
+table.insert(pending, c)
+table.insert(list, c)
+else
+pcall(function()
+tool.RequiresHandle = origRH
+tool.Enabled = origEn
+end)
 end
 end
 end
@@ -69831,27 +70282,15 @@ RootPart.CFrame = CFrame.new(p) * CFrame.Angles(math.pi / 2, 0, 0)
 RootPart.AssemblyLinearVelocity, RootPart.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
 end)
 end
-local function ClaimPass(character, hum, RootPart, initial)
-if Busy then return end
-Busy, Holding = true, false
-local function alive()
-return character:IsDescendantOf(workspace) and not Stopped and not Reanimate.Stopping
-end
-Park(RootPart, true)
-local list = {}
-local function Commit()
-for _, c in list do
-if not IsClaimed(c.Tool) and Valid(c) then
-c.Handle.CanCollide = false
-table.insert(claimed, c)
-end
-end
-end
-local bring = RunService.Heartbeat:Connect(function()
-local p, now = ClaimPosition(RootPart), os.clock()
-for _, c in list do
+-- Pending tools that are already free are pulled to the claim spot (only while we are the simulator).
+BringConn = RunService.Heartbeat:Connect(function()
+if #pending == 0 then return end
+local root = ParkRoot
+if not (root and root:IsDescendantOf(workspace)) then return end
+local p, now = ClaimPosition(root), os.clock()
+for _, c in pending do
 local h = c.Handle
-if (not c.Driven or now - c.Driven > 0.1) and h:IsDescendantOf(workspace) and h.ReceiveAge == 0 and IsFree(c) then
+if not c.Failed and (not c.Driven or now - c.Driven > 0.1) and h:IsDescendantOf(workspace) and h.ReceiveAge == 0 and IsFree(c) then
 h.CanCollide = false
 h.CFrame = CFrame.new(p)
 h.AssemblyLinearVelocity = Vector3.new(0, 67, 0)
@@ -69859,6 +70298,142 @@ h.AssemblyAngularVelocity = Vector3.zero
 end
 end
 end)
+-- Hat-style handle driving: the same alignment routine HatReanimator uses for its handles (SetUACFrameNetless: claim-time
+-- settle phase, netless velocity, speed limit, aligned flag, same _Uhhhhhh_* handle attributes), a per-handle mapping that
+-- honours HatReanimator.HatCFrameOverride entries by tool Name, and the per-handle PhysicsRepRootRef from that mapping.
+local function AlignHandle(handle, dt, newcf, tvel, fling, spin)
+if dt <= 0 then return false end
+if not (handle:IsA("BasePart") and handle:IsDescendantOf(workspace)) then return false end
+local timing = os.clock()
+local idlerv = Vector3.new(
+math.sin(timing * 14), math.sin(timing * 15 + 1.0472), math.sin(timing * 16 + 2.0944)
+)
+local idleoff = idlerv * 0.001
+local ylimit = FallenPartsDestroyHeight + 5
+if newcf.Y < ylimit then
+newcf += Vector3.new(0, ylimit - newcf.Y, 0)
+end
+local speedlimit = 16384
+if fling then
+speedlimit = math.huge
+end
+local netless = Reanimate.NetlessVelocity + (math.sin(timing * 0.5) + 1) / 2
+local aligned = true
+local lastcf = handle:GetAttribute("_Uhhhhhh_LastPosition")
+local claimtime = handle:GetAttribute("_Uhhhhhh_ClaimTime")
+if typeof(lastcf) ~= "CFrame" then lastcf = handle.CFrame end
+if not handle:IsGrounded() and handle.ReceiveAge == 0 then
+local newpos = newcf.Position
+local lastpos = lastcf.Position
+local vel = (newpos - lastpos) / dt
+if vel.Magnitude < 0.12 then
+newcf += idleoff
+elseif vel.Magnitude > speedlimit then
+vel = vel.Unit * speedlimit
+newpos = lastpos + vel * dt
+newcf = newcf.Rotation + newpos
+aligned = false
+end
+local rvel = lastcf:ToObjectSpace(newcf)
+local a, b = rvel:ToAxisAngle()
+rvel = (a * b) / dt
+lastcf = newcf
+if claimtime then
+if timing - claimtime < 5.67 then
+handle.Massless = false
+handle.CustomPhysicalProperties = nil
+else
+handle.Massless = true
+handle.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
+end
+if timing - claimtime < 0.51 then
+handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
+else
+if fling then
+handle.AssemblyLinearVelocity = Vector3.new(16384, 16384, 16384)
+else
+if Reanimate.UsePatchmaLikeNetless then
+vel = tvel
+vel *= Vector3.new(1, 0, 1)
+if vel.Magnitude > netless then
+vel = vel.Unit * netless
+end
+handle.AssemblyLinearVelocity = Vector3.new(vel.X * 10, netless, vel.Z * 10)
+else
+vel += tvel
+vel *= Vector3.new(1, 0, 1)
+if vel.Magnitude > netless then
+vel = vel.Unit * netless
+end
+handle.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, netless), vel.Z)
+end
+end
+end
+else
+claimtime = timing
+handle.AssemblyLinearVelocity = Vector3.new(0, netless * 2, 0)
+end
+handle.CFrame = newcf
+if spin then
+handle.AssemblyAngularVelocity = Vector3.new(16384, 16384, 16384)
+else
+if Reanimate.UseAngularVelocity then
+handle.AssemblyAngularVelocity = rvel + idleoff
+else
+handle.AssemblyAngularVelocity = idleoff
+end
+end
+else
+claimtime = nil
+lastcf = handle.CFrame
+aligned = false
+end
+handle:SetAttribute("_Uhhhhhh_LastPosition", lastcf)
+handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime)
+return aligned
+end
+local function ResolveMap(c, now)
+if c.Map and now - c.MapAt < 1 then return c.Map end
+local map = {Limb = c.Limb}
+for _, data in HatReanimator.HatCFrameOverride do
+if not data.Disable and data.Name and not data.MeshId and not data.TextureId and not data.Group and not data.Index and data.Name == c.Tool.Name then
+map = {
+Limb = data.Limb or c.Limb,
+C0 = data.C0, C1 = data.C1,
+Offset = data.Offset or data.CFrame,
+RepRootPart = data.RepRootPart,
+}
+break
+end
+end
+c.Map, c.MapAt = map, now
+return map
+end
+local function MappedCFrame(map, limb, scale)
+if map.C0 and map.C1 then
+return limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(map.C0, scale)) * Util.ScaleCFrame(map.C1, 1):Inverse(), limb.Velocity
+end
+if map.Offset then
+return limb.CFrame * map.Offset, limb.Velocity
+end
+return limb.CFrame, limb.Velocity
+end
+local function SetRepRoot(c, part, now)
+local want = nil
+if typeof(part) == "Instance" and part:IsA("BasePart") and Util.Fling.UseGlue() then want = part end
+if c.RepRef ~= want or now - (c.RepRefAt or 0) > 0.5 then
+c.RepRef, c.RepRefAt = want, now
+pcall(sethiddenproperty, c.Handle, "PhysicsRepRootRef", want)
+end
+end
+local function ClaimPass(character, hum, RootPart, initial)
+if Busy then return end
+Busy, Holding, PassError = true, false, nil
+local function alive()
+return character:IsDescendantOf(workspace) and not Stopped and not Reanimate.Stopping
+end
+Park(RootPart, true)
+local list = {}
 local ok, err = pcall(function()
 repeat
 if not alive() then return end
@@ -69885,96 +70460,101 @@ if c.Tool.Parent ~= character then
 pcall(function() c.Tool.Parent = character end)
 end
 c.Handle.CanTouch = false
-if c.Tool.Parent == character and not IsFree(c) then ready += 1 end
+if c.Tool.Parent == character and not IsFree(c, true) then ready += 1 end
 end
 end
 if ready < #list then task.wait(0.1) end
 until ready >= #list or os.clock() > armDeadline or not alive()
 if not alive() then return end
-Status.ReanimState = "Corpse Claim: killing the real character"
+Status.ReanimState = "Corpse Claim: detaching tools (client death + server joint break)"
+if replicatesignal then pcall(replicatesignal, hum.ServerBreakJoints) end
 pcall(function()
 hum.EvaluateStateMachine = true
 hum.BreakJointsOnDeath = true
-hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
-end)
-if ToolLimbRemote then
-ToolLimbRemote:FireServer("claim")
+if replicatesignal then
+pcall(function() character:BreakJoints() end)
+hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
+hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+hum:ChangeState(Enum.HumanoidStateType.Climbing)
+Status.Permadeath = "Body kept alive on the server (tools stay replicated)."
 else
-if replicatesignal then pcall(replicatesignal, hum.ServerBreakJoints) end
-hum.Health = 0
-pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+hum:ChangeState(Enum.HumanoidStateType.Dead)
 end
-Status.ReanimState = "Corpse Claim: rescuing tools"
-local deadline = os.clock() + 4
+end)
+Status.ReanimState = "Corpse Claim: waiting for the tools to detach"
+local deadline = os.clock() + 6
 local left
 repeat
 left = 0
 local now = os.clock()
 for _, c in list do
+if Valid(c) then
 c.Handle.CanTouch = false
-if c.Tool.Parent ~= workspace then
-pcall(function() c.Tool.Parent = workspace end)
-nextredrop[c] = now + 0.75
-elseif not IsFree(c) and now > (nextredrop[c] or 0) then
-Redrop(c, now, 0.75)
+if not Detached(c, true) then
+DropTool(c, now, c.Tool.Parent == workspace)
+if not c.Failed then left += 1 end
 end
-if not IsFree(c) then left += 1 end
+end
 end
 if left > 0 then RunService.Heartbeat:Wait() end
 until left == 0 or os.clock() > deadline or not alive()
 end
 Commit()
-Status.ReanimState = "Waiting for tool ownership"
-local ownDeadline = os.clock() + 3
-local own
+Status.ReanimState = "Waiting for local ownership confirmation"
+local ownDeadline = os.clock() + 4
+local waiting
 repeat
 task.wait(0.1)
-own = 0
+Commit()
+waiting = 0
 for _, c in list do
-if Owns(c.Handle) and IsFree(c) then own += 1 end
+if not c.Owned and not c.Failed and Valid(c) then waiting += 1 end
 end
-until own >= #list or os.clock() > ownDeadline or not alive()
-local unowned = 0
-for _, c in claimed do
-if IsFree(c) and not Owns(c.Handle) then unowned += 1 end
-end
-Holding = unowned > 0
-Status.ReanimState = Holding and "Waiting for real tool ownership (character stays at the claim spot)" or "Done."
+until waiting == 0 or os.clock() > ownDeadline or not alive()
 end)
-bring:Disconnect()
 Commit()
 Busy = false
+Holding = HasLivePending()
 if alive() then
-if Holding then
-Park(RootPart, true)
+Park(RootPart, Holding)
+end
+if ok then
+ResolveState()
 else
-Park(RootPart)
+PassError = tostring(err)
+Status.ReanimState = "Error: " .. PassError
 end
 end
-if not ok then
-Status.ReanimState = "Error: " .. tostring(err)
-end
+local function ClearAll()
+for _, c in claimed do Forget(c) end
+for _, c in pending do Forget(c) end
+table.clear(claimed)
+table.clear(pending)
+Holding = false
 end
 local function OnCharacter(character)
-if Stopped or HandledChar == character then return end
-HandledChar = character
+if Stopped or HandledChar == character or Handling[character] then return end
+Handling[character] = true
 Status.ReanimState = "Respawned."
 local hum = character:WaitForChild("Humanoid", 10)
-if not hum then return end
+if not hum then Handling[character] = nil return end
+ClaimHum = hum
+WatchCorpse(character, hum)
 if not Reanimate.UseLoadAnimationHook then
 local stupid = character:FindFirstChild("Animate")
 if stupid then stupid:Destroy() end
-character.ChildAdded:Connect(function(v)
+table.insert(CharConns, character.ChildAdded:Connect(function(v)
 if v:IsA("LocalScript") then
 v.Disabled = true
 task.defer(function() v:Destroy() end)
 end
-end)
+end))
 end
 local animator = hum:FindFirstChildOfClass("Animator")
 if animator then animator:Destroy() end
 local RootPart = character:WaitForChild("HumanoidRootPart", 10)
-if not RootPart then return end
+if not RootPart then Handling[character] = nil return end
 ParkRoot = RootPart
 for _, v in character:GetDescendants() do
 if v:IsA("BasePart") then v.CanTouch = false end
@@ -69982,16 +70562,23 @@ end
 pcall(function() hum.EvaluateStateMachine = false end)
 pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
 while Busy and not Stopped and character:IsDescendantOf(workspace) do task.wait(0.1) end
-if Stopped or not character:IsDescendantOf(workspace) then return end
+if Stopped or not character:IsDescendantOf(workspace) then Handling[character] = nil return end
+HandledChar = character
 Prune()
-if #claimed > 0 then
+if #claimed > 0 or HasLivePending() then
+-- previously claimed / still-pending tool state survives the respawn
+Holding = HasLivePending()
 Park(RootPart, Holding)
-Status.ReanimState = "Done (tools kept across the respawn)."
+ResolveState()
+Status.ReanimState = "Respawned. " .. Status.ReanimState
 return
 end
+-- nothing claimed and nothing still worth waiting for: forget the failed leftovers and run a fresh claim pass
+for _, c in pending do Forget(c) end
+table.clear(pending)
 ClaimPass(character, hum, RootPart, true)
 end
-local CharConn = Player.CharacterAdded:Connect(function(c) task.spawn(OnCharacter, c) end)
+table.insert(CharConns, Player.CharacterAdded:Connect(function(c) task.spawn(OnCharacter, c) end))
 local InitCFrame = nil
 local startChar = Player.Character
 do
@@ -70006,7 +70593,9 @@ end
 local nextsummary, stuckSince = 0, nil
 while not Reanimate.Stopping do
 RunService.PreSimulation:Wait()
+if workspace.FallenPartsDestroyHeight == workspace.FallenPartsDestroyHeight then
 workspace.FallenPartsDestroyHeight = 0/0
+end
 if Util.FX.SimDue() then
 pcall(function() Player.SimulationRadius = #Players:GetPlayers() * 1000 end)
 pcall(sethiddenproperty, Player, "SimulationRadius", #Players:GetPlayers() * 1000)
@@ -70021,34 +70610,29 @@ task.spawn(OnCharacter, Character)
 end
 local hum = Character:FindFirstChildOfClass("Humanoid")
 local rchum = ReanimCharacter and ReanimCharacter:FindFirstChildOfClass("Humanoid")
-if Camera and (rchum or hum) then
-Camera.CameraSubject = rchum or hum
+local subject = rchum or hum
+if Camera and subject and Camera.CameraSubject ~= subject then
+Camera.CameraSubject = subject
 end
 for _, v in Character:GetChildren() do
 if v:IsA("BasePart") then
-v.CanCollide = false
-v.CanTouch = false
-v.LocalTransparencyModifier = ltm
+if v.CanCollide then v.CanCollide = false end
+if v.CanTouch then v.CanTouch = false end
+if v.LocalTransparencyModifier ~= ltm then v.LocalTransparencyModifier = ltm end
 end
 end
 end
 Prune()
-local usable, unowned = 0, 0
+local usable = 0
 for _, c in claimed do
-if IsFree(c) then
-if Owns(c.Handle) then usable += 1 else unowned += 1 end
+if Owns(c.Handle) then usable += 1 end
 end
-end
-if Holding and not Busy and unowned == 0 and ParkRoot then
-Holding = false
-Park(ParkRoot)
-end
-if ToolReanimator.AutoForceRespawn and not Busy and #claimed > 0 and usable == 0 then
+if ToolReanimator.AutoForceRespawn and not Busy and #claimed + #pending > 0 and usable == 0 then
 local now = os.clock()
 stuckSince = stuckSince or now
 if now - stuckSince > ToolReanimator.StuckTimeout and now - HatReanimator.LastForceRespawn > 5 then
 stuckSince = nil
-table.clear(claimed)
+ClearAll()
 ToolReanimator.ForceRespawn("No usable tool for " .. ToolReanimator.StuckTimeout .. "s. Force respawning!")
 end
 else
@@ -70057,46 +70641,65 @@ end
 local dt = RunService.Heartbeat:Wait()
 local t = os.clock()
 if ReanimCharacter and dt > 0 then
-local ylimit = FallenPartsDestroyHeight + 5
-local netless = Reanimate.NetlessVelocity + (math.sin(t * 0.5) + 1) / 2
-local idle = Vector3.new(math.sin(t * 14), math.sin(t * 15 + 1.0472), math.sin(t * 16 + 2.0944)) * 0.001
-Prune()
+local scale = ReanimCharacter:GetScale()
 local flung = ToolReanimator.FlingStep(claimed, Owns, t)
-for _, c in claimed do
+for i = #claimed, 1, -1 do
+local c = claimed[i]
 local handle = c.Handle
-local limb = ReanimCharacter:FindFirstChild(c.Limb)
 if c == flung then
-elseif c.Tool.Parent ~= workspace then
-if t > (nextredrop[c] or 0) then
-nextredrop[c] = t + 0.25
-pcall(function() c.Tool.Parent = workspace end)
-end
-elseif handle:IsDescendantOf(workspace) and not IsFree(c) then
-if t > (nextredrop[c] or 0) then
-Redrop(c, t, 1)
-end
-elseif limb and handle:IsDescendantOf(workspace) then
-handle.CanCollide = ToolReanimator.Collide
-handle.CanTouch = false
-handle.LocalTransparencyModifier = ltm
-if not handle:IsGrounded() and Owns(handle) then
-local cf = limb.CFrame
-if cf.Y < ylimit then
-cf += Vector3.new(0, ylimit - cf.Y, 0)
-end
-handle.Massless = true
-handle.CFrame = cf + idle
-handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
-handle.AssemblyAngularVelocity = Vector3.zero
-c.Driven = t
-elseif not handle:IsGrounded() then
+c.RepRef = false
+elseif not Valid(c) then
+-- removed by Prune next frame
+elseif not Detached(c) then
+-- grip came back / tool left the workspace: back to pending (bounded), never driven while attached
+Demote(c, i, "tool keeps getting re-attached")
+elseif not Owns(handle) then
+-- delayed replication / ownership change: stop driving, give it a grace period, then re-confirm from pending
+c.OwnLostAt = c.OwnLostAt or t
+if not handle:IsGrounded() then
 pcall(sethiddenproperty, handle, "NetworkIsSleeping", false)
+end
+if t - c.OwnLostAt > OWN_GRACE then Demote(c, i, "ownership lost") end
+else
+c.OwnLostAt = nil
+if c.ClaimedAt and c.Cycles > 0 and t - c.ClaimedAt > 30 then c.Cycles = 0 end
+local map = ResolveMap(c, t)
+local limb = c.LimbPart
+if not limb or limb.Parent ~= ReanimCharacter or limb.Name ~= map.Limb then
+limb = ReanimCharacter:FindFirstChild(map.Limb)
+c.LimbPart = limb
+end
+local lltm = ltm
+if Reanimate.FirstPersonBody and map.Limb ~= "Head" then lltm = 0 end
+if handle.CanCollide ~= ToolReanimator.Collide then handle.CanCollide = ToolReanimator.Collide end
+if handle.CanTouch then handle.CanTouch = false end
+if handle.LocalTransparencyModifier ~= lltm then handle.LocalTransparencyModifier = lltm end
+if limb and limb:IsA("BasePart") then
+local tcf, tvel = MappedCFrame(map, limb, scale)
+c.Aligned = AlignHandle(handle, dt, tcf, tvel, false, false)
+c.Driven = t
+SetRepRoot(c, map.RepRootPart, t)
+end
+end
+end
+if not Busy and #pending > 0 and t > nextcommit then
+nextcommit = t + 0.1
+Commit()
+for _, c in pending do
+if not c.Failed and not c.Detached and Valid(c) then
+DropTool(c, t, c.Tool.Parent == workspace)
 end
 end
 end
 if t > nextsummary then
 nextsummary = t + 0.5
+local live = HasLivePending()
+if not Busy and ParkRoot and live ~= Holding then
+Holding = live
+Park(ParkRoot, Holding)
+end
 UpdateSummary()
+ResolveState()
 end
 end
 RunService.PreRender:Wait()
@@ -70104,25 +70707,42 @@ if Reanimate.Character and Reanimate:ShouldRotationType() then
 Reanimate:CameraLockCharacter()
 end
 end
-if ToolLimbRemote then pcall(ToolLimbRemote.FireServer, ToolLimbRemote, "release") end
 Stopped = true
-CharConn:Disconnect()
+if BringConn then BringConn:Disconnect() BringConn = nil end
 if ParkConn then ParkConn:Disconnect() ParkConn = nil end
+for _, conn in CharConns do conn:Disconnect() end
+table.clear(CharConns)
 local Character = Player.Character
 local hum = Character and Character:FindFirstChildOfClass("Humanoid")
 local rroot = Reanimate.Character and Reanimate.Character:FindFirstChild("HumanoidRootPart")
 local ReturnCFrame = rroot and rroot.CFrame
 for _, v in (Character and Character:GetDescendants() or {}) do
-if v:IsA("BasePart") then v.CanTouch = true end
+if v:IsA("BasePart") then
+v.CanTouch = true
+v.LocalTransparencyModifier = 0
+end
 end
 local backpack = Player:FindFirstChildOfClass("Backpack")
-for _, c in claimed do
+local function RestoreTool(c)
 if c.Tool.Parent and c.Handle.Parent then
-c.Handle.CanTouch = true
-if ReturnCFrame then pcall(function() c.Handle.CFrame = ReturnCFrame end) end
+local h = c.Handle
+ResetDrive(c)
+pcall(function()
+h.CanTouch = c.OrigTouch ~= false
+h.CanCollide = c.OrigCollide ~= false
+h.Massless = c.OrigMassless == true
+h.LocalTransparencyModifier = 0
+h.AssemblyLinearVelocity, h.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+c.Tool.RequiresHandle = c.OrigRH ~= false
+c.Tool.Enabled = c.OrigEnabled ~= false
+end)
+if ReturnCFrame then pcall(function() h.CFrame = ReturnCFrame end) end
 pcall(function() c.Tool.Parent = backpack or Character end)
 end
 end
+ToolReanimator.FlingReset()
+for _, c in claimed do RestoreTool(c) end
+for _, c in pending do RestoreTool(c) end
 if hum and hum.Parent then
 pcall(function() hum.EvaluateStateMachine = true end)
 pcall(function() hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true) end)
@@ -70136,9 +70756,8 @@ pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
 end
 pcall(function() if Camera then Camera.CameraSubject = hum end end)
 end
-table.clear(claimed)
+ClearAll()
 table.clear(nextredrop)
-ToolReanimator.FlingReset()
 ToolReanimator.HasPermadeath = false
 ToolReanimator.Summary = "(no tools claimed yet...)"
 Status.Permadeath = "(no status)"
@@ -72687,9 +73306,8 @@ local LocalPlayer = Players.LocalPlayer
 SaveData.ServerHopMode = tonumber(SaveData.ServerHopMode) or 1
 if SaveData.ServerHopSkipVisited == nil then SaveData.ServerHopSkipVisited = true end
 if type(SaveData.ServerHopVisited) ~= "table" then SaveData.ServerHopVisited = {} end
-if type(SaveData.ServerHopReexec) ~= "string" then SaveData.ServerHopReexec = "" end
+SaveData.ServerHopReexec, SaveData.ServerHopAutoPath = nil, nil
 if SaveData.ServerHopAutoExec == nil then SaveData.ServerHopAutoExec = true end
-if type(SaveData.ServerHopAutoPath) ~= "string" then SaveData.ServerHopAutoPath = "" end
 local VISIT_MEMORY = 3600
 local function pruneVisited()
 local now, count = os.time(), 0
@@ -72717,79 +73335,12 @@ SaveData.ServerHopSkipVisited = val
 end)
 UI.CreateSwitch(MainPage, "Auto Execute after hop / rejoin", SaveData.ServerHopAutoExec).Changed:Connect(function(val)
 SaveData.ServerHopAutoExec = val
+if val then Util.TeleportAutoExec.Check() end
 end)
-UI.CreateText(MainPage, "Auto Execute runs this script again by itself in the new server.\nIt looks for its own file in your executor's workspace folder, so normally you set nothing.\nIf it can't find it, type the file name or a raw https:// link below (optional override).", 10, Enum.TextXAlignment.Center)
-local ReexecBox = UI.CreateTextbox(MainPage, SaveData.ServerHopReexec, "override: file name or link (optional)", 20)
-ReexecBox.FocusLost:Connect(function()
-SaveData.ServerHopReexec = ReexecBox.Text
-end)
+UI.CreateText(MainPage, "Automatically executes UH Admin again after teleporting to another server. No file, URL, or manual execution required. Requires executor teleport-queue support.", 10, Enum.TextXAlignment.Center)
 local HopStatus = UI.CreateText(MainPage, "<font color=\"#AAAAAA\">(ready)</font>", 12, Enum.TextXAlignment.Center)
 local function status(msg)
 HopStatus.Text = msg
-end
-local SELF_MARK = "Nooby's Uh Modded Reanimation"
-local function fileLooksLikeUs(path)
-local ok, data = pcall(readfile, path)
-if not ok or type(data) ~= "string" then return false end
-return data:sub(1, 4000):find(SELF_MARK, 1, true) ~= nil and data:find("_G.UhhhhhhLoaded", 1, true) ~= nil
-end
-local function findOwnFile()
-local saved = SaveData.ServerHopAutoPath
-if saved ~= "" and isfile(saved) and fileLooksLikeUs(saved) then
-return saved
-end
-local seen = 0
-for _, folder in {"", "."} do
-local okl, files = pcall(listfiles, folder)
-if okl and type(files) == "table" then
-for _, path in files do
-local low = path:lower()
-if (low:match("%.lua$") or low:match("%.txt$")) and not low:find("uhhhhhhreanim", 1, true) and isfile(path) then
-seen += 1
-if seen > 120 then break end
-if fileLooksLikeUs(path) then
-SaveData.ServerHopAutoPath = path
-return path
-end
-if seen % 8 == 0 then task.wait() end
-end
-end
-if seen > 0 then break end
-end
-end
-return nil
-end
-local function queueReexec()
-if not SaveData.ServerHopAutoExec then return true end
-local queue = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
-if ismissing(queue) then
-Util.Notify("your executor has no queue_on_teleport, re-execute the script manually after hopping")
-return false
-end
-local src = SaveData.ServerHopReexec
-if type(src) ~= "string" then src = "" end
-src = src:gsub("^%s+", ""):gsub("%s+$", "")
-if #src == 0 then
-local okg, envsrc = pcall(function() return getgenv().UhhhhhhReexec end)
-if okg and type(envsrc) == "string" and envsrc ~= "" then src = envsrc end
-end
-if #src == 0 then
-status("auto execute: looking for this script's file...")
-src = findOwnFile() or ""
-end
-if #src == 0 then
-status("auto execute: couldn't find this script's file. Type its file name (or a raw link) in the box above.")
-Util.Notify("Auto Execute couldn't find this script's file. Type its file name or link in the Server Hop box.")
-return false
-end
-local body
-if src:lower():match("^https?://") then
-body = ("loadstring(game:HttpGet(%q))()"):format(src)
-else
-body = ("loadstring(readfile(%q))()"):format(src)
-end
-pcall(queue, "if not game:IsLoaded() then game.Loaded:Wait() end task.wait(2) " .. body)
-return true
 end
 local function fetchServers(desc)
 local list, cursor = {}, nil
@@ -72840,7 +73391,7 @@ if plr == LocalPlayer then
 failedmsg = (type(msg) == "string" and msg ~= "") and msg or tostring(result)
 end
 end)
-_G.UhhhhhhLoaded = nil
+Util.TeleportAutoExec.Arm()
 local ok, err = pcall(TeleportService.TeleportToPlaceInstance, TeleportService, game.PlaceId, jobid, LocalPlayer)
 if not ok then failedmsg = tostring(err) end
 local start = os.clock()
@@ -72848,7 +73399,7 @@ while not failedmsg and os.clock() - start < 8 do
 task.wait(0.2)
 end
 conn:Disconnect()
-if failedmsg then _G.UhhhhhhLoaded = true end
+if failedmsg then Util.TeleportAutoExec.Abort() end
 return failedmsg == nil, failedmsg
 end
 local hopping = false
@@ -72871,7 +73422,6 @@ return
 end
 SaveData.ServerHopVisited[game.JobId] = os.time()
 pruneVisited()
-queueReexec()
 for i = 1, math.min(4, #pool) do
 local s = pool[i]
 status(("hopping to %s (%d/%d players)..."):format(s.id:sub(1, 8), tonumber(s.playing) or 0, tonumber(s.maxPlayers) or 0))
@@ -72894,8 +73444,7 @@ if hopping then return end
 hopping = true
 task.spawn(function()
 status("rejoining...")
-queueReexec()
-_G.UhhhhhhLoaded = nil
+Util.TeleportAutoExec.Arm()
 local ok, err
 if #Players:GetPlayers() <= 1 then
 ok, err = pcall(TeleportService.Teleport, TeleportService, game.PlaceId, LocalPlayer)
@@ -72903,7 +73452,7 @@ else
 ok, err = pcall(TeleportService.TeleportToPlaceInstance, TeleportService, game.PlaceId, game.JobId, LocalPlayer)
 end
 if not ok then
-_G.UhhhhhhLoaded = true
+Util.TeleportAutoExec.Abort()
 status("rejoin failed: " .. tostring(err))
 end
 task.wait(5)
@@ -78167,368 +78716,94 @@ Util.ForceTextSize(UhhhhhhFire)
 UI.CreateText(CreditsPage, "Reanimate by STEVE :D", 15, Enum.TextXAlignment.Right)
 local UhhhhhhFiret = UI.CreateSlider(CreditsPage, "Transparency", 0.25, 0, 1, 0)
 local UhhhhhhFirep = {}
--- artwork spec: "Uhhhhhh" drawn procedurally (rounded U / h glyphs) on a 57x15 cell grid, supersampled for smooth silhouettes
-local UhhhhhhFirea = {Word = "Uhhhhhh", Cols = 57, Rows = 15, Aspect = 1.75, Left = 1, Pitch = 8, Width = 7, Stroke = 2, Top = 4, Height = 8}
-do
-local function UhhhhhhFireInit(label, slider, pool, art)
-	local COLS, ROWS, ASP = art.Cols, art.Rows, art.Aspect
-	local N = COLS * ROWS
-	local floor, sin, cos, exp, rnd, min, max = math.floor, math.sin, math.cos, math.exp, math.random, math.min, math.max
-	local concat, fmt = table.concat, string.format
-	local NG = #art.Word
-
-	-- ===== static artwork (built once): glyph coverage, bevel lighting, fuel map, ember emitters =====
-	local GW, ST, GH = art.Width, art.Stroke, art.Height * ASP
-	local Ro = GW / 2
-	local Ri = Ro - ST
-local RiV = Ro - 2.5
-	local vcU = GH - Ro
-	local vxH = 3 * ASP
-	local vcH = vxH + Ro
-	local function inside(ch, u, v)
-		if u < 0 or u > GW or v < 0 or v > GH then return false end
-		if ch == "U" then
-			if v <= vcU then return u <= ST or u >= GW - ST end
-			local dx, dy = u - Ro, v - vcU
-			local d2 = dx * dx + dy * dy
-			return d2 <= Ro * Ro and d2 >= Ri * Ri
-		end
-		if u <= ST then return true end
-		if v < vxH then return false end
-		if v <= vcH then
-			local dx, dy = u - Ro, v - vcH
-			local d2 = dx * dx + dy * dy
-			return d2 <= Ro * Ro and dx * dx / (Ri * Ri) + dy * dy / (RiV * RiV) >= 1
-		end
-		return u >= GW - ST
-	end
-	local COV, BLUR, LIT, FUEL, GR, ENV, GCOL = {}, {}, {}, {}, {}, {}, {}
-	local SS = 4
-	for y = 1, ROWS do
-		for x = 1, COLS do
-			local hits = 0
-			for sj = 1, SS do
-				local v = ((y - 1) + (sj - 0.5) / SS - art.Top) * ASP
-				for si = 1, SS do
-					local px = (x - 1) + (si - 0.5) / SS - art.Left
-					local g = floor(px / art.Pitch) + 1
-					if g >= 1 and g <= NG and inside(art.Word:sub(g, g), px - (g - 1) * art.Pitch, v) then hits = hits + 1 end
-				end
-			end
-			COV[(y - 1) * COLS + x] = hits / (SS * SS)
-		end
-	end
-	for y = 1, ROWS do
-		for x = 1, COLS do
-			local sum = 0
-			for dy = -1, 1 do
-				local yy = min(max(y + dy, 1), ROWS)
-				for dx = -1, 1 do sum = sum + COV[(yy - 1) * COLS + min(max(x + dx, 1), COLS)] end
-			end
-			BLUR[(y - 1) * COLS + x] = sum / 9
-		end
-	end
-	local emx, emy, NE = {}, {}, 0
-	for y = 1, ROWS do
-		local ym, yp = min(max(y - 1, 1), ROWS), min(max(y + 1, 1), ROWS)
-		for x = 1, COLS do
-			local i = (y - 1) * COLS + x
-			local xm, xp = min(max(x - 1, 1), COLS), min(max(x + 1, 1), COLS)
-			local gx = (BLUR[(y - 1) * COLS + xp] - BLUR[(y - 1) * COLS + xm]) * 0.5
-			local gy = (BLUR[(yp - 1) * COLS + x] - BLUR[(ym - 1) * COLS + x]) / (2 * ASP)
-			local l = (gx * 0.62 + gy * 0.78) * 3.4
-			LIT[i] = l > 1 and 1 or (l < -1 and -1 or l)
-			local m = COV[i]
-			local a1 = y > 1 and COV[i - COLS] or 0
-			local a2 = y > 2 and COV[i - 2 * COLS] or 0
-			local top = m * (1 - a1)
-			FUEL[i] = top + m * a1 * (1 - a2) * 0.4 + m * 0.05
-			if top > 0.7 then NE = NE + 1 emx[NE], emy[NE] = x, y end
-			GR[i] = (((i * 7919) % 113) / 113 - 0.5) * 0.12
-		end
-	end
-	for x = 2, COLS - 1 do NE = NE + 1 emx[NE], emy[NE] = x, ROWS end
-	for x = 1, COLS do
-		local e = sin(3.14159265 * (x - 0.5) / COLS)
-		ENV[x] = 0.55 + 0.45 * e * e
-		local g = floor((x - 0.5 - art.Left + (art.Pitch - GW) / 2) / art.Pitch) + 1
-		GCOL[x] = g < 1 and 1 or (g > NG and NG or g)
-	end
-
-	-- ===== character ramp (15 density levels) + fire palettes =====
-	local RAMP = {[0] = " ", ".", ",", ":", ";", "-", "~", "+", "=", "*", "x", "X", "#", "%", "@"}
-	local LV = 14
-	local STOPS = {{0, 0.50, 0.08, 0.03}, {0.22, 0.82, 0.17, 0.05}, {0.48, 1, 0.42, 0.08}, {0.74, 1, 0.74, 0.22}, {1, 1, 0.95, 0.74}}
-	local function grad(u)
-		for k = 2, #STOPS do
-			local b = STOPS[k]
-			if u <= b[1] or k == #STOPS then
-				local a = STOPS[k - 1]
-				local f = (u - a[1]) / (b[1] - a[1])
-				f = f < 0 and 0 or (f > 1 and 1 or f)
-				return a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f, a[4] + (b[4] - a[4]) * f
-			end
-		end
-	end
-	local PAL, BK = {}, {}
-	for _, nb in ipairs({6, 4}) do
-		BK[nb] = {}
-		for lv = 1, LV do BK[nb][lv] = floor((lv - 1) * nb / LV) + 1 end
-	end
-	local function buildPalette(r, g, b)
-		local neutral = max(r, g, b) - min(r, g, b) < 0.22 and max(r, g, b) > 0.55
-		local dark = 0.3 * r + 0.59 * g + 0.11 * b < 0.45
-		for _, nb in ipairs({6, 4}) do
-			local t = {}
-			for k = 1, nb do
-				local u = (k - 0.5) / nb
-				local cr, cg, cb
-				if neutral then cr, cg, cb = grad(u)
-				elseif dark then
-					local f = (1 - u) * 0.6
-					cr, cg, cb = r + (1 - r) * f, g + (1 - g) * f, b + (1 - b) * f
-				else
-					local f = 0.38 + 0.62 * u
-					cr, cg, cb = r * f, g * f, b * f
-				end
-				t[k] = fmt('<font color="#%02x%02x%02x">', floor(cr * 255 + 0.5), floor(cg * 255 + 0.5), floor(cb * 255 + 0.5))
-			end
-			PAL[nb] = t
-		end
-	end
-	local tc = label.TextColor3
-	local pr, pg, pb = tc.R, tc.G, tc.B
-	buildPalette(pr, pg, pb)
-
-	-- ===== runtime state (all preallocated; nothing is created per frame) =====
-	local H, H2, SPK = {}, {}, {}
-	for i = 1, N do H[i], H2[i], SPK[i] = 0, 0, 0 end
-	local cRise, cCoal, cWig, sB, cB = {}, {}, {}, {}, {}
-	for x = 1, COLS do cRise[x], cCoal[x], cWig[x], sB[x], cB[x] = 0, 0, 0, sin(x * 0.23), cos(x * 0.23) end
-	local rWind, rDec, rFac, rAmp, sA, cA, nA, nC, nS, nT = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
-	local xA, xC, xS, xT = {}, {}, {}, {}
-	for y = 1, ROWS do rFac[y] = (ROWS - y) / (ROWS - 1) rAmp[y], rWind[y], rDec[y], sA[y], cA[y] = 0.42 * rFac[y], 0, 1, 0, 1 end
-	local GF = {}
-	for g = 1, NG do GF[g] = 1 end
-	local PN = 36
-	for i = 1, PN do pool[i] = {x = 0, y = 0, vx = 0, vy = 0, age = 0, life = 1, ph = 0, fq = 1, k = 1, on = false} end
-	local PCAP, PRATE = {[1] = 12, [2] = 22, [3] = PN}, {[1] = 7, [2] = 11, [3] = 15}
-	local TM, burst, nextBurst, spawnAcc, wnow = 0, 0, 3 + rnd() * 2, 0, 0
-	local buf = {}
-
-	local function stepFire(dt, q)
-		TM = TM + dt
-		nextBurst = nextBurst - dt
-		if nextBurst <= 0 then burst, nextBurst = 1, 4 + rnd() * 5 end
-		burst = burst * exp(-2.2 * dt)
-		local inten = 0.94 + 0.07 * sin(TM * 0.9) + 0.05 * sin(TM * 2.3 + 1.3) + 0.38 * burst
-		for g = 1, NG do GF[g] = 0.72 + 0.28 * sin(TM * (4.6 + 0.8 * g) + g * 2.3) * (0.65 + 0.35 * sin(TM * 1.7 + g * 1.1)) end
-		local wb = 1.5 + 1.2 * sin(TM * 0.41) + 0.55 * sin(TM * 1.13 + 0.7)
-		wnow = wb
-		for y = 1, ROWS do
-			local f = rFac[y]
-			rWind[y] = wb * (0.2 + 0.8 * f) + 1.2 * f * sin(y * 0.62 - TM * 2.6)
-			rDec[y] = exp(-(0.25 + 0.7 * f) * dt)
-			local ph = y * 0.5 - TM * 2.2 + 0.8 * sin(TM * 0.6)
-			sA[y], cA[y] = sin(ph), cos(ph)
-			nA[y], nC[y], nS[y], nT[y] = sin(y * 0.6 + TM * 4.4), cos(y * 0.6 + TM * 4.4), sin(y * 0.3 - TM * 1.3), cos(y * 0.3 - TM * 1.3)
-		end
-		local cap = inten > 1 and 1 or inten
-		for x = 1, COLS do
-			local u = x * 0.83
-			local tg = 0.5 + 0.28 * sin(u + TM * 2.7) + 0.22 * sin(u * 0.47 - TM * 1.6 + 1.9)
-			cRise[x] = (7.5 + 3 * tg) * (0.9 + 0.1 * inten)
-			cCoal[x] = ENV[x] * cap * (0.88 + 0.12 * sin(x * 0.61 + TM * 2.3))
-			cWig[x] = sin(x * 0.71 + TM * 3.3)
-			xA[x], xC[x], xS[x], xT[x] = sin(x * 0.45), cos(x * 0.45), sin(x * 0.21 + TM * 0.9), cos(x * 0.21 + TM * 0.9)
-		end
-		-- flame field: semi-Lagrangian advection (rise + wind + turbulence), cooling, letter fuel
-		local src, dst, fg = H, H2, 16 * inten
-		for y = 1, ROWS do
-			local base, wy, dec, f = (y - 1) * COLS, rWind[y], rDec[y], rFac[y]
-			for x = 1, COLS do
-				local sx = x - (wy + 0.9 * f * cWig[x]) * dt
-				local sy = y + cRise[x] * dt
-				if sx < 1 then sx = 1 elseif sx > COLS then sx = COLS end
-				if sy > ROWS then sy = ROWS end
-				local x0, y0 = floor(sx), floor(sy)
-				local fx, fy = sx - x0, sy - y0
-				local r0 = (y0 - 1) * COLS
-				local r1 = y0 < ROWS and r0 + COLS or r0
-				local x1 = x0 < COLS and x0 + 1 or x0
-				local a, b, c, d = src[r0 + x0], src[r0 + x1], src[r1 + x0], src[r1 + x1]
-				local top = a + (b - a) * fx
-				local nz = 0.5 + 0.25 * (nA[y] * xC[x] + nC[y] * xA[x] + nS[y] * xT[x] + nT[y] * xS[x])
-				local h = (top + (c + (d - c) * fx - top) * fy) * dec - (1.2 - 0.9 * nz) * 1.3 * dt
-				local fu = FUEL[base + x]
-				if fu > 0 then h = h + fu * fg * GF[GCOL[x]] * dt end
-				if h < 0 then h = 0 elseif h > 1 then h = 1 end
-				dst[base + x] = h
-			end
-		end
-		local b1, b2 = (ROWS - 1) * COLS, (ROWS - 2) * COLS
-		for x = 1, COLS do
-			local c = cCoal[x]
-			if dst[b1 + x] < c then dst[b1 + x] = c end
-			if dst[b2 + x] < c * 0.7 then dst[b2 + x] = c * 0.7 end
-		end
-		H, H2 = dst, src
-
-		-- embers & sparks (fixed pool, recycled)
-		for i = 1, N do SPK[i] = 0 end
-		spawnAcc = spawnAcc + dt * PRATE[q] * (0.55 + 0.7 * inten) * (1 + 3 * burst)
-		local cp = PCAP[q]
-		while spawnAcc >= 1 do
-			spawnAcc = spawnAcc - 1
-			local p
-			for k = 1, cp do
-				if not pool[k].on then p = pool[k] break end
-			end
-			if not p then spawnAcc = 0 break end
-			local e = floor(rnd() * NE) + 1
-			local sp = rnd() < 0.3
-			p.x, p.y = emx[e] + (rnd() - 0.5), emy[e] - rnd() * 0.6
-			p.k = sp and 2 or 1
-			p.vy = sp and (7 + rnd() * 6) or (2.4 + rnd() * 3.2)
-			p.vx = (rnd() - 0.5) * (sp and 5 or 1.6)
-			p.life = sp and (0.6 + rnd() * 0.9) or (1.8 + rnd() * 2.4)
-			p.age, p.ph, p.fq, p.on = 0, rnd() * 6.283, 2.5 + rnd() * 3, true
-		end
-		for k = 1, PN do
-			local p = pool[k]
-			if p.on then
-				local age = p.age + dt
-				p.age = age
-				if age >= p.life then
-					p.on = false
-				else
-					p.vy = p.vy * (1 - 0.45 * dt)
-					local hf = (ROWS - p.y) / ROWS
-					p.x = p.x + (p.vx + wnow * (0.3 + 0.9 * hf) + sin(p.ph + TM * p.fq) * (p.k == 1 and 1.4 or 0.6)) * dt
-					p.y = p.y - p.vy * dt
-					local px, py = p.x, p.y
-					if py < 1 or px < 1 or px > COLS or py > ROWS then
-						p.on = false
-					else
-						local u = 1 - age / p.life
-						local amt = u * u * (0.75 + 0.25 * sin(TM * (9 + p.fq * 2) + p.ph)) * (p.k == 2 and 1 or 0.85)
-						local x0, y0 = floor(px), floor(py)
-						local fx, fy = px - x0, py - y0
-						local x1, y1 = x0 < COLS and x0 + 1 or x0, y0 < ROWS and y0 + 1 or y0
-						for n = 1, 4 do
-							local cx, cy, w
-							if n == 1 then cx, cy, w = x0, y0, (1 - fx) * (1 - fy)
-							elseif n == 2 then cx, cy, w = x1, y0, fx * (1 - fy)
-							elseif n == 3 then cx, cy, w = x0, y1, (1 - fx) * fy
-							else cx, cy, w = x1, y1, fx * fy end
-							w = w * 1.6
-							local s = amt * (w > 1 and 1 or w)
-							local idx = (cy - 1) * COLS + cx
-							if SPK[idx] < s then SPK[idx] = s end
-						end
-					end
-				end
-			end
-		end
-	end
-
-	local function render(q, tr)
-		local g0 = (tr - 0.1) / 0.9
-		local bgOn = g0 > 0
-		local gain = bgOn and g0 ^ 0.35 or 0
-		local sgain = bgOn and (0.45 + 0.55 * gain) or 0
-		local shim = q == 3 and 1 or (q == 2 and 0.55 or 0)
-		local nb = q == 3 and 6 or (q == 2 and 4 or 0)
-		local bk, tags = BK[nb], PAL[nb]
-		local Hh, S, cov, lit, gr = H, SPK, COV, LIT, GR
-		local bn = 0
-		for y = 1, ROWS do
-			local base = (y - 1) * COLS
-			local sa, ca, amp = sA[y], cA[y], rAmp[y] * shim
-			local cur = 0
-			for x = 1, COLS do
-				local i = base + x
-				local m, l
-				if shim > 0 then
-					local fx = x + amp * (sa * cB[x] + ca * sB[x])
-					if fx < 1 then fx = 1 elseif fx > COLS then fx = COLS end
-					local x0 = floor(fx)
-					local j = base + x0
-					local jn = x0 < COLS and j + 1 or j
-					local f = fx - x0
-					m = cov[j] + (cov[jn] - cov[j]) * f
-					l = lit[j] + (lit[jn] - lit[j]) * f
-				else
-					m, l = cov[i], lit[i]
-				end
-				local h, s = Hh[i], S[i]
-				local hb = h * (0.7 + 0.3 * h)
-				local b = 0
-				if bgOn then
-					local bg = hb * gain
-					b = bg + s * sgain * (1 - bg)
-				end
-				if m > 0.003 then
-					local lb = 0.72 + 0.26 * l + 0.16 * hb + 0.4 * s
-					if lb > 1 then lb = 1 end
-					b = b + (lb - b) * m
-				end
-				local lv = floor(b * LV + 0.15 + gr[i])
-				if lv > LV then lv = LV end
-				bn = bn + 1
-				if lv <= 0 then
-					buf[bn] = " "
-				else
-					if nb > 0 then
-						local cb = bk[lv]
-						if cb ~= cur then
-							if cur ~= 0 then buf[bn] = "</font>" bn = bn + 1 end
-							buf[bn] = tags[cb]
-							bn = bn + 1
-							cur = cb
-						end
-					end
-					buf[bn] = RAMP[lv]
-				end
-			end
-			if cur ~= 0 then bn = bn + 1 buf[bn] = "</font>" end
-			if y < ROWS then bn = bn + 1 buf[bn] = "\n" end
-		end
-		return concat(buf, "", 1, bn)
-	end
-
-	for _ = 1, 48 do stepFire(1 / 30, 3) end -- warm start so the flames are already burning when the page opens
-
-	-- no work while the Credits page is hidden; 30 fps (20 fps when low-end / governor-throttled); the label is only written when the text changes
-	local acc, lastText, palT = 0, nil, 0
-	Util.AddDecoStep(function(t, dt)
-		if not CreditsPage.Visible or not Util.IsGuiVisible(label) then return end
-		local FXg = Util.FX
-		local low = FXg.IsLowEnd()
-		local gov = FXg.Gov and FXg.Gov.Stride > 1
-		acc = acc + (dt or 0)
-		if acc < ((low or gov) and 1 / 20 or 1 / 30) - 0.002 then return end
-		dt, acc = acc, 0
-		if dt > 0.1 then dt = 0.1 end
-		local q = low and 1 or (gov and 2 or 3)
-		palT = palT - dt
-		if palT <= 0 then
-			palT = 0.5
-			local c = label.TextColor3
-			if c.R ~= pr or c.G ~= pg or c.B ~= pb then
-				pr, pg, pb = c.R, c.G, c.B
-				buildPalette(pr, pg, pb)
-				lastText = nil
-			end
-		end
-		stepFire(dt, q)
-		local tr = slider.Value
-		tr = tr < 0 and 0 or (tr > 1 and 1 or tr)
-		local s = render(q, tr)
-		if s ~= lastText then lastText = s label.Text = s end
-	end)
+for i=1, 64 do
+table.insert(UhhhhhhFirep, {i / 64, 0.98 + math.random() * 0.04, math.random(), math.random() - 0.5})
 end
-UhhhhhhFireInit(UhhhhhhFire, UhhhhhhFiret, UhhhhhhFirep, UhhhhhhFirea)
+local UhhhhhhFirea = {
+"XX    XX XX      XX      XX      XX      XX      XX     ",
+"XX    XX XX      XX      XX      XX      XX      XX     ",
+"XX    XX XXXXXX  XXXXXX  XXXXXX  XXXXXX  XXXXXX  XXXXXX ",
+"XX    XX XX   XX XX   XX XX   XX XX   XX XX   XX XX   XX",
+"XXX  XXX XX   XX XX   XX XX   XX XX   XX XX   XX XX   XX",
+" XXXXXX  XX   XX XX   XX XX   XX XX   XX XX   XX XX   XX",
+}
+local UhhhhhhFirex = #UhhhhhhFirea[1]
+local UhhhhhhFirey = #UhhhhhhFirea
+do
+local radius = 0.1
+local ratio = (UhhhhhhFirey / UhhhhhhFirex) * 1.75
+local r2, depth = radius * radius, 1 + radius / ratio
+local rows, cols = UhhhhhhFirey, UhhhhhhFirex
+local pq = {}
+for i = 1, #UhhhhhhFirep do pq[i] = {0, 0, 0} end
+local X1, Y1, SP = {}, {}, {}
+for x = 1, cols do X1[x] = x / cols end
+for y = 1, rows do
+Y1[y] = y / rows
+local row = {}
+for x = 1, cols do row[x] = UhhhhhhFirea[y]:sub(x, x) == " " end
+SP[y] = row
+end
+local cells, lines, lastText, fireAcc = {}, {}, nil, 0
+-- same fire as before (identical per-cell result), but: no work while the Credits page is hidden, a particle that cannot reach a cell is skipped
+-- before sqrt/pow, no per-frame table churn, and it runs at 30 fps (20 fps when the UI is stressed) instead of every render frame
+Util.AddDecoStep(function(t, dt)
+if not CreditsPage.Visible or not Util.IsGuiVisible(UhhhhhhFire) then return end
+local FXg = Util.FX
+fireAcc = fireAcc + (dt or 0)
+if fireAcc < ((FXg.IsLowEnd() or (FXg.Gov and FXg.Gov.Stride > 1)) and 1 / 20 or 1 / 30) then return end
+dt, fireAcc = fireAcc, 0
+local tr = math.clamp(UhhhhhhFiret.Value, 0, 1)
+local n = 0
+for _, v in UhhhhhhFirep do
+v[1] = v[1] + dt * v[2]
+if v[1] >= 1 then
+v[1], v[2], v[3], v[4] = 0, 0.98 + math.random() * 0.04, math.random(), math.random() - 0.5
+end
+n = n + 1
+local q = pq[n]
+q[1], q[2], q[3] = 1 - v[1], v[3] + v[4] * v[1] * 0.25, (1 - v[1]) * depth
+end
+for y = 1, rows do
+local y1, sp = Y1[y], SP[y]
+for x = 1, cols do
+local ch
+local isSp = sp[x]
+if isSp and tr < 0.1 then
+ch = " "
+else
+local bright, x1 = 0, X1[x]
+for i = 1, n do
+local q = pq[i]
+local x3 = q[2] - x1
+if x3 < radius and x3 > -radius then
+local y3 = (q[3] - y1) * ratio
+local d2 = x3 * x3 + y3 * y3
+if d2 < r2 then
+local a = (1 - math.sqrt(d2) / radius) * q[1]
+bright = bright + (1.0 - bright) * (a ^ 1.5)
+end
+end
+end
+if isSp then bright = bright * tr end
+if bright > 0.9 then ch = "Q"
+elseif bright > 0.8 then ch = "W"
+elseif bright > 0.7 then ch = "#"
+elseif bright > 0.6 then ch = "S"
+elseif bright > 0.5 then ch = "l"
+elseif bright > 0.4 then ch = "v"
+elseif bright > 0.3 then ch = "|"
+elseif bright > 0.2 then ch = ";"
+elseif bright > 0.1 then ch = "."
+else ch = " " end
+end
+cells[x] = ch
+end
+lines[y] = table.concat(cells, "", 1, cols)
+end
+local s = table.concat(lines, "\n", 1, rows)
+if s ~= lastText then lastText = s UhhhhhhFire.Text = s end
+end)
 end
 UI.CreateSeparator(CreditsPage)
 UI.CreateText(CreditsPage, "<b>* Credits to *</b>", 15, Enum.TextXAlignment.Center)
@@ -81054,8 +81329,9 @@ reason = name .. ((msg and msg ~= "") and (": " .. tostring(msg)) or "")
 viaLauncher()
 end)
 task.delay(30, function() if con then con:Disconnect() end end)
+pcall(Util.TeleportAutoExec.Arm)
 local ok = pcall(function() TeleportService:TeleportToPlaceInstance(pid, jid, LP) end)
-if not ok then viaLauncher() else task.delay(12, viaLauncher) end
+if not ok then pcall(Util.TeleportAutoExec.Abort) viaLauncher() else task.delay(12, viaLauncher) end
 end
 local act
 local function render()
@@ -82181,6 +82457,7 @@ cols[3].Text = fmtTime(workspace.DistributedGameTime)
 end
 tile(sv, UDim2.new(0, 8, 0, 66), UDim2.new(0.5, -11, 0, 40), "Rejoin", "Same server", C.green, function()
 pcall(function()
+Util.TeleportAutoExec.Arm()
 if #Players:GetPlayers() <= 1 then
 TeleportService:Teleport(game.PlaceId, Player)
 else
@@ -82200,7 +82477,7 @@ end
 for _, s in ipairs(data.data) do
 if s.id ~= game.JobId and s.playing and s.maxPlayers and s.playing < s.maxPlayers then
 note("Hopping servers...")
-pcall(function() TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, Player) end)
+pcall(function() Util.TeleportAutoExec.Arm() TeleportService:TeleportToPlaceInstance(game.PlaceId, s.id, Player) end)
 return
 end
 end
@@ -83507,3 +83784,11 @@ end end
 end
 d()
 _G.UhhhhhhLoaded = UhhhhhhVersion
+]============]
+do
+local g = (getgenv and getgenv()) or _G
+g.UhhhhhhSource = UH_SRC
+local f, e = loadstring(UH_SRC)
+if not f then error("UH Admin failed to compile: " .. tostring(e), 0) end
+return f()
+end
