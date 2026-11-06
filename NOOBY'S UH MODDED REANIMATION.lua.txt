@@ -1860,7 +1860,7 @@ local consumers, order = {}, {}
 local peak, slow, fluxAvg, lastOnset, period, mis = 80, 0, 0.02, -1, 0.5, 0
 local lastPos, lastPosAt, lastBeatI, song = 0, 0, nil, nil
 local curName, curId, acc = nil, nil, 0
-local SONGS = {"ThemeSong", "Intro2Song", "Intro3Song", "Intro4Song", "Intro5Song", "Intro6Song", "Intro7Song", "Intro8Song", "Intro9Song", "Intro10Song", "Intro11Song", "Intro12Song", "Intro13Song"}
+local SONGS = {"ThemeSong", "Intro2Song", "Intro3Song", "Intro4Song", "Intro5Song", "Intro6Song", "Intro7Song", "Intro8Song", "Intro9Song", "Intro10Song", "Intro11Song", "Intro12Song", "Intro13Song", "Intro14Song"}
 local function enabled() return FX.Cfg.MusicDance ~= false end
 local function findSong(name)
 for i = 1, #SONGS do
@@ -18366,6 +18366,1773 @@ function FX.Intro13(MainFrame, Music, _, opts)
 	if not FX.Intro13Fn then return "fallback" end
 	return FX.Intro13Fn(MainFrame, Music, _, opts)
 end
+FX.Intro14Src = [==[
+local Util, FX = ...
+return function(MainFrame, Music, _, opts)
+	if FX.IntroCamBusy then return end
+	FX.IntroCamBusy = true
+	FX.IntroActive = true
+	opts = opts or {}
+	local CFG, SONG = FX.Cfg, opts.Song or {}
+	local RunService, UIS = game:GetService("RunService"), game:GetService("UserInputService")
+	local floor, sin, cos, sqrt, max, min, abs, exp, pi, atan2 = math.floor, math.sin, math.cos, math.sqrt, math.max, math.min, math.abs, math.exp, math.pi, math.atan2
+	local TAU, DEG = pi * 2, 180 / pi
+	local DUR = 120
+	local NAME = (tostring(CFG.IntroTitle):gsub("[^\32-\126]", "")):sub(1, 20):upper()
+	if NAME == "" then NAME = "STEVETHEREALONE" end
+	local function C(r, g, b) return Color3.fromRGB(r, g, b) end
+	local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+	local OBS, PANEL, STEEL, ICE, CYAN, GOLD, VIO = C(2, 3, 7), C(18, 26, 42), C(112, 130, 158), C(208, 230, 252), C(66, 198, 255), C(255, 194, 98), C(144, 118, 255)
+	local function cl(x, a, b) return x < a and a or (x > b and b or x) end
+	local function c01(x) return cl(x, 0, 1) end
+	local function lerp(a, b, k) return a + (b - a) * k end
+	local function ss(a, b, x) local k = c01((x - a) / (b - a)) return k * k * (3 - 2 * k) end
+	local function eo3(x) return 1 - (1 - c01(x)) ^ 3 end
+	local function eio(x) x = c01(x) return x < 0.5 and 4 * x * x * x or 1 - (-2 * x + 2) ^ 3 / 2 end
+	local function eob(x) x = c01(x) return 1 + 2.70158 * (x - 1) ^ 3 + 1.70158 * (x - 1) ^ 2 end
+	local function mix(a, b, k) return Color3.new(a.R + (b.R - a.R) * k, a.G + (b.G - a.G) * k, a.B + (b.B - a.B) * k) end
+	local function hash(i, k) return (sin(i * 12.9898 + k * 78.233) * 43758.5453) % 1 end
+	local function soft(m) return NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.5, m), NumberSequenceKeypoint.new(1, 1)}) end
+	local function mk(class, parent, props)
+		local o = Util.Instance(class, parent)
+		if props then for k, v in pairs(props) do o[k] = v end end
+		return o
+	end
+	local conns, E = {}, {}
+	local S = {began = os.clock(), wall0 = os.clock(), skipped = false, skipT = nil, tEnd = DUR, fallback = false, t = 0, sx = 800, sy = 450, U = 450, cx = 400, cy = 225,
+		lv = 0, pk = 50, en = 0, kick = 0, shake = 0, punch = 0, flashK = 0, sfxN = 0, warned = {}, wa = 1, tint = 0, peak = false, fin = false, sk = 0, px = 0, py = 0,
+		fph = 0, bt = -9, bmag = 1, bcol = GOLD, bx = 0, by = 0, pulseT = -9, lastBeat = 0, wipeT = -9, ci = 0, bvis = false}
+	local function guard(name, fn, ...)
+		local ok, err = pcall(fn, ...)
+		if not ok and not S.warned[name] then
+			S.warned[name] = true
+			warn("[UhhhhhhFX] intro 14 " .. name .. " (continuing): " .. tostring(err))
+		end
+	end
+	local stage = mk("Frame", MainFrame, {Size = UDim2.fromScale(1, 1), BackgroundColor3 = OBS, BorderSizePixel = 0, ZIndex = 1000000, ClipsDescendants = true, Active = true})
+	conns[#conns + 1] = UIS.InputBegan:Connect(function(input)
+		if os.clock() - S.began < 0.4 then return end
+		if input.UserInputType == Enum.UserInputType.Keyboard then
+			local k = input.KeyCode
+			if k == Enum.KeyCode.Space or k == Enum.KeyCode.Return or k == Enum.KeyCode.Escape then S.skipped = true end
+		end
+	end)
+	local function box(par, z, col, tr, rnd)
+		local f = mk("Frame", par, {AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = col or WHITE, BackgroundTransparency = tr or 0, BorderSizePixel = 0, ZIndex = z or 1, Interactable = false, Size = UDim2.fromOffset(2, 2)})
+		if rnd then mk("UICorner", f, {CornerRadius = UDim.new(rnd, 0)}) end
+		return f
+	end
+	local function lab(par, z, size, col, xa, font)
+		return mk("TextLabel", par, {AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, BorderSizePixel = 0, Font = font or Enum.Font.Code, TextSize = size, TextColor3 = col or WHITE, ZIndex = z, Interactable = false, TextXAlignment = xa or Enum.TextXAlignment.Center, Text = "", TextTransparency = 1})
+	end
+	local function place(f, x, y, w, h, rot, tr)
+		f.Position = UDim2.fromOffset(x, y)
+		f.Size = UDim2.fromOffset(max(w, 0.5), max(h, 0.5))
+		if rot then f.Rotation = rot end
+		if tr then f.BackgroundTransparency = tr end
+	end
+	local function seg(f, x0, y0, x1, y1, th, tr)
+		local dx, dy = x1 - x0, y1 - y0
+		local len = sqrt(dx * dx + dy * dy)
+		f.Position = UDim2.fromOffset((x0 + x1) / 2, (y0 + y1) / 2)
+		f.Size = UDim2.fromOffset(max(len, 0.5), max(th, 0.5))
+		f.Rotation = atan2(dy, dx) * DEG
+		f.BackgroundTransparency = tr
+	end
+	local function layer(par, z) return mk("Frame", par, {Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = z, Interactable = false}) end
+
+	-- ---------- sound effects: tiny, throttled, always far below the soundtrack ----------
+	local lastSfx = {}
+	local function sfx(kind, vol, spd)
+		local c = opts.ClickSnd
+		if not c then return end
+		local now = os.clock()
+		if now - (lastSfx[kind] or 0) < 0.09 or S.sfxN > 4 then return end
+		lastSfx[kind] = now
+		pcall(function()
+			local s = c:Clone()
+			s.Volume = vol
+			s.PlaybackSpeed = spd
+			s.Looped = false
+			s.Parent = stage
+			s:Play()
+			S.sfxN = S.sfxN + 1
+			task.delay(0.7, function()
+				S.sfxN = S.sfxN - 1
+				pcall(function() s:Destroy() end)
+			end)
+		end)
+	end
+
+	-- ---------- layout region (resolution aware) ----------
+	local G = {rx = 0, ry = 0, W = 100, H = 60, stamp = 0}
+	local function geom()
+		local sx, sy = S.sx, S.sy
+		local asp = cl(sy / sx * 0.85, 0.56, 0.95)
+		local W = min(sx * 0.84, sy * 0.8 / asp)
+		local H = W * asp
+		local rx, ry = (sx - W) / 2, (sy - H) / 2 + sy * 0.01
+		if abs(W - G.W) > 0.5 or abs(H - G.H) > 0.5 or abs(rx - G.rx) > 0.5 or abs(ry - G.ry) > 0.5 then G.stamp = G.stamp + 1 end
+		G.rx, G.ry, G.W, G.H = rx, ry, W, H
+	end
+	local function PX(f) return G.rx + f * G.W end
+	local function PY(f) return G.ry + f * G.H end
+
+	-- ---------- the interface the swarm rebuilds ----------
+	local RC, RL = {}, {}
+	local function R(id, x, y, w, h, fa, o)
+		o = o or {}
+		local r = {id = id, x = x, y = y, w = w, h = h, fa = fa or 0, p = 0, q = 0, fp = 0, sl = 0, lk = 0, gl = -1, ox = 0, oy = 0, tx = 0, ty = 0, jx = 0, jy = 0, trot = 0, tsc = 1,
+			key = -1, fo = o.fo, up = o.up, col = o.col, hit = 0, z = o.z or 18, nb = (w * h < 0.05)}
+		RC[id] = r
+		RL[#RL + 1] = r
+		return r
+	end
+	R("win", 0, 0, 1, 1, 0.18, {z = 10})
+	R("tb", 0, 0, 1, 0.085, 0.35, {z = 14})
+	R("sb", 0.015, 0.11, 0.2, 0.875, 0.22, {z = 14})
+	for i = 1, 5 do R("nav" .. i, 0.028, 0.14 + (i - 1) * 0.075, 0.165, 0.055, 0.2, {z = 18}) end
+	R("hd", 0.235, 0.11, 0.75, 0.13, 0.22, {z = 14})
+	local BH = {0.4, 0.7, 0.5, 0.9, 0.6, 0.8}
+	for k = 1, 3 do
+		local cx = 0.235 + (k - 1) * 0.2575
+		R("c" .. k, cx, 0.27, 0.235, 0.33, 0.2, {z = 18})
+		R("c" .. k .. "t", cx + 0.012, 0.285, 0.211, 0.17, 0.45, {z = 22})
+		R("c" .. k .. "l1", cx + 0.012, 0.51, 0.14, 0.022, 0.6, {fo = true, z = 26})
+		R("c" .. k .. "l2", cx + 0.012, 0.545, 0.09, 0.018, 0.35, {fo = true, z = 26})
+		for j = 1, 6 do
+			local hh = BH[j] * 0.13
+			R("c" .. k .. "b" .. j, cx + 0.026 + (j - 1) * 0.03, 0.44 - hh, 0.02, hh, 0.8, {fo = true, up = true, col = (j % 2 == 0) and CYAN or ICE, z = 26})
+		end
+	end
+	R("lp", 0.235, 0.63, 0.75, 0.355, 0.18, {z = 14})
+	for i = 1, 4 do
+		R("r" .. i, 0.25, 0.655 + (i - 1) * 0.082, 0.57, 0.058, 0.15, {z = 18})
+		R("tg" .. i, 0.845, 0.655 + (i - 1) * 0.082, 0.12, 0.058, 0.3, {z = 18})
+		R("kn" .. i, 0.85, 0.662 + (i - 1) * 0.082, 0.03, 0.044, 0.9, {fo = true, col = GOLD, z = 26})
+	end
+	-- arrival poses: start offset (fraction of region), roll (deg), scale
+	local ARR = {win = {0, -0.95, -3, 1.5}, tb = {0, -0.7, 0, 1.12}, sb = {-0.75, 0.1, -4, 1.25}, hd = {0.8, -0.45, 3.2, 1.2},
+		c1 = {-0.55, 0.85, -10, 1.35}, c2 = {0.02, 1.05, 0, 1.4}, c3 = {0.6, 0.85, 10, 1.35}, lp = {0, 0.95, 2.2, 1.25}}
+	local TX, TL = {}, {}
+	local function X(id, x, y, sz, text, col, abs_)
+		local o = {id = id, x = x, y = y, sz = sz, text = text, col = col or ICE, tp = 0, n = -1, cu = -9, act = false, abs = abs_}
+		TX[id] = o
+		TL[#TL + 1] = o
+		return o
+	end
+	X("dots", 0.012, 0.043, 0.016, "● ● ●", STEEL)
+	X("ttl", 0.08, 0.043, 0.016, "NOOBY'S UH MODDED REANIMATION", ICE)
+	X("ver", 0.905, 0.043, 0.015, "v1.1.1", STEEL)
+	local navL = {"HOME", "ANIMATIONS", "MUSIC", "SETTINGS", "CREDITS"}
+	for i = 1, 5 do X("nav" .. i, 0.04, 0.1675 + (i - 1) * 0.075, 0.015, navL[i], ICE) end
+	X("h1", 0.25, 0.155, 0.032, "WELCOME BACK", WHITE).font = Enum.Font.GothamBold
+	X("h2", 0.25, 0.208, 0.015, "ALL SYSTEMS RECONSTRUCTED  //  READY", STEEL)
+	local cardL = {"ANIMATIONS", "SCRIPTS", "MUSIC"}
+	for k = 1, 3 do X("c" .. k, 0.235 + (k - 1) * 0.2575 + 0.012, 0.4875, 0.015, cardL[k], ICE) end
+	local rowL = {"AUTO ANIMATE", "SMOOTH CAMERA", "FX QUALITY", "SYNC AUDIO"}
+	for i = 1, 4 do
+		X("r" .. i, 0.265, 0.684 + (i - 1) * 0.082, 0.015, rowL[i], ICE)
+		X("tg" .. i, 0.862, 0.684 + (i - 1) * 0.082, 0.014, "ON", GOLD)
+	end
+	X("stat", 0.25, 0.955, 0.014, "SYSTEM READY", ICE)
+	local SUBTXT = X("sub", 0, 0, 0, "NOOBY'S UH MODDED REANIMATION", ICE, true)
+	local GLY = {"#", "/", "0", "1", "<", ">", "+", "=", "%", "x"}
+
+	local GD = {{o = "v", f = 0}, {o = "h", f = 0}, {o = "v", f = 0.235}, {o = "h", f = 0.27}, {o = "v", f = 1}, {o = "h", f = 0.63}}
+	for _, g in ipairs(GD) do g.prog = 0 g.hit = 0 end
+	local RU = {h = {prog = 0, n = 40}, v = {prog = 0, n = 24}}
+	local DM = {{prog = 0}, {prog = 0}, {prog = 0}}
+	local LKS = {{"sb", "hd"}, {"tb", "hd"}, {"hd", "c1"}, {"hd", "c2"}, {"hd", "c3"}, {"c1", "lp"}, {"c2", "lp"}, {"c3", "lp"}}
+	for _, l in ipairs(LKS) do l.prog = 0 end
+	local function dimGeo(id)
+		if id == 1 then return G.rx, max(G.ry - 38, 12), G.rx + G.W, max(G.ry - 38, 12), "W " .. floor(G.W) end
+		if id == 2 then local x = min(G.rx + G.W + 38, S.sx - 16) return x, G.ry, x, G.ry + G.H, "H " .. floor(G.H) end
+		local y = min(G.ry + G.H + 30, S.sy - 14)
+		return PX(0.235), y, PX(0.985), y, "CONTENT " .. floor(0.75 * G.W)
+	end
+
+	-- ---------- the swarm: scouts survey, builders construct, anchors lock, relays connect ----------
+	local NA = 30
+	local RN = {sc = 8, bd = 10, an = 5, rl = 7}
+	local ROT = {sc = 0.22, bd = -0.3, an = 0, rl = 0.38}
+	local CODE = {sc = "SC", bd = "BD", an = "AN", rl = "RL"}
+	local function roleOf(i)
+		if i <= 8 then return "sc", i elseif i <= 18 then return "bd", i - 8 elseif i <= 23 then return "an", i - 18 end
+		return "rl", i - 23
+	end
+	local function spawnOf(i)
+		if i <= 4 then return 12.3 + (i - 1) * 1.9, "edge" end
+		if i <= 8 then return 19.2 + (i - 5) * 1.3, "edge" end
+		if i <= 14 then return 43.4 + (i - 9) * 0.35, "edge" end
+		if i <= 18 then return 65 + (i - 15) * 0.45, "fis", i - 6 end
+		if i <= 22 then return 46.2 + (i - 19) * 0.5, "edge" end
+		if i == 23 then return 66.6, "fis", 19 end
+		if i <= 26 then return 61.5 + (i - 24) * 0.5, "beacon" end
+		return 67.2 + (i - 27) * 0.6, "fis", i - 3
+	end
+	local AG = {}
+	for i = 1, NA do
+		local role, ri = roleOf(i)
+		local sp, mode, par = spawnOf(i)
+		AG[i] = {role = role, ri = ri, rn = RN[role], spawn = sp, mode = mode, par = par,
+			col = (role == "sc" and CYAN) or (role == "an" and VIO) or ICE,
+			tcol = (role == "sc" and CYAN) or (role == "bd" and GOLD) or (role == "an" and VIO) or ICE,
+			ccol = (role == "bd" and GOLD) or (role == "rl" and CYAN) or WHITE,
+			a0 = hash(i, 6) * TAU, ph = hash(i, 4) * TAU, stiff = 0.8 + 0.6 * hash(i, 1), zeta = 0.55 + 0.3 * hash(i, 2), sc = 0.9 + 0.2 * hash(i, 9),
+			dir = (i % 2 == 0) and 1 or -1, x = 0, y = 0, vx = 0, vy = 0, hd = 0, init = false, work = 0, tag = "", hist = {}, hacc = 0, vis = 0, cha = 0}
+		for j = 0, 5 do AG[i].hist[j] = {0, 0} end
+	end
+
+	-- ---------- construction script (who builds what, when) ----------
+	local AT, ALL = {}, {}
+	for i = 1, NA do AT[i] = {} end
+	local function T(a, t0, dur, kind, id, x)
+		local k = {a = a, t0 = t0, t1 = t0 + dur, kind = kind, id = id, x = x, done = false}
+		AT[a][#AT[a] + 1] = k
+		ALL[#ALL + 1] = k
+		return k
+	end
+	-- III blueprint: scouts survey and map
+	T(1, 27.6, 5.4, "ruler", "h") T(2, 28, 5.4, "ruler", "v")
+	T(3, 28.6, 4.8, "bp", "win") T(4, 28.8, 3, "bp", "tb") T(5, 29, 3.8, "bp", "sb") T(6, 29.4, 3.6, "bp", "hd") T(7, 29.8, 4, "bp", "lp")
+	T(8, 28.6, 2.4, "dim", 1) T(8, 31.2, 2.4, "dim", 2) T(8, 34, 2.4, "dim", 3)
+	T(1, 33.6, 2.2, "guide", 1) T(2, 35.4, 2.2, "guide", 2)
+	T(4, 32.2, 2.4, "bp", "c1") T(4, 34.8, 2.4, "bp", "c2") T(4, 37.2, 2.4, "bp", "c3")
+	T(3, 34, 2.2, "guide", 3) T(3, 36.4, 2.2, "guide", 4)
+	T(6, 33.4, 2, "guide", 5) T(6, 35.6, 2, "guide", 6)
+	for i = 1, 5 do T(5, 33.2 + (i - 1) * 0.9, 0.9, "bp", "nav" .. i) end
+	for i = 1, 4 do T(7, 33.9 + (i - 1) * 0.95, 0.95, "bp", "r" .. i) end
+	for i = 1, 4 do T(6, 37.9 + (i - 1) * 0.9, 0.9, "bp", "tg" .. i) end
+	-- IV reconstruction: builders carry panels in, anchors lock them
+	T(9, 45, 3, "arr", "win") T(9, 48, 1.2, "tr", "win") T(9, 49.2, 2.4, "fill", "win")
+	T(9, 53.5, 2.4, "arr", "c3") T(9, 55.9, 0.7, "tr", "c3") T(9, 56.6, 1.2, "fill", "c3") T(9, 57.8, 1.2, "box", "c3t") T(9, 59, 0.6, "fill", "c3l1") T(9, 59.7, 0.5, "fill", "c3l2") T(9, 60.3, 1.2, "type", "c3")
+	T(10, 45.6, 2, "arr", "tb") T(10, 47.6, 1, "tr", "tb") T(10, 48.6, 1.4, "fill", "tb") T(10, 50.1, 0.8, "type", "dots") T(10, 51, 3.4, "type", "ttl")
+	T(10, 54.6, 0.6, "tr", "nav4") T(10, 55.2, 0.5, "fill", "nav4") T(10, 55.7, 0.9, "type", "nav4")
+	T(10, 56.7, 0.6, "tr", "nav5") T(10, 57.3, 0.5, "fill", "nav5") T(10, 57.8, 0.9, "type", "nav5")
+	T(11, 46.2, 2.2, "arr", "sb") T(11, 48.4, 0.9, "tr", "sb") T(11, 49.3, 1.4, "fill", "sb")
+	for i = 1, 3 do
+		local b = 51.2 + (i - 1) * 2.1
+		T(11, b, 0.6, "tr", "nav" .. i) T(11, b + 0.6, 0.5, "fill", "nav" .. i) T(11, b + 1.1, 0.9, "type", "nav" .. i)
+	end
+	T(12, 46.8, 2.2, "arr", "hd") T(12, 49, 0.9, "tr", "hd") T(12, 49.9, 1.4, "fill", "hd") T(12, 51.5, 1.5, "type", "h1") T(12, 53.1, 3.5, "type", "h2")
+	T(13, 47.4, 2.4, "arr", "c1") T(13, 49.8, 0.8, "tr", "c1") T(13, 50.6, 1.4, "fill", "c1") T(13, 52.1, 1.4, "box", "c1t") T(13, 53.6, 0.8, "fill", "c1l1") T(13, 54.5, 0.6, "fill", "c1l2") T(13, 55.2, 1.4, "type", "c1")
+	T(13, 56.8, 2.4, "arr", "c2") T(13, 59.2, 0.7, "tr", "c2") T(13, 59.9, 1.2, "fill", "c2") T(13, 61.2, 1.2, "box", "c2t") T(13, 62.5, 0.6, "fill", "c2l1") T(13, 63.2, 0.5, "fill", "c2l2") T(13, 63.8, 1.2, "type", "c2")
+	T(14, 48, 2.4, "arr", "lp") T(14, 50.4, 0.8, "tr", "lp") T(14, 51.3, 1.6, "fill", "lp")
+	for i = 1, 4 do
+		local b = 53.2 + (i - 1) * 1.4
+		T(14, b, 0.5, "tr", "r" .. i) T(14, b + 0.5, 0.8, "fill", "r" .. i)
+	end
+	for i = 1, 4 do T(14, 58.9 + (i - 1) * 1.05, 1, "type", "r" .. i) end
+	for i = 1, 4 do
+		local b = 63.2 + (i - 1) * 1
+		T(14, b, 0.5, "box", "tg" .. i) T(14, b + 0.5, 0.5, "fill", "tg" .. i)
+	end
+	T(19, 47.4, 1.4, "lock", "win") T(20, 47.2, 1.4, "lock", "tb") T(21, 48.2, 1.4, "lock", "sb") T(22, 48.8, 1.4, "lock", "hd")
+	T(19, 49.6, 1.4, "lock", "c1") T(20, 50.2, 1.4, "lock", "lp") T(21, 55.7, 1.4, "lock", "c3") T(22, 59, 1.4, "lock", "c2")
+	-- V multiplication: every agent visibly contributes
+	do
+		local n = 0
+		for k = 1, 3 do
+			for j = 1, 6 do
+				local b = 9 + (n % 10)
+				T(b, 66.2 + (n % 10) * 0.5 + floor(n / 10) * 3.5, 1.8, "bar", "c" .. k .. "b" .. j)
+				n = n + 1
+			end
+		end
+	end
+	T(24, 65, 1.3, "tog", 1) T(25, 66.3, 1.3, "tog", 2) T(26, 67.6, 1.3, "tog", 3) T(24, 68.9, 1.3, "tog", 4)
+	for i = 1, 4 do T(24 + (i % 3), 65 + (i - 1) * 1.3, 0, "type", "tg" .. i) end
+	T(2, 66, 2, "type", "stat") T(4, 66.5, 1, "type", "ver")
+	do
+		local order = {"sb", "hd", "c2", "c3", "tb", "lp", "c1", "win"}
+		for n = 0, 7 do T(19 + (n % 5), 68 + n * 1.8, 1.6, "snap", order[n + 1]) end
+	end
+	-- VI network
+	for i = 1, 8 do T(24 + ((i - 1) % 7), 85.5 + (i - 1) * 0.55, 2.4, "link", i) end
+
+	-- letters of the final identity, traced by the swarm
+	local PEAK, FIN = 113, 116.8
+	local LET = {}
+	do
+		local m = 0
+		for i = 1, #NAME do if NAME:sub(i, i) ~= " " then m = m + 1 end end
+		local k = 0
+		for i = 1, #NAME do
+			local ch = NAME:sub(i, i)
+			if ch ~= " " then
+				k = k + 1
+				local tA = 106 + (k - 1) * (5.2 / max(m, 1))
+				LET[#LET + 1] = {ch = ch, cell = i, tA = tA, a = ((k - 1) * 7) % NA + 1, task = {t0 = tA, t1 = tA + 1.15, kind = "trace"}}
+			end
+		end
+	end
+
+	-- ---------- cinematic camera keyframes: zoom, pan(x,y in U), roll(deg) ----------
+	local CK = {{0, 0.9, 0, 0.03, 0}, {11.8, 0.98, 0, 0.01, 0}, {13, 1.03, 0, 0, 0.6}, {20, 1.06, 0.02, -0.01, 1.8}, {27, 0.99, -0.012, 0, -0.8}, {36, 0.94, 0.03, 0.012, 1.4},
+		{45, 0.97, 0, 0, 0}, {54, 1.07, -0.035, 0.015, -1.6}, {64, 1.03, 0.02, 0, 0.8}, {75, 1.08, 0.04, -0.012, 3.2}, {85, 1.02, -0.035, 0, -2.4}, {95, 0.89, 0, 0, 0},
+		{103, 0.99, 0, -0.012, 2.2}, {105, 1, 0, 0, 0}, {112.6, 1.1, 0, -0.02, 0}, {113.4, 1.05, 0, -0.01, 0}, {116, 1.03, 0, 0, 0}, {120, 1.07, 0, 0, 0}}
+	local function camTarget(t)
+		local a, b = CK[1], CK[#CK]
+		if t <= a[1] then return a[2], a[3], a[4], a[5] end
+		if t >= b[1] then return b[2], b[3], b[4], b[5] end
+		for n = 1, #CK - 1 do
+			local p, q = CK[n], CK[n + 1]
+			if t < q[1] then
+				local u = (t - p[1]) / (q[1] - p[1])
+				return lerp(p[2], q[2], u), lerp(p[3], q[3], u), lerp(p[4], q[4], u), lerp(p[5], q[5], u)
+			end
+		end
+		return 1, 0, 0, 0
+	end
+
+	-- ---------- beams between agents (energy transfer) and the outer network ----------
+	local BM = {}
+	for j = 9, 18 do BM[#BM + 1] = {a = 24 + ((j - 9) % 7), b = j, feed = true} end
+	for j = 24, 29 do BM[#BM + 1] = {a = j, b = j + 1} end
+	for j = 19, 23 do BM[#BM + 1] = {a = 24 + ((j - 19) * 2) % 7, b = j} end
+	local MAPN = {"tb", "hd", "c3", "c3", "lp", "lp", "lp", "c1", "sb", "sb", "sb", "tb"}
+	local NE = {}
+	for i, l in ipairs(LKS) do NE[#NE + 1] = {ia = l[1], ib = l[2], inner = i} end
+	for k = 1, 12 do NE[#NE + 1] = {oa = k, ib = MAPN[k], t0 = 86 + (k - 1) * 0.6} end
+	for k = 1, 12 do NE[#NE + 1] = {oa = k, ob = k % 12 + 1, t0 = 87 + (k - 1) * 0.5} end
+	local NODEIDS = {"tb", "sb", "hd", "c1", "c2", "c3", "lp"}
+	local function outerPos(k, t)
+		local th = (k - 1) / 12 * TAU + t * 0.04
+		return S.cx + cos(th) * G.W * 0.57, S.cy + sin(th) * G.H * 0.58
+	end
+
+	-- ---------- build ----------
+	local function build()
+		E.bg = mk("Frame", stage, {Size = UDim2.fromScale(1, 1), BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 1, Interactable = false})
+		mk("UIGradient", E.bg, {Rotation = 90, Color = ColorSequence.new(C(2, 3, 7), C(9, 13, 25))})
+		E.hz1 = mk("Frame", stage, {AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0.6), BackgroundColor3 = CYAN, BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 2, Interactable = false})
+		mk("UIGradient", E.hz1, {Rotation = 90, Transparency = NumberSequence.new(1, 0)})
+		E.hz2 = mk("Frame", stage, {Size = UDim2.fromScale(1, 0.5), BackgroundColor3 = VIO, BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 2, Interactable = false})
+		mk("UIGradient", E.hz2, {Rotation = 90, Transparency = NumberSequence.new(0, 1)})
+		local okCG, cg = pcall(function()
+			local o = Util.Instance("CanvasGroup", stage)
+			o.GroupTransparency = 0
+			return o
+		end)
+		E.cgOK = okCG
+		E.world = okCG and cg or Util.Instance("Frame", stage)
+		for k, v in pairs({AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 3, Visible = false, Interactable = false}) do
+			E.world[k] = v
+		end
+		E.ws = mk("UIScale", E.world, {Scale = 1})
+		local W = E.world
+		-- perspective deck: floor and ceiling lines converging on the vanishing point
+		E.fh, E.fr = {}, {}
+		for i = 1, 14 do E.fh[i] = box(W, 3, ICE, 1) end
+		for i = 1, 18 do E.fr[i] = box(W, 3, CYAN, 1) end
+		E.dust = {}
+		for i = 1, 30 do E.dust[i] = {f = box(W, 4, ICE, 1, 0.5), x = (sin(i * 4.1) * 999) % 1, y = (sin(i * 7.7) * 777) % 1, v = 0.004 + ((sin(i * 2.3) * 99) % 1) * 0.012, s = 1 + floor(((sin(i * 5.1) * 55) % 1) * 2.4), ph = i * 1.7, k = 0.6 + hash(i, 3) * 0.3} end
+		E.nd = {}
+		for i = 1, 18 do E.nd[i] = {f = box(W, 50, ICE, 1), th = hash(i, 1) * TAU, d = hash(i, 2), v = 0.5 + hash(i, 3)} end
+		-- volumetric shafts
+		E.sh = {}
+		for i = 1, 5 do
+			local f = box(W, 5, ICE, 1)
+			mk("UIGradient", f, {Rotation = 0, Transparency = soft(0.35)})
+			E.sh[i] = f
+		end
+		-- dormant fragments of the interface
+		E.fg = {}
+		local TG = {"win", "sb", "hd", "c1", "c2", "c3", "lp"}
+		for i = 1, 24 do
+			local f = {k = 0.6 + hash(i, 1) * 0.9, hx = hash(i, 2), hy = hash(i, 3), w = 0.025 + hash(i, 4) * 0.09, h = 0.015 + hash(i, 5) * 0.06, rot = (hash(i, 6) - 0.5) * 50, spin = (hash(i, 7) - 0.5) * 3, on = 1.2 + hash(i, 8) * 10, tg = TG[i % 7 + 1]}
+			f.o = box(W, 6, WHITE, 1)
+			f.st = mk("UIStroke", f.o, {Thickness = 1, Color = (i % 3 == 0) and CYAN or STEEL, Transparency = 1})
+			f.d = box(W, 6, STEEL, 1)
+			E.fg[i] = f
+		end
+		-- barely visible signal traces
+		E.tr = {}
+		for i = 1, 6 do
+			local t = {s = {box(W, 7, ICE, 1), box(W, 7, ICE, 1), box(W, 7, ICE, 1)}, p = box(W, 7, WHITE, 1, 0.5), n = box(W, 7, CYAN, 1), side = (i % 2 == 0) and 1 or -1, sp = 0.05 + hash(i, 5) * 0.06}
+			E.tr[i] = t
+		end
+		-- the dormant presence / beacon
+		E.sg = {sq = {}, st = {}, tk = {}, hl = {}}
+		for i = 1, 3 do
+			local f = box(W, 8, WHITE, 1)
+			E.sg.st[i] = mk("UIStroke", f, {Thickness = 1, Color = (i == 2) and GOLD or ICE, Transparency = 1})
+			E.sg.sq[i] = f
+		end
+		E.sg.orb = {}
+		for i = 1, 4 do
+			local o = box(W, 6, WHITE, 1, 0.5)
+			E.sg.orb[i] = {f = o, st = mk("UIStroke", o, {Thickness = 1, Color = STEEL, Transparency = 1})}
+		end
+		for i = 1, 16 do E.sg.tk[i] = box(W, 8, ICE, 1) end
+		local hc = {ICE, CYAN, GOLD}
+		for i = 1, 3 do E.sg.hl[i] = box(W, 7, hc[i], 1, 0.5) end
+		E.core = box(W, 9, WHITE, 1, 0.5)
+		E.vb = box(W, 8, ICE, 1)
+		mk("UIGradient", E.vb, {Rotation = 0, Transparency = soft(0)})
+		E.hb = box(W, 8, ICE, 1)
+		mk("UIGradient", E.hb, {Rotation = 90, Transparency = soft(0)})
+		-- holographic survey layer (clipped to the interface region)
+		E.reg = mk("Frame", W, {BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 9, ClipsDescendants = true, Interactable = false})
+		E.hv, E.hh = {}, {}
+		for i = 1, 13 do E.hv[i] = box(E.reg, 9, CYAN, 1) end
+		for i = 1, 8 do E.hh[i] = box(E.reg, 9, CYAN, 1) end
+		E.scan = box(E.reg, 9, ICE, 1)
+		E.scanG = box(E.reg, 9, CYAN, 1)
+		mk("UIGradient", E.scanG, {Rotation = 0, Transparency = NumberSequence.new(1, 0)})
+		E.reg2 = mk("Frame", W, {BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 27, ClipsDescendants = true, Interactable = false})
+		E.sheen = mk("Frame", E.reg2, {AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = WHITE, BorderSizePixel = 0, ZIndex = 27, BackgroundTransparency = 1, Interactable = false, Rotation = 16})
+		mk("UIGradient", E.sheen, {Transparency = soft(0.6)})
+		E.scl = lab(W, 28, 11, CYAN, Enum.TextXAlignment.Left)
+		-- guides, dimension lines
+		for _, g in ipairs(GD) do
+			g.line = box(W, 28, ICE, 1)
+			g.lab = lab(W, 28, 9, ICE, Enum.TextXAlignment.Left)
+		end
+		for _, d in ipairs(DM) do
+			d.line, d.t1, d.t2 = box(W, 28, CYAN, 1), box(W, 28, CYAN, 1), box(W, 28, CYAN, 1)
+			d.lab = lab(W, 28, 10, ICE)
+		end
+		-- beams
+		for _, b in ipairs(BM) do
+			b.line = box(W, 31, CYAN, 1)
+			b.pk = box(W, 31, GOLD, 1)
+		end
+		-- network
+		for _, e in ipairs(NE) do
+			e.line = box(W, 31, ICE, 1)
+			e.pk = box(W, 31, WHITE, 1, 0.5)
+		end
+		E.on = {}
+		for k = 1, 12 do E.on[k] = box(W, 31, ICE, 1) end
+		E.rn = {}
+		for k = 1, #NODEIDS do E.rn[k] = box(W, 31, ICE, 1) end
+		-- scout survey crosshairs
+		E.ch = {}
+		for i = 1, 4 do E.ch[i] = {h = box(W, 32, CYAN, 1), v = box(W, 32, CYAN, 1)} end
+		-- agents: layered cores, role shells, trails
+		for i = 1, NA do
+			local a = AG[i]
+			a.g1 = box(W, 34, a.tcol, 1, 0.5)
+			a.g2 = box(W, 35, a.col, 1, 0.5)
+			a.trail = {}
+			for j = 1, 5 do a.trail[j] = box(W, 33, a.tcol, 1) end
+			a.nose = box(W, 36, a.tcol, 1)
+			a.sh = box(W, 37, WHITE, 1, (a.role == "rl") and 0.5 or nil)
+			a.shs = mk("UIStroke", a.sh, {Thickness = 1.4, Color = a.col, Transparency = 1})
+			if a.role == "an" then
+				a.sh2 = box(W, 37, WHITE, 1)
+				a.sh2s = mk("UIStroke", a.sh2, {Thickness = 1.2, Color = ICE, Transparency = 1})
+			end
+			if a.role == "rl" then a.sat = box(W, 38, CYAN, 1, 0.5) end
+			a.core = box(W, 38, a.ccol, 1, (a.role == "rl") and 0.5 or nil)
+			a.tagl = lab(W, 39, 9, a.tcol, Enum.TextXAlignment.Left)
+		end
+		-- title: wire trace, metallic face, extrusion, chromatic ghosts
+		E.tl = layer(W, 44)
+		E.tl.Visible = false
+		E.gt = {box(E.tl, 43, GOLD, 1, 0.5), box(E.tl, 43, ICE, 1, 0.5), box(E.tl, 43, CYAN, 1, 0.5)}
+		E.tline = box(E.tl, 46, ICE, 1)
+		mk("UIGradient", E.tline, {Rotation = 0, Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.2, 0.15), NumberSequenceKeypoint.new(0.8, 0.15), NumberSequenceKeypoint.new(1, 1)})})
+		E.tdL, E.tdR = box(E.tl, 46, GOLD, 1), box(E.tl, 46, GOLD, 1)
+		E.ana = box(E.tl, 47, WHITE, 1)
+		mk("UIGradient", E.ana, {Rotation = 90, Transparency = soft(0)})
+		E.ana2 = box(E.tl, 47, GOLD, 1)
+		mk("UIGradient", E.ana2, {Rotation = 0, Transparency = soft(0)})
+		for _, L in ipairs(LET) do
+			L.slot = box(E.tl, 45, WHITE, 1)
+			L.slst = mk("UIStroke", L.slot, {Thickness = 1, Color = ICE, Transparency = 1})
+			L.sf = box(E.tl, 47, ICE, 1)
+			L.clip = mk("Frame", E.tl, {BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 44, Interactable = false})
+			local function tl(dz, col)
+				return mk("TextLabel", L.clip, {BackgroundTransparency = 1, BorderSizePixel = 0, Font = Enum.Font.GothamBlack, Text = L.ch, TextColor3 = col, TextSize = 60, ZIndex = 44 + dz, Interactable = false,
+					TextTransparency = 1, TextXAlignment = Enum.TextXAlignment.Center, TextYAlignment = Enum.TextYAlignment.Center})
+			end
+			L.e2, L.e1, L.gc, L.gv, L.lab = tl(0, C(14, 20, 40)), tl(1, C(34, 46, 86)), tl(2, CYAN), tl(2, VIO), tl(3, WHITE)
+			L.gr = mk("UIGradient", L.lab, {Rotation = 25, Color = ColorSequence.new({ColorSequenceKeypoint.new(0, C(172, 196, 228)), ColorSequenceKeypoint.new(0.42, C(206, 228, 252)), ColorSequenceKeypoint.new(0.5, WHITE), ColorSequenceKeypoint.new(0.58, C(206, 228, 252)), ColorSequenceKeypoint.new(1, C(150, 174, 208))})})
+			L.str = mk("UIStroke", L.lab, {Thickness = 1.5, Color = CYAN, Transparency = 1})
+		end
+		-- shockwave pool
+		E.rg = {}
+		for i = 1, 8 do
+			local f = box(W, 42, WHITE, 1, 0.5)
+			local st = mk("UIStroke", f, {Thickness = 2, Color = ICE, Transparency = 1})
+			E.rg[i] = {f = f, st = st, t0 = -9, life = 1, mr = 100, x = 0, y = 0}
+		end
+		-- impact blades and burst streaks
+		E.bl = {box(W, 49, GOLD, 1), box(W, 49, GOLD, 1)}
+		for _, b in ipairs(E.bl) do mk("UIGradient", b, {Rotation = 0, Transparency = soft(0)}) end
+		E.bs = {}
+		for i = 1, 28 do E.bs[i] = {f = box(W, 49, GOLD, 1), th = (i - 1) / 28 * TAU + hash(i, 1) * 0.12, v = 0.4 + hash(i, 2) * 0.6} end
+		E.wp = box(W, 29, CYAN, 1)
+		E.wpG = box(W, 29, CYAN, 1)
+		mk("UIGradient", E.wpG, {Rotation = 90, Transparency = NumberSequence.new(1, 0)})
+		-- stage overlays
+		E.lbT = mk("Frame", stage, {BackgroundColor3 = BLACK, BorderSizePixel = 0, ZIndex = 70, Interactable = false, Size = UDim2.new(1, 0, 0, 0)})
+		E.lbB = mk("Frame", stage, {AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), BackgroundColor3 = BLACK, BorderSizePixel = 0, ZIndex = 70, Interactable = false, Size = UDim2.new(1, 0, 0, 0)})
+		E.vg = {}
+		for i = 1, 4 do
+			local f = mk("Frame", stage, {BackgroundColor3 = BLACK, BorderSizePixel = 0, ZIndex = 60, Interactable = false})
+			mk("UIGradient", f, {Rotation = ({0, 180, 90, 270})[i], Transparency = NumberSequence.new(0, 1)})
+			if i <= 2 then
+				f.Size = UDim2.fromScale(0.3, 1)
+				f.AnchorPoint = Vector2.new(i == 1 and 0 or 1, 0)
+				f.Position = UDim2.fromScale(i == 1 and 0 or 1, 0)
+			else
+				f.Size = UDim2.fromScale(1, 0.3)
+				f.AnchorPoint = Vector2.new(0, i == 3 and 0 or 1)
+				f.Position = UDim2.fromScale(0, i == 3 and 0 or 1)
+			end
+			E.vg[i] = f
+		end
+		E.cap = lab(stage, 75, 12, ICE, Enum.TextXAlignment.Left, Enum.Font.GothamMedium)
+		E.tc = lab(stage, 75, 11, STEEL, Enum.TextXAlignment.Left)
+		E.term = lab(stage, 75, 13, ICE)
+		E.term.Position = UDim2.fromScale(0.5, 0.5)
+		E.term.Size = UDim2.fromOffset(400, 20)
+		E.flash = mk("Frame", stage, {Size = UDim2.fromScale(1, 1), BackgroundColor3 = mix(WHITE, GOLD, 0.2), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 80, Interactable = false})
+		E.skip = mk("TextButton", stage, {AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -16, 0, 14), Size = UDim2.fromOffset(168, 30), BackgroundColor3 = BLACK, BackgroundTransparency = 0.35, BorderSizePixel = 0, Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = WHITE, Text = "SKIP INTRO  >>  OPEN UI", ZIndex = 90, AutoButtonColor = true})
+		mk("UIStroke", E.skip, {Thickness = 1, Color = WHITE, Transparency = 0.3})
+		conns[#conns + 1] = E.skip.Activated:Connect(function() S.skipped = true end)
+	end
+
+	local function ring(x, y, col, life, mr, th)
+		local best, bt = nil, 1e9
+		for _, r in ipairs(E.rg) do
+			if r.t0 < bt then best, bt = r, r.t0 end
+		end
+		if not best then return end
+		best.t0, best.life, best.mr, best.x, best.y = S.t, life, mr, x, y
+		best.st.Color = col
+		best.st.Thickness = th or 2
+	end
+	local function burst(t, mag, col, x, y)
+		S.bt, S.bmag, S.bcol, S.bx, S.by = t, mag, col, x or S.cx, y or S.cy
+	end
+
+	-- ---------- rect / text drawing ----------
+	local function rectGeo(r)
+		return PX(r.x + r.ox + r.jx), PY(r.y + r.oy + r.jy), r.w * G.W, r.h * G.H
+	end
+	local function perim(r, p)
+		local x0, y0, w, h = rectGeo(r)
+		p = c01(p)
+		local sg = p * 4
+		local i = min(floor(sg), 3)
+		local f = sg - i
+		if i == 0 then return x0 + w * f, y0 elseif i == 1 then return x0 + w, y0 + h * f elseif i == 2 then return x0 + w * (1 - f), y0 + h end
+		return x0, y0 + h * (1 - f)
+	end
+	local function drawRect(r)
+		local dim = S.wa
+		local key = r.p * 1.1 + r.q * 3.3 + r.fp * 7.7 + r.sl * 5.9 + r.lk * 11.3 + r.gl * 13.1 + (r.ox + r.jx + r.tx) * 131 + (r.oy + r.jy + r.ty) * 173 + r.trot * 2.7 + r.tsc * 17.9 + G.stamp * 0.37 + dim * 5.1 + S.tint * 2.3 + r.hit * 9.7
+		if key == r.key then return end
+		r.key = key
+		local x0, y0, w, h = rectGeo(r)
+		local fp = r.fp
+		if r.fo then
+			if not r.f then
+				r.f = box(E.world, r.z, CYAN, 1)
+				r.f.AnchorPoint = Vector2.new(0, 0)
+			end
+			r.f.BackgroundColor3 = mix(r.col or CYAN, GOLD, S.tint * 0.5)
+			if fp <= 0 then r.f.BackgroundTransparency = 1 return end
+			if r.up then
+				r.f.Position = UDim2.fromOffset(x0, y0 + h * (1 - fp))
+				r.f.Size = UDim2.fromOffset(max(w, 1), max(h * fp, 0.5))
+			else
+				r.f.Position = UDim2.fromOffset(x0, y0)
+				r.f.Size = UDim2.fromOffset(max(w * fp, 0.5), max(h, 1))
+			end
+			r.f.BackgroundTransparency = 1 - cl(r.fa * dim + r.hit * 0.3, 0, 1)
+			return
+		end
+		if not r.ct then
+			local z = r.z
+			r.ct = mk("Frame", E.world, {AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = z, Interactable = false, Size = UDim2.fromOffset(10, 10)})
+			r.us = mk("UIScale", r.ct, {Scale = 1})
+			local function ch(dz, col, par)
+				return mk("Frame", par or r.ct, {BackgroundColor3 = col, BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = z + dz, Interactable = false})
+			end
+			r.sh = ch(0, BLACK)
+			r.f0 = ch(0, C(110, 170, 230))
+			r.f = ch(1, PANEL)
+			mk("UIGradient", r.f, {Rotation = 90, Color = ColorSequence.new(WHITE, C(142, 158, 190))})
+			r.scn = ch(2, ICE)
+			r.hl = ch(2, ICE)
+			r.gc = ch(2, WHITE)
+			r.gc.ClipsDescendants = true
+			r.glb = ch(3, WHITE, r.gc)
+			r.glb.AnchorPoint = Vector2.new(0.5, 0.5)
+			mk("UIGradient", r.glb, {Transparency = soft(0)})
+			r.e = {}
+			for i = 1, 4 do r.e[i] = ch(3, STEEL) end
+			r.cb = {}
+			if not r.nb then
+				for i = 1, 4 do
+					r.cb[i] = ch(3, CYAN)
+					r.cb[i].AnchorPoint = Vector2.new(0.5, 0.5)
+				end
+			end
+		end
+		r.ct.Position = UDim2.fromOffset(x0 + w / 2 + r.tx * G.W, y0 + h / 2 + r.ty * G.H)
+		r.ct.Size = UDim2.fromOffset(max(w, 1), max(h, 1))
+		r.ct.Rotation = r.trot
+		r.us.Scale = max(r.tsc, 0.05)
+		local solid = c01(max(r.sl, fp * 4))
+		r.sh.Position = UDim2.fromOffset(4, 6)
+		r.sh.Size = UDim2.fromOffset(w, h)
+		r.sh.BackgroundTransparency = 1 - solid * 0.4 * dim
+		r.f0.Size = UDim2.fromOffset(w, h)
+		r.f0.BackgroundTransparency = 1 - cl(r.sl * (1 - fp) * 0.2 + r.hit * 0.16, 0, 1) * dim
+		if fp > 0 then
+			r.f.BackgroundColor3 = mix(mix(C(12, 18, 32), C(58, 82, 118), r.fa * 1.6), GOLD, S.tint * 0.18 + r.hit * 0.1)
+			r.f.Position = UDim2.fromOffset(1, 1)
+			r.f.Size = UDim2.fromOffset(max(w - 2, 1), max((h - 2) * fp, 0.5))
+			r.f.BackgroundTransparency = 1 - cl((0.3 + r.fa) * dim + r.hit * 0.22, 0, 1)
+			r.hl.Position = UDim2.fromOffset(1, 1)
+			r.hl.Size = UDim2.fromOffset(max(w - 2, 1), 1)
+			r.hl.BackgroundTransparency = 1 - 0.45 * dim
+		else
+			r.f.BackgroundTransparency = 1
+			r.hl.BackgroundTransparency = 1
+		end
+		if fp > 0 and fp < 1 then
+			r.scn.Position = UDim2.fromOffset(1, (h - 2) * fp)
+			r.scn.Size = UDim2.fromOffset(max(w - 2, 1), 2)
+			r.scn.BackgroundTransparency = 1 - 0.75 * dim
+		else
+			r.scn.BackgroundTransparency = 1
+		end
+		r.gc.Position = UDim2.fromOffset(0, 0)
+		r.gc.Size = UDim2.fromOffset(w, h)
+		if r.gl >= 0 then
+			r.glb.Size = UDim2.fromOffset(max(w * 0.16, 6), h * 2.6)
+			r.glb.Position = UDim2.fromOffset(lerp(-w * 0.2, w * 1.2, r.gl), h / 2)
+			r.glb.Rotation = 18
+			r.glb.BackgroundTransparency = 1 - sin(pi * c01(r.gl)) * 0.7 * dim
+		else
+			r.glb.BackgroundTransparency = 1
+		end
+		for i = 1, 4 do
+			local e = r.e[i]
+			local ep = c01(r.p * 4 - (i - 1))
+			local bi = c01(r.q * 4 - (i - 1))
+			if ep <= 0 then
+				e.BackgroundTransparency = 1
+			else
+				local th = (bi > 0.5) and 2 or 1
+				e.BackgroundColor3 = mix(mix(C(70, 150, 200), ICE, bi), GOLD, S.tint * 0.75 + r.hit * 0.45)
+				e.BackgroundTransparency = 1 - cl((0.5 + 0.5 * bi + r.hit * 0.4) * dim, 0, 1)
+				if i == 1 then
+					e.Position = UDim2.fromOffset(0, 0) e.Size = UDim2.fromOffset(max(w * ep, 1), th)
+				elseif i == 2 then
+					e.Position = UDim2.fromOffset(w - th, 0) e.Size = UDim2.fromOffset(th, max(h * ep, 1))
+				elseif i == 3 then
+					e.Position = UDim2.fromOffset(w * (1 - ep), h - th) e.Size = UDim2.fromOffset(max(w * ep, 1), th)
+				else
+					e.Position = UDim2.fromOffset(0, h * (1 - ep)) e.Size = UDim2.fromOffset(th, max(h * ep, 1))
+				end
+			end
+		end
+		if not r.nb then
+			local bsz = lerp(3, 7, min(r.lk, 1.3))
+			local ba = c01(r.p * 0.7 + r.lk)
+			local pts = {{0, 0}, {w, 0}, {w, h}, {0, h}}
+			for i = 1, 4 do
+				local b = r.cb[i]
+				b.Position = UDim2.fromOffset(pts[i][1], pts[i][2])
+				b.Size = UDim2.fromOffset(bsz, bsz)
+				b.Rotation = 45 * c01(r.lk)
+				b.BackgroundColor3 = mix(CYAN, GOLD, c01(r.lk))
+				b.BackgroundTransparency = 1 - ba * dim * (r.p > 0 and 1 or 0)
+			end
+		end
+	end
+	local function drawText(o, t)
+		if o.tp <= 0 then
+			if o.l then o.l.TextTransparency = 1 o.c.BackgroundTransparency = 1 end
+			return
+		end
+		if not o.l then
+			o.l = lab(E.world, 30, 12, o.col, o.abs and Enum.TextXAlignment.Center or Enum.TextXAlignment.Left, o.font)
+			if not o.abs then o.l.AnchorPoint = Vector2.new(0, 0.5) end
+			o.l.Size = UDim2.fromOffset(10, 10)
+			o.l.AutomaticSize = Enum.AutomaticSize.X
+			o.c = box(E.world, 30, GOLD, 1)
+		end
+		local n = floor(o.tp * #o.text + 0.0001)
+		local typing = n < #o.text and o.act
+		if n ~= o.n then
+			if n > o.n and n % 3 == 0 then sfx("key", 0.045, 1.55 + ((n * 7) % 5) * 0.06) end
+			o.n = n
+			o.cu = t
+		end
+		o.l.Text = o.text:sub(1, n) .. (typing and GLY[(floor(t * 40) + n) % #GLY + 1] or "")
+		local sz = o.abs and max(9, floor(o.asz or 12)) or max(8, floor(G.W * o.sz))
+		o.l.TextSize = sz
+		local px, py
+		if o.abs then px, py = o.ax, o.ay else px, py = PX(o.x), PY(o.y) end
+		o.l.Position = UDim2.fromOffset(px, py)
+		o.px, o.py, o.psz = px, py, sz
+		o.l.TextTransparency = 1 - min(1, S.wa + (o.abs and 1 or 0))
+		local on = (o.act or t - o.cu < 0.9) and floor(t * 2.4) % 2 == 0
+		if on then
+			local bx = o.l.TextBounds.X
+			local cxp = o.abs and (px + bx / 2 + 3) or (px + bx + 2)
+			place(o.c, cxp, py, 2, sz * 1.1)
+			o.c.BackgroundTransparency = 0.1
+		else
+			o.c.BackgroundTransparency = 1
+		end
+	end
+
+	-- ---------- task engine ----------
+	local function setHit(r) if r then r.hit = 1 end end
+	local function impact(r, t, mag)
+		r.hit = 1
+		r.gl = 0
+		r.lockT = t
+		local A = ARR[r.id]
+		local dx, dy = A and A[1] or 0, A and A[2] or 0
+		local l = sqrt(dx * dx + dy * dy)
+		if l < 0.001 then l = 1 end
+		r.jdx, r.jdy = -dx / l * mag * 0.016, -dy / l * mag * 0.016
+		local x0, y0, w, h = rectGeo(r)
+		ring(x0 + w / 2, y0 + h / 2, ICE, 0.9, max(w, h) * 0.6, 2)
+		S.shake = max(S.shake, 0.12 + 0.5 * min(1, (w * h) / (G.W * G.H)) * mag)
+		sfx("snap", 0.07, 1.0)
+		sfx("glass", 0.04, 1.7)
+	end
+	local function applyTask(k, t)
+		local u = c01((t - k.t0) / max(k.t1 - k.t0, 0.001))
+		local kd, id = k.kind, k.id
+		if kd == "bp" then
+			RC[id].p = eio(u)
+		elseif kd == "tr" then
+			local r = RC[id]
+			r.p = 1
+			r.q = eio(u)
+		elseif kd == "box" then
+			local r = RC[id]
+			r.p = eio(u) r.q = r.p
+		elseif kd == "fill" then
+			local r = RC[id]
+			r.p = max(r.p, 1) r.q = max(r.q, 1) r.sl = 1
+			r.fp = eo3(u)
+		elseif kd == "arr" then
+			local r, A = RC[id], ARR[id]
+			local s = 1 - u ^ 2.3
+			local arc = sin(pi * u) * 0.08
+			r.p = max(r.p, 1)
+			r.sl = c01(u * 3.2)
+			r.tx = A[1] * s - A[2] * arc
+			r.ty = A[2] * s + A[1] * arc
+			r.trot = A[3] * s
+			r.tsc = 1 + (A[4] - 1) * s
+		elseif kd == "type" then
+			local o = TX[id]
+			if k.t1 - k.t0 <= 0.01 then o.tp = 1 o.act = false k.done = true return end
+			o.tp = c01(u * 1.04)
+			o.act = u < 1
+		elseif kd == "guide" then
+			GD[id].prog = eo3(u)
+		elseif kd == "ruler" then
+			RU[id].prog = eio(u)
+		elseif kd == "dim" then
+			DM[id].prog = eio(u)
+		elseif kd == "link" then
+			LKS[id].prog = eio(u)
+		elseif kd == "bar" then
+			local r = RC[id]
+			r.p = 1
+			r.fp = eo3(u)
+		elseif kd == "tog" then
+			local kn = RC["kn" .. id]
+			kn.fp = 1
+			kn.ox = 0.075 * eob(u)
+		elseif kd == "lock" then
+			local r = RC[id]
+			if u >= 0.5 and not k.fired then
+				k.fired = true
+				r.lkT = t
+				r.hit = 1
+				local x0, y0, w, h = rectGeo(r)
+				ring(x0 + w / 2, y0 + h / 2, GOLD, 0.8, max(w, h) * 0.35, 2)
+				sfx("snap", 0.05, 1.5)
+			end
+		elseif kd == "snap" then
+			local r = RC[id]
+			if u >= 0.5 and not k.fired then
+				k.fired = true
+				impact(r, t, 0.55)
+				r.lkT = r.lkT or t
+			end
+		end
+		if u >= 1 and not k.done then
+			k.done = true
+			if kd == "arr" then
+				local r = RC[id]
+				r.tx, r.ty, r.trot, r.tsc, r.sl = 0, 0, 0, 1, 1
+				impact(r, t, 1)
+			elseif kd == "bp" or kd == "tr" or kd == "box" or kd == "guide" or kd == "link" then
+				setHit(RC[id])
+				if kd == "guide" then GD[id].hit = 1 end
+				sfx("snap", 0.06, 1.0)
+			elseif kd == "fill" then
+				sfx("snap", 0.04, 1.8)
+			end
+			if kd == "type" then
+				local o = TX[id]
+				if o then o.tp = 1 o.act = false end
+			end
+		end
+	end
+	local CORN = {{0, 0}, {1, 0}, {1, 1}, {0, 1}}
+	local function penPos(k, t)
+		local u = c01((t - k.t0) / max(k.t1 - k.t0, 0.001))
+		local kd, id = k.kind, k.id
+		if kd == "bp" or kd == "box" then
+			local x, y = perim(RC[id], eio(u))
+			return x, y, string.format("%d x %d", floor(RC[id].w * G.W * eio(u)), floor(RC[id].h * G.H * eio(u)))
+		elseif kd == "tr" then
+			local x, y = perim(RC[id], eio(u))
+			return x, y, "energize"
+		elseif kd == "fill" then
+			local r = RC[id]
+			local x0, y0, w, h = rectGeo(r)
+			local z = abs(2 * ((eo3(u) * 3) % 1) - 1)
+			return x0 + w * z, y0 + h * eo3(u), "fill"
+		elseif kd == "arr" then
+			local r = RC[id]
+			local x0, y0, w, h = rectGeo(r)
+			return x0 + w * 0.5 + r.tx * G.W, y0 + r.ty * G.H + 6, "carry " .. id
+		elseif kd == "type" then
+			local o = TX[id]
+			if o.px then return o.px + (o.l and o.l.TextBounds.X or 0) + (o.abs and o.l.TextBounds.X * -0.5 or 0) + 8, o.py + (o.psz or 10) * 0.9, "typing" end
+			return PX(o.x), PY(o.y), "typing"
+		elseif kd == "lock" or kd == "snap" then
+			local r = RC[id]
+			local x0, y0, w, h = rectGeo(r)
+			local c = CORN[(#id + id:byte(1)) % 4 + 1]
+			return x0 + w * c[1], y0 + h * c[2], (kd == "lock") and "lock" or "stabilize"
+		elseif kd == "guide" then
+			local g = GD[id]
+			local p = eo3(u)
+			if g.o == "v" then return PX(g.f), S.sy * p, string.format("x:%d", floor(g.f * G.W)) end
+			return S.sx * p, PY(g.f), string.format("y:%d", floor(g.f * G.H))
+		elseif kd == "ruler" then
+			local p = eio(u)
+			if id == "h" then return G.rx + G.W * p, G.ry - 12, "ruler" end
+			return G.rx - 12, G.ry + G.H * p, "ruler"
+		elseif kd == "dim" then
+			local x0, y0, x1, y1 = dimGeo(id)
+			local p = eio(u)
+			return lerp(x0, x1, p), lerp(y0, y1, p), "measure"
+		elseif kd == "link" then
+			local l = LKS[id]
+			local a, b = RC[l[1]], RC[l[2]]
+			local p = eio(u)
+			return lerp(PX(a.x + a.w / 2), PX(b.x + b.w / 2), p), lerp(PY(a.y + a.h / 2), PY(b.y + b.h / 2), p), "link"
+		elseif kd == "bar" then
+			local r = RC[id]
+			local x0, y0, w, h = rectGeo(r)
+			return x0 + w / 2, y0 + h * (1 - eo3(u)), "bar"
+		elseif kd == "tog" then
+			local x0, y0, w, h = rectGeo(RC["kn" .. id])
+			return x0 + w / 2, y0 + h / 2, "toggle"
+		end
+		return S.cx, S.cy, ""
+	end
+
+	-- ---------- swarm formations and targets ----------
+	local function titleGeo()
+		local nC = #NAME
+		local Ls = min(100, S.sx * 0.9 / (nC * 0.72), S.sy * 0.22)
+		local adv = Ls * 0.72
+		return Ls, adv, S.sx / 2 - nC * adv / 2, S.sy * 0.45
+	end
+	local function ringR(t)
+		local U = S.U
+		if t < 104 then return U * (0.28 + 0.16 * ss(95, 104, t)) end
+		if t < 112.6 then return U * (0.44 - 0.3 * ss(104, 112.6, t)) end
+		return U * (0.14 + 0.38 * ss(113, 114.6, t))
+	end
+	local RR = {sc = {0.47, 0.43}, rl = {0.4, 0.36}, bd = {0.31, 0.28}}
+	local ANC = {{0, 0, -1, -1}, {1, 0, 1, -1}, {1, 1, 1, 1}, {0, 1, -1, 1}, {0.5, 0, 0, -1}}
+	local function formBase(i, a, t)
+		local sx, sy, U = S.sx, S.sy, S.U
+		local cx, cy = S.cx, S.cy
+		if a.role == "an" then
+			local c = ANC[a.ri]
+			return PX(c[1]) + c[3] * 20 + sin(t * 0.9 + a.ph) * 3, PY(c[2]) + c[4] * 20 + cos(t * 0.7 + a.ph) * 3
+		end
+		if a.role == "sc" and t < 27 then
+			local A = U * (0.2 + 0.05 * (a.ri % 4)) * (0.6 + 0.4 * ss(a.spawn, a.spawn + 8, t))
+			local lx = cx + A * 1.5 * sin(0.17 * (1 + a.ri % 3) * t + a.ph)
+			local ly = cy + A * sin(0.17 * (2 + a.ri % 2) * t + a.ph * 1.7)
+			local w1 = ss(21.5, 25.5, t)
+			local R0 = U * (0.26 - 0.05 * ss(23, 26, t))
+			local th = a.ri / 8 * TAU + t * 1.3
+			local x, y = lerp(lx, cx + cos(th) * R0 * 1.4, w1), lerp(ly, cy + sin(th) * R0, w1)
+			local w2 = ss(25.9, 26.9, t)
+			return lerp(x, cx + cos(th) * U * 0.02, w2), lerp(y, cy + sin(th) * U * 0.02, w2)
+		end
+		local fr = RR[a.role]
+		local th = a.ri / a.rn * TAU + a.a0 * 0.2 + t * ROT[a.role]
+		return cx + cos(th) * sx * fr[1], cy + sin(th) * sy * fr[2]
+	end
+	local function formation(i, a, t)
+		local x, y = formBase(i, a, t)
+		local sx, sy = S.sx, S.sy
+		local wH = ss(70, 72.5, t) * (1 - ss(78.5, 80.5, t))
+		if wH > 0.001 then
+			local s = (i - 1) / (NA - 1)
+			x, y = lerp(x, sx * (0.07 + 0.86 * s), wH), lerp(y, S.cy + sy * 0.27 * sin(s * TAU * 1.5 + t * 1.1 + (i % 2) * pi), wH)
+		end
+		local wS = ss(84.5, 86.5, t) * (1 - ss(94, 96, t))
+		if wS > 0.001 then
+			local yy = sy * (0.12 + 0.76 * ((i - 1) / (NA - 1)))
+			local xx = sx * (0.5 + 0.44 * sin(t * 0.8 + ((i % 2 == 0) and 0 or pi) + i * 0.28))
+			x, y = lerp(x, xx, wS), lerp(y, yy, wS)
+		end
+		local wR = ss(94, 96.5, t) * (1 - ss(115, 116.4, t))
+		if wR > 0.001 then
+			local R0 = ringR(t)
+			local mul = (a.role == "bd" and 0.72) or (a.role == "rl" and 0.9) or (a.role == "an" and 0.55) or 1.12
+			local th = a.ri / a.rn * TAU + (t - 95) * 0.7 * ((a.role == "bd" or a.role == "an") and -1 or 1) + (a.role == "rl" and 0.4 or 0)
+			x, y = lerp(x, sx / 2 + cos(th) * R0 * mul * 1.7, wR), lerp(y, sy * 0.45 + sin(th) * R0 * mul * 0.62, wR)
+		end
+		return x, y
+	end
+	local function agentTarget(i, a, t)
+		if t >= 115.2 then
+			local Ls, _, _, ty = titleGeo()
+			local sp = min(S.sx * 0.04, S.sx * 0.8 / NA)
+			local k = ss(115.2, 117, t)
+			local ix, iy = formation(i, a, 115.2)
+			return lerp(ix, S.sx / 2 + (i - (NA + 1) / 2) * sp, k), lerp(iy, ty + Ls * 1.0, k), 24, "", nil
+		end
+		for _, L in ipairs(LET) do
+			if L.a == i and t >= L.tA - 0.8 and t < L.tA + 1.15 then
+				local Ls, adv, tx0, ty = titleGeo()
+				local cellH = Ls * 1.12
+				local lx = tx0 + (L.cell - 0.5) * adv
+				if t < L.tA then return lx - adv * 0.5, ty - cellH * 0.5, 42, "slot", nil end
+				local u = (t - L.tA) / 1.15
+				local f = eo3(c01(u / 0.6))
+				local z = abs(2 * ((u * 4) % 1) - 1)
+				return lx - adv * 0.45 + adv * 0.9 * z, ty - cellH * 0.5 + cellH * f, 120, "trace " .. L.ch, L.task
+			end
+		end
+		for _, k in ipairs(AT[i]) do
+			if t >= k.t0 - 0.35 and t < k.t1 + 0.1 and k.t1 - k.t0 > 0.01 then
+				local x, y, tg = penPos(k, max(t, k.t0))
+				return x, y, (t >= k.t0) and 95 or 22, tg, k
+			end
+		end
+		local x, y = formation(i, a, t)
+		return x, y, ((a.role == "an") and 4 or 7) * a.stiff, "", nil
+	end
+	local CAPS = {{0, "I  /  ZERO STATE"}, {12, "II  /  THE AWAKENING"}, {27, "III  /  THE BLUEPRINT"}, {45, "IV  /  RECONSTRUCTION"}, {65, "V  /  SWARM MULTIPLICATION"}, {85, "VI  /  NETWORK ASCENSION"}, {105, "VII  /  THE FINAL CONVERGENCE"}, {115, "VIII  /  THE FINAL LOCK"}}
+
+	local function updAgents(t, dt)
+		local cnt = {sc = 0, bd = 0, an = 0, rl = 0}
+		local us0 = cl(S.U / 450, 0.7, 1.3)
+		for i = 1, NA do
+			local a = AG[i]
+			if t >= a.spawn then
+				cnt[a.role] = cnt[a.role] + 1
+				if not a.init then
+					a.init = true
+					local R0 = max(S.sx, S.sy) * 0.62
+					if a.mode == "fis" then
+						local p = AG[a.par]
+						a.x, a.y = p.x, p.y
+						a.vx, a.vy = cos(a.a0) * S.U * 0.9, sin(a.a0) * S.U * 0.9
+						ring(a.x, a.y, a.tcol, 0.8, S.U * 0.12, 2)
+						S.sk = max(S.sk, 0.5)
+					elseif a.mode == "beacon" then
+						a.x, a.y = S.cx, S.cy
+						a.vx, a.vy = cos(a.a0) * S.U * 1.1, sin(a.a0) * S.U * 1.1
+						ring(S.cx, S.cy, CYAN, 1, S.U * 0.2, 2)
+					else
+						a.x, a.y = S.cx + cos(a.a0) * R0, S.cy + sin(a.a0) * R0
+					end
+					for j = 0, 5 do a.hist[j][1], a.hist[j][2] = a.x, a.y end
+					sfx("glass", 0.05, 2.2)
+				end
+				local tx, ty, k, tg, task = agentTarget(i, a, t)
+				if a.role == "sc" and t < 27 then
+					k = 3.4 + 1.6 * ss(a.spawn, a.spawn + 6, t) * a.stiff
+					if t > 25.9 then k = 14 end
+				end
+				a.task = task
+				local wk = (task and t >= task.t0 and t < task.t1) and 1 or 0
+				a.work = lerp(a.work, wk, 1 - exp(-8 * dt))
+				tx = tx + sin(t * 9 + i) * a.work * 1.2
+				ty = ty + cos(t * 7.3 + i * 2) * a.work * 1.2
+				local z = a.zeta
+				if k > 60 then z = 0.95 end
+				local c = 2 * z * sqrt(k)
+				local steps = max(1, floor(dt / 0.012))
+				local h = dt / steps
+				for _ = 1, steps do
+					local ax, ay = k * (tx - a.x) - c * a.vx, k * (ty - a.y) - c * a.vy
+					a.vx, a.vy = a.vx + ax * h, a.vy + ay * h
+					local sp = sqrt(a.vx * a.vx + a.vy * a.vy)
+					local lim = S.U * 3.2
+					if sp > lim then a.vx, a.vy = a.vx / sp * lim, a.vy / sp * lim end
+					a.x, a.y = a.x + a.vx * h, a.y + a.vy * h
+				end
+				local sp = sqrt(a.vx * a.vx + a.vy * a.vy)
+				if sp > 25 then
+					local want = atan2(a.vx, -a.vy) * DEG
+					local d = (want - a.hd + 540) % 360 - 180
+					a.hd = a.hd + d * (1 - exp(-12 * dt))
+				end
+				a.vis = ss(a.spawn, a.spawn + 0.7, t)
+				a.hacc = a.hacc + dt
+				if a.hacc >= 0.03 * (1 + 1.6 * ss(84, 100, t)) then
+					a.hacc = 0
+					for j = 5, 1, -1 do a.hist[j][1], a.hist[j][2] = a.hist[j - 1][1], a.hist[j - 1][2] end
+					a.hist[0][1], a.hist[0][2] = a.x, a.y
+				end
+				local us, gl, wkn = us0 * a.sc, a.vis, a.work
+				local spd = c01(sp / (S.U * 0.6))
+				local hr = a.hd / DEG
+				local dx, dy = sin(hr), -cos(hr)
+				local gs = (20 + 18 * S.en + 10 * wkn + 12 * S.lv) * us
+				place(a.g1, a.x, a.y, gs * 2.2, gs * 2.2, 0, 1 - gl * (0.05 + 0.05 * S.en + 0.05 * wkn))
+				place(a.g2, a.x, a.y, gs, gs, 0, 1 - gl * (0.09 + 0.12 * S.en + 0.12 * wkn))
+				local ro = a.role
+				if ro == "sc" then
+					place(a.sh, a.x, a.y, 10 * us, 10 * us, a.hd + 45, 1)
+					a.shs.Transparency = 1 - gl * 0.95
+					place(a.core, a.x, a.y, 3.6 * us, 3.6 * us, a.hd + 45, 1 - gl)
+					local nl = (9 + 12 * (0.4 + 0.6 * spd) + 10 * wkn) * us
+					seg(a.nose, a.x + dx * 7 * us, a.y + dy * 7 * us, a.x + dx * (7 * us + nl), a.y + dy * (7 * us + nl), 1.2, 1 - gl * (0.25 + 0.55 * spd + 0.2 * wkn))
+				elseif ro == "bd" then
+					place(a.sh, a.x, a.y, 15 * us, 8 * us, a.hd + 90, 1)
+					a.shs.Transparency = 1 - gl * 0.95
+					place(a.core, a.x, a.y, 4.4 * us, 4.4 * us, a.hd + 90, 1 - gl)
+					local nl = (6 + 16 * spd + 8 * wkn) * us
+					seg(a.nose, a.x - dx * 8 * us, a.y - dy * 8 * us, a.x - dx * (8 * us + nl), a.y - dy * (8 * us + nl), 2, 1 - gl * (0.15 + 0.7 * spd + 0.4 * wkn))
+				elseif ro == "an" then
+					local rr = t * 38 * a.dir
+					place(a.sh, a.x, a.y, 14 * us, 14 * us, rr, 1)
+					place(a.sh2, a.x, a.y, 14 * us, 14 * us, rr + 45, 1)
+					a.shs.Transparency = 1 - gl * 0.9
+					a.sh2s.Transparency = 1 - gl * 0.7
+					place(a.core, a.x, a.y, 5 * us, 5 * us, 0, 1 - gl)
+				else
+					place(a.sh, a.x, a.y, 13 * us, 13 * us, 0, 1)
+					a.shs.Transparency = 1 - gl * 0.9
+					local so = t * 3.2 + a.ph
+					place(a.sat, a.x + cos(so) * 11 * us, a.y + sin(so) * 11 * us, 3.6 * us, 3.6 * us, 0, 1 - gl * (0.5 + 0.5 * wkn))
+					place(a.core, a.x, a.y, 4.6 * us, 4.6 * us, 0, 1 - gl)
+				end
+				local want = (tg ~= nil and tg ~= "") and (CODE[ro] .. string.format("%02d", a.ri) .. " " .. tg) or ""
+				if want ~= a.tagS then a.tagS = want a.tagl.Text = want end
+				a.tagl.Position = UDim2.fromOffset(a.x + 16, a.y + 12)
+				a.tagl.Size = UDim2.fromOffset(120, 12)
+				a.tagl.TextTransparency = 1 - gl * wkn * 0.75
+				local tl = (0.25 + 0.5 * S.en) * (0.25 + 0.75 * spd)
+				local px0, py0 = a.x, a.y
+				for j = 1, 5 do
+					local hp = a.hist[j]
+					local fall = (1 - (j - 1) / 5) ^ 1.5
+					seg(a.trail[j], px0, py0, hp[1], hp[2], (2.4 * fall + 0.6) * us, 1 - gl * tl * fall)
+					px0, py0 = hp[1], hp[2]
+				end
+				if ro == "sc" and a.ri <= 4 then
+					local c4 = E.ch[a.ri]
+					local on = (task and wkn > 0.05 and (task.kind == "bp" or task.kind == "tr" or task.kind == "guide" or task.kind == "dim")) and 1 or 0
+					a.cha = lerp(a.cha, on, 1 - exp(-6 * dt))
+					local al = 1 - a.cha * 0.5
+					place(c4.h, S.sx / 2, a.y, S.sx, 1, 0, al)
+					place(c4.v, a.x, S.sy / 2, 1, S.sy, 0, al)
+				end
+			end
+		end
+		return cnt
+	end
+
+	-- ---------- scene systems ----------
+	local function updScene(t, dt)
+		local sx, sy, U = S.sx, S.sy, S.U
+		local cx, cy = S.cx, S.cy
+		local pxo, pyo = S.px, S.py
+		local sk = max(S.sk, 0.1 * ss(60, 100, t))
+		-- atmosphere
+		E.hz1.BackgroundTransparency = 1 - (0.05 + 0.07 * ss(10, 40, t) + 0.07 * S.en) * 0.9
+		E.hz2.BackgroundTransparency = 1 - (0.03 + 0.1 * ss(85, 105, t)) * 0.9
+		-- perspective deck
+		S.fph = (S.fph + dt * (0.05 + 0.22 * S.en + 0.25 * sk)) % 1
+		local fa = ss(10, 22, t) * (1 - ss(112, 117, t) * 0.7)
+		local hx, hy = cx + pxo * -0.2, cy + pyo * -0.2
+		for n = 1, 7 do
+			local z = (S.fph + (n - 1) / 7) % 1
+			local zz = z ^ 2.2
+			local al = 1 - fa * z * 0.14 * (0.6 + 0.4 * S.en)
+			place(E.fh[n], hx, hy + (sy - hy) * zz, sx * 1.3, 1, 0, al)
+			place(E.fh[n + 7], hx, hy - hy * zz, sx * 1.3, 1, 0, al)
+		end
+		for k = 1, 9 do
+			local xk = cx + (k - 5) * sx * 0.16 + pxo * -0.2
+			seg(E.fr[k], hx, hy, xk, sy * 1.05, 1, 1 - fa * 0.07)
+			seg(E.fr[k + 9], hx, hy, xk, -sy * 0.05, 1, 1 - fa * 0.07)
+		end
+		-- far dust
+		local da = ss(1, 8, t)
+		for _, d in ipairs(E.dust) do
+			d.y = (d.y - d.v * dt * (1 + S.en)) % 1
+			local tw = 0.5 + 0.5 * sin(t * 1.3 + d.ph)
+			place(d.f, (d.x * sx + pxo * (d.k - 1)) % sx, (d.y * sy + pyo * (d.k - 1)) % sy, d.s, d.s, 0, 1 - da * tw * (0.25 + 0.3 * S.en))
+		end
+		-- near motes that stretch into streaks under motion
+		for _, d in ipairs(E.nd) do
+			d.d = d.d + dt * (0.012 * d.v + 0.5 * sk * d.v)
+			if d.d > 1 then d.d = d.d - 0.97 end
+			local r0 = d.d * U * 0.95
+			local x, y = cx + cos(d.th) * r0 + pxo * 0.6, cy + sin(d.th) * r0 + pyo * 0.6
+			local len = 2 + sk * U * 0.07 * d.d
+			seg(d.f, x - cos(d.th) * len, y - sin(d.th) * len, x, y, 1 + d.d, 1 - da * (0.08 + 0.5 * sk) * c01(d.d * 3) * (1 - d.d * 0.4))
+		end
+		-- dormant fragments, later gathered into the blueprint
+		local wC = ss(31, 44, t)
+		local fOut = 1 - ss(40, 46, t)
+		for i, f in ipairs(E.fg) do
+			local on = ss(f.on, f.on + 3, t) * fOut
+			if on > 0.002 or f.vis then
+				f.vis = on > 0.002
+				local bx = sx * f.hx + sin(t * 0.12 + i) * U * 0.02 + pxo * (f.k - 1)
+				local by = sy * f.hy + cos(t * 0.1 + i * 1.3) * U * 0.02 + pyo * (f.k - 1)
+				local rt = RC[f.tg]
+				local x, y = lerp(bx, PX(rt.x + rt.w / 2), wC), lerp(by, PY(rt.y + rt.h / 2), wC)
+				local sc = 1 - 0.7 * wC
+				local w, h = f.w * U * f.k * sc, f.h * U * f.k * sc
+				local rot = f.rot + f.spin * t
+				local fl = 0.6 + 0.4 * sin(t * 3 + i * 5)
+				place(f.o, x, y, w, h, rot, 1)
+				f.st.Transparency = 1 - on * (0.2 + 0.25 * S.en) * fl
+				seg(f.d, x - w * 0.3, y + h * 0.7, x + w * 0.3, y + h * 0.7, 1, 1 - on * 0.3 * fl)
+			end
+		end
+		-- signal traces
+		local trA = (1 - ss(32, 40, t))
+		for i, tr in ipairs(E.tr) do
+			local on = ss(2 + i * 1.1, 5 + i * 1.1, t) * trA
+			if on > 0.002 or tr.vis then
+				tr.vis = on > 0.002
+				local h1, h2, h3, h4 = hash(i + 20, 1), hash(i + 20, 2), hash(i + 20, 3), hash(i + 20, 4)
+				local sd = tr.side
+				local p0x, p0y = (sd > 0) and sx or 0, sy * (0.14 + 0.72 * h1)
+				local p1x, p1y = cx + sd * U * (0.55 + 0.25 * h2), p0y
+				local p2x, p2y = p1x, cy + (h3 - 0.5) * U * 0.5
+				local p3x, p3y = cx + sd * U * (0.1 + 0.07 * h4), p2y
+				local en = 0.12 + 0.12 * ss(12, 20, t) + 0.1 * S.lv
+				seg(tr.s[1], p0x, p0y, p1x, p1y, 1, 1 - on * en)
+				seg(tr.s[2], p1x, p1y, p2x, p2y, 1, 1 - on * en)
+				seg(tr.s[3], p2x, p2y, p3x, p3y, 1, 1 - on * en)
+				local l1, l2, l3 = abs(p1x - p0x), abs(p2y - p1y), abs(p3x - p2x)
+				local L = l1 + l2 + l3
+				local d = ((t * tr.sp * (1 + 2 * ss(12, 20, t)) + i * 0.37) % 1) * L
+				local px, py
+				if d < l1 then px, py = lerp(p0x, p1x, d / l1), p0y
+				elseif d < l1 + l2 then px, py = p1x, lerp(p1y, p2y, (d - l1) / l2)
+				else px, py = lerp(p2x, p3x, (d - l1 - l2) / l3), p2y end
+				place(tr.p, px, py, 3, 3, 0, 1 - on * (0.4 + 0.4 * S.lv))
+				place(tr.n, p3x, p3y, 5, 5, 45, 1 - on * en * 2)
+			end
+		end
+		-- the presence / beacon
+		local ig = ss(12, 13.4, t)
+		local d0 = ss(1.2, 8, t) * (0.22 + 0.08 * sin(t * 1.7))
+		local bz = (d0 * (1 - ig) + ig * (0.85 + 0.15 * S.lv)) * (1 - ss(104, 108, t))
+		local pulse = 1 + 0.5 * S.kick + 0.05 * sin(t * 1.6)
+		for i = 1, 3 do
+			local sz = U * (0.05 + 0.035 * i) * pulse * lerp(0.82, 1, ig)
+			place(E.sg.sq[i], cx, cy, sz, sz, t * (6 + 5 * i) * ((i % 2 == 0) and -1 or 1) + i * 20 + 40 * S.kick, 1)
+			E.sg.st[i].Transparency = 1 - bz * (0.3 + 0.15 * i)
+		end
+		local ov = ss(13, 18, t) * (1 - ss(22, 26, t)) + 0.35 * d0
+		for i = 1, 4 do
+			local r = U * (0.1 + 0.05 * (i - 1))
+			place(E.sg.orb[i].f, cx, cy, r * 2, r * 2, 0, 1)
+			E.sg.orb[i].st.Transparency = 1 - bz * ov * 0.5
+		end
+		for i = 1, 16 do
+			local th = (i - 1) / 16 * TAU + t * 0.3 * ((i % 2 == 0) and 1 or -1)
+			local r0 = U * 0.075 * pulse
+			local r1 = r0 + U * (0.012 + 0.02 * (i % 3))
+			seg(E.sg.tk[i], cx + cos(th) * r0, cy + sin(th) * r0, cx + cos(th) * r1, cy + sin(th) * r1, 1, 1 - bz * 0.6)
+		end
+		local gold = ss(104, 113, t)
+		for i = 1, 3 do
+			local sz = U * (0.06 + (0.26 * ig) * (1 + S.en) * i * 0.6 + 0.1 * S.lv) * (0.8 + 0.2 * i)
+			E.sg.hl[i].BackgroundColor3 = mix((i == 1) and ICE or ((i == 2) and CYAN or GOLD), GOLD, gold * 0.5)
+			place(E.sg.hl[i], cx, cy, sz, sz, 0, 1 - bz * (0.04 + 0.1 * ig + 0.12 * S.lv) / i)
+		end
+		place(E.core, cx, cy, U * (0.006 + 0.012 * ig + 0.01 * S.kick), U * (0.006 + 0.012 * ig + 0.01 * S.kick), 0, 1 - bz)
+		place(E.vb, cx, cy, 2 + U * 0.02 * ig * (1 + S.kick), sy * 1.3, 0, 1 - bz * 0.5 * ig)
+		place(E.hb, cx, cy, sx * (0.15 + 0.7 * ig), 2 + 2 * S.kick, 0, 1 - bz * 0.55 * ig * (0.5 + 0.5 * S.kick + 0.3))
+		-- shafts of volumetric light, re-centred on the title for the finale
+		local tcx, tcy = S.sx / 2, S.sy * 0.45
+		local mv = ss(104, 108, t)
+		local pkd = (t > PEAK) and exp(-(t - PEAK) * 1.2) or 0
+		local sa = bz * (0.05 + 0.1 * ig * (0.6 + 0.4 * S.lv)) * (1 - 0.55 * ss(40, 50, t)) + mv * (1 - ss(117.5, 119.5, t)) * (0.07 + 0.12 * pkd) + ss(95, 105, t) * (1 - mv) * 0.08
+		for i = 1, 5 do
+			E.sh[i].BackgroundColor3 = mix(ICE, GOLD, S.tint)
+			place(E.sh[i], lerp(cx, tcx, mv), lerp(cy, tcy, mv), U * (1.4 + 0.3 * (i % 3)), U * (0.025 + 0.018 * i), i * 36 + t * (2.5 + i * 0.8) * ((i % 2 == 0) and 1 or -1), 1 - sa)
+		end
+		-- holographic survey: spatial map revealed by the scouts
+		E.reg.Position = UDim2.fromOffset(G.rx, G.ry)
+		E.reg.Size = UDim2.fromOffset(G.W, G.H)
+		E.reg2.Position = UDim2.fromOffset(G.rx, G.ry)
+		E.reg2.Size = UDim2.fromOffset(G.W, G.H)
+		local fS = ss(28.6, 40.5, t)
+		local hA = ss(27.5, 29, t) * (1 - ss(46, 54, t))
+		for i = 1, 13 do
+			local r = (i - 1) / 12
+			local d = fS - r
+			local on = c01(d * 14)
+			local fresh = (d > 0) and exp(-d * 10) or 0
+			place(E.hv[i], G.W * r, G.H / 2, 1, G.H, sin((t + i) * 0.6) * 0.4 * S.kick, 1 - hA * (0.1 + 0.5 * fresh) * on)
+		end
+		for j = 1, 8 do
+			place(E.hh[j], G.W * fS / 2, G.H * (j - 1) / 7, max(G.W * fS, 1), 1, 0, 1 - hA * 0.13)
+		end
+		local scA = hA * ((fS > 0.001 and fS < 0.999) and 1 or 0)
+		place(E.scan, G.W * fS, G.H / 2, 3, G.H, 0, 1 - scA * 0.85)
+		place(E.scanG, G.W * fS - 30, G.H / 2, 60, G.H, 0, 1 - scA * 0.6)
+		E.scl.Text = string.format("SPATIAL MAP  %03d%%", floor(fS * 100))
+		E.scl.Position = UDim2.fromOffset(G.rx + 74, max(G.ry - 62, 10))
+		E.scl.Size = UDim2.fromOffset(150, 14)
+		E.scl.TextTransparency = 1 - scA * 0.8
+		local sh = ss(85, 90, t) * (1 - ss(113.5, 115, t))
+		E.sheen.Size = UDim2.fromOffset(G.W * 0.22, G.H * 1.9)
+		E.sheen.Position = UDim2.fromOffset(G.W * (-0.2 + 1.4 * ((t * 0.2) % 1)), G.H / 2)
+		E.sheen.BackgroundTransparency = 1 - sh * (0.45 + 0.4 * ss(95, 112, t))
+		-- guides
+		local gA = 1 - ss(99, 106, t)
+		for _, g in ipairs(GD) do
+			g.hit = g.hit * exp(-5 * dt)
+			if g.prog > 0 then
+				local al = (0.4 + 0.5 * g.hit) * gA
+				if g.o == "v" then
+					local x = PX(g.f)
+					local len = sy * g.prog
+					place(g.line, x, len / 2, 1, len, 0, 1 - al)
+					g.lab.Text = string.format("x:%d", floor(g.f * G.W))
+					g.lab.Position = UDim2.fromOffset(x + 28, min(len, sy) - 8)
+				else
+					local y = PY(g.f)
+					local len = sx * g.prog
+					place(g.line, len / 2, y, len, 1, 0, 1 - al)
+					g.lab.Text = string.format("y:%d", floor(g.f * G.H))
+					g.lab.Position = UDim2.fromOffset(min(len, sx) - 30, y - 8)
+				end
+				g.lab.Size = UDim2.fromOffset(60, 12)
+				g.lab.TextTransparency = 1 - al * 0.9
+			end
+		end
+		-- dimension lines
+		for id, d in ipairs(DM) do
+			if d.prog > 0 then
+				local x0, y0, x1, y1, txt = dimGeo(id)
+				local ex, ey = lerp(x0, x1, d.prog), lerp(y0, y1, d.prog)
+				local nx, ny = -(y1 - y0), (x1 - x0)
+				local nl = max(sqrt(nx * nx + ny * ny), 0.001)
+				nx, ny = nx / nl, ny / nl
+				seg(d.line, x0, y0, ex, ey, 1, 1 - 0.7 * gA)
+				seg(d.t1, x0 - nx * 7, y0 - ny * 7, x0 + nx * 7, y0 + ny * 7, 1, 1 - 0.8 * gA)
+				seg(d.t2, ex - nx * 7, ey - ny * 7, ex + nx * 7, ey + ny * 7, 1, 1 - 0.8 * gA * ss(0.05, 0.2, d.prog))
+				d.lab.Text = txt
+				d.lab.Position = UDim2.fromOffset((x0 + x1) / 2 + nx * 14, (y0 + y1) / 2 + ny * 14)
+				d.lab.Size = UDim2.fromOffset(120, 12)
+				d.lab.TextTransparency = 1 - 0.9 * gA * ss(0.5, 0.9, d.prog)
+			end
+		end
+		-- rulers
+		for id, ru in pairs(RU) do
+			if ru.prog > 0 then
+				if not ru.t then
+					ru.t = {}
+					for k = 0, ru.n do ru.t[k] = {box(E.world, 28, STEEL, 1), (k % 4 == 0) and lab(E.world, 28, 8, STEEL) or nil} end
+					ru.base = box(E.world, 28, STEEL, 1)
+				end
+				if id == "h" then
+					place(ru.base, G.rx + G.W * ru.prog / 2, G.ry - 12, G.W * ru.prog, 1, 0, 1 - 0.5 * gA)
+				else
+					place(ru.base, G.rx - 12, G.ry + G.H * ru.prog / 2, 1, G.H * ru.prog, 0, 1 - 0.5 * gA)
+				end
+				for k = 0, ru.n do
+					local tk = ru.t[k]
+					local on = (k / ru.n <= ru.prog) and 1 or 0
+					local len = (k % 4 == 0) and 9 or 4
+					if id == "h" then
+						place(tk[1], G.rx + G.W * k / ru.n, G.ry - 12 - len / 2, 1, len, 0, 1 - on * 0.5 * gA)
+					else
+						place(tk[1], G.rx - 12 - len / 2, G.ry + G.H * k / ru.n, len, 1, 0, 1 - on * 0.5 * gA)
+					end
+					if tk[2] then
+						tk[2].Text = tostring(floor(((id == "h") and G.W or G.H) * k / ru.n))
+						if id == "h" then tk[2].Position = UDim2.fromOffset(G.rx + G.W * k / ru.n, G.ry - 28) else tk[2].Position = UDim2.fromOffset(G.rx - 30, G.ry + G.H * k / ru.n) end
+						tk[2].Size = UDim2.fromOffset(40, 10)
+						tk[2].TextTransparency = 1 - on * 0.55 * gA
+					end
+				end
+			end
+		end
+		-- act transition wipe
+		local wu = (t - S.wipeT) / 1.1
+		if wu >= 0 and wu <= 1 then
+			local y = sy * eio(wu)
+			place(E.wp, cx, y, sx, 2, 0, 1 - 0.6 * sin(pi * wu))
+			place(E.wpG, cx, y - 40, sx, 80, 0, 1 - 0.25 * sin(pi * wu))
+			E.wp.BackgroundColor3 = mix(CYAN, GOLD, S.tint)
+			E.wpG.BackgroundColor3 = E.wp.BackgroundColor3
+		else
+			E.wp.BackgroundTransparency = 1
+			E.wpG.BackgroundTransparency = 1
+		end
+	end
+
+	local function updBeams(t)
+		local win = ss(63, 66, t) * (1 - ss(106, 109, t))
+		for n, b in ipairs(BM) do
+			local A, B = AG[b.a], AG[b.b]
+			local v = min(A.vis, B.vis) * win
+			if v < 0.01 then
+				b.line.BackgroundTransparency = 1
+				b.pk.BackgroundTransparency = 1
+			else
+				local act = b.feed and (0.25 + 0.75 * B.work) or (0.45 + 0.2 * S.en)
+				seg(b.line, A.x, A.y, B.x, B.y, 1, 1 - v * 0.5 * act)
+				local f = (t * 0.8 + n * 0.37) % 1
+				place(b.pk, lerp(A.x, B.x, f), lerp(A.y, B.y, f), 5, 5, 45, 1 - v * act)
+			end
+		end
+	end
+	local function epos(e, which, t)
+		local id, o
+		if which == "a" then id, o = e.ia, e.oa else id, o = e.ib, e.ob end
+		if id then
+			local r = RC[id]
+			return PX(r.x + r.w / 2), PY(r.y + r.h / 2)
+		end
+		return outerPos(o, t)
+	end
+	local function updNet(t, dt)
+		local nA = ss(85, 88, t) * (1 - 0.6 * ss(108, 113, t)) * (1 - ss(117, 119, t))
+		local wr = (t - S.pulseT) * S.U * 1.5
+		local wd = exp(-(t - S.pulseT) * 0.6)
+		for idx, e in ipairs(NE) do
+			local prog = e.inner and LKS[e.inner].prog or eio((t - e.t0) / 2.2)
+			if prog > 0.001 and nA > 0.001 then
+				local ax, ay = epos(e, "a", t)
+				local bx, by = epos(e, "b", t)
+				local ex, ey = lerp(ax, bx, prog), lerp(ay, by, prog)
+				local mx, my = (ax + bx) / 2 - S.cx, (ay + by) / 2 - S.cy
+				local dd = (sqrt(mx * mx + my * my) - wr) / (S.U * 0.14)
+				local w = exp(-dd * dd) * wd
+				e.line.BackgroundColor3 = mix(mix(CYAN, ICE, w), GOLD, S.tint * 0.8)
+				seg(e.line, ax, ay, ex, ey, 1.2 + 1.6 * w, 1 - c01((0.45 + 0.25 * S.en + w * 0.5) * nA))
+				if prog >= 0.99 then
+					local f = (t * 0.4 + idx * 0.173) % 1
+					place(e.pk, lerp(ax, bx, f), lerp(ay, by, f), 7 + 7 * S.lv, 7 + 7 * S.lv, 0, 1 - nA * 0.7)
+				else
+					e.pk.BackgroundTransparency = 1
+				end
+			else
+				e.line.BackgroundTransparency = 1
+				e.pk.BackgroundTransparency = 1
+			end
+		end
+		for k = 1, 12 do
+			local x, y = outerPos(k, t)
+			local pr = eio((t - (86 + (k - 1) * 0.6)) / 2.2)
+			place(E.on[k], x, y, 8, 8, 45, 1 - pr * nA * 0.9)
+		end
+		for k, id in ipairs(NODEIDS) do
+			local r = RC[id]
+			local pr = c01(r.p) * ss(86, 90, t)
+			place(E.rn[k], PX(r.x + r.w / 2), PY(r.y + r.h / 2), 6, 6, 45, 1 - pr * nA * 0.9)
+		end
+	end
+
+	local function updTitle(t, dt)
+		local Ls, adv, tx0, ty = titleGeo()
+		local on = t >= 104.5
+		E.tl.Visible = on
+		if not on then return end
+		local gf = 1 - ss(117.7, 119.9, t)
+		local dep = ss(112.6, 114.6, t)
+		local pk = (t > PEAK) and exp(-(t - PEAK) * 2.2) or 0
+		local fk = (t > FIN) and exp(-(t - FIN) * 2.6) or 0
+		local cs = Ls * 0.055 * (pk + fk * 1.4) + Ls * 0.006
+		local M = max(6, Ls * 0.16)
+		local cellH = Ls * 1.12
+		local cw, chh = adv + 2 * M, cellH + 2 * M
+		local d = Ls * 0.026 * dep
+		for n, L in ipairs(LET) do
+			local u = c01((t - L.tA) / 1.15)
+			local wire = ss(0, 0.3, u)
+			local fa = ss(0.42, 1, u)
+			local clipK = eo3(c01(u / 0.6))
+			local x = tx0 + (L.cell - 0.5) * adv
+			local sinceDone = t - (L.tA + 1.15)
+			local by = (sinceDone > 0) and Ls * 0.05 * exp(-sinceDone * 10) * cos(sinceDone * 30) or 0
+			place(L.slot, x, ty, adv * 0.92, cellH, 0)
+			L.slot.BackgroundTransparency = 1
+			L.slst.Transparency = 1 - ss(L.tA - 0.8, L.tA - 0.4, t) * (1 - ss(L.tA + 0.2, L.tA + 0.5, t)) * 0.8
+			L.clip.Position = UDim2.fromOffset(x - adv / 2 - M, ty - cellH / 2 - M - by)
+			L.clip.Size = UDim2.fromOffset(cw, max(chh * clipK, 0.5))
+			local function setL(f, ox, oy)
+				f.Position = UDim2.fromOffset(ox, oy)
+				f.Size = UDim2.fromOffset(cw, chh)
+				f.TextSize = max(10, floor(Ls))
+			end
+			setL(L.e2, 2 * d, 2.6 * d) setL(L.e1, d, 1.3 * d) setL(L.gc, -cs, 0) setL(L.gv, cs, cs * 0.3) setL(L.lab, 0, 0)
+			local ea = fa * gf * dep * 0.95
+			L.e2.TextTransparency = 1 - ea
+			L.e1.TextTransparency = 1 - ea
+			local ga = fa * gf * (0.14 + 0.5 * c01(pk + fk))
+			L.gc.TextTransparency = 1 - ga
+			L.gv.TextTransparency = 1 - ga
+			L.lab.TextTransparency = 1 - fa * gf
+			L.lab.TextColor3 = mix(WHITE, GOLD, 0.8 * fk + 0.12 * (1 - dep))
+			L.gr.Offset = Vector2.new(lerp(-1.2, 1.2, ((t * 0.33 + n * 0.05) % 1.6) / 1.6), 0)
+			L.str.Color = mix(CYAN, GOLD, fa)
+			L.str.Thickness = 1.5 + 4 * pk + 3 * fk
+			L.str.Transparency = 1 - cl((wire * (0.9 - 0.5 * fa) + 0.6 * c01(pk + fk)) * gf, 0, 1)
+			local scA = (u > 0 and u < 0.62) and 0.9 or 0
+			place(L.sf, x, ty - cellH / 2 + cellH * clipK, adv + M, 2, 0, 1 - scA * gf)
+			if u >= 1 and not L.done then
+				L.done = true
+				ring(x, ty, GOLD, 0.8, Ls * 1.2, 2)
+				sfx("glass", 0.05, 2.0 + ((L.cell * 3) % 5) * 0.08)
+				S.flashK = max(S.flashK, 0.1)
+			end
+		end
+		local gs = Ls * (NAME:len() * 0.72)
+		for i = 1, 3 do
+			place(E.gt[i], S.sx / 2, ty, gs * (0.9 + 0.5 * i) * (1 + 0.3 * pk), Ls * (1.2 + 1.2 * i), 0, 1 - gf * (0.03 + 0.07 * dep + 0.2 * pk + 0.25 * fk) / i)
+		end
+		local tl = eio(ss(107, 112.8, t))
+		local lw = adv * #NAME * 1.02 * tl
+		place(E.tline, S.sx / 2, ty + cellH * 0.62, max(lw, 1), 2, 0, 1 - gf * 0.8 * c01(tl * 3))
+		place(E.tdL, S.sx / 2 - lw / 2, ty + cellH * 0.62, 6, 6, 45, 1 - gf * c01(tl * 3))
+		place(E.tdR, S.sx / 2 + lw / 2, ty + cellH * 0.62, 6, 6, 45, 1 - gf * c01(tl * 3))
+		place(E.ana, S.sx / 2, ty, 2 + Ls * 0.1 * (pk + fk), S.sy * 1.2, 0, 1 - gf * 0.6 * c01(pk + fk))
+		place(E.ana2, S.sx / 2, ty, S.sx * (0.25 + 0.85 * c01(pk + fk)), 2 + Ls * 0.05 * (pk + fk), 0, 1 - gf * 0.9 * c01(pk + fk * 1.2))
+		SUBTXT.ax, SUBTXT.ay, SUBTXT.asz = S.sx / 2, ty + cellH * 0.62 + Ls * 0.2, max(9, Ls * 0.2)
+		SUBTXT.sz = 0.01
+	end
+
+	local function updRings(t)
+		for _, r in ipairs(E.rg) do
+			local u = (t - r.t0) / r.life
+			if u >= 0 and u <= 1 then
+				local s = r.mr * 2 * eo3(u)
+				place(r.f, r.x, r.y, s, s, 0, 1)
+				r.st.Transparency = 1 - (1 - u) * 0.85
+			else
+				r.st.Transparency = 1
+			end
+		end
+	end
+	local function updBurst(t)
+		local u = (t - S.bt) / 1.1
+		if u >= 0 and u <= 1 then
+			S.bvis = true
+			local U = S.U
+			for _, s in ipairs(E.bs) do
+				local e = eo3(u)
+				local a0 = U * (0.05 + 0.9 * e * s.v)
+				local len = U * (0.05 + 0.3 * s.v) * (1 - u) * S.bmag
+				local ox, oy = S.bx + cos(s.th) * a0, S.by + sin(s.th) * a0
+				seg(s.f, ox - cos(s.th) * len, oy - sin(s.th) * len, ox, oy, 2 * (1 - u) + 0.6, 1 - (1 - u) * 0.9 * min(S.bmag, 1))
+				s.f.BackgroundColor3 = S.bcol
+			end
+		elseif S.bvis then
+			S.bvis = false
+			for _, s in ipairs(E.bs) do s.f.BackgroundTransparency = 1 end
+		end
+		-- final-lock blades: close in on the title line, then slam
+		local Ls, _, _, ty = titleGeo()
+		local bu = (t - 115.8) / 1.0
+		if bu >= 0 and bu <= 1 then
+			local g = eio(bu)
+			local off = Ls * 1.5 * (1 - g)
+			place(E.bl[1], S.sx / 2, ty - off, S.sx * 0.9, 2 + 3 * g, 0, 1 - 0.85 * g)
+			place(E.bl[2], S.sx / 2, ty + off, S.sx * 0.9, 2 + 3 * g, 0, 1 - 0.85 * g)
+		elseif t > FIN then
+			local fk = exp(-(t - FIN) * 5)
+			place(E.bl[1], S.sx / 2, ty, S.sx * (0.9 + 0.4 * (1 - fk)), 2 + 8 * fk, 0, 1 - fk)
+			E.bl[2].BackgroundTransparency = 1
+		else
+			E.bl[1].BackgroundTransparency = 1
+			E.bl[2].BackgroundTransparency = 1
+		end
+	end
+
+	-- ---------- key moments ----------
+	local function onPeak(t)
+		S.peak = true
+		S.flashK = 0.8
+		S.shake = 0.7
+		S.punch = 0.1
+		S.sk = 1
+		ring(S.sx / 2, S.sy * 0.45, GOLD, 1.6, S.U * 0.95, 3)
+		ring(S.sx / 2, S.sy * 0.45, ICE, 1.15, S.U * 0.58, 2)
+		ring(S.sx / 2, S.sy * 0.45, WHITE, 0.8, S.U * 0.3, 2)
+		burst(t, 0.8, GOLD, S.sx / 2, S.sy * 0.45)
+		sfx("glass", 0.09, 1.7)
+		sfx("snap", 0.09, 0.8)
+		for _, r in ipairs(RL) do r.hit = 1 end
+	end
+	local function onFinal(t)
+		S.fin = true
+		S.flashK = 1
+		S.shake = 0.9
+		S.punch = 0.12
+		S.sk = 1
+		ring(S.sx / 2, S.sy * 0.45, GOLD, 1.6, S.U * 1.1, 4)
+		ring(S.sx / 2, S.sy * 0.45, WHITE, 1.1, S.U * 0.7, 3)
+		ring(S.sx / 2, S.sy * 0.45, ICE, 0.8, S.U * 0.4, 2)
+		burst(t, 1, GOLD, S.sx / 2, S.sy * 0.45)
+		sfx("glass", 0.1, 1.5)
+		sfx("snap", 0.1, 0.7)
+	end
+	local EV = {
+		{12, function(t)
+			S.flashK, S.shake, S.punch, S.sk = 0.6, 0.5, 0.07, 1
+			ring(S.cx, S.cy, ICE, 1.4, S.U * 0.7, 3) ring(S.cx, S.cy, CYAN, 1.0, S.U * 0.45, 2) ring(S.cx, S.cy, WHITE, 0.7, S.U * 0.25, 2)
+			burst(t, 0.7, CYAN, S.cx, S.cy)
+			sfx("glass", 0.08, 1.2) sfx("snap", 0.08, 0.7)
+		end},
+		{27, function(t) S.sk = max(S.sk, 0.5) ring(S.cx, S.cy, ICE, 1.2, S.U * 0.8, 2) end},
+		{45, function(t) S.flashK = max(S.flashK, 0.2) S.sk = max(S.sk, 0.5) ring(S.cx, S.cy, GOLD, 1.2, S.U * 0.6, 2) end},
+		{65, function(t) S.flashK = max(S.flashK, 0.25) S.punch = 0.03 S.sk = 0.8 ring(S.cx, S.cy, CYAN, 1.2, S.U * 0.7, 2) ring(S.cx, S.cy, ICE, 0.9, S.U * 0.4, 2) end},
+		{85, function(t) S.flashK = max(S.flashK, 0.25) S.sk = 1 ring(S.cx, S.cy, CYAN, 1.5, S.U * 0.9, 3) ring(S.cx, S.cy, ICE, 1.1, S.U * 0.6, 2) ring(S.cx, S.cy, WHITE, 0.8, S.U * 0.3, 2) end},
+		{105, function(t) S.flashK = max(S.flashK, 0.2) ring(S.sx / 2, S.sy * 0.45, GOLD, 1.3, S.U * 0.7, 2) end},
+		{PEAK, onPeak},
+		{FIN, onFinal},
+	}
+
+	local function audioGain(t)
+		local g = ss(0, 6, t) * (1 - 0.8 * ss(116.5, 120, t))
+		if S.skipT then g = g * (1 - c01((t - S.skipT) / 0.35)) end
+		return g
+	end
+
+	local function loop()
+		do
+			local w0, lim = os.clock(), opts.ReadyWait or 8
+			E.term.Text = ""
+			while opts.Ready and not opts.Ready() and os.clock() - w0 < lim and not S.skipped do
+				if opts.Failed and opts.Failed() then break end
+				local prog = SONG.Progress
+				E.term.Text = "> LOADING SOUNDTRACK" .. string.rep(".", floor(os.clock() * 3) % 4) .. ((type(prog) == "number" and prog > 0 and prog < 1) and string.format("  %d%%", floor(prog * 100)) or "")
+				E.term.TextTransparency = 0.3
+				RunService.Heartbeat:Wait()
+			end
+			if opts.Failed and opts.Failed() then
+				S.fallback = true
+				return
+			end
+			E.term.Text = ""
+			E.world.Visible = true
+			S.began = os.clock()
+			S.wall0 = S.began
+		end
+		local okV, vv = pcall(function() return Music.Volume end)
+		S.v0 = (okV and type(vv) == "number" and vv > 0.01) and vv or 1
+		while true do
+			local dt = math.min(RunService.Heartbeat:Wait(), 0.1)
+			local t = os.clock() - S.began
+			do
+				local okP, pos, playing = pcall(function() return Music.TimePosition, Music.IsPlaying end)
+				if okP and playing and type(pos) == "number" and pos > 0.05 then
+					local now = os.clock()
+					if pos ~= S.lastPos then S.lastPos, S.lastPosAt = pos, now end
+					local est = pos + math.min(now - (S.lastPosAt or now), 0.1)
+					local d = est - t
+					if abs(d) > 0.25 then S.began = now - est else S.began = S.began - d * 0.35 end
+					t = now - S.began
+				end
+			end
+			if S.skipped and S.tEnd == DUR then
+				S.tEnd = t + 0.35
+				S.skipT = t
+			end
+			if t >= S.tEnd or t > DUR + 8 or os.clock() - S.wall0 > DUR + 10 then break end
+			S.t = t
+			local sz = stage.AbsoluteSize
+			local sx, sy = max(sz.X, 160), max(sz.Y, 120)
+			S.sx, S.sy, S.U = sx, sy, min(sx, sy)
+			S.cx, S.cy = sx / 2, sy / 2
+			geom()
+			-- live loudness (music reactive, normalised); the choreography never depends on it
+			local okL, raw = pcall(function() return Music.PlaybackLoudness end)
+			raw = (okL and type(raw) == "number") and raw or 0
+			S.pk = max(S.pk * exp(-0.04 * dt), raw, 60)
+			S.lv = lerp(S.lv, c01(raw / S.pk), 1 - exp(-9 * dt))
+			local et = 0.1 * ss(0, 12, t) + 0.2 * ss(12, 45, t) + 0.22 * ss(45, 85, t) + 0.3 * ss(85, 105, t) + 0.18 * ss(105, 113, t)
+			S.en = lerp(S.en, et + 0.12 * S.lv * ss(10, 40, t), 1 - exp(-3 * dt))
+			S.kick = S.kick * exp(-8 * dt)
+			local beat = false
+			if S.lv - (S.lastLv or 0) > 0.12 and t > 20 then S.kick = max(S.kick, 0.5 * S.lv) beat = true end
+			S.lastLv = S.lv
+			if t > 14 and t < 114 and not beat and t - S.lastBeat > 2.6 then beat = true S.kick = max(S.kick, 0.4) end
+			if beat and t - S.lastBeat > 0.35 then
+				S.lastBeat = t
+				if t >= 85 then S.pulseT = t end
+				if t > 14 and t < 105 then ring(S.cx, S.cy, (t >= 85) and ICE or CYAN, 1.1, S.U * (0.3 + 0.25 * ss(40, 100, t)), 1.5) end
+			end
+			S.shake = S.shake * exp(-9 * dt)
+			S.flashK = S.flashK * exp(-6 * dt)
+			S.punch = S.punch * exp(-5 * dt)
+			S.sk = S.sk * exp(-1.6 * dt)
+			S.wa = 1 - 0.6 * ss(105, 107.5, t) + 0.25 * (t > PEAK and exp(-(t - PEAK) * 1.4) or 0)
+			S.tint = ss(104, 113, t) * 0.9
+			-- camera: keyframed path, smoothed so every move eases in and settles
+			do
+				local tz, tx, ty, tr = camTarget(t)
+				local cam = S.cam
+				if not cam then cam = {z = tz, x = tx, y = ty, r = tr} S.cam = cam end
+				local kc = 1 - exp(-2.6 * dt)
+				cam.z, cam.x, cam.y, cam.r = lerp(cam.z, tz, kc), lerp(cam.x, tx, kc), lerp(cam.y, ty, kc), lerp(cam.r, tr, kc)
+				S.px, S.py = cam.x * S.U, cam.y * S.U
+			end
+			for _, e in ipairs(EV) do
+				if not e[3] and t >= e[1] then e[3] = true guard("event", e[2], t) end
+			end
+			for _, r in ipairs(RL) do
+				if r.hit > 0.002 then r.hit = r.hit * exp(-5 * dt) else r.hit = 0 end
+				if r.lockT then
+					local s = t - r.lockT
+					if r.jdx and s < 0.9 then
+						local e = exp(-7 * s) * cos(s * 24)
+						r.jx, r.jy = r.jdx * e, r.jdy * e
+					else
+						r.jx, r.jy = 0, 0
+					end
+					if s >= 0.9 then r.lockT = nil end
+				end
+				if r.lkT then r.lk = eob(c01((t - r.lkT) / 0.45)) end
+				if r.gl >= 0 then
+					r.gl = r.gl + dt / 0.75
+					if r.gl > 1 then r.gl = -1 end
+				end
+			end
+			for _, k in ipairs(ALL) do
+				if not k.done and t >= k.t0 then guard("task", applyTask, k, t) end
+			end
+			if t >= 113.4 then
+				SUBTXT.tp = c01((t - 113.4) / 1.9)
+				SUBTXT.act = SUBTXT.tp < 1
+			end
+			guard("scene", updScene, t, dt)
+			for _, r in ipairs(RL) do
+				if r.p > 0 or r.fp > 0 or r.sl > 0 or r.key ~= -1 then guard("rect", drawRect, r) end
+			end
+			guard("title", updTitle, t, dt)
+			for _, o in ipairs(TL) do guard("text", drawText, o, t) end
+			local cnt = {sc = 0, bd = 0, an = 0, rl = 0}
+			guard("agents", function() cnt = updAgents(t, dt) end)
+			guard("beams", updBeams, t)
+			guard("net", updNet, t, dt)
+			guard("rings", updRings, t)
+			guard("burst", updBurst, t)
+			-- apply the camera
+			do
+				local cam = S.cam
+				E.ws.Scale = max(cam.z * (1 + S.punch) + 0.012 * S.kick, 0.2)
+				local roll = (1.2 * sin(t * 0.3) * ss(30, 50, t) + 2 * sin(t * 0.5) * ss(85, 100, t)) * (1 - ss(106, 112, t))
+				E.world.Rotation = cam.r + roll
+				local shk = S.shake * S.U * 0.012
+				E.world.Position = UDim2.new(0.5, S.px + (math.random() - 0.5) * 2 * shk, 0.5, S.py + (math.random() - 0.5) * 2 * shk)
+			end
+			-- overlays
+			local ho = ss(117.6, 120, t)
+			local gf = 1 - ho
+			local lb = sy * (0.11 - 0.07 * ss(3, 30, t) + 0.03 * ss(104, 108, t) - 0.03 * ss(108, PEAK, t)) * (1 - ss(116, 119, t))
+			E.lbT.Size = UDim2.new(1, 0, 0, floor(max(lb, 0)))
+			E.lbB.Size = UDim2.new(1, 0, 0, floor(max(lb, 0)))
+			local fl = S.flashK
+			if S.skipT then fl = max(fl, c01((t - S.skipT) / 0.35)) end
+			E.flash.BackgroundTransparency = 1 - c01(fl) * 0.9 * (S.skipT and 1 or gf)
+			for i = 1, 4 do E.vg[i].BackgroundTransparency = 1 - (0.55 + 0.25 * S.en + 0.08 * S.kick) * gf end
+			local ci = 1
+			for i = 1, #CAPS do if t >= CAPS[i][1] then ci = i end end
+			if ci ~= S.ci then S.ci = ci S.wipeT = t end
+			local c0 = CAPS[ci][1]
+			E.cap.Text = CAPS[ci][2]
+			E.cap.TextTransparency = 1 - ss(c0 + 0.1, c0 + 0.9, t) * (1 - ss(c0 + 3.4, c0 + 4.4, t)) * 0.85 * gf
+			E.cap.Position = UDim2.fromOffset(24 + 130, sy - lb - 20)
+			E.cap.Size = UDim2.fromOffset(280, 16)
+			E.tc.Text = string.format("SWARM REBUILD  //  %02d:%02d  //  S%02d  B%02d  A%02d  R%02d", floor(t / 60), floor(t) % 60, cnt.sc, cnt.bd, cnt.an, cnt.rl)
+			E.tc.TextTransparency = 1 - 0.55 * ss(1, 4, t) * gf
+			E.tc.Position = UDim2.fromOffset(24 + 190, lb + 20)
+			E.tc.Size = UDim2.fromOffset(380, 16)
+			E.skip.Visible = t < 116
+			-- hand-off: the whole cinematic dissolves into the real interface
+			stage.BackgroundTransparency = ho
+			E.bg.BackgroundTransparency = ho
+			if E.cgOK then E.world.GroupTransparency = ho end
+			E.world.Visible = ho < 0.995
+			pcall(function() Music.Volume = S.v0 * audioGain(t) end)
+		end
+	end
+
+	local ok, err = pcall(function()
+		build()
+		loop()
+	end)
+	if not ok then warn("[UhhhhhhFX] intro 14 error (continuing): " .. tostring(err)) end
+	for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+	pcall(function() stage:Destroy() end)
+	FX.IntroCamBusy = false
+	-- gentle return of the soundtrack to full level after the closing fade
+	if S.v0 then
+		task.spawn(function()
+			local from = 0
+			pcall(function() from = Music.Volume end)
+			local t0 = os.clock()
+			local dur = S.skipped and 0.6 or 3
+			while os.clock() - t0 < dur do
+				pcall(function() Music.Volume = lerp(from, S.v0, ss(0, dur, os.clock() - t0)) end)
+				RunService.Heartbeat:Wait()
+			end
+			pcall(function() Music.Volume = S.v0 end)
+		end)
+	end
+	if S.fallback then return "fallback" end
+	FX.IntroActive = false
+	return true
+end
+]==]
+function FX.Intro14(MainFrame, Music, _, opts)
+	if FX.Intro14Fn == nil then
+		FX.Intro14Fn = false
+		local ls = loadstring or load
+		if ls then
+			local okC, fn, cerr = pcall(ls, FX.Intro14Src, "=Intro14")
+			if okC and type(fn) == "function" then
+				local okR, f2 = pcall(fn, Util, FX)
+				if okR and type(f2) == "function" then FX.Intro14Fn = f2 end
+			else
+				warn("[UhhhhhhFX] intro 14 unavailable: " .. tostring(cerr or fn))
+			end
+		end
+	end
+	if not FX.Intro14Fn then return "fallback" end
+	return FX.Intro14Fn(MainFrame, Music, _, opts)
+end
 function FX.BuildLoader(host, env)
 local L = {Visible = false, p = 0, target = 0}
 local showToken = 0
@@ -22235,6 +24002,13 @@ return {
 }
 end,
 })
+Util.Intro14Song = Util.SongLoader({
+Title = "GTA V Pause Menu - Main Menu Music (OST)", File = "gta_v_pause_menu_main_menu_music_repo.mp3", Bpm = 120.0, Offset = 0.0, MinBytes = 100000, Remote = {Name = "GTA V Pause Menu Main Menu Music - OST Grand Theft Auto.mp3", Match = {"gta v pause menu"}},
+Data = function()
+return {
+}
+end,
+})
 local UISound = {}
 UISound.Music = Util.Instance("Sound", UIMainFrame)
 UISound.Music.Looped = false
@@ -22310,7 +24084,7 @@ MusicPlayer.PlayDefault = function()
 if MusicPlayer.UserPicked then return end
 local ok = Util.ThemeSong.Ensure(40)
 if MusicPlayer.UserPicked then return end
-local IS = (SaveData.IntroStyle == 13 and Util.Intro13Song) or (SaveData.IntroStyle == 12 and Util.Intro12Song) or (SaveData.IntroStyle == 11 and Util.Intro11Song) or (SaveData.IntroStyle == 10 and Util.Intro10Song) or (SaveData.IntroStyle == 9 and Util.Intro9Song) or (SaveData.IntroStyle == 8 and Util.Intro8Song) or nil
+local IS = (SaveData.IntroStyle == 14 and Util.Intro14Song) or (SaveData.IntroStyle == 13 and Util.Intro13Song) or (SaveData.IntroStyle == 12 and Util.Intro12Song) or (SaveData.IntroStyle == 11 and Util.Intro11Song) or (SaveData.IntroStyle == 10 and Util.Intro10Song) or (SaveData.IntroStyle == 9 and Util.Intro9Song) or (SaveData.IntroStyle == 8 and Util.Intro8Song) or nil
 if IS then
 local okS, idxS = pcall(function()
 if not IS.Ensure(60) then return nil end
@@ -38939,6 +40713,7 @@ Util.IntroRunning = true
 Util.IntroMusicReady = false
 Util.IntroTheme = false
 Util.Intro2Failed = false
+local intro14 = SaveData.IntroStyle == 14 and Util.FX.Intro14 ~= nil and Util.Intro14Song ~= nil
 local intro12 = SaveData.IntroStyle == 12 and Util.FX.Intro12 ~= nil and Util.Intro12Song ~= nil
 local intro11 = SaveData.IntroStyle == 11 and Util.FX.Intro11 ~= nil and Util.Intro11Song ~= nil
 local intro10 = SaveData.IntroStyle == 10 and Util.FX.Intro10 ~= nil and Util.Intro10Song ~= nil
@@ -38949,10 +40724,10 @@ local intro6 = SaveData.IntroStyle == 6 and Util.FX.Intro6 ~= nil and Util.Intro
 local intro5 = SaveData.IntroStyle == 5 and Util.FX.Intro5 ~= nil and Util.Intro5Song ~= nil
 local intro4 = SaveData.IntroStyle == 4 and Util.FX.Intro4 ~= nil and Util.Intro4Song ~= nil
 local intro3 = SaveData.IntroStyle == 3 and Util.FX.Intro3 ~= nil and Util.Intro3Song ~= nil
-local intro2 = (SaveData.IntroStyle == 13 and Util.FX.Intro13 ~= nil and Util.Intro13Song ~= nil) or intro12 or intro11 or intro10 or intro9 or intro8 or intro7 or intro6 or intro5 or intro4 or intro3 or (SaveData.IntroStyle == 2 and Util.FX.Intro2 ~= nil and Util.Intro2Song ~= nil)
+local intro2 = intro14 or (SaveData.IntroStyle == 13 and Util.FX.Intro13 ~= nil and Util.Intro13Song ~= nil) or intro12 or intro11 or intro10 or intro9 or intro8 or intro7 or intro6 or intro5 or intro4 or intro3 or (SaveData.IntroStyle == 2 and Util.FX.Intro2 ~= nil and Util.Intro2Song ~= nil)
 Util.FX.IntroActive = true
 pcall(Util.PlayCredits)
-local introSong = ((SaveData.IntroStyle == 13 and Util.FX.Intro13 ~= nil and Util.Intro13Song ~= nil) and Util.Intro13Song) or (intro12 and Util.Intro12Song) or (intro11 and Util.Intro11Song) or (intro10 and Util.Intro10Song) or (intro9 and Util.Intro9Song) or (intro8 and Util.Intro8Song) or (intro7 and Util.Intro7Song) or (intro6 and Util.Intro6Song) or (intro5 and Util.Intro5Song) or (intro4 and Util.Intro4Song) or (intro3 and Util.Intro3Song) or Util.Intro2Song
+local introSong = (intro14 and Util.Intro14Song) or ((SaveData.IntroStyle == 13 and Util.FX.Intro13 ~= nil and Util.Intro13Song ~= nil) and Util.Intro13Song) or (intro12 and Util.Intro12Song) or (intro11 and Util.Intro11Song) or (intro10 and Util.Intro10Song) or (intro9 and Util.Intro9Song) or (intro8 and Util.Intro8Song) or (intro7 and Util.Intro7Song) or (intro6 and Util.Intro6Song) or (intro5 and Util.Intro5Song) or (intro4 and Util.Intro4Song) or (intro3 and Util.Intro3Song) or Util.Intro2Song
 Util.FX.IntroActive = true
 task.spawn(function()
 pcall(function()
@@ -39002,7 +40777,7 @@ Util.IntroMusicReady = true
 end)
 local okAll, errAll
 if intro2 then
-okAll, errAll = pcall(((SaveData.IntroStyle == 13 and Util.FX.Intro13 ~= nil and Util.Intro13Song ~= nil) and Util.FX.Intro13) or (intro12 and Util.FX.Intro12) or (intro11 and Util.FX.Intro11) or (intro10 and Util.FX.Intro10) or (intro9 and Util.FX.Intro9) or (intro8 and Util.FX.Intro8) or (intro7 and Util.FX.Intro7) or (intro6 and Util.FX.Intro6) or (intro5 and Util.FX.Intro5) or (intro4 and Util.FX.Intro4) or (intro3 and Util.FX.Intro3) or Util.FX.Intro2, UIMainFrame, UISound.Music, nil, {
+okAll, errAll = pcall((intro14 and Util.FX.Intro14) or ((SaveData.IntroStyle == 13 and Util.FX.Intro13 ~= nil and Util.Intro13Song ~= nil) and Util.FX.Intro13) or (intro12 and Util.FX.Intro12) or (intro11 and Util.FX.Intro11) or (intro10 and Util.FX.Intro10) or (intro9 and Util.FX.Intro9) or (intro8 and Util.FX.Intro8) or (intro7 and Util.FX.Intro7) or (intro6 and Util.FX.Intro6) or (intro5 and Util.FX.Intro5) or (intro4 and Util.FX.Intro4) or (intro3 and Util.FX.Intro3) or Util.FX.Intro2, UIMainFrame, UISound.Music, nil, {
 Song = introSong, Preview = preview, ClickSnd = UISound.Click, ReadyWait = 70,
 Ready = function() return Util.IntroMusicReady end,
 Failed = function() return Util.Intro2Failed end,
@@ -60321,9 +62096,9 @@ end)
 UI.CreateSeparator(MainPage)
 end
 end) then warn("[v93] owner broadcast failed to build") end
-UI.CreateDropdown(MainPage, "Intro", {"Original", "Moonlight", "Jealousy", "lil peep", "Liquid Smooth", "Thriller", "Perfect Face", "The Aura Farmer", "In The End", "Impostor Syndrome", "Paparazzi", "Baby One More Time", "Survivor"}, (SaveData.IntroStyle == 13 and 13) or (SaveData.IntroStyle == 12 and 12) or (SaveData.IntroStyle == 11 and 11) or (SaveData.IntroStyle == 10 and 10) or (SaveData.IntroStyle == 9 and 9) or (SaveData.IntroStyle == 8 and 8) or (SaveData.IntroStyle == 7 and 7) or (SaveData.IntroStyle == 6 and 6) or (SaveData.IntroStyle == 5 and 5) or (SaveData.IntroStyle == 4 and 4) or (SaveData.IntroStyle == 3 and 3) or (SaveData.IntroStyle == 2 and 2) or 1).Changed:Connect(function(value)
-SaveData.IntroStyle = (value == 13 and 13) or (value == 12 and 12) or (value == 11 and 11) or (value == 10 and 10) or (value == 9 and 9) or (value == 8 and 8) or (value == 7 and 7) or (value == 6 and 6) or (value == 5 and 5) or (value == 4 and 4) or (value == 3 and 3) or (value == 2 and 2) or 1
-local song = (value == 13 and Util.Intro13Song) or (value == 12 and Util.Intro12Song) or (value == 11 and Util.Intro11Song) or (value == 10 and Util.Intro10Song) or (value == 9 and Util.Intro9Song) or (value == 8 and Util.Intro8Song) or (value == 7 and Util.Intro7Song) or (value == 6 and Util.Intro6Song) or (value == 5 and Util.Intro5Song) or (value == 4 and Util.Intro4Song) or (value == 3 and Util.Intro3Song) or (value == 2 and Util.Intro2Song) or nil
+UI.CreateDropdown(MainPage, "Intro", {"Original", "Moonlight", "Jealousy", "lil peep", "Liquid Smooth", "Thriller", "Perfect Face", "The Aura Farmer", "In The End", "Impostor Syndrome", "Paparazzi", "Baby One More Time", "Survivor", "Swarm Rebuild"}, (SaveData.IntroStyle == 14 and 14) or (SaveData.IntroStyle == 13 and 13) or (SaveData.IntroStyle == 12 and 12) or (SaveData.IntroStyle == 11 and 11) or (SaveData.IntroStyle == 10 and 10) or (SaveData.IntroStyle == 9 and 9) or (SaveData.IntroStyle == 8 and 8) or (SaveData.IntroStyle == 7 and 7) or (SaveData.IntroStyle == 6 and 6) or (SaveData.IntroStyle == 5 and 5) or (SaveData.IntroStyle == 4 and 4) or (SaveData.IntroStyle == 3 and 3) or (SaveData.IntroStyle == 2 and 2) or 1).Changed:Connect(function(value)
+SaveData.IntroStyle = (value == 14 and 14) or (value == 13 and 13) or (value == 12 and 12) or (value == 11 and 11) or (value == 10 and 10) or (value == 9 and 9) or (value == 8 and 8) or (value == 7 and 7) or (value == 6 and 6) or (value == 5 and 5) or (value == 4 and 4) or (value == 3 and 3) or (value == 2 and 2) or 1
+local song = (value == 14 and Util.Intro14Song) or (value == 13 and Util.Intro13Song) or (value == 12 and Util.Intro12Song) or (value == 11 and Util.Intro11Song) or (value == 10 and Util.Intro10Song) or (value == 9 and Util.Intro9Song) or (value == 8 and Util.Intro8Song) or (value == 7 and Util.Intro7Song) or (value == 6 and Util.Intro6Song) or (value == 5 and Util.Intro5Song) or (value == 4 and Util.Intro4Song) or (value == 3 and Util.Intro3Song) or (value == 2 and Util.Intro2Song) or nil
 if song then task.spawn(song.Ensure, 0) end
 end)
 Util.FCMark("music")
