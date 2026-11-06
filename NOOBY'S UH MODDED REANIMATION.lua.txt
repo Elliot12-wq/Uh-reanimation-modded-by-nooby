@@ -1,4 +1,7 @@
-if _G.UhhhhhhLoaded == "V10" then return end
+if _G.UhhhhhhLoaded == "V10" then
+	warn("[Nooby's UH Reanimation] already loaded in this session (V10) - rejoin the game to load it again")
+	return
+end
 local UH_SRC = [============[
 --[[
  ...    :::::        ::        ::        ::        ::        ::        
@@ -18830,6 +18833,7 @@ tween(flash, 0.3, Quad, EOut, {BackgroundTransparency = 1})
 tween(hs, 0.08, Quad, EOut, {Transparency = 0.1})
 end)
 end)
+end
 end
 function FX.Polish(env, win, content, topBar)
 local S = FX.Settings
@@ -84729,13 +84733,26 @@ while isok do task.wait() end
 end
 end end
 end
-d()
 _G.UhhhhhhLoaded = UhhhhhhVersion
+task.spawn(function()
+local okD, errD = pcall(d)
+if not okD then warn("[UhAdmin] optional startup extras failed (script keeps running): " .. tostring(errD)) end
+end)
 ]============]
 do
 local g = (getgenv and getgenv()) or _G
 g.UhhhhhhSource = UH_SRC
-local f, e = loadstring(UH_SRC)
-if not f then error("UH Admin failed to compile: " .. tostring(e), 0) end
-return f()
+local loader = loadstring or load
+if type(loader) ~= "function" then error("UH Admin cannot start: this executor has no loadstring/load", 0) end
+local okL, f, e = pcall(loader, UH_SRC, "=UhAdmin")
+if not okL then okL, f, e = pcall(loader, UH_SRC) end
+if not okL then error("UH Admin loader error: " .. tostring(f), 0) end
+if type(f) ~= "function" then error("UH Admin failed to compile: " .. tostring(e or f), 0) end
+local ok, err = xpcall(f, function(m)
+return (debug and debug.traceback) and debug.traceback(tostring(m), 2) or tostring(m)
+end)
+if not ok then
+warn("[UH Admin] fatal startup error:\n" .. tostring(err))
+error(tostring(err), 0)
+end
 end
