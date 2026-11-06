@@ -129,6 +129,11 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 startup cache, UhhhhhhReanim/FastExecution.cache, remembers which bundled songs / UI graphics were already verified so the next launch
                 skips re-reading them; rebuilt automatically when missing / corrupt / outdated, never stores code or player data, OFF = normal startup)
        Custom mod (v323: TELEPORT AUTO EXECUTE - the file / URL based Auto Execute is replaced by a queue_on_teleport manager (Util.TeleportAutoExec) that queues this script's own embedded source before every internal teleport; no file, link or manual execution needed)
+       Custom mod (v324: UI REMASTER PASS - glow frames follow their window through property-specific signals instead of Instance.Changed (no more
+                glow re-layout on every colour / transparency write), button halo + flash overlays are built lazily on first hover / press and can no
+                longer be stacked twice, window polish loops disconnect themselves when the window is destroyed, notification width clamps to the
+                screen on phones, UI ANIMATION CACHE is versioned (generated files rebuilt when outdated, UI/customization.json never touched),
+                folder checks run once per session and identical customization snapshots are not rewritten)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -1697,19 +1702,35 @@ end
 -- every UI customization key (theme, colours, font, scale, particles, trail, glow, intro / triangle / notification options ...) is mirrored to disk
 -- (debounced). It is only read back when the save holds NO customization at all (wiped / new save file), so it never overrides a live setting.
 Cache.UIRoot = "UhhhhhhReanim/Assets/UI ANIMATION CACHE"
+Cache.UIVer = 2
+Cache.UIGenerated = {"animations.json"}
 Cache.UISkip = {LowEnd = true, PerfProfile = true, FastExec = true, AutoReport = true, CModOn = true, CModSay = true, CModConf = true}
 function Cache.UIPath() return Cache.UIRoot .. "/UI/customization.json" end
 function Cache.UIFolders()
+if Cache.UIDirs ~= nil then return Cache.UIDirs end
 if not fsOk() then return false end
 local ok = pcall(function()
 for _, d in ipairs({"UhhhhhhReanim", "UhhhhhhReanim/Assets", Cache.UIRoot, Cache.UIRoot .. "/UI"}) do
 if not isfolder(d) then makefolder(d) end
 end
 local meta = Cache.UIRoot .. "/cache.json"
-if not isfile(meta) then
-writefile(meta, '{"v":1,"note":"UI ANIMATION CACHE - delete this folder to rebuild it"}')
+local current = false
+if isfile(meta) then
+local okR, raw = pcall(readfile, meta)
+current = okR and type(raw) == "string" and raw:find('"v":' .. Cache.UIVer .. ",", 1, true) ~= nil
+end
+if not current then
+-- outdated / missing / corrupt: only generated files are dropped, UI/customization.json (the saved look) is never touched
+if type(delfile) == "function" then
+for _, f in ipairs(Cache.UIGenerated) do
+local p = Cache.UIRoot .. "/" .. f
+if isfile(p) then pcall(delfile, p) end
+end
+end
+writefile(meta, '{"v":' .. Cache.UIVer .. ',"note":"UI ANIMATION CACHE - generated assets only, rebuilt automatically when outdated; UI/customization.json is your saved look and is never rebuilt"}')
 end
 end)
+Cache.UIDirs = ok
 return ok
 end
 function Cache.UILoad()
@@ -1744,9 +1765,12 @@ if type(v) ~= type(d) then v = d end
 cfg[k] = v
 end
 end
-pcall(function()
-writefile(Cache.UIPath(), game:GetService("HttpService"):JSONEncode({v = 1, note = "UI customization snapshot (restored only when the save has no customization)", cfg = cfg}))
+local okE, enc = pcall(function()
+return game:GetService("HttpService"):JSONEncode({v = 1, note = "UI customization snapshot (restored only when the save has no customization)", cfg = cfg})
 end)
+if not okE or enc == Cache.UILast then return end
+local okW = pcall(writefile, Cache.UIPath(), enc)
+if okW then Cache.UILast = enc else Cache.UIDirs = nil end
 end
 function Cache.UISchedule()
 if Cache.UIPending or not Cache.UIReady or not Cache.Enabled() then return end
@@ -18745,27 +18769,32 @@ end
 do
 local orig = FX.EnhanceButton
 function FX.EnhanceButton(b)
+if b:GetAttribute("FXH") then return end
+b:SetAttribute("FXH", true)
 orig(b)
 pcall(function()
 local bc = b:FindFirstChildOfClass("UICorner")
+local halo, hs, flash
 local function corner(f)
 local c = Util.Instance("UICorner", f)
 c.CornerRadius = bc and bc.CornerRadius or UDim.new(0, FX.Cfg.UIRound)
 return c
 end
-local halo = Util.Instance("Frame", b)
+local function ensure()
+if halo then return end
+halo = Util.Instance("Frame", b)
 halo.BackgroundTransparency = 1
 halo.BorderSizePixel = 0
 halo.Size = UDim2.fromScale(1, 1)
 halo.ZIndex = 8
 halo.Interactable = false
 local hc = corner(halo)
-local hs = Util.Instance("UIStroke", halo)
+hs = Util.Instance("UIStroke", halo)
 hs.Thickness = 1.5
 hs.Transparency = 1
 hs.Color = WHITE
 hs.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-local flash = Util.Instance("Frame", b)
+flash = Util.Instance("Frame", b)
 flash.BackgroundColor3 = WHITE
 flash.BackgroundTransparency = 1
 flash.BorderSizePixel = 0
@@ -18779,25 +18808,28 @@ hc.CornerRadius = bc.CornerRadius
 fc.CornerRadius = bc.CornerRadius
 end)
 end
+end
 local function live()
 return FX.Settings.Transitions and not FX.IsLowEnd()
 end
 b.MouseEnter:Connect(function()
 if not live() then return end
+ensure()
 hs.Color = FX.GetColor and FX.GetColor() or WHITE
 tween(hs, 0.22, Quad, EOut, {Transparency = 0.4})
 end)
 b.MouseLeave:Connect(function()
+if not hs then return end
 tween(hs, 0.35, Quad, EOut, {Transparency = 1})
 end)
 b.MouseButton1Down:Connect(function()
 if not live() then return end
+ensure()
 flash.BackgroundTransparency = 0.8
 tween(flash, 0.3, Quad, EOut, {BackgroundTransparency = 1})
 tween(hs, 0.08, Quad, EOut, {Transparency = 0.1})
 end)
 end)
-end
 end
 function FX.Polish(env, win, content, topBar)
 local S = FX.Settings
@@ -18922,18 +18954,20 @@ dragging = true
 tween(rs, 0.2, Quad, EOut, {Thickness = 3, Transparency = 0})
 end
 end)
-UserInputService.InputEnded:Connect(function(i)
+local endConn = UserInputService.InputEnded:Connect(function(i)
 local ty = i.UserInputType
 if dragging and (ty == Enum.UserInputType.MouseButton1 or ty == Enum.UserInputType.Touch) then
 dragging = nil
 tween(rs, 0.45, Quint, EOut, {Thickness = 1.5, Transparency = 0.15})
 end
 end)
+pcall(function() win.Destroying:Connect(function() endConn:Disconnect() end) end)
 end
 local acc, lastCol = 0, nil
 local spA, spx, spy = 0, 0, 0
 local mouseOK = UserInputService.MouseEnabled and not UserInputService.TouchEnabled
-RunService.RenderStepped:Connect(function(dt)
+local stepConn
+stepConn = RunService.RenderStepped:Connect(function(dt)
 if not win.Parent then return end
 acc = acc + dt
 local gap = 1 / 30
@@ -18983,6 +19017,7 @@ c.BackgroundTransparency = 1 - (1 - spB[i]) * spA
 end
 end
 end)
+pcall(function() win.Destroying:Connect(function() if stepConn then stepConn:Disconnect() stepConn = nil end end) end)
 end
 function FX.Chrome(env)
 local win, content = env.UIMainWindow, env.WindowContent
@@ -56248,7 +56283,18 @@ GloF.Visible = obj.Visible
 GloF.ZIndex = obj.ZIndex - 2
 end
 update()
-obj.Changed:Connect(update)
+do
+local lA, lP, lS, lV, lZ = obj.AnchorPoint, obj.Position, obj.Size, obj.Visible, obj.ZIndex
+local function sync()
+local a, p, sz, v, z = obj.AnchorPoint, obj.Position, obj.Size, obj.Visible, obj.ZIndex
+if a == lA and p == lP and sz == lS and v == lV and z == lZ then return end
+lA, lP, lS, lV, lZ = a, p, sz, v, z
+update()
+end
+for _, pn in ipairs({"AnchorPoint", "Position", "Size", "Visible", "ZIndex"}) do
+Util.LinkDestroyI2C(obj, obj:GetPropertyChangedSignal(pn):Connect(sync))
+end
+end
 local tex = Util.GetCDNAsset("lightinursoul.graphic.png")
 for x=0, 2 do
 for y=0, 2 do
@@ -57315,17 +57361,18 @@ if uinotif.Exp ~= (th == 1) then uinotif.Exp = th == 1 pcall(Util.FX.MotionBlur,
 if ia.x > 0.012 or nEnter then
 UINotifyFrame.Visible = true
 local nh = math.max(30, CFG.NotifSize + 12)
+local nwidth = math.min(CFG.NotifWidth, math.max(120, UIMainFrame.AbsoluteSize.X - 24))
 if uinotif.Wrap then
-local wkey = tostring(uinotif.Text) .. "|" .. CFG.NotifSize .. "|" .. CFG.NotifWidth
+local wkey = tostring(uinotif.Text) .. "|" .. CFG.NotifSize .. "|" .. nwidth
 if uinotif.WrapKey ~= wkey then
 uinotif.WrapKey = wkey
-local wok, wsz = pcall(TextService.GetTextSize, TextService, tostring(uinotif.Text), CFG.NotifSize, Enum.Font.Code, Vector2.new(CFG.NotifWidth - 12, 1000))
+local wok, wsz = pcall(TextService.GetTextSize, TextService, tostring(uinotif.Text), CFG.NotifSize, Enum.Font.Code, Vector2.new(nwidth - 12, 1000))
 uinotif.WrapH = wok and math.min(wsz.Y + 14, 160) or nil
 end
 if uinotif.WrapH then nh = math.max(nh, uinotif.WrapH) end
 end
 NotifyText.TextWrapped = uinotif.Wrap == true
-local fullW = CFG.NotifWidth
+local fullW = nwidth
 local pillW, pillH = math.min(92, fullW), math.min(26, nh)
 local ax, wx, hx = math.max(ia.x, 0), math.max(iw.x, 0), math.max(ih.x, 0)
 UINotifyFrame.Size = UDim2.fromOffset(math.max(2, (pillW + (fullW - pillW) * wx) * ax), math.max(2, (pillH + (nh - pillH) * hx) * ax))
@@ -68414,7 +68461,7 @@ local cfgChar = Player.Character
 local cfgHum = cfgChar and cfgChar:FindFirstChildOfClass("Humanoid")
 local cfgIsR15 = cfgHum ~= nil and cfgHum.RigType == Enum.HumanoidRigType.R15
 if cfgIsR15 then
-table.insert(torsoOffsetNames, "11 - r15 hat reanim (R15 only)")
+table.insert(torsoOffsetNames, "R15 Reanimation")
 elseif HatReanimator.HatCollideMethod >= 10 then
 HatReanimator.HatCollideMethod = 6
 SaveData.Reanimator.HatsCollideMethod = 6
@@ -68424,7 +68471,7 @@ HatReanimator.HatCollideMethod = val - 1
 SaveData.Reanimator.HatsCollideMethod = val - 1
 end)
 if cfgIsR15 then
-UI.CreateText(parent, "11 - r15 hat reanim: R15 only.\nThis hat reanimation method is exclusively compatible with R15 characters.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "R15 Reanimation: R15 only.\nUses the R15 rig with Humanoid.ServerBreakJoints and is exclusively compatible with R15 characters.", 10, Enum.TextXAlignment.Center)
 end
 UI.CreateSwitch(parent, "Ensure All Hats", HatReanimator.IWantAllHats).Changed:Connect(function(val)
 HatReanimator.IWantAllHats = val
@@ -69733,21 +69780,52 @@ task.wait(0.5)
 return _counthats(hats)
 end,
 }
-local r15hat_lock = {}
-local r15hat_hrptp = hatcol_hrptpstab(CFrame.new(0, 0, -60))
+local r15reanim_lock = {}
+local r15reanim_torsooffset = CFrame.new(0, 0, -60)
+local function r15reanim_cleanup()
+for _,c in r15reanim_lock do c:Disconnect() end
+table.clear(r15reanim_lock)
+end
+local function r15reanim_hrptp(dt, character, Humanoid, RootPosition, RootPart, readystate)
+if Humanoid.RigType ~= Enum.HumanoidRigType.R15 then return end
+local rootcf = CFrame.new(RootPosition + Vector3.new(8, -8, 0)) * CFrame.Angles(math.pi * 0.5, 0, 0)
+if readystate > 0 then
+RootPart.CFrame = rootcf
+else
+RootPart.CFrame = rootcf + Vector3.new(0, 141, 0)
+end
+RootPart.AssemblyLinearVelocity, RootPart.AssemblyAngularVelocity = Vector3.new(0, 26, 0), Vector3.zero
+local torsorot = r15reanim_torsooffset.Rotation:Inverse()
+for _,v in character:GetDescendants() do
+if v:IsA("Motor6D") then
+local n = v.Name
+if n == "Root" then
+Util.SetMotor6DOffset(v, rootcf:ToObjectSpace(CFrame.new(RootPosition + Vector3.new(0, 0.75, 0)) * CFrame.Angles(math.pi * 0.5, 0, 0) * r15reanim_torsooffset))
+elseif n == "Neck" then
+Util.SetMotor6DOffset(v, torsorot * CFrame.new(math.random() * 0.05, 1.5, -10))
+elseif n == "RightShoulder" or n == "LeftShoulder" or n == "RightHip" or n == "LeftHip" then
+Util.SetMotor6DOffset(v, torsorot * CFrame.new(v.C0.X - v.C1.X, v.C0.Y - v.C1.Y, -0.5 + math.random() * 0.05))
+else
+Util.SetMotor6DTransform(v, CFrame.identity)
+end
+end
+end
+end
 HatCollideMethods[10] = {
 NoAnim = true,
 Wait1 = 0.1,
 Wait2 = 0.1,
-HRPTP = function(dt, character, Humanoid, RootPosition, RootPart, readystate)
-if Humanoid.RigType ~= Enum.HumanoidRigType.R15 then return end
-r15hat_hrptp(dt, character, Humanoid, RootPosition, RootPart, readystate)
-end,
+HRPTP = r15reanim_hrptp,
 State1 = function(character, Humanoid, hats)
-for _,c in r15hat_lock do c:Disconnect() end
-table.clear(r15hat_lock)
+r15reanim_cleanup()
+if Humanoid.RigType ~= Enum.HumanoidRigType.R15 then return end
+table.insert(r15reanim_lock, character.AncestryChanged:Connect(function()
+if not character:IsDescendantOf(workspace) then
+r15reanim_cleanup()
+end
+end))
 for _,v in hats do
-table.insert(r15hat_lock, v.Changed:Connect(function(p)
+table.insert(r15reanim_lock, v.Changed:Connect(function(p)
 if p == "BackendAccoutrementState" then
 SetAccoutrementState(v, BackendAccoutrementState.None)
 end
@@ -69755,16 +69833,27 @@ end))
 SetAccoutrementState(v, BackendAccoutrementState.InWorkspace)
 SetAccoutrementState(v, BackendAccoutrementState.None)
 end
-HatReanimator.Status.HatCollide = #hats .. " hats LOCKED (r15 hat reanim)!"
+HatReanimator.Status.HatCollide = #hats .. " hats LOCKED (R15 Reanimation)!"
 end,
 State2 = function(character, hats)
+local hum = character:FindFirstChildOfClass("Humanoid")
+if not hum or hum.RigType ~= Enum.HumanoidRigType.R15 then
+r15reanim_cleanup()
+return 0
+end
 local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("LowerTorso")
 if torso and torso.Parent then
+task.spawn(function()
+for _=1, 10 do
+if not torso.Parent or not hum.Parent then break end
+pcall(replicatesignal, hum.ServerBreakJoints)
+task.wait(0.2)
+end
+end)
 torso.AncestryChanged:Wait()
 end
 HatReanimator.Status.HatCollide = "R15 torso gone, re-equipping ASAP."
-for _,c in r15hat_lock do c:Disconnect() end
-table.clear(r15hat_lock)
+r15reanim_cleanup()
 for _,v in hats do
 SetAccoutrementState(v, BackendAccoutrementState.Equipped)
 end
@@ -69790,6 +69879,7 @@ character.DescendantAdded:Connect(CharOnDesc)
 for _,v in character:GetDescendants() do
 CharOnDesc(v)
 end
+r15reanim_cleanup()
 HatReanimator.Status.ReanimState = "Respawned."
 HatReanimator.Status.Permadeath = "Respawn detected."
 HatReanimator.Status.HatCollide = "Respawn detected."
@@ -69810,7 +69900,9 @@ if not Humanoid then return end
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
 selhatcol = HatCollideMethods[hatcolmeth]
-pcall(Util.UINotify, "r15 hat reanim is R15 only - using method 7 instead.")
+HatReanimator.HatCollideMethod = 6
+SaveData.Reanimator.HatsCollideMethod = 6
+pcall(Util.UINotify, "R15 Reanimation is R15 only - using method 7 instead.")
 end
 if not Reanimate.UseLoadAnimationHook then
 local stupid = character:FindFirstChild("Animate")
