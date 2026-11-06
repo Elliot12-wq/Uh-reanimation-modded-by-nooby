@@ -67523,6 +67523,11 @@ end)
 UI.CreateText(parent, "vvv touch player = they lose ownership vvv", 10, Enum.TextXAlignment.Center)
 UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / NaN State / Fling 1 / Fling 2 / Fling 3)", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
+do
+local UX = Reanimate.UnanchoredReanimator
+if UX and UX.ConfigExtra then UX.ConfigExtra(parent) end
+end
+UI.CreateSeparator(parent)
 UI.CreateText(parent, "-=+ Compatibility Checker +=-", 12, Enum.TextXAlignment.Center)
 local checkBtn, checkBtnText = UI.CreateButton(parent, "Check Limb Compatibility", 16)
 local checkResult = UI.CreateText(parent, "Spawn a character, then press the button to check game animations, voice chat players, dynamic faces, the game environment and R6/R15.", 10, Enum.TextXAlignment.Left)
@@ -68048,6 +68053,10 @@ end
 end
 if Ragdoll then RagdollDrive(RootPart) end
 end
+do
+local UX = Reanimate.UnanchoredReanimator
+if UX and UX.StartExtra then pcall(UX.StartExtra) end
+end
 Reanimate.Starting = false
 local rebuildWindowStart, rebuildCount, lastRebuild, rebuildGaveUp = 0, 0, 0, false
 local function FrameStep()
@@ -68241,6 +68250,10 @@ warn("[Limb Reanimator] frame step failed (x" .. stepFails .. "): " .. stepErr)
 pcall(Util.Notify, "Limb Reanimator frame error (see console): " .. stepErr)
 end
 end
+end
+do
+local UX = Reanimate.UnanchoredReanimator
+if UX and UX.StopExtra then pcall(UX.StopExtra) end
 end
 table.clear(LimbReanimator.FlingTargets)
 table.clear(LimbReanimator._TempNotFling)
@@ -68461,12 +68474,9 @@ local torsoOffsetNames = {
 "9 - experimental do not use",
 "10 - NOOBY'S METHOD *EXPERIMENTAL!!!*",
 }
-local cfgChar = Player.Character
-local cfgHum = cfgChar and cfgChar:FindFirstChildOfClass("Humanoid")
-local cfgIsR15 = cfgHum ~= nil and cfgHum.RigType == Enum.HumanoidRigType.R15
-if cfgIsR15 then
-table.insert(torsoOffsetNames, "R15 Reanimation")
-elseif HatReanimator.HatCollideMethod >= 10 then
+-- always listed: it used to be hidden whenever the character was not a loaded R15 rig at the moment this config was built; an R6 character falls back to method 7 when reanimating
+table.insert(torsoOffsetNames, "11 - R15 Hat Reanimation (R15 only)")
+if HatReanimator.HatCollideMethod > 10 then
 HatReanimator.HatCollideMethod = 6
 SaveData.Reanimator.HatsCollideMethod = 6
 end
@@ -68474,9 +68484,7 @@ UI.CreateDropdown(parent, "Torso Offset", torsoOffsetNames, HatReanimator.HatCol
 HatReanimator.HatCollideMethod = val - 1
 SaveData.Reanimator.HatsCollideMethod = val - 1
 end)
-if cfgIsR15 then
-UI.CreateText(parent, "R15 Reanimation: R15 only.\nUses the R15 rig with Humanoid.ServerBreakJoints and is exclusively compatible with R15 characters.", 10, Enum.TextXAlignment.Center)
-end
+UI.CreateText(parent, "R15 Hat Reanimation (entry 11): R15 only.\nUses the R15 rig with Humanoid.ServerBreakJoints and is exclusively compatible with R15 characters; on an R6 character it falls back to method 7.", 10, Enum.TextXAlignment.Center)
 UI.CreateSwitch(parent, "Ensure All Hats", HatReanimator.IWantAllHats).Changed:Connect(function(val)
 HatReanimator.IWantAllHats = val
 SaveData.Reanimator.IWantAllHats = val
@@ -69837,7 +69845,7 @@ end))
 SetAccoutrementState(v, BackendAccoutrementState.InWorkspace)
 SetAccoutrementState(v, BackendAccoutrementState.None)
 end
-HatReanimator.Status.HatCollide = #hats .. " hats LOCKED (R15 Reanimation)!"
+HatReanimator.Status.HatCollide = #hats .. " hats LOCKED (R15 Hat Reanimation)!"
 end,
 State2 = function(character, hats)
 local hum = character:FindFirstChildOfClass("Humanoid")
@@ -69906,7 +69914,7 @@ hatcolmeth = 6
 selhatcol = HatCollideMethods[hatcolmeth]
 HatReanimator.HatCollideMethod = 6
 SaveData.Reanimator.HatsCollideMethod = 6
-pcall(Util.UINotify, "R15 Reanimation is R15 only - using method 7 instead.")
+pcall(Util.UINotify, "R15 Hat Reanimation is R15 only - using method 7 instead.")
 end
 if not Reanimate.UseLoadAnimationHook then
 local stupid = character:FindFirstChild("Animate")
@@ -72157,6 +72165,1802 @@ return CFrame.identity
 end
 end
 end
+-- ===== Unanchored Reanimation (separate method: no tools, hats, reset or respawn) =====
+do
+local U = {Name = "Unanchored"}
+Reanimate.UnanchoredReanimator = U
+local C
+do
+local SD = SaveData.Reanimator
+if type(SD.Unanchored) ~= "table" then SD.Unanchored = {} end
+C = SD.Unanchored
+end
+if C.Wings == nil then C.Wings = true end
+if C.Tail == nil then C.Tail = true end
+if C.Halo == nil then C.Halo = true end
+if C.AutoSearch == nil then C.AutoSearch = true end
+if C.Confirm == nil then C.Confirm = true end
+if C.Extra == nil then C.Extra = false end
+C.WingAnim = C.WingAnim == 2 and 2 or 1
+C.TailAnim = C.TailAnim == 2 and 2 or 1
+C.Radius = math.clamp(tonumber(C.Radius) or 150, 20, 500)
+U.Want = {Wings = 20, Tail = 6, Halo = 8}
+U.Label = {Wings = "Wings", Tail = "Tail", Halo = "Halo Aura"}
+U.Feats = {"Wings", "Tail", "Halo"}
+U.Near, U.Hot, U.OwnWait = 45, 0.7, 10
+-- U.OwnConfirm = ReceiveAge 0 must hold this long before a part is touched, U.RecoverWait = how long a previously live part may stay without ownership before it is released, U.Drift = studs of unexpected displacement that re-bases the smoothing
+U.OwnConfirm, U.RecoverWait, U.Drift = 0.35, 25, 10
+-- OwnGrace = how long ReceiveAge may flicker away from 0 before an owned part counts as lost (the controller stays enabled through blips so nothing drops), MaxPend = parts that may wait for their first ownership confirmation at once
+U.OwnGrace, U.MaxPend = 0.3, 5
+-- Top = candidates examined per selection pass, ReserveTTL = longest a reservation may wait for the character to come within reach (the ownership clock then takes over), PromptMin = closest distance still worth a teleport prompt
+U.Top, U.ReserveTTL, U.PromptMin = 8, 20, 12
+-- attachment tuning: PosResp / RotResp = AlignPosition / AlignOrientation responsiveness, MaxVel / MaxAng = speed caps (studs/s, rad/s), ForceK / TorqueK = finite force / torque caps per unit of assembly mass (x gravity, x length^2)
+U.PosResp, U.RotResp, U.MaxVel, U.MaxAng, U.ForceK, U.TorqueK = 120, 90, 300, 40, 40, 1200
+
+-- same convention as the Hats/Tools reanimators: only a part that exists for everyone, never the client-only rig
+function U.RepRef(p)
+if typeof(p) ~= "Instance" or not p:IsA("BasePart") or not p:IsDescendantOf(workspace) then return nil end
+local rc = Reanimate.Character
+if rc and p:IsDescendantOf(rc) then return nil end
+return p
+end
+function U.Note(text)
+pcall(Util.UINotify, text)
+end
+function U.Sm(x) return x * x * (3 - 2 * x) end
+function U.Fit(x, lo, hi, ideal)
+if x < lo or x > hi then return 0 end
+return 1 - 0.8 * math.abs(x - ideal) / math.max(ideal - lo, hi - ideal)
+end
+function U.Score(s, f)
+local mx = math.max(s.X, s.Y, s.Z)
+local mn = math.max(math.min(s.X, s.Y, s.Z), 0.05)
+if f == "Wings" then
+return U.Fit(mx, 1.2, 16, 5) * 0.6 + math.clamp(mx / mn / 4, 0, 1) * 0.4
+elseif f == "Tail" then
+return U.Fit(mx, 0.8, 12, 3) * 0.7 + math.clamp(mx / mn / 3, 0, 1) * 0.3
+end
+return U.Fit(mx, 0.4, 6, 1.5) * 0.7 + math.clamp(mn / mx, 0, 1) * 0.3
+end
+-- detector tuning: U.Min = minimum fit to count as suitable, U.Slack = discovery reach beyond Search Radius (existing candidates get 25% more before they drop),
+-- U.NearQ = radius of the frequent near pass, U.MinLen / U.MaxLen = part size window, U.MaxAsm = max parts in a free assembly, U.Stale = candidate re-rate interval
+U.Min, U.Slack, U.NearQ, U.MinLen, U.MaxLen, U.MaxAsm, U.Stale = 0.45, 1.2, 70, 0.05, 150, 64, 1.5
+U.PS = game:GetService("PhysicsService")
+function U.Why(p, f, sc)
+local s = p.Size
+return ("%.1f x %.1f x %.1f studs, %d%% fit for %s, unanchored and free to simulate"):format(s.X, s.Y, s.Z, math.floor(sc * 100), U.Label[f])
+end
+-- Stage 1/2 filter: rejects only genuinely unusable parts (characters / NPCs / the rig, anchored or grounded assemblies, seats, terrain, destroyed, oversized).
+-- Name, class (MeshPart / Union / any shape), CanQuery, CanCollide, transparency and network ownership are NOT reasons to reject here.
+-- Returns the number of parts in the part's assembly (1 = fully independent), or nil when the part cannot be used.
+function U.Grounded(p)
+local ok, g = pcall(p.IsGrounded, p)
+return ok and g == true
+end
+-- Tool protection: a part inside a Tool (Handle or any other part), or welded into an assembly with a Tool part or a player character, is never claimed, collided with, driven or velocity-reset.
+function U.Foreign(q)
+if q:FindFirstAncestorWhichIsA("Tool") then return true end
+local m = q:FindFirstAncestorWhichIsA("Model")
+while m do
+if Players:GetPlayerFromCharacter(m) then return true end
+m = m:FindFirstAncestorWhichIsA("Model")
+end
+return false
+end
+function U.Tainted(p)
+if U.Foreign(p) then return true end
+if p.AssemblyMass > p.Mass * 1.001 + 0.0001 then
+local ok, cp = pcall(p.GetConnectedParts, p, true)
+if ok then
+for i = 1, #cp do
+if cp[i] ~= p and U.Foreign(cp[i]) then return true end
+end
+end
+end
+return false
+end
+-- re-rates a record only when its assembly mass changed (parts joined / left); returns true when it became tainted
+function U.Taint(rec)
+rec.AM = rec.P.AssemblyMass
+return U.Tainted(rec.P)
+end
+-- event-driven: a claimed part that is destroyed, removed, or picked up as a Tool is released the same frame (coalesced, so a remove + re-add in one frame keeps its attachment)
+function U.Watch(S, rec)
+local p = rec.P
+rec.Conns = {p.AncestryChanged:Connect(function()
+if rec.Dead or not S.Alive or rec.Chk then return end
+rec.Chk = true
+task.defer(function()
+rec.Chk = nil
+if rec.Dead or not S.Alive then return end
+if not p:IsDescendantOf(workspace) then
+U.Release(S, rec, 20)
+elseif U.Foreign(p) then
+U.Release(S, rec, 30)
+end
+end)
+end)}
+end
+function U.Filter(S, p)
+if p.Anchored or not p.Parent or not p:IsDescendantOf(workspace) then return nil, "anchored or destroyed" end
+if p:IsA("Terrain") then return nil, "terrain" end
+if (p:IsA("Seat") or p:IsA("VehicleSeat")) and p.Occupant ~= nil then return nil, "seat in use" end
+local s = p.Size
+local mx = math.max(s.X, s.Y, s.Z)
+if mx < U.MinLen or mx > U.MaxLen then return nil, ("size %.1f studs is outside %.2f-%d"):format(mx, U.MinLen, U.MaxLen) end
+local rc = Reanimate.Character
+if rc and p:IsDescendantOf(rc) then return nil, "own rig" end
+if p.Name == "RagdollProxy" then return nil, "own rig" end
+local m = p.Parent
+while m and m ~= workspace do
+if m:IsA("Tool") then return nil, "Tool part (Tools and their Handles are never used)" end
+if m:IsA("Model") then
+if Players:GetPlayerFromCharacter(m) then return nil, "player character" end
+local hum = m:FindFirstChildOfClass("Humanoid")
+if hum and hum.Health > 0 then return nil, "living character / NPC" end
+end
+m = m.Parent
+end
+if U.Grounded(p) then return nil, "grounded (attached to anchored geometry)" end
+local n = 1
+if p.AssemblyMass > p.Mass * 1.001 + 0.0001 then
+local ok2, cp = pcall(p.GetConnectedParts, p, true)
+if ok2 then n = math.max(#cp, 1) end
+if n > U.MaxAsm then return nil, n .. " parts in one assembly" end
+if ok2 then
+for i = 1, #cp do
+if cp[i] ~= p and U.Foreign(cp[i]) then return nil, "assembly contains a Tool or character part" end
+end
+end
+end
+return n
+end
+function U.Valid(S, p)
+return U.Filter(S, p) ~= nil
+end
+function U.Free(S, p, now)
+if S.Rec[p] then return false end
+local ar = p.AssemblyRootPart
+if ar and S.Asm[ar] then return false end
+if (S.Cool[p] or 0) > now then return false end
+if (S.Declined[p] or 0) > now then return false end
+return true
+end
+-- engine-reported simulator only (same rule as the Tools reanimator); used when rating candidates
+function U.Owns(p)
+return p.Parent ~= nil and not p.Anchored and p.ReceiveAge == 0 and not U.Grounded(p)
+end
+-- per-record ownership read for the Heartbeat drive: ReceiveAge / Anchored every frame, the pcall'd grounded check only a few times per second
+function U.RecOwns(rec, now)
+local p = rec.P
+if p.Parent == nil or p.Anchored or p.ReceiveAge ~= 0 then return false end
+if now >= rec.GrAt then
+rec.GrAt = now + 0.25
+rec.Gr = U.Grounded(p)
+end
+return not rec.Gr
+end
+function U.Wake(rec, now)
+if now - rec.WakeAt < 0.5 then return end
+rec.WakeAt = now
+pcall(sethiddenproperty, rec.P, "NetworkIsSleeping", false)
+end
+-- orient a part so its longest side runs along t1, its middle side along t2 and its shortest side along t3 of the target frame
+function U.Align(s, t1, t2, t3)
+local sz = {s.X, s.Y, s.Z}
+local idx = {1, 2, 3}
+table.sort(idx, function(i, j) return sz[i] > sz[j] or (sz[i] == sz[j] and i < j) end)
+local rank = {}
+for r = 1, 3 do rank[idx[r]] = r end
+local T = {t1, t2, t3}
+return CFrame.fromMatrix(Vector3.zero, T[rank[1]], T[rank[2]])
+end
+-- the used parts (and every part joined into their assembly) stop colliding with your character and the world; originals are remembered once and restored on release
+function U.NoCollide(rec)
+local p = rec.P
+local cc = rec.CCs
+if not cc then
+cc = {}
+rec.CCs = cc
+end
+local list = {p}
+if p.AssemblyMass > p.Mass * 1.001 + 0.0001 then
+local ok, cp = pcall(p.GetConnectedParts, p, true)
+if ok and #cp <= U.MaxAsm then list = cp end
+end
+for i = 1, #list do
+local q = list[i]
+if not U.Foreign(q) then
+if cc[q] == nil then cc[q] = q.CanCollide end
+if q.CanCollide then pcall(function() q.CanCollide = false end) end
+end
+end
+end
+-- reservation only; physics properties are touched once ownership is confirmed (U.Apply). One record per part and one writer per assembly.
+function U.Claim(S, p, f, now, rsv)
+local ex = S.Rec[p]
+if ex then return ex end
+if U.Tainted(p) then return nil end
+local ar = p.AssemblyRootPart
+if ar and S.Asm[ar] then return nil end
+local s = p.Size
+local rec = {P = p, F = f, Born = now, Rsv = rsv == true, LastOwned = now, WakeAt = 0, Owned = false, WasLive = false, GrAt = 0, RefAt = 0, LiveAt = now, AR = ar, CF = p.CFrame, Len = math.max(s.X, s.Y, s.Z)}
+if s.X >= s.Y and s.X >= s.Z then
+rec.AX, rec.AZ = CFrame.identity, CFrame.Angles(0, math.rad(90), 0)
+elseif s.Y >= s.Z then
+rec.AX, rec.AZ = CFrame.Angles(0, 0, math.rad(90)), CFrame.Angles(math.rad(90), 0, 0)
+else
+rec.AX, rec.AZ = CFrame.Angles(0, math.rad(90), 0), CFrame.identity
+end
+local d = {s.X, s.Y, s.Z}
+table.sort(d, function(x, y) return x > y end)
+rec.Wid, rec.Thk, rec.Thick = d[2], d[3], math.min(d[3], 6)
+rec.AX = U.Align(s, Vector3.xAxis, Vector3.yAxis, Vector3.zAxis)
+rec.AH = U.Align(s, Vector3.zAxis, Vector3.xAxis, Vector3.yAxis)
+S.Rec[p] = rec
+if ar then S.Asm[ar] = rec end
+rec.AM = p.AssemblyMass
+U.Watch(S, rec)
+local g = S.G[f]
+g[#g + 1] = rec
+return rec
+end
+-- PhysicsRepRootRef is only ever pointed at a valid replicated root (U.RepRef) and only written when it differs; a nil / stale root never overwrites a working reference
+function U.SetRef(rec, rr)
+if not rr or rec.Ref == rr then return end
+local p = rec.P
+if not p.Parent then return end
+if pcall(sethiddenproperty, p, "PhysicsRepRootRef", rr) then rec.Ref = rr end
+end
+function U.VerifyRef(S, rec)
+local want = S.RepRoot
+if not (want and want.Parent) then return end
+local ok, cur = pcall(gethiddenproperty, rec.P, "PhysicsRepRootRef")
+if ok and cur ~= want then
+rec.Ref = nil
+U.SetRef(rec, want)
+end
+end
+-- genuine attachment: one Attachment on the part (A), one target Attachment on the character part that hosts the feature (T), one AlignPosition + one AlignOrientation between them
+-- (reaction force / torque off, so the character is never pushed) and one VectorForce that only cancels the assembly's weight. Animation only moves T's CFrame; the controller is built once per part.
+function U.Host(S, f)
+local h = f == "Tail" and S.LowT or S.Tor
+if h and h.Parent then return h end
+return S.Root
+end
+function U.Tune(rec)
+local m = math.max(rec.P.AssemblyMass, 0.001)
+local g = workspace.Gravity
+if rec.M == m and rec.Gv == g then return end
+rec.M, rec.Gv = m, g
+rec.AP.MaxForce = m * math.max(g, 50) * U.ForceK
+rec.AO.MaxTorque = m * (rec.Len * rec.Len + 1) * U.TorqueK
+rec.VF.Force = Vector3.new(0, m * g, 0)
+end
+function U.Hold(rec, on)
+rec.On = on
+if rec.AP then rec.AP.Enabled, rec.AO.Enabled, rec.VF.Enabled = on, on, on end
+end
+function U.Detach(rec)
+for _, k in {"AP", "AO", "VF", "A", "T"} do
+local o = rec[k]
+if o then pcall(o.Destroy, o) end
+rec[k] = nil
+end
+rec.M = nil
+end
+-- returns the host part while the controller is intact. Every piece (part attachment, target attachment, AlignPosition, AlignOrientation, VectorForce) is checked on its own: valid pieces are kept untouched (no duplicates, no needless rebuilds),
+-- only missing / destroyed / foreign-parented pieces are recreated, and the target attachment is re-hosted after a respawn. Only UhUA_* instances created by this system are ever touched; Tool welds and other constraints are never modified.
+function U.Attach(S, rec)
+local p, host = rec.P, U.Host(S, rec.F)
+if not (host and host.Parent) then return nil end
+local a0, a1, ap, ao, vf = rec.A, rec.T, rec.AP, rec.AO, rec.VF
+if a0 and a0.Parent == p and a1 and a1.Parent == host and ap and ap.Parent == p and ao and ao.Parent == p and vf and vf.Parent == p
+and ap.Attachment0 == a0 and ap.Attachment1 == a1 and ao.Attachment0 == a0 and ao.Attachment1 == a1 and vf.Attachment0 == a0 then
+return host
+end
+if not (a0 or a1 or ap or ao or vf) then
+-- first build: remove leftovers of an earlier run that was never cleaned up
+for _, c in p:GetChildren() do
+if string.sub(c.Name, 1, 5) == "UhUA_" then pcall(c.Destroy, c) end
+end
+end
+if not (a0 and a0.Parent == p) then
+if a0 then pcall(a0.Destroy, a0) end
+a0 = Instance.new("Attachment")
+a0.Name = "UhUA_Part"
+a0.Parent = p
+end
+if a1 and a1.Parent ~= host and not pcall(function() a1.Parent = host end) then
+pcall(a1.Destroy, a1)
+a1 = nil
+end
+if not a1 then
+a1 = Instance.new("Attachment")
+a1.Name = "UhUA_Target"
+a1.CFrame = host.CFrame:ToObjectSpace(p.CFrame)
+a1.Parent = host
+end
+local on = rec.On ~= false
+if not (ap and ap.Parent == p) then
+if ap then pcall(ap.Destroy, ap) end
+ap = Instance.new("AlignPosition")
+ap.Name = "UhUA_Pos"
+ap.Mode = Enum.PositionAlignmentMode.TwoAttachment
+ap.ApplyAtCenterOfMass = true
+ap.RigidityEnabled, ap.ReactionForceEnabled = false, false
+ap.Responsiveness, ap.MaxVelocity = U.PosResp, U.MaxVel
+ap.Attachment0, ap.Attachment1 = a0, a1
+ap.Enabled = on
+ap.Parent = p
+rec.M = nil
+elseif ap.Attachment0 ~= a0 or ap.Attachment1 ~= a1 then
+ap.Attachment0, ap.Attachment1 = a0, a1
+end
+if not (ao and ao.Parent == p) then
+if ao then pcall(ao.Destroy, ao) end
+ao = Instance.new("AlignOrientation")
+ao.Name = "UhUA_Rot"
+ao.Mode = Enum.OrientationAlignmentMode.TwoAttachment
+ao.RigidityEnabled, ao.ReactionTorqueEnabled = false, false
+ao.Responsiveness, ao.MaxAngularVelocity = U.RotResp, U.MaxAng
+ao.Attachment0, ao.Attachment1 = a0, a1
+ao.Enabled = on
+ao.Parent = p
+rec.M = nil
+elseif ao.Attachment0 ~= a0 or ao.Attachment1 ~= a1 then
+ao.Attachment0, ao.Attachment1 = a0, a1
+end
+if not (vf and vf.Parent == p) then
+if vf then pcall(vf.Destroy, vf) end
+vf = Instance.new("VectorForce")
+vf.Name = "UhUA_Weight"
+vf.ApplyAtCenterOfMass = true
+vf.RelativeTo = Enum.ActuatorRelativeTo.World
+vf.Attachment0 = a0
+vf.Enabled = on
+vf.Parent = p
+rec.M = nil
+elseif vf.Attachment0 ~= a0 then
+vf.Attachment0 = a0
+end
+rec.A, rec.T, rec.AP, rec.AO, rec.VF = a0, a1, ap, ao, vf
+U.Tune(rec)
+return host
+end
+-- first confirmed ownership saves the original physics state once; every later confirmation (recovery) only re-asserts it and re-enables the existing controller. Returns true once the controller exists and is enabled.
+function U.Apply(S, rec)
+local p = rec.P
+if not rec.Applied then
+rec.Applied = true
+local ok, prev = pcall(gethiddenproperty, p, "PhysicsRepRootRef")
+rec.PrevRef = ok and U.RepRef(prev) or nil
+end
+U.NoCollide(rec)
+U.SetRef(rec, S.RepRoot or U.RepRef(U.RepSource(S, S.Root)))
+if U.Attach(S, rec) then
+-- control starts from rest so leftover free-fall velocity never fights the constraints
+pcall(function()
+rec.P.AssemblyLinearVelocity = Vector3.zero
+rec.P.AssemblyAngularVelocity = Vector3.zero
+end)
+U.Hold(rec, true)
+rec.Held = true
+return true
+end
+return false
+end
+function U.Release(S, rec, cool)
+local p = rec.P
+if S.Rec[p] ~= rec then return end
+rec.Dead = true
+if rec.Conns then
+for _, c in rec.Conns do pcall(c.Disconnect, c) end
+rec.Conns = nil
+end
+S.Rec[p] = nil
+S.NextChoose = 0
+if rec.AR and S.Asm[rec.AR] == rec then S.Asm[rec.AR] = nil end
+local g = S.G[rec.F]
+local i = table.find(g, rec)
+if i then table.remove(g, i) end
+if cool and cool > 0 then S.Cool[p] = os.clock() + cool end
+U.Detach(rec)
+if rec.CCs then
+for q, v in rec.CCs do
+if q.Parent then pcall(function() q.CanCollide = v end) end
+end
+rec.CCs = nil
+end
+if rec.Applied and p.Parent then
+pcall(sethiddenproperty, p, "PhysicsRepRootRef", U.RepRef(rec.PrevRef))
+if rec.Owned and p.ReceiveAge == 0 and not U.Tainted(p) then
+pcall(function()
+p.AssemblyLinearVelocity = Vector3.zero
+p.AssemblyAngularVelocity = Vector3.zero
+end)
+end
+end
+end
+-- ownership lifecycle per part: RESERVED (claimed, character not yet in reach) -> AWAITING OWNERSHIP (clock running) -> confirmed (engine reports ReceiveAge 0 for OwnConfirm, short flickers tolerated) -> ATTACHED (controllers built + enabled)
+-- -> OWNERSHIP LOST (no writes, record + feature kept, recovery watched) -> live again after re-confirmation. The work runs protected so one broken record never stops the Heartbeat step for the other parts; a record that keeps failing is released by U.Validate.
+function U.Drive(S, rec, tgt, a, now)
+local ok, err = pcall(U.DriveRec, S, rec, tgt, a, now)
+if not ok then
+rec.Errs = (rec.Errs or 0) + 1
+if not S.Warned then
+S.Warned = true
+warn("[Unanchored Reanimation] part drive error: " .. tostring(err))
+end
+end
+end
+function U.DriveRec(S, rec, tgt, a, now)
+local p = rec.P
+if rec.Dead or not p.Parent then return end
+-- the ownership clock only starts once the character is within reach of the part
+if not rec.WasLive and not rec.WaitAt and (p.Position - S.Origin).Magnitude <= U.Near + 25 then rec.WaitAt = now end
+if U.RecOwns(rec, now) then
+rec.BlipAt = nil
+elseif (rec.Owned or rec.OwnSince) and now - (rec.BlipAt or now) < U.OwnGrace then
+-- ReceiveAge flickers on healthy parts: keep the confirmation clock / controller on and keep driving through the blip so the part (and anything welded to it) never falls
+rec.BlipAt = rec.BlipAt or now
+U.Wake(rec, now)
+if not rec.Owned then return end
+else
+rec.BlipAt = nil
+if rec.Owned then
+rec.Owned = false
+rec.Held = nil
+rec.LostAt = now
+-- stop manipulating while the engine does not report us as simulator; the controller and all metadata stay for recovery
+U.Hold(rec, false)
+end
+rec.OwnSince = nil
+local cd = S.Cand[p]
+if cd then cd.Own = false end
+U.Wake(rec, now)
+return
+end
+local cd = S.Cand[p]
+if cd then cd.Own, cd.Fails = true, 0 end
+if not rec.Owned then
+rec.OwnSince = rec.OwnSince or now
+-- first acquisition has to hold ReceiveAge 0 for OwnConfirm; a part that was already live resumes the moment the engine reports us as simulator again
+if not rec.WasLive and now - rec.OwnSince < U.OwnConfirm then return end
+local lost = rec.LostAt and now - rec.LostAt or 0
+rec.Owned = true
+rec.LostAt = nil
+if not rec.WasLive or lost > 1 then
+rec.CF = p.CFrame
+rec.LiveAt = now
+end
+rec.WasLive = true
+rec.Held = nil
+rec.WaitAt = rec.WaitAt or now
+rec.ApplyAt = now + 0.25
+U.Apply(S, rec)
+end
+rec.LastOwned = now
+-- Apply is retried until the controller really exists (e.g. the host part was missing during a respawn)
+if not rec.Held and now >= (rec.ApplyAt or 0) then
+rec.ApplyAt = now + 0.25
+U.Apply(S, rec)
+end
+if rec.Rsv and rec.Held and not rec.Noted then
+rec.Noted = true
+U.Note(("Ownership of \"%s\" confirmed - attached as %s."):format((p.Name:gsub("[<>&]", "?")), U.Label[rec.F]))
+end
+local cur = p.CFrame
+if (cur.Position - rec.CF.Position).Magnitude > U.Drift then
+-- displaced by something else (server correction, collision, teleport): glide back from where the part really is instead of snapping
+rec.CF = cur
+rec.LiveAt = now
+end
+local yl = S.YLim
+if yl and tgt.Y < yl then tgt += Vector3.new(0, yl - tgt.Y, 0) end
+-- the first second glides the target from where the part really is into the formation; after that the target is the exact formation frame, so the constraints track the character without smoothing lag
+local lv = now - rec.LiveAt
+local k = a * math.min(1, 0.25 + lv * 2.2)
+if lv > 0.6 then k += (1 - k) * math.min(1, (lv - 0.6) * 2) end
+local cf = rec.CF:Lerp(tgt, k)
+rec.CF = cf
+-- animation only moves the character-relative target attachment; the Align constraints do the moving
+local host = U.Attach(S, rec)
+if host then
+rec.T.CFrame = host.CFrame:ToObjectSpace(cf)
+U.Tune(rec)
+end
+if now >= rec.RefAt then
+rec.RefAt = now + 2
+U.VerifyRef(S, rec)
+U.NoCollide(rec)
+if host then U.Tune(rec) end
+end
+end
+function U.Slash(t)
+local T = 2.6
+local c = math.floor(t / T)
+local u = t - c * T
+local d = (c % 2 == 0) and 1 or -1
+local rad = math.rad
+if u < 0.25 then return -d * rad(55) * U.Sm(u / 0.25) end
+if u < 0.6 then return -d * rad(55) + d * rad(125) * U.Sm((u - 0.25) / 0.35) end
+if u < 1.3 then return d * rad(70) * (1 - U.Sm((u - 0.6) / 0.7)) end
+return 0
+end
+
+-- ===== Wing formation (structured angel wing) =====
+-- Each wing is a three-bone skeleton (arm / forearm / hand) carrying four feather sections:
+--   1 primary    long outer fan on the hand bone, tips form the curved outer outline
+--   2 secondary  two overlapping rows on the forearm bone (main row + shorter covert row)
+--   3 inner      short feathers in two staggered layers along the arm, densest at the wing root, growing longer outward
+--   4 lower      elongated feathers hanging down from the inner / middle arm
+-- The layout is built once per feather set in RIGHT-WING LOCAL space (+X outward from the wing root, +Y up, +Z behind the character, units of Lp = primary feather length).
+-- The left wing is the same local layout mirrored in local space (U.WingMir) - never a mirrored world CFrame - so both wings share identical slots, angles and spacing.
+-- Every feather keeps a fixed pose relative to its bone (rec.WL), so animation only bends the bones and the internal arrangement is never disturbed.
+U.WA = {math.rad(58), math.rad(30), math.rad(8)}
+U.WB = {0.30, 0.50, 0.22}
+function U.WingMir(cf)
+local x, y = cf.XVector, cf.YVector
+return CFrame.fromMatrix(Vector3.new(-cf.X, cf.Y, cf.Z), Vector3.new(-x.X, x.Y, x.Z), Vector3.new(-y.X, y.Y, y.Z))
+end
+-- feathers per section for the number of feathers one wing owns {primary, secondary, inner, lower}
+function U.WingPlan(m)
+if m <= 0 then return {0, 0, 0, 0} end
+if m == 1 then return {1, 0, 0, 0} end
+if m == 2 then return {1, 1, 0, 0} end
+if m == 3 then return {1, 1, 0, 1} end
+local fr = {0.30, 0.28, 0.24, 0.18}
+local c, tot = {}, 0
+for i = 1, 4 do
+c[i] = math.max(1, math.floor(fr[i] * m))
+tot += c[i]
+end
+while tot < m do
+local bi, bv = 1, -math.huge
+for i = 1, 4 do
+local v = fr[i] * m - c[i]
+if v > bv then bi, bv = i, v end
+end
+c[bi] += 1
+tot += 1
+end
+while tot > m do
+local bi, bv = nil, -math.huge
+for i = 1, 4 do
+local v = c[i] - fr[i] * m
+if c[i] > 1 and v > bv then bi, bv = i, v end
+end
+if not bi then break end
+c[bi] -= 1
+tot -= 1
+end
+return c
+end
+-- Assigns every wing part to a slot and stores its bone-relative rest pose. The parts are ranked by length: the longest go to the outer primaries, then the lower / secondary / inner sections in turn, and each slot is filled with a matching pair (one part per wing) so both wings get feathers of the same size at the same place. An odd leftover (the shortest part) becomes a centre feather between the two wing roots.
+function U.WingBuild(S, g)
+local n = #g
+local sc = S.Sc or 1
+local rad, cos, sin = math.rad, math.cos, math.sin
+local ord = {}
+for i = 1, n do ord[i] = {g[i], i} end
+table.sort(ord, function(a, b)
+if a[1].Len ~= b[1].Len then return a[1].Len > b[1].Len end
+return a[2] < b[2]
+end)
+local pc = n // 2
+local pl = U.WingPlan(pc)
+local np, ns, ni, nl = pl[1], pl[2], pl[3], pl[4]
+local nB = ns // 2
+local nA = ns - nB
+local slots, k = {}, 0
+local function add(sec, q, u, lf, row)
+k += 1
+slots[k] = {sec = sec, q = q, u = u, lf = lf, row = row, k = k}
+end
+for q = 1, np do
+local u = np > 1 and (q - 1) / (np - 1) or 0
+add(1, q, u, 1 - 0.2 * u)
+end
+for q = 1, nA do
+local u = nA > 1 and (q - 1) / (nA - 1) or 0.5
+add(2, q, u, 0.54 + 0.12 * u, 1)
+end
+for q = 1, nB do
+local u = (q - 0.5) / nB
+add(2, q, u, 0.36 + 0.12 * u, 2)
+end
+for q = 1, ni do
+local u = ni > 1 and ((q - 1) / (ni - 1)) ^ 1.25 or 0.5
+add(3, q, u, 0.16 + 0.18 * u)
+end
+for q = 1, nl do
+local u = nl > 1 and (q - 1) / (nl - 1) or 0.5
+add(4, q, u, 0.58 + 0.18 * u)
+end
+table.sort(slots, function(a, b)
+if a.lf ~= b.lf then return a.lf > b.lf end
+return a.k < b.k
+end)
+local mt = 0
+for i = 1, n do
+if g[i].Thick > mt then mt = g[i].Thick end
+end
+local prim, pls, pn = {}, 0, 0
+for p = 1, pc do
+local sl = slots[p]
+local a, b = ord[2 * p - 1][1], ord[2 * p][1]
+if p % 2 == 1 then sl.R, sl.L = a, b else sl.R, sl.L = b, a end
+sl.Len, sl.Wid = (a.Len + b.Len) * 0.5, (a.Wid + b.Wid) * 0.5
+if sl.sec == 1 then
+prim[sl.q] = sl
+pls += sl.Len
+pn += 1
+end
+end
+local Lp = math.clamp(pn > 0 and pls / pn or (n > 0 and ord[1][1].Len or 2), 1.2, 16)
+-- skeleton rest pose (right-wing local)
+local WA, WB = U.WA, U.WB
+local R0 = CFrame.Angles(0, 0, WA[1])
+local J1 = R0.XVector * (WB[1] * Lp)
+local R1 = CFrame.new(J1) * CFrame.Angles(0, 0, WA[2])
+local J2 = J1 + R1.XVector * (WB[2] * Lp)
+local R2 = CFrame.new(J2) * CFrame.Angles(0, 0, WA[3])
+local J3 = J2 + R2.XVector * (WB[3] * Lp)
+local RI = {R0:Inverse(), R1:Inverse(), R2:Inverse()}
+local function poly(pu)
+local b0 = WB[1] * Lp
+local s = pu * (WB[1] + WB[2]) * Lp
+if s <= b0 then return R0.XVector * s, 1 end
+return J1 + R1.XVector * (s - b0), 2
+end
+-- primary fan: angular step follows the feather width so neighbours keep an even, slightly overlapping spacing; total fan kept inside a natural range
+local th = rad(16)
+if prim[1] then
+prim[1].th = th
+for q = 2, np do
+local a, b = prim[q - 1], prim[q]
+local wd = (a.Wid + b.Wid) * 0.5
+local ln = (a.Len + b.Len) * 0.5
+th -= math.clamp(0.9 * wd / math.max(ln * 0.8, 0.1), rad(3.5), rad(9))
+b.th = th
+end
+if np > 1 then
+local tot = prim[1].th - prim[np].th
+local sf = math.clamp(tot, rad(28), rad(66)) / tot
+for q = 2, np do prim[q].th = prim[1].th - (prim[1].th - prim[q].th) * sf end
+end
+end
+local tEnd = prim[np] and prim[np].th or rad(16)
+local sW, sE = math.min(tEnd - rad(8), rad(-42)), rad(-80)
+local gap = math.min(0.14 * sc + mt * 0.5, 1.2)
+local z0 = 0.1 * sc
+for p = 1, pc do
+local sl = slots[p]
+local sec, u = sl.sec, sl.u
+local an, tha, bone, layer, beta
+if sec == 1 then
+an, tha, bone, layer, beta = J3:Lerp(J2, u), sl.th, 3, 1, rad(3 + 4 * (1 - u))
+elseif sec == 2 then
+an, tha, bone, beta = J1:Lerp(J2, u), sE + (sW - sE) * u, 2, rad(2)
+if sl.row == 1 then
+layer = 2
+else
+layer = 3
+tha += rad(3)
+end
+elseif sec == 3 then
+an, bone = poly(0.05 + 0.8 * u)
+tha, layer, beta = rad(-78) + rad(22) * u, (sl.q % 2 == 1) and 4 or 3.5, rad(2)
+else
+an, bone = poly(0.08 + 0.55 * u)
+an += Vector3.new(0, -0.03 * Lp, 0)
+tha, layer, beta = rad(-88) + rad(20) * u, 0, rad(2)
+end
+local d = Vector3.new(cos(tha), sin(tha), 0)
+local nv = Vector3.new(-sin(tha), cos(tha), 0)
+local z = z0 + layer * gap + (sl.q % 2) * 0.3 * gap
+for i = 1, 2 do
+local rec = i == 1 and sl.R or sl.L
+local cf = CFrame.fromMatrix(an + d * (rec.Len * 0.5) + Vector3.new(0, 0, z), d, nv) * CFrame.Angles(0, -beta, 0)
+rec.WL, rec.WB, rec.WS = RI[bone] * cf, bone, i == 1 and 1 or -1
+end
+end
+if n % 2 == 1 then
+local rec = ord[n][1]
+rec.WL = CFrame.fromMatrix(Vector3.new(0, 0.15 * sc - rec.Len * 0.5, z0 + 4.5 * gap), Vector3.new(0, -1, 0), Vector3.new(1, 0, 0))
+rec.WB, rec.WS = 0, 0
+end
+local lay = {N = n, Sc = sc, Lp = Lp, List = {}, Bones = {}, Root = Vector3.new(0.45 * sc + math.min(0.04 * Lp, 0.6), 0, 0.06 * sc)}
+for i = 1, n do lay.List[i] = g[i] end
+return lay
+end
+
+function U.Step(S, dt)
+if not S.Alive then return end
+local root = S.Root
+if not (root and root.Parent) then
+local ch = U.HostChar(S)
+root = ch and ch:FindFirstChild("HumanoidRootPart")
+S.Root = root
+S.RefDirty = true
+end
+if not root and not S.LastCF then return end
+local now = os.clock()
+if now >= S.RefChkAt then
+S.RefChkAt = now + 0.25
+S.YLim = U.VoidY() + 5
+local ch = root and root.Parent
+local tor = ch and (ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso"))
+local lt = ch and (ch:FindFirstChild("LowerTorso") or tor)
+S.Tor, S.LowT = tor, lt
+S.BackAtt = tor and tor:FindFirstChild("BodyBackAttachment")
+S.WaistAtt = lt and lt:FindFirstChild("WaistBackAttachment")
+S.Sc = tor and math.clamp(tor.Size.X / 2, 0.4, 4) or 1
+local cr = S.RepRoot
+local rs = U.RepSource(S, root)
+if (cr and not cr:IsDescendantOf(workspace)) or (rs ~= cr and U.RepRef(rs)) then S.RefDirty = true end
+end
+if S.RefDirty then
+S.RefDirty = nil
+local rr = U.RepRef(U.RepSource(S, root))
+if rr then
+S.RepRoot = rr
+for _, rec in S.Rec do
+if rec.Applied then U.SetRef(rec, rr) end
+end
+end
+end
+local t = now - S.T0
+local rcf = root and root.CFrame or S.LastCF
+if root then S.LastCF = rcf end
+local a = 1 - math.exp(-math.min(dt, 0.1) * 14)
+local sin, cos, rad = math.sin, math.cos, math.rad
+-- mounts: wings hang off the real BodyBackAttachment of the torso (follows the torso's own pose and the avatar scale); the tail off the waist-back attachment. +Z of both frames is behind the character.
+local sc = S.Sc or 1
+local aw = 1 - math.exp(-math.min(dt, 0.1) * 24)
+local tor = S.Tor
+local wm, tb
+if tor and tor.Parent then
+local ba = S.BackAtt
+local bp = ba and ba.Parent == tor and ba.Position or Vector3.new(0, 0, tor.Size.Z * 0.5)
+wm = tor.CFrame * CFrame.new(0, math.min(bp.Y + 0.55 * sc, tor.Size.Y * 0.42), bp.Z)
+else
+wm = rcf * CFrame.new(0, 0.55 * sc, 0.5 * sc)
+end
+local lt, wa = S.LowT, S.WaistAtt
+if lt and lt.Parent and wa and wa.Parent == lt then
+local wp = wa.Position
+tb = lt.CFrame * CFrame.new(wp.X, wp.Y - 0.2 * sc, wp.Z + 0.2 * sc) * CFrame.Angles(rad(8), 0, 0)
+else
+tb = rcf * CFrame.new(0, -sc, 1.1 * sc) * CFrame.Angles(rad(8), 0, 0)
+end
+-- Wings: two mirrored articulated wings hinged behind the shoulder blades (roots offset in the BodyBackAttachment frame). The whole wing hinges at its root (sweep swings it back and away from the torso, lift raises / lowers it) and the forearm / hand bones trail with a small phase lag; every feather is rigid relative to its bone (U.WingBuild), so flapping and idling never change the formation. The left wing is the local-space mirror of the right wing's bone-relative poses.
+local g = S.G.Wings
+local n = #g
+if n > 0 and C.Wings then
+local lay = S.WingLay
+local fresh = lay and lay.N == n and math.abs(lay.Sc - sc) < 0.05
+if fresh then
+local lst = lay.List
+for k = 1, n do
+if lst[k] ~= g[k] then
+fresh = false
+break
+end
+end
+end
+if not fresh then
+lay = U.WingBuild(S, g)
+S.WingLay = lay
+end
+local sweep, lift, eb, wb
+if C.WingAnim == 2 then
+local b = sin(t * 1.7)
+sweep, lift = rad(22 + 2 * b), rad(7 + 3 * b)
+eb, wb = rad(1.5 * sin(t * 1.7 - 0.6)), rad(2.5 * sin(t * 1.7 - 1.2))
+else
+local ph = t * 7
+local w = sin(ph) + 0.2 * sin(2 * ph - 0.9)
+sweep, lift = rad(26 - 11 * w), rad(8 + 26 * w)
+eb, wb = rad(4 * sin(ph - 0.6)), rad(7 * sin(ph - 1.2))
+end
+local Lp, WA, WB = lay.Lp, U.WA, U.WB
+local bn = lay.Bones
+local B1 = CFrame.Angles(0, -sweep, 0) * CFrame.Angles(0, 0, lift) * CFrame.Angles(0, 0, WA[1])
+local B2 = B1 * CFrame.new(WB[1] * Lp, 0, 0) * CFrame.Angles(0, 0, WA[2] - WA[1] + eb)
+local B3 = B2 * CFrame.new(WB[2] * Lp, 0, 0) * CFrame.Angles(0, 0, WA[3] - WA[2] + wb)
+bn[1], bn[2], bn[3] = B1, B2, B3
+local rt = lay.Root
+local rootR = wm * CFrame.new(rt)
+local rootL = wm * CFrame.new(-rt.X, rt.Y, rt.Z)
+for k = 1, n do
+local rec = g[k]
+local side = rec.WS
+local tgt
+if side == 0 then
+tgt = wm * rec.WL * rec.AX
+elseif side < 0 then
+tgt = rootL * U.WingMir(bn[rec.WB] * rec.WL) * rec.AX
+else
+tgt = rootR * (bn[rec.WB] * rec.WL) * rec.AX
+end
+U.Drive(S, rec, tgt, aw, now)
+end
+end
+-- Tail: chain behind the lower torso, each segment lagging the previous one
+g = S.G.Tail
+n = #g
+if n > 0 and C.Tail then
+local cf = tb
+local slash = C.TailAnim == 2
+for k = 1, n do
+local rec = g[k]
+local yaw
+if slash then yaw = U.Slash(t - k * 0.03) * 1.5 / n else yaw = rad(11) * sin(t * 3.2 - k * 0.5) end
+cf = cf * CFrame.Angles(rad(-4), yaw, 0)
+U.Drive(S, rec, cf * CFrame.new(0, 0, rec.Len * 0.5) * rec.AZ, a, now)
+cf = cf * CFrame.new(0, 0, rec.Len * 0.9)
+end
+end
+-- Halo: level ring centred above the character, always rotating. Every part claims arc room in proportion to its own size, so big parts spread the ring wider (more radius, more gap, more headroom) instead of piling into a small circle.
+g = S.G.Halo
+n = #g
+if n > 0 and C.Halo then
+local tot, mw, mt = 0, 0, 0
+for k = 1, n do
+local rec = g[k]
+rec.Span = rec.Len * 1.08 + 0.3 + rec.Wid * 0.12
+tot = tot + rec.Span
+if rec.Wid > mw then mw = rec.Wid end
+if rec.Thk > mt then mt = rec.Thk end
+end
+local R = math.max(3.4 * sc, tot / 6.2832, mw * 0.5 + 2.2 * sc)
+local c = rcf.Position + Vector3.new(0, 3.8 * sc + mt * 0.5, 0)
+S.HaloA = (S.HaloA or 0) + math.min(dt, 0.1) * 1.6 * math.min(1, 10 / R)
+local acc = 0
+for k = 1, n do
+local rec = g[k]
+local arc = 6.2832 * rec.Span / tot
+local th = S.HaloA + acc + arc * 0.5
+acc = acc + arc
+local pos = c + Vector3.new(cos(th) * R, sin(t * 2 + k) * 0.12, sin(th) * R)
+U.Drive(S, rec, CFrame.lookAt(pos, pos + Vector3.new(-sin(th), 0, cos(th))) * rec.AH, a, now)
+end
+end
+end
+
+function U.ClosePrompt(S)
+local pr = S.Prompt
+if not pr then return end
+S.Prompt = nil
+for _, c in pr.Conns do pcall(c.Disconnect, c) end
+pcall(pr.Gui.Destroy, pr.Gui)
+end
+function U.PromptText(S, pr)
+local d = S.Root and (pr.P.Position - S.Root.Position).Magnitude or pr.D
+pr.Info.Text = ("Part: %s\nDistance: %d studs\nWhy: %s\nIntended use: %s"):format(pr.P.Name, math.floor(d), pr.Why, U.Label[pr.F])
+end
+-- one window at a time (S.Prompt guard + stale windows of an earlier run are removed); returns true only when the YES / NO window is really on screen
+function U.ShowPrompt(S, e, f)
+if S.Prompt then return false end
+local g = Instance.new("ScreenGui")
+g.Name = "UhUnanchoredPrompt"
+g.ResetOnSpawn = false
+g.DisplayOrder = 965
+g.IgnoreGuiInset = true
+g.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+local mounted = false
+for _, get in {function() return gethui and gethui() end, function() return game:GetService("CoreGui") end, function() return Player:FindFirstChildOfClass("PlayerGui") end} do
+local ok, par = pcall(get)
+if ok and typeof(par) == "Instance" then
+pcall(function()
+for _, o in par:GetChildren() do
+if o.Name == "UhUnanchoredPrompt" then o:Destroy() end
+end
+end)
+if pcall(function() g.Parent = par end) and g.Parent == par then
+mounted = true
+break
+end
+end
+end
+if not mounted then
+pcall(g.Destroy, g)
+return false
+end
+local ok, err = pcall(function()
+local fr = Instance.new("Frame")
+fr.AnchorPoint = Vector2.new(0.5, 0)
+fr.Position = UDim2.new(0.5, 0, 0.08, 0)
+fr.Size = UDim2.new(0, 340, 0, 214)
+fr.BackgroundColor3 = Color3.fromRGB(20, 22, 30)
+fr.BorderSizePixel = 0
+fr.Active = true
+fr.Parent = g
+Instance.new("UICorner", fr).CornerRadius = UDim.new(0, 8)
+local st = Instance.new("UIStroke", fr)
+st.Color = Color3.fromRGB(90, 140, 255)
+st.Thickness = 1.5
+local function lbl(text, y, h, size, bold)
+local l = Instance.new("TextLabel")
+l.BackgroundTransparency = 1
+l.Position = UDim2.new(0, 12, 0, y)
+l.Size = UDim2.new(1, -24, 0, h)
+l.Text = text
+l.TextWrapped = true
+l.TextXAlignment = Enum.TextXAlignment.Left
+l.TextYAlignment = Enum.TextYAlignment.Top
+l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+l.TextSize = size
+l.TextColor3 = Color3.new(1, 1, 1)
+l.Parent = fr
+return l
+end
+local function btn(text, x, ox, col)
+local b = Instance.new("TextButton")
+b.Position = UDim2.new(x, ox, 1, -48)
+b.Size = UDim2.new(0.5, -18, 0, 36)
+b.BackgroundColor3 = col
+b.BorderSizePixel = 0
+b.Text = text
+b.Font = Enum.Font.GothamBold
+b.TextSize = 13
+b.TextColor3 = Color3.new(1, 1, 1)
+b.AutoButtonColor = true
+b.Parent = fr
+Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+return b
+end
+lbl("A suitable unanchored part has been found! Would you like to teleport to it?", 10, 44, 14, true)
+local p = e.P
+local pr = {P = p, F = f, D = e.D, Gui = g, Conns = {}, Why = U.Why(p, f, e[f])}
+pr.Info = lbl("", 58, 102, 12, false)
+local yes = btn("YES — TELEPORT", 0, 12, Color3.fromRGB(46, 160, 90))
+local no = btn("NO — DECLINE", 0.5, 6, Color3.fromRGB(190, 64, 64))
+U.PromptText(S, pr)
+pr.Conns[1] = yes.Activated:Connect(function()
+if S.Prompt ~= pr then return end
+U.ClosePrompt(S)
+local okA, errA = pcall(U.Accept, S, p, f)
+if not okA then
+S.NextChoose = 0
+U.Note("Teleport failed (" .. tostring(errA) .. "). Searching for another part...")
+end
+end)
+pr.Conns[2] = no.Activated:Connect(function()
+if S.Prompt ~= pr then return end
+U.ClosePrompt(S)
+S.Declined[p] = os.clock() + 300
+S.NextPrompt = os.clock() + 2
+end)
+S.Prompt = pr
+end)
+if not ok then
+pcall(g.Destroy, g)
+if not S.Warned then
+S.Warned = true
+warn("[Unanchored Reanimation] teleport prompt failed: " .. tostring(err))
+end
+return false
+end
+return true
+end
+-- safe spot beside/above the part: tries all four sides, ground-snapped, never inside the part, away from void and obvious kill bricks
+function U.SafeSpot(S, p)
+local root = S.Root
+if not (root and root.Parent) then return nil end
+local ch = root.Parent
+local hum = ch:FindFirstChildOfClass("Humanoid")
+local half = (hum and hum.HipHeight or 2) + root.Size.Y * 0.5 + 0.5
+local sz, pp = p.Size, p.Position
+local flat = Vector3.new(root.Position.X - pp.X, 0, root.Position.Z - pp.Z)
+flat = flat.Magnitude > 0.1 and flat.Unit or Vector3.new(0, 0, 1)
+local rc = Reanimate.Character
+local ign = rc and {ch, p, rc} or {ch, p}
+local rp = RaycastParams.new()
+rp.FilterType = Enum.RaycastFilterType.Exclude
+rp.FilterDescendantsInstances = ign
+local op = OverlapParams.new()
+op.FilterType = Enum.RaycastFilterType.Exclude
+op.FilterDescendantsInstances = ign
+local dist = math.max(sz.X, sz.Z) * 0.5 + 4
+local low = U.VoidY() + 50
+local air
+for _, ang in {0, 90, -90, 180} do
+local dir = CFrame.Angles(0, math.rad(ang), 0) * flat
+local base = pp + dir * dist + Vector3.new(0, sz.Y * 0.5 + 6, 0)
+local hit = workspace:Raycast(base, Vector3.new(0, -150, 0), rp)
+local pos, ok = base, true
+if hit then
+local nm = string.lower(hit.Instance.Name .. " " .. (hit.Instance.Parent and hit.Instance.Parent.Name or ""))
+for _, w in {"kill", "lava", "death", "damage", "acid"} do
+if string.find(nm, w, 1, true) then ok = false end
+end
+pos = hit.Position + Vector3.new(0, half, 0)
+end
+if ok and pos.Y >= low then
+for _ = 1, 3 do
+local blocked = false
+for _, q in workspace:GetPartBoundsInBox(CFrame.new(pos), Vector3.new(2.5, 4.5, 2.5), op) do
+if q.CanCollide then blocked = true break end
+end
+if not blocked then
+if hit then return pos end
+air = air or pos
+break
+end
+pos = pos + Vector3.new(0, 4, 0)
+end
+end
+end
+return air
+end
+-- only ever called from the YES button: revalidate -> safe spot -> teleport -> reserve this exact part + feature -> re-rate it first.
+-- Success is NOT reported here: the part is only moved after the engine confirms ownership (U.Drive), and the confirmation / failure notices come from there.
+function U.Accept(S, p, f)
+local now = os.clock()
+local name = (p.Name:gsub("[<>&]", "?"))
+S.NextChoose = 0
+if not U.Valid(S, p) then
+U.Note(("\"%s\" is no longer usable (moved, anchored, removed or taken). Searching for another part..."):format(name))
+return
+end
+local root = S.Root
+if not (root and root.Parent) then
+U.Note("Teleport cancelled: your character is not loaded. Searching for another part...")
+return
+end
+local pos = U.SafeSpot(S, p)
+if not pos then
+S.Seen[p] = now + 120
+U.Note(("No safe spot to stand near \"%s\". Searching for another part..."):format(name))
+return
+end
+local pp = p.Position
+S.Cool[p], S.Declined[p] = nil, nil
+local cd = S.Cand[p]
+if cd then cd.Chk, cd.Fails = 0, 0 end
+local rec = S.Rec[p]
+if rec and not rec.Owned and not rec.WasLive then rec.Born, rec.WaitAt, rec.Rsv = now, nil, true end
+S.Reserve = {P = p, F = f, Until = now + 25}
+S.NextNear = 0
+S.ForceEval = p
+S.NextPrompt = now + 8
+root.CFrame = CFrame.lookAt(pos, Vector3.new(pp.X, pos.Y, pp.Z))
+root.AssemblyLinearVelocity = Vector3.zero
+U.Note(("Teleported next to \"%s\". Waiting for the server to hand over ownership before anything moves..."):format(name))
+task.delay(0.6, function()
+local rt = S.Root
+if not S.Alive or not (rt and rt.Parent) then return end
+if (rt.Position - pos).Magnitude > 40 then
+if S.Reserve and S.Reserve.P == p then S.Reserve = nil end
+S.Seen[p] = os.clock() + 60
+S.NextPrompt = 0
+S.NextChoose = 0
+U.Note(("The teleport to \"%s\" did not hold (the game moved you back). Searching for another part..."):format(name))
+end
+end)
+end
+
+-- ownership never arrived inside U.OwnWait: free the slot with a short escalating pause only (the part stays a discovered, suitable candidate and is reconsidered when the pause ends)
+function U.Fail(S, rec)
+local p = rec.P
+local cd = S.Cand[p]
+local fl = (cd and cd.Fails or 0) + 1
+if cd then cd.Fails = fl end
+if rec.Rsv then
+if S.Reserve and S.Reserve.P == p then S.Reserve = nil end
+U.Note(("Could not take ownership of \"%s\" even after teleporting (the server did not hand it over). Searching for another part..."):format((p.Name:gsub("[<>&]", "?"))))
+end
+U.Release(S, rec, math.min(5 * fl, 25))
+end
+function U.Validate(S)
+local now = os.clock()
+local pr = S.Prompt
+if pr then
+local cd = S.Cand[pr.P]
+local rec = S.Rec[pr.P]
+local root = S.Root
+-- the window only closes when it can no longer be answered meaningfully; selecting other candidates never touches it
+if not (root and root.Parent) or not C.Confirm or not C.AutoSearch or not C[pr.F] or not cd or cd.Own or (rec and rec.Owned) or cd.D <= U.PromptMin or #S.G[pr.F] >= U.Want[pr.F] or not U.Valid(S, pr.P) then
+U.ClosePrompt(S)
+S.NextPrompt = now + 1
+else
+U.PromptText(S, pr)
+end
+end
+for p, rec in S.Rec do
+if not p.Parent or not p:IsDescendantOf(workspace) or p.Anchored then
+U.Release(S, rec, 20)
+elseif rec.Errs and rec.Errs >= 30 then
+U.Release(S, rec, 15)
+elseif rec.AM ~= p.AssemblyMass and U.Taint(rec) then
+-- a Tool part or a character got welded into this assembly: let go cleanly, nothing of theirs is touched
+U.Release(S, rec, 30)
+elseif not C[rec.F] then
+U.Release(S, rec, 0)
+elseif rec.Gr then
+U.Release(S, rec, 30)
+else
+local ar = p.AssemblyRootPart
+local dup = false
+if ar ~= rec.AR then
+if rec.AR and S.Asm[rec.AR] == rec then S.Asm[rec.AR] = nil end
+local o = ar and S.Asm[ar]
+if o and o ~= rec then
+dup = true
+else
+rec.AR = ar
+if ar then S.Asm[ar] = rec end
+end
+end
+if dup then
+-- the part joined an assembly another record already drives: one writer per assembly
+U.Release(S, rec, 3)
+elseif not rec.Owned then
+if rec.WasLive then
+-- ownership lost after it was confirmed: keep the record and its feature slot while the engine may hand ownership back, release only after RecoverWait
+if now - (rec.LostAt or rec.LastOwned) > U.RecoverWait then U.Release(S, rec, 8) end
+elseif rec.WaitAt then
+if now - rec.WaitAt > U.OwnWait then U.Fail(S, rec) end
+elseif now - rec.Born > U.ReserveTTL then
+-- reserved but the character never came within reach: give the slot back
+U.Release(S, rec, 4)
+end
+end
+end
+end
+end
+
+-- ===== multi-method part detector =====
+-- Stage 1 Discovery: spatial radius + forward box queries (every collision group), incremental Workspace scan, DescendantAdded queue, periodic re-rating.
+-- Stage 2 Suitability: per-feature fit + proximity / front / independence / ownership rank. Stage 3 Ownership: only read, never required to register a candidate.
+-- Stage 4 Acquisition: U.Claim / U.Drive (unchanged) move parts only once the engine reports we simulate them.
+function U.Drop(S, c)
+local list = S.CL
+local i = c.I
+if i and list[i] == c then
+local last = list[#list]
+list[i] = last
+last.I = i
+list[#list] = nil
+end
+S.Cand[c.P] = nil
+end
+-- parts ahead of the character weigh most; beside / behind still count (never zero, never an exclusion)
+function U.FrontW(dot)
+if dot >= 0.5 then return 1 end
+if dot >= -0.25 then return 0.55 + 0.45 * (dot + 0.25) / 0.75 end
+return 0.3 + 0.25 * (dot + 1) / 0.75
+end
+-- register or refresh one candidate (no ownership needed); returns the record, or nil when the part is not / no longer a candidate
+function U.Eval(S, p, now)
+local c = S.Cand[p]
+if p.Anchored then
+if c then U.Drop(S, c) end
+return nil
+end
+local o = S.Origin
+local pos = p.Position
+local dx, dy, dz = pos.X - o.X, pos.Y - o.Y, pos.Z - o.Z
+local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+if d > C.Radius * U.Slack * (c and 1.25 or 1) then
+if c then U.Drop(S, c) end
+return nil
+end
+local n, why = U.Filter(S, p)
+if n or (why ~= "player character" and why ~= "living character / NPC" and why ~= "own rig") then
+local dg = S.Diag
+if d < dg.D or dg.P == p or now - dg.T > 4 then dg.P, dg.D, dg.T, dg.Why = p, d, now, why end
+end
+if not n then
+if c then U.Drop(S, c) end
+return nil
+end
+if not c then
+c = {P = p, Born = now, Wings = 0, Tail = 0, Halo = 0, Fails = 0}
+S.Cand[p] = c
+local list = S.CL
+local i = #list + 1
+list[i] = c
+c.I = i
+end
+local s = p.Size
+c.Seen, c.Chk, c.D, c.N, c.Size, c.DY = now, now, d, n, s, dy
+c.Len = math.max(s.X, s.Y, s.Z)
+local fl = math.sqrt(dx * dx + dz * dz)
+c.Dot = fl > 3 and (dx * S.FX + dz * S.FZ) / fl or 1
+c.Front = U.FrontW(c.Dot)
+c.Ind = n == 1 and 1 or (n <= 4 and 0.75 or (n <= 12 and 0.5 or 0.3))
+c.Own = p.ReceiveAge == 0
+if c.Own then c.Fails = 0 end
+local vis = p.Transparency >= 0.9 and 0.3 or 1
+c.Wings = U.Score(s, "Wings") * vis
+c.Tail = U.Score(s, "Tail") * vis
+c.Halo = U.Score(s, "Halo") * vis
+return c
+end
+function U.Take(S, list, now)
+local pass, stamp = S.Pass, S.Stamp
+for i = 1, #list do
+local p = list[i]
+if stamp[p] ~= pass then
+stamp[p] = pass
+if p.Anchored then
+local c = S.Cand[p]
+if c then U.Drop(S, c) end
+else
+U.Eval(S, p, now)
+end
+end
+end
+end
+-- character origin + flat forward direction from the current root CFrame; a big move / teleport re-rates every cached candidate
+function U.Context(S, now)
+local root = S.Root
+if not (root and root.Parent) then
+S.Ready = false
+return
+end
+local cf = root.CFrame
+local o = cf.Position
+local lv = cf.LookVector
+local fx, fz = lv.X, lv.Z
+local m = math.sqrt(fx * fx + fz * fz)
+if m > 0.05 then S.FX, S.FZ = fx / m, fz / m end
+S.Origin = o
+S.Ready = true
+local lo = S.LastO
+if not lo or (o - lo).Magnitude > 20 then
+S.LastO = o
+if lo then
+for _, c in S.CL do c.Chk = 0 end
+S.NextNear = 0
+end
+end
+end
+-- spatial queries only return parts whose collision group collides with the query group, so also query once for every group that Default would miss
+function U.Groups(S, now)
+local gs = S.Groups
+if gs and now < S.GroupsAt then return gs end
+S.GroupsAt = now + 20
+gs = {"Default"}
+local PS = U.PS
+local ok, all = pcall(PS.GetRegisteredCollisionGroups, PS)
+if ok and type(all) == "table" then
+local names = {}
+for _, g in all do
+if type(g) == "table" and type(g.name) == "string" then names[#names + 1] = g.name end
+end
+for _, h in names do
+if h ~= "Default" then
+local okc, hit = pcall(PS.CollisionGroupsAreCollidable, PS, h, "Default")
+if okc and not hit then
+local q
+local okh, selfc = pcall(PS.CollisionGroupsAreCollidable, PS, h, h)
+if okh and selfc then
+q = h
+else
+for _, x in names do
+local okx, cx = pcall(PS.CollisionGroupsAreCollidable, PS, h, x)
+if okx and cx then
+q = x
+break
+end
+end
+end
+if q and not table.find(gs, q) then gs[#gs + 1] = q end
+end
+end
+end
+end
+S.Groups = gs
+return gs
+end
+-- spatial pass: radius sphere around the character + a forward box (wide for left / right, tall for ground-level and overhead parts)
+function U.Query(S, now, far)
+local root = S.Root
+local o = S.Origin
+local rc = Reanimate.Character
+local op = S.OP
+op.FilterDescendantsInstances = rc and {root.Parent, rc} or {root.Parent}
+S.Pass += 1
+local R = C.Radius * U.Slack
+local rad, bx, by, bz
+if far then
+rad = R
+bx, by, bz = math.clamp(R * 0.8, 80, 400), math.clamp(R * 0.5, 60, 250), R
+else
+rad = math.min(U.NearQ, R)
+bx, by, bz = 60, 60, math.min(90, R)
+end
+local box = CFrame.lookAt(o, o + Vector3.new(S.FX, 0, S.FZ)) * CFrame.new(0, 0, -bz * 0.5)
+local bs = Vector3.new(bx, by, bz)
+local groups = U.Groups(S, now)
+for i = 1, #groups do
+op.CollisionGroup = groups[i]
+local ok, list = pcall(workspace.GetPartBoundsInRadius, workspace, o, rad, op)
+if ok then U.Take(S, list, now) end
+ok, list = pcall(workspace.GetPartBoundsInBox, workspace, box, bs, op)
+if ok then U.Take(S, list, now) end
+end
+end
+-- parts reported by DescendantAdded (new spawns, streamed-in parts)
+function U.Drain(S, now)
+local q, h, t = S.Q, S.QH, S.QT
+if h >= t then return end
+local t0 = os.clock()
+local k = 0
+while h < t do
+h += 1
+local d = q[h]
+q[h] = nil
+if d then U.Eval(S, d, now) end
+k += 1
+if k % 32 == 0 and os.clock() - t0 > 0.002 then break end
+end
+S.QH = h
+if h >= t then S.QH, S.QT = 0, 0 end
+end
+-- incremental Workspace descendant scan: catches parts the spatial queries cannot return (CanQuery off, odd collision groups, query limits)
+function U.Scan(S, now)
+local list = S.List
+if not list then
+if now < S.NextList then return end
+list = workspace:GetDescendants()
+S.List, S.ListI = list, 0
+end
+local i, n = S.ListI, #list
+local t0 = os.clock()
+while i < n do
+i += 1
+local d = list[i]
+if d:IsA("BasePart") and not d.Anchored then U.Eval(S, d, now) end
+if i % 64 == 0 and os.clock() - t0 > 0.002 then break end
+end
+S.ListI = i
+if i >= n then
+S.List = nil
+S.Scans += 1
+S.NextList = now + math.max(8, n / 5000)
+end
+end
+-- round-robin re-rating of cached candidates: drops destroyed / anchored / grounded / out-of-range ones, refreshes distance, direction and ownership
+function U.Revalidate(S, now)
+local list = S.CL
+local n = #list
+if n == 0 then
+S.VI = 1
+return
+end
+local i = S.VI
+local t0 = os.clock()
+for k = 1, 120 do
+if i > n then i = 1 end
+local c = list[i]
+if c and now - c.Chk >= U.Stale then
+if U.Eval(S, c.P, now) then i += 1 else n = #list end
+else
+i += 1
+end
+if k % 16 == 0 and os.clock() - t0 > 0.002 then break end
+end
+S.VI = i
+end
+-- rank cached candidates, claim the best ones for open feature slots, and offer a teleport for suitable parts that are out of reach.
+-- Reach = the engine can plausibly hand ownership over without moving (U.Near + front bonus) or already reports us as simulator (c.Own).
+-- Parts already owned and the part just accepted through the prompt skip the pending cap, so unconfirmable parts can never starve them; failed parts sit out an escalating cooldown and then compete again.
+function U.Choose(S, now)
+local rv = S.Reserve
+if rv and (rv.Until < now or not rv.P.Parent) then
+S.Reserve = nil
+rv = nil
+end
+local open, tc, tf, tv = S.Open, S.TC, S.TF, S.TV
+local top = U.Top
+for _, f in U.Feats do open[f] = (C[f] and #S.G[f] < U.Want[f]) and true or false end
+for i = 1, top do
+tc[i] = false
+tv[i] = -math.huge
+end
+local nf, ns = 0, 0
+local bc, bfe, bv
+local pc, pf, pv
+local rad = math.max(C.Radius, 1)
+local conf = C.Confirm and not S.Prompt and now >= S.NextPrompt
+for _, c in S.CL do
+nf += 1
+local p = c.P
+local base = (1 - math.min(c.D / rad, 1)) * 0.22 + c.Front * 0.12 + c.Ind * 0.08 + (c.Own and 0.08 or 0) - math.min(c.Fails, 6) * 0.04
+local f1, v1, f2, v2
+for _, f in U.Feats do
+if C[f] then
+local fit = c[f]
+if fit > U.Min then
+local v = fit * 0.45 + base
+if rv and rv.P == p and rv.F == f then v += 10 end
+if not v1 or v > v1 then f1, v1 = f, v end
+if open[f] and (not v2 or v > v2) then f2, v2 = f, v end
+end
+end
+end
+if f1 then
+ns += 1
+if not S.Rec[p] then
+if not bv or v1 > bv then bc, bfe, bv = c, f1, v1 end
+if f2 and U.Free(S, p, now) then
+local reach = U.Near + 25 * c.Front
+if c.Own or c.D <= reach then
+if v2 > tv[top] then
+local j = top
+while j > 1 and v2 > tv[j - 1] do
+tc[j], tf[j], tv[j] = tc[j - 1], tf[j - 1], tv[j - 1]
+j -= 1
+end
+tc[j], tf[j], tv[j] = c, f2, v2
+end
+end
+-- teleport offer: suitable, usable by an enabled feature, not simulated by us, and either out of reach or already failed once; no failed attempt is needed first
+if conf and not c.Own and c.D > U.PromptMin and (c.D > reach or c.Fails > 0) and (S.Seen[p] or 0) < now and not (rv and rv.P == p) then
+local pw = v2 + (c[f2] >= U.Hot and 5 or 0)
+if not pv or pw > pv then pc, pf, pv = c, f2, pw end
+end
+end
+end
+end
+end
+local k = S.Cnt
+k.Found, k.Suit = nf, ns
+S.Best, S.BestF = bc, bfe
+-- claims are staggered: only a few parts wait for their first ownership confirmation at once, so a burst of new parts never destabilises the ones already attached
+local pend = 0
+for _, r in S.Rec do
+if not r.WasLive then pend += 1 end
+end
+local hold = pc and pc.P or (S.Prompt and S.Prompt.P)
+for i = 1, top do
+local c = tc[i]
+if not c then break end
+local f = tf[i]
+local p = c.P
+if p ~= hold and open[f] and #S.G[f] < U.Want[f] and not S.Rec[p] and not p.Anchored then
+local rsv = rv ~= nil and rv.P == p
+if c.Own or rsv or pend < U.MaxPend then
+local rec = U.Claim(S, p, f, now, rsv)
+if rec then
+if not c.Own then pend += 1 end
+if rsv then
+S.Reserve = nil
+rv = nil
+end
+else
+-- could not be reserved (assembly already driven / tainted): rest briefly so it cannot occupy a top slot every pass
+S.Cool[p] = now + 3
+end
+end
+end
+end
+if pc and not S.Prompt then
+if not U.ShowPrompt(S, pc, pf) then S.NextPrompt = now + 3 end
+end
+end
+function U.Sim(S)
+local sr = math.max(1000, #Players:GetPlayers() * 1000)
+pcall(function() Player.SimulationRadius = sr end)
+pcall(function() Player.MaximumSimulationRadius = sr end)
+pcall(sethiddenproperty, Player, "SimulationRadius", sr)
+pcall(sethiddenproperty, Player, "MaximumSimulationRadius", sr)
+end
+-- ===== lifecycle states (reporting only; nothing here changes behaviour) =====
+-- ATTACHED is reported only while the part attachment, target attachment, AlignPosition, AlignOrientation and VectorForce all exist and are enabled
+function U.Attached(rec)
+local p, ap, ao, vf, a0, a1 = rec.P, rec.AP, rec.AO, rec.VF, rec.A, rec.T
+if not (rec.Owned and ap and ao and vf and a0 and a1) then return false end
+return ap.Parent == p and ao.Parent == p and vf.Parent == p and a0.Parent == p and a1.Parent ~= nil and ap.Enabled and ao.Enabled and vf.Enabled
+end
+function U.Phase(rec)
+if rec.Owned then return U.Attached(rec) and "ATTACHED" or "OWNERSHIP CONFIRMED" end
+if rec.WasLive then return "OWNERSHIP LOST" end
+if rec.WaitAt then return "AWAITING OWNERSHIP" end
+return "RESERVED"
+end
+function U.PartState(S, p, now)
+local rec = S.Rec[p]
+if rec then return U.Phase(rec) end
+if (S.Declined[p] or 0) > now then return "REJECTED (declined by you)" end
+local rv = S.Reserve
+if rv and rv.P == p then return "RESERVED (teleport accepted)" end
+local cd = S.Cand[p]
+if not cd then return "DISCOVERED" end
+local suit = false
+for _, f in U.Feats do
+if C[f] and cd[f] > U.Min then
+suit = true
+break
+end
+end
+if not suit then return "DISCOVERED (no enabled feature fits it)" end
+local cl = (S.Cool[p] or 0) - now
+if cl > 0 then return ("SUITABLE (retry in %ds)"):format(math.ceil(cl)) end
+return "SUITABLE"
+end
+-- lightweight status line in the Part Finder config
+function U.Status(S, now)
+local lab = U.StatusLabel
+if not lab or not lab.Parent then return end
+local rsv, awt, acq, att, lost = 0, 0, 0, 0, 0
+for _, rec in S.Rec do
+if rec.Owned then
+acq += 1
+if U.Attached(rec) then att += 1 end
+elseif rec.WasLive then
+lost += 1
+elseif rec.WaitAt then
+awt += 1
+else
+rsv += 1
+end
+end
+local state
+if not C.AutoSearch then
+state = "OFF (Automatic Part Search is disabled)"
+elseif S.List then
+state = "SEARCHING - scanning Workspace " .. math.floor(S.ListI / math.max(#S.List, 1) * 100) .. "%"
+else
+state = "SEARCHING - nearby queries + new-part watch active"
+end
+local bt = "none yet"
+local b = S.Best
+if b and S.BestF then
+bt = ("%s - %d studs - %s (%d%% fit) - %s"):format((b.P.Name:gsub("[<>&]", "?")), math.floor(b.D), U.Label[S.BestF], math.floor(b[S.BestF] * 100), U.PartState(S, b.P, now))
+end
+local dg = S.Diag
+local dt = "none seen within the search radius yet"
+if dg.P and now - dg.T <= 6 then
+local p = dg.P
+local pn = (p.Name:gsub("[<>&]", "?"))
+if dg.Why then
+dt = ("%s - %d studs - REJECTED: %s"):format(pn, math.floor(dg.D), dg.Why)
+else
+local cd = S.Cand[p]
+local ft = cd and ("fit W%d T%d H%d"):format(math.floor(cd.Wings * 100), math.floor(cd.Tail * 100), math.floor(cd.Halo * 100)) or "fit ?"
+dt = ("%s - %d studs - %s (%s, receive age %.1fs)"):format(pn, math.floor(dg.D), U.PartState(S, p, now), ft, p.ReceiveAge)
+end
+end
+local k = S.Cnt
+local txt = ("Detector: %s\nDiscovered: %d | Suitable: %d | Pending: %d (reserved %d, awaiting ownership %d) | Acquired: %d | Attached: %d | Ownership lost: %d\nBest candidate: %s\nNearest unanchored part: %s"):format(state, k.Found, k.Suit, rsv + awt, rsv, awt, acq, att, lost, bt, dt)
+if txt ~= S.LastStatus then
+S.LastStatus = txt
+pcall(function() lab.Text = txt end)
+end
+end
+function U.Guard(S, name, fn, ...)
+local ok, err = pcall(fn, ...)
+if not ok and not S.Warned then
+S.Warned = true
+warn("[Unanchored Reanimation] part finder error (" .. name .. "): " .. tostring(err))
+end
+end
+function U.Tick(S)
+local now = os.clock()
+U.Guard(S, "validate", U.Validate, S)
+if now >= S.NextSim then
+S.NextSim = now + 1.5
+U.Guard(S, "simulation radius", U.Sim, S)
+end
+U.Guard(S, "context", U.Context, S, now)
+if S.Ready and C.AutoSearch then
+local fp = S.ForceEval
+if fp then
+S.ForceEval = nil
+U.Guard(S, "recheck target", U.Eval, S, fp, now)
+end
+U.Guard(S, "new parts", U.Drain, S, now)
+U.Guard(S, "recheck", U.Revalidate, S, now)
+U.Guard(S, "scan", U.Scan, S, now)
+if now >= S.NextNear then
+S.NextNear = now + 0.75
+local far = now >= S.NextFar
+if far then S.NextFar = now + 3 end
+U.Guard(S, "query", U.Query, S, now, far)
+end
+if now >= S.NextChoose then
+S.NextChoose = now + 0.5
+U.Guard(S, "choose", U.Choose, S, now)
+end
+end
+if now >= S.NextStatus then
+S.NextStatus = now + 0.5
+U.Guard(S, "status", U.Status, S, now)
+end
+end
+function U.Worker(S)
+while S.Alive do
+task.wait(0.2)
+if not S.Alive then break end
+U.Guard(S, "tick", U.Tick, S)
+end
+end
+
+function U.Cleanup()
+local S = U.Run
+if not S then return end
+U.Run = nil
+S.Alive = false
+for _, c in S.Conns do pcall(c.Disconnect, c) end
+U.ClosePrompt(S)
+for _, rec in S.Rec do U.Release(S, rec, 0) end
+for _, grp in S.G do table.clear(grp) end
+table.clear(S.Asm)
+table.clear(S.Q)
+table.clear(S.Cand)
+table.clear(S.CL)
+S.List = nil
+pcall(function()
+if U.StatusLabel then U.StatusLabel.Text = "Detector: idle (Unanchored Reanimation is not running)" end
+end)
+if S.PrevSleep ~= nil then pcall(function() settings().Physics.AllowSleep = S.PrevSleep end) end
+if S.PrevSim then pcall(sethiddenproperty, Player, "SimulationRadius", S.PrevSim) end
+if S.PrevMax then pcall(sethiddenproperty, Player, "MaximumSimulationRadius", S.PrevMax) end
+end
+function U.Init(extra)
+U.Cleanup()
+local S = {Alive = true, Extra = extra == true, T0 = os.clock(), Rec = {}, G = {Wings = {}, Tail = {}, Halo = {}}, Conns = {}, NextPrompt = 0, RefDirty = true, Asm = {}, RefChkAt = 0}
+S.Cand, S.CL, S.VI = {}, {}, 1
+S.Q, S.QH, S.QT = {}, 0, 0
+S.Pass, S.Scans, S.ListI, S.NextList = 0, 0, 0, 0
+S.NextSim, S.NextNear, S.NextFar, S.NextChoose, S.NextStatus = 0, 0, 0, 0, 0
+S.FX, S.FZ, S.Origin = 0, -1, Vector3.zero
+S.Cnt, S.Open, S.TC, S.TF, S.TV = {Found = 0, Suit = 0, Pend = 0}, {}, {}, {}, {}
+S.Cool = setmetatable({}, {__mode = "k"})
+S.Declined = setmetatable({}, {__mode = "k"})
+S.Seen = setmetatable({}, {__mode = "k"})
+S.Stamp = setmetatable({}, {__mode = "k"})
+S.Diag = {D = math.huge, T = -1e9}
+pcall(function()
+local ph = settings().Physics
+S.PrevSleep = ph.AllowSleep
+ph.AllowSleep = false
+end)
+S.OP = OverlapParams.new()
+S.OP.FilterType = Enum.RaycastFilterType.Exclude
+S.OP.MaxParts = 0
+local ch = U.HostChar(S)
+S.Root = ch and ch:FindFirstChild("HumanoidRootPart")
+local ok1, r1 = pcall(gethiddenproperty, Player, "SimulationRadius")
+local ok2, r2 = pcall(gethiddenproperty, Player, "MaximumSimulationRadius")
+S.PrevSim = ok1 and r1 or nil
+S.PrevMax = ok2 and r2 or nil
+U.Run = S
+S.Conns[1] = RunService.Heartbeat:Connect(function(dt) U.Guard(S, "step", U.Step, S, dt) end)
+S.Conns[2] = workspace.DescendantAdded:Connect(function(d)
+if C.AutoSearch and d:IsA("BasePart") then
+local t = S.QT + 1
+S.QT = t
+S.Q[t] = d
+if t - S.QH > 20000 then
+table.clear(S.Q)
+S.QH, S.QT = 0, 0
+end
+end
+end)
+task.spawn(U.Worker, S)
+end
+function U.Start()
+local ok, err = pcall(U.Init)
+if not ok then
+warn("[Unanchored Reanimation] failed to start: " .. tostring(err))
+U.Note("Unanchored Reanimation failed to start (see console): " .. tostring(err))
+end
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+pcall(U.Cleanup)
+Reanimate.Stopping = false
+end
+
+-- ===== Extra Unanchored Reanimation (runs inside the Limb / Ragdoll reanimator, hosted on the FAKE character) =====
+-- host character of the formation: the real character (standalone method) or the fake rig (extra mode)
+function U.HostChar(S)
+if S.Extra then return Reanimate.Character end
+return Player.Character
+end
+-- the Limb reanimator sets FallenPartsDestroyHeight to NaN every frame; fall back to the value saved at startup
+function U.VoidY()
+local y = workspace.FallenPartsDestroyHeight
+if y ~= y then y = FallenPartsDestroyHeight end
+if type(y) ~= "number" or y ~= y then y = -500 end
+return y
+end
+-- PhysicsRepRootRef must point at a part that exists for everyone; the fake rig only exists on this client, so extra mode references a part of the REAL character instead
+function U.RepSource(S, root)
+if not S.Extra then return root end
+local ch = Player.Character
+return ch and (ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso") or ch:FindFirstChild("HumanoidRootPart")) or nil
+end
+function U.StartExtra()
+if not C.Extra then return end
+local ok, err = pcall(U.Init, true)
+if not ok then
+warn("[Unanchored Reanimation] extra mode failed to start: " .. tostring(err))
+U.Note("Extra Unanchored Reanimation failed to start (see console): " .. tostring(err))
+end
+end
+function U.StopExtra()
+if U.Run and U.Run.Extra then pcall(U.Cleanup) end
+end
+function U.LimbRunning()
+local cur = Reanimate.Current
+local n = cur and cur.Name
+return cur ~= nil and cur.Running == true and (n == "Limbs" or n == "Ragdoll") and Reanimate.Character ~= nil and not Reanimate.Stopping
+end
+-- switch flipped while a Limb / Ragdoll run is active: start or stop the extra system immediately
+function U.ExtraToggle()
+if C.Extra then
+if U.LimbRunning() and not (U.Run and U.Run.Extra) then U.StartExtra() end
+else
+U.StopExtra()
+end
+end
+function U.ConfigExtra(parent)
+local function refresh() task.defer(function() pcall(Util.RefreshReanimatorConfig) end) end
+UI.CreateText(parent, "-=+ Extra Unanchored Reanimation +=-", 12, Enum.TextXAlignment.Center)
+UI.CreateSwitch(parent, "Extra Unanchored Reanimation", C.Extra).Changed:Connect(function(v)
+C.Extra = v
+U.ExtraToggle()
+refresh()
+end)
+UI.CreateText(parent, "^^^ ON: while this reanimator runs, loose unanchored parts from the map become Wings, a Tail and a Halo Aura on your FAKE character (not the real one). Parts are only moved once the engine confirms you simulate them. Same options as Unanchored Reanimation.", 10, Enum.TextXAlignment.Center)
+if C.Extra then U.Options(parent) end
+end
+function U.Config(parent)
+UI.CreateText(parent, "Unanchored Reanimation: no tools, hats, reset or respawn. Finds loose unanchored parts near you, only moves them once the engine confirms you simulate them, and turns them into Wings, a Tail and a Halo.", 10, Enum.TextXAlignment.Center)
+U.Options(parent)
+end
+-- shared option list: standalone method + Extra Unanchored Reanimation
+function U.Options(parent)
+local function refresh() task.defer(function() pcall(Util.RefreshReanimatorConfig) end) end
+UI.CreateSwitch(parent, "Wings", C.Wings).Changed:Connect(function(v)
+C.Wings = v
+refresh()
+end)
+if C.Wings then
+UI.CreateDropdown(parent, "Wing Animation", {"Flap", "Idle"}, C.WingAnim).Changed:Connect(function(v)
+C.WingAnim = v == 2 and 2 or 1
+end)
+end
+UI.CreateSwitch(parent, "Tail", C.Tail).Changed:Connect(function(v)
+C.Tail = v
+refresh()
+end)
+if C.Tail then
+UI.CreateDropdown(parent, "Tail Animation", {"Wag", "Slash Tail"}, C.TailAnim).Changed:Connect(function(v)
+C.TailAnim = v == 2 and 2 or 1
+end)
+end
+UI.CreateSwitch(parent, "Halo Aura", C.Halo).Changed:Connect(function(v)
+C.Halo = v
+end)
+UI.CreateText(parent, "Part Finder", 12, Enum.TextXAlignment.Center)
+U.StatusLabel = UI.CreateText(parent, "Detector: idle (Unanchored Reanimation is not running)", 10, Enum.TextXAlignment.Left)
+if U.Run then U.Run.LastStatus = nil end
+UI.CreateSwitch(parent, "Automatic Part Search", C.AutoSearch).Changed:Connect(function(v)
+C.AutoSearch = v
+refresh()
+end)
+if C.AutoSearch then
+UI.CreateSlider(parent, "Search Radius (studs)", C.Radius, 20, 500, 5).Changed:Connect(function(v)
+C.Radius = math.clamp(v, 20, 500)
+end)
+UI.CreateSwitch(parent, "Teleport Confirmation", C.Confirm).Changed:Connect(function(v)
+C.Confirm = v
+end)
+UI.CreateText(parent, "^^^ ON: a Yes / No prompt appears when a suitable part is out of reach, and you are only teleported after pressing YES. OFF: no prompt and no teleport, only parts already in range are used.", 10, Enum.TextXAlignment.Center)
+else
+UI.CreateText(parent, "^^^ OFF: no new parts are searched or claimed; parts already held keep animating.", 10, Enum.TextXAlignment.Center)
+end
+end
+end
 do
 SaveData.SelectedReanimator = SaveData.SelectedReanimator or 1
 if not SaveData.ReanimSel8 then
@@ -72167,7 +73971,7 @@ if not SaveData.ReanimSelRagdoll then
 SaveData.ReanimSelRagdoll = true
 if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end
 end
-if SaveData.SelectedReanimator > 4 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
+if SaveData.SelectedReanimator > 5 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
 Util.FCMark("reanim")
 
 local ReanimMethods = {
@@ -72175,6 +73979,7 @@ local ReanimMethods = {
 {HatReanimator, "Hats Reanimator"},
 {Reanimate.ToolReanimator, "Tool Reanimation"},
 {Reanimate.RagdollReanimator, "Ragdoll Reanimator"},
+{Reanimate.UnanchoredReanimator, "Unanchored Reanimation"},
 }
 local ReanimMethodNames = {}
 for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
