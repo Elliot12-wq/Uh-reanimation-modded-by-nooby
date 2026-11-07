@@ -69630,6 +69630,436 @@ end
 end
 end
 end
+local Servo = LimbReanimator.ServoMode and true or false
+local ServoByPart, ServoRoot, ServoBase, ServoConn, ServoDrive = {}, nil, nil, nil, nil
+local ServoAnchor = CFrame.new(math.random(-512, 512), math.random(2500, 3000), math.random(-512, 512))
+local SERVO_AX = {
+CFrame.identity,
+CFrame.fromMatrix(Vector3.zero, Vector3.yAxis, Vector3.zAxis),
+CFrame.fromMatrix(Vector3.zero, Vector3.zAxis, Vector3.xAxis),
+}
+local SERVO_TAU, SERVO_RAD, SERVO_DEG = math.pi * 2, math.rad, math.deg
+-- Servo calibration. Kinds hold anatomical ranges (deg) about the character's right (P), up (T) and forward/back (R) axes for a limb hanging down; R is the right-side range and is mirrored for the left side.
+-- Hinge stage order stays X > Y > Z (CFrame.Angles order); the middle stage (Y) is the gimbal axis and is always kept inside +/-MID.
+local SJ = {
+TQ = 20, -- max torque per unit of driven mass at Strength 1 (stud^2/s^2)
+RESP = 100, -- hinge servo responsiveness: high so the physical joint tracks the animated target without a smoothing lag
+DEV = 0.35, -- max radians the replicated angle may stray from the commanded target
+MID = 88, -- middle-axis limit (deg), keeps the Euler decomposition away from gimbal lock
+CAP = 178, -- hinge angle safety range (deg), avoids the +/-180 wrap
+CARRIER = 4, -- carrier density, keeps carrier / limb mass ratios solver friendly
+HEAD = 1.5, -- hinge speed headroom over the per-joint target rate, so the physical hinge never trails the target (the target rate is the only speed limit)
+SPIN = SERVO_TAU * 8, -- unwrapped hinge angle range (rad) used for continuous rotation when anatomical limits are off
+Kinds = {
+root = {P = {-180, 180}, T = {-180, 180}, R = {-180, 180}, Spd = 1},
+neck = {P = {-90, 90}, T = {-88, 88}, R = {-70, 70}, Spd = 1},
+shoulder = {P = {-180, 180}, T = {-88, 88}, R = {-120, 180}, Spd = 1},
+elbow = {P = {-20, 175}, T = {-60, 60}, R = {-30, 30}, Spd = 1},
+wrist = {P = {-90, 90}, T = {-70, 70}, R = {-70, 70}, Spd = 1},
+hip = {P = {-120, 160}, T = {-88, 88}, R = {-80, 100}, Spd = 1},
+knee = {P = {-175, 15}, T = {-30, 30}, R = {-20, 20}, Spd = 1},
+ankle = {P = {-70, 70}, T = {-40, 40}, R = {-45, 45}, Spd = 1},
+waist = {P = {-90, 70}, T = {-88, 88}, R = {-70, 70}, Spd = 1},
+generic = {P = {-178, 178}, T = {-178, 178}, R = {-178, 178}, Spd = 1},
+},
+Keys = {
+{"neck", "neck"}, {"head", "neck"}, {"shoulder", "shoulder"}, {"elbow", "elbow"}, {"wrist", "wrist"}, {"hand", "wrist"},
+{"hip", "hip"}, {"knee", "knee"}, {"ankle", "ankle"}, {"foot", "ankle"}, {"waist", "waist"}, {"spine", "waist"},
+},
+}
+local function ServoPart(name, size, anchored, density)
+local p = Instance.new("Part")
+p.Name = name
+p.Size = size
+p.Transparency = 1
+p.Anchored = anchored
+p.CanCollide, p.CanTouch, p.CanQuery = false, false, false
+p.CustomPhysicalProperties = PhysicalProperties.new(density or 0.5, 0, 0, 0, 0)
+p.CFrame = ServoAnchor
+if not (ServoRoot and ServoRoot.Parent) then
+ServoRoot = Instance.new("Folder")
+ServoRoot.Name = "SJR" .. math.random(100000, 999999)
+ServoRoot.Parent = workspace
+end
+p.Parent = ServoRoot
+return p
+end
+local function ServoGetBase()
+if not (ServoBase and ServoBase.Parent) then
+ServoBase = ServoPart("ServoBase", Vector3.one, true)
+end
+return ServoBase
+end
+local function ServoHinge(name, host, p0, cf0, p1, cf1)
+local a0, a1 = Instance.new("Attachment"), Instance.new("Attachment")
+a0.Name, a1.Name = name .. "A0", name .. "A1"
+a0.CFrame, a1.CFrame = cf0, cf1
+a0.Parent, a1.Parent = p0, p1
+local h = Instance.new("HingeConstraint")
+h.Name = name
+h.ActuatorType = Enum.ActuatorType.Servo
+h.Attachment0, h.Attachment1 = a0, a1
+h.Parent = host
+return h
+end
+local function ServoSetProp(o, k, v)
+o[k] = v
+end
+-- mass of the limb ghost, its carriers and everything hanging off it: servo torque is scaled to this instead of a blind constant
+function SJ.Mass(sv)
+local m = sv.PX.Mass + sv.CR1.Mass + sv.CR2.Mass
+for _,map in LimbMapping do
+local c = map.SV
+if c and c ~= sv and c.Linked and c.P0 == sv.P1 then m += SJ.Mass(c) end
+end
+return m
+end
+-- classifies the joint (root / neck / shoulder / hip / elbow / knee ...) and maps its anatomical ranges onto the three local hinge axes of the original Motor6D C0 frame (sign aware)
+function SJ.Profile(sv, map, psv)
+local c0 = sv.C0
+local r0 = psv and psv.R1 or CFrame.identity
+sv.R1 = r0 * c0.Rotation * sv.C1.Rotation:Inverse()
+local kind = SJ.Kinds.generic
+if map.RPart0 == "ROOT" then
+kind = SJ.Kinds.root
+else
+local nm = string.lower(sv.Motor.Name .. " " .. sv.P1.Name)
+for _,key in SJ.Keys do
+if string.find(nm, key[1], 1, true) then
+kind = SJ.Kinds[key[2]]
+break
+end
+end
+end
+local side = r0:VectorToWorldSpace(c0.Position).X
+local fr = r0 * c0.Rotation
+local axes = {fr.XVector, fr.YVector, fr.ZVector}
+for i = 1, 3 do
+local v = axes[i]
+local ax, ay, az = math.abs(v.X), math.abs(v.Y), math.abs(v.Z)
+local L, s
+if ay >= ax and ay >= az then
+L, s = kind.T, v.Y
+elseif ax >= az then
+L, s = kind.P, v.X
+else
+L, s = kind.R, v.Z
+if side < 0 then L = {-L[2], -L[1]} end
+end
+s = s >= 0 and 1 or -1
+local lo, hi = L[1] * s, L[2] * s
+if lo > hi then lo, hi = hi, lo end
+sv.LoD[i], sv.HiD[i] = lo, hi
+end
+sv.Spd = kind.Spd
+end
+-- joint limits (user cap + anatomical ranges + gimbal-safe middle axis) -> clamp radians, and torque / speed / limits pushed to the hinges
+local function ServoApply(sv, cfg)
+sv.Ver = cfg.Ver
+local on = cfg.Limits
+local cap = on and math.min(cfg.LimitDeg, SJ.CAP) or SJ.CAP
+local mid = SJ.MID
+local S = sv.S
+for i = 1, 3 do
+local l, u = sv.LoD[i], sv.HiD[i]
+if not on then l, u = -SJ.CAP, SJ.CAP end
+if l < -cap then l = -cap end
+if u > cap then u = cap end
+if i == 2 then
+if l < -mid then l = -mid end
+if u > mid then u = mid end
+end
+sv.LD[i], sv.HD[i] = l, u
+if on or i == 2 then
+sv.Lo[i], sv.Hi[i] = SERVO_RAD(l), SERVO_RAD(u)
+else
+sv.Lo[i], sv.Hi[i] = -SJ.SPIN, SJ.SPIN
+end
+end
+sv.Rate = cfg.Speed * sv.Spd
+local H = sv.H
+if H then
+local tq = cfg.Torque * SJ.TQ * SJ.Mass(sv)
+local sp = sv.Rate * SJ.HEAD
+for i = 1, 3 do
+local h = H[i]
+local l, u = sv.LD[i], sv.HD[i]
+if S[i] < 0 then l, u = -u, -l end
+h.ServoMaxTorque = tq
+h.AngularSpeed = sp
+pcall(ServoSetProp, h, "AngularResponsiveness", SJ.RESP)
+h.LowerAngle = l
+h.UpperAngle = u
+h.LimitsEnabled = on or i == 2
+end
+end
+end
+local function ServoClamp(sv, x, y, z)
+local lo, hi = sv.Lo, sv.Hi
+return math.clamp(x, lo[1], hi[1]), math.clamp(y, lo[2], hi[2]), math.clamp(z, lo[3], hi[3])
+end
+-- desired joint rotation (Motor6D transform) -> XYZ euler angles = one angle per hinge stage, unwrapped against the previous target; translation is kept separately
+local function ServoDesired(sv, mcf)
+local t = sv.C0i * mcf * sv.C1
+sv.PT = t.Position
+local hj = sv.Hj
+if hj then t = hj:Inverse() * t.Rotation end
+local x, y, z = t:ToEulerAnglesXYZ()
+local T = sv.T
+x += SERVO_TAU * math.round((T[1] - x) / SERVO_TAU)
+z += SERVO_TAU * math.round((T[3] - z) / SERVO_TAU)
+return x, y, z
+end
+local function ServoRelease(map, restore)
+local sv = map.SV
+if not sv then return end
+map.SV = nil
+if ServoByPart[sv.P1] == map then ServoByPart[sv.P1] = nil end
+for _,o in {sv.PX, sv.CR1, sv.CR2, sv.PA} do
+pcall(o.Destroy, o)
+end
+if restore and sv.Motor then
+pcall(function() sv.Motor.Enabled = true end)
+pcall(Util.SetMotor6DTransform, sv.Motor, CFrame.identity)
+end
+end
+local function ServoBuild(map, v)
+local p0, p1 = v.Part0, v.Part1
+if not (p0 and p1) then return end
+local old = map.SV
+if old and old.P1 == p1 and old.PX.Parent then
+old.Motor, old.P0 = v, p0
+return
+end
+if old then ServoRelease(map) end
+local cs = Vector3.new(0.4, 0.4, 0.4)
+map.SV = {
+P0 = p0, P1 = p1, Motor = v,
+C0 = v.C0, C1 = v.C1, C0i = v.C0:Inverse(), C1i = v.C1:Inverse(),
+T = {0, 0, 0}, W = {0, 0, 0}, S = {1, 1, 1}, E = {0, 0, 0},
+LoD = {-178, -86, -178}, HiD = {178, 86, 178}, LD = {-178, -86, -178}, HD = {178, 86, 178},
+Lo = {-3.1, -1.5, -3.1}, Hi = {3.1, 1.5, 3.1},
+Pos = Vector3.zero, PT = Vector3.zero, Spd = 1, Ver = -1, Built = os.clock(),
+PX = ServoPart("ServoLimb", p1.Size, true, 0.5),
+CR1 = ServoPart("ServoCarrierX", cs, true, SJ.CARRIER),
+CR2 = ServoPart("ServoCarrierY", cs, true, SJ.CARRIER),
+}
+ServoByPart[p1] = map
+-- one central physics-step connection drives every servo target
+if not ServoConn then
+ServoConn = RunService.PreSimulation:Connect(function(dt)
+local rp = SJ.Root
+if rp then pcall(SJ.Pose, Reanimate.Character, rp) end
+pcall(ServoDrive, dt)
+end)
+end
+end
+-- X stage: parent -> carrier X, Y stage: carrier X -> carrier Y, Z stage: carrier Y -> limb. Pivot = C0 / C1 of the original Motor6D.
+-- Every stage starts exactly at its clamped target pose (CurrentAngle == TargetAngle) so the first physics step has nothing to correct.
+local function ServoLink(map, sv, pp, psv)
+local cfg = LimbReanimator.ServoCfg
+local c0 = sv.C0
+SJ.Profile(sv, map, psv)
+ServoApply(sv, cfg)
+local x, y, z = ServoDesired(sv, map.CFrame)
+x, y, z = ServoClamp(sv, x, y, z)
+sv.T[1], sv.T[2], sv.T[3] = x, y, z
+sv.Pos = sv.PT
+local px, cr1, cr2 = sv.PX, sv.CR1, sv.CR2
+local piv = pp.CFrame * c0
+local r1 = CFrame.Angles(x, 0, 0)
+local r12 = r1 * CFrame.Angles(0, y, 0)
+cr1.CFrame = piv * r1
+cr2.CFrame = piv * r12
+px.CFrame = piv * r12 * CFrame.Angles(0, 0, z) * sv.C1i
+local ax = SERVO_AX
+local h1 = ServoHinge("ServoX", cr1, pp, c0 * ax[1], cr1, ax[1])
+local h2 = ServoHinge("ServoY", cr2, cr1, ax[2], cr2, ax[2])
+local h3 = ServoHinge("ServoZ", px, cr2, ax[3], px, sv.C1 * ax[3])
+sv.H = {h1, h2, h3}
+sv.PA = h1.Attachment0
+ServoApply(sv, cfg)
+local d1, d2, d3 = SERVO_DEG(x), SERVO_DEG(y), SERVO_DEG(z)
+sv.W[1], sv.W[2], sv.W[3] = d1, d2, d3
+sv.E[1], sv.E[2], sv.E[3] = d1, d2, d3
+h1.TargetAngle, h2.TargetAngle, h3.TargetAngle = d1, d2, d3
+sv.Cal = false
+cr1.Anchored, cr2.Anchored, px.Anchored = false, false, false
+sv.Linked = true
+-- the driven mass of every ancestor changed: refresh their torque on the next step
+local a = psv
+while a do
+a.Ver = -1
+local pm = ServoByPart[a.P0]
+a = pm and pm.SV
+end
+end
+local function ServoAlive(sv)
+local H = sv.H
+local h1 = H[1]
+if not (sv.PX.Parent and sv.CR1.Parent and sv.CR2.Parent and h1.Parent and H[2].Parent and H[3].Parent) then return false end
+local a0 = h1.Attachment0
+return a0 ~= nil and a0.Parent ~= nil and sv.Motor.C0 == sv.C0 and sv.Motor.C1 == sv.C1
+end
+-- measured servo angles -> joint pose that gets replicated through the original Motor6D (angles may not stray far from the commanded target, non-finite readings fall back to it)
+local function ServoSample()
+local dev = SJ.DEV
+for _,map in LimbMapping do
+local sv = map.SV
+if sv then
+sv.Act = nil
+if sv.Linked then
+local H = sv.H
+local h1, h2, h3 = H[1], H[2], H[3]
+if h1.Parent and h2.Parent and h3.Parent then
+local T, S = sv.T, sv.S
+local a1, a2, a3 = SERVO_RAD(h1.CurrentAngle) * S[1], SERVO_RAD(h2.CurrentAngle) * S[2], SERVO_RAD(h3.CurrentAngle) * S[3]
+if a1 ~= a1 then a1 = T[1] end
+if a2 ~= a2 then a2 = T[2] end
+if a3 ~= a3 then a3 = T[3] end
+a1 = T[1] + math.clamp(a1 - T[1], -dev, dev)
+a2 = T[2] + math.clamp(a2 - T[2], -dev, dev)
+a3 = T[3] + math.clamp(a3 - T[3], -dev, dev)
+local act = sv.C0 * (CFrame.new(sv.Pos) * (sv.Hj or CFrame.identity) * CFrame.Angles(a1, a2, a3)) * sv.C1i
+if RagdollFiniteCF(act) then sv.Act = act end
+end
+end
+end
+end
+end
+-- animation -> servo snapshot: the pose the active moveset + dance just produced becomes every servo limb's authoritative target pose, sampled each physics step (never behind the dorep / ReplicateFPS10 throttle). A missing or non-finite pose holds the last good one so a limb is never left uncontrolled.
+-- LimbPoseCFrame also returns identity for a joint whose parts cannot be found: only that case is an invalid pose, a real neutral pose is accepted
+function SJ.PoseValid(map, RC, RootPart)
+if not RC then return false end
+local p0 = map.RPart0 == "ROOT" and RootPart or RC:FindFirstChild(map.RPart0)
+return p0 ~= nil and RC:FindFirstChild(map.RPart1) ~= nil
+end
+function SJ.Pose(RC, RootPart)
+local pose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
+-- heading (yaw) of the animated character relative to the real RootPart: the root joint carries it kinematically so a turning character never runs the root hinges through gimbal / +-180 wrap
+local H, Fr
+if RC and RootPart and RootPart.Parent then
+local hrp = RC:FindFirstChild("HumanoidRootPart")
+if hrp then
+local rcf = RootPart.CFrame
+local _, a0 = rcf:ToEulerAnglesYXZ()
+local _, a1 = hrp.CFrame:ToEulerAnglesYXZ()
+if a0 == a0 and a1 == a1 then H, Fr = CFrame.Angles(0, a1 - a0, 0), rcf.Rotation end
+end
+end
+for _,map in LimbMapping do
+local sv = map.SV
+if sv and map.Reference then
+local cf = pose(map, map.Reference, RC, RootPart)
+if RagdollFiniteCF(cf) and (cf ~= idcf or SJ.PoseValid(map, RC, RootPart)) then map.CFrame = cf end
+if map.RPart0 == "ROOT" then
+if H then
+local F = Fr * sv.C0.Rotation
+sv.Hj = F:Inverse() * H * F
+else
+sv.Hj = nil
+end
+end
+end
+end
+end
+-- Coordinated rig update. Every joint's goal comes from the one animation snapshot SJ.Pose just produced. Each joint tracks its own goal directly (all three axes of a joint move together at one shared fraction, so the joint is never distorted) and is limited only by its own angular speed: a slow or extreme joint never time-dilates the rest of the rig, and there is no extra smoothing on top of the servo.
+ServoDrive = function(dt)
+local cfg = LimbReanimator.ServoCfg
+if dt > 0.1 then dt = 0.1 elseif dt < 0.002 then dt = 0.002 end
+local now = os.clock()
+for _,map in LimbMapping do
+local sv = map.SV
+if sv then
+if not sv.Linked then
+local pp, psv
+if map.RPart0 == "ROOT" then
+pp = ServoGetBase()
+else
+local pm = ServoByPart[sv.P0]
+psv = pm and pm.SV
+if psv and psv.Linked and psv.PX.Parent then pp = psv.PX end
+end
+local mcf = map.CFrame
+if pp and mcf and RagdollFiniteCF(mcf) and now - (sv.Try or 0) > 0.25 then
+if not pcall(ServoLink, map, sv, pp, psv) then
+local m = sv.Motor
+ServoRelease(map)
+pcall(ServoBuild, map, m)
+local ns = map.SV
+if ns then ns.Try = now end
+end
+end
+elseif not ServoAlive(sv) then
+if now - sv.Built > 0.25 then
+local m = sv.Motor
+ServoRelease(map)
+pcall(ServoBuild, map, m)
+end
+else
+local mcf = map.CFrame
+if mcf and RagdollFiniteCF(mcf) then
+if sv.Ver ~= cfg.Ver then ServoApply(sv, cfg) end
+local H, T, W, S = sv.H, sv.T, sv.W, sv.S
+-- one-time check of the hinge angle direction against the pose the limb was placed in
+if sv.Cal == false then
+sv.Cal = true
+local E, flip = sv.E, false
+for i = 1, 3 do
+local e = E[i]
+if math.abs(e) > 4 then
+local c = H[i].CurrentAngle
+if c == c and math.abs(c + e) < math.abs(c - e) then
+S[i], W[i], flip = -1, math.huge, true
+end
+end
+end
+if flip then ServoApply(sv, cfg) end
+end
+local x, y, z = ServoDesired(sv, mcf)
+x, y, z = ServoClamp(sv, x, y, z)
+sv.Pos = sv.PT
+local need = math.max(math.abs(x - T[1]), math.abs(y - T[2]), math.abs(z - T[3])) / (sv.Rate * dt)
+if need <= 1 then
+T[1], T[2], T[3] = x, y, z
+else
+local f = 1 / need
+T[1] += (x - T[1]) * f
+T[2] += (y - T[2]) * f
+T[3] += (z - T[3]) * f
+end
+for a = 1, 3 do
+local d = SERVO_DEG(T[a]) * S[a]
+if math.abs(d - W[a]) > 0.004 then
+W[a] = d
+H[a].TargetAngle = d
+end
+end
+end
+end
+end
+end
+end
+local function ServoCleanAll(restore)
+if ServoConn then
+ServoConn:Disconnect()
+ServoConn = nil
+end
+for _,map in LimbMapping do ServoRelease(map, restore) end
+if ServoRoot then
+pcall(ServoRoot.Destroy, ServoRoot)
+ServoRoot = nil
+end
+ServoBase = nil
+SJ.Root = nil
+table.clear(ServoByPart)
+end
+local ServoCleaner = function() ServoCleanAll(true) end
+if Servo then
+local stale = LimbReanimator.ServoCleanup
+if stale then pcall(stale) end
+LimbReanimator.ServoCleanup = ServoCleaner
+end
 local CharOnDesc = function(v)
 if v:IsA("BasePart") then
 if not table.find(BaseParts, v) then
@@ -69649,6 +70079,7 @@ for _,map in LimbMapping do
 if map.Part0 == p0 and map.Part1 == p1 then
 map.Reference = v
 if Ragdoll then pcall(Ragdollize, map, v) end
+if Servo then pcall(ServoBuild, map, v) end
 return
 end
 end
@@ -69727,6 +70158,7 @@ table.clear(RagdollByPart)
 for _,map in LimbMapping do
 map.Reference = nil
 if map.RG then RagdollRelease(map) end
+if map.SV then ServoRelease(map) end
 map.RG, map.RT = nil, nil
 end
 character.DescendantAdded:Connect(CharOnDesc)
@@ -69815,6 +70247,10 @@ for _,v in UnknownMotor6Ds do
 Util.SetMotor6DTransform(v, CFrame.identity)
 end
 if Ragdoll then RagdollSample(RootPart) end
+if Servo then
+SJ.Root = RootPart
+ServoSample()
+end
 local LimbPose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
 for _,map in LimbMapping do
 local v = map.Reference
@@ -69837,6 +70273,19 @@ local rg = map.RG
 if dorep or not rg.Out then rg.Out = rg.Act or mcf end
 if rg.Out and not RagdollFiniteCF(rg.Out) then rg.Out = mcf end
 if rg.Out then pcall(Util.SetMotor6DOffset, v, rg.Out) end
+end
+elseif map.SV then
+if flingtarget then
+pcall(Util.SetMotor6DTransform, v, CFrame.identity)
+else
+local mcf = map.CFrame
+if not mcf then
+local cf = LimbPose(map, v, ReanimCharacter, RootPart)
+mcf = cf
+end
+local sv = map.SV
+sv.Out = sv.Act or mcf
+if sv.Out then pcall(Util.SetMotor6DOffset, v, sv.Out) end
 end
 elseif flingtarget then
 Util.SetMotor6DTransform(v, CFrame.identity)
@@ -70066,6 +70515,10 @@ if Ragdoll then
 for _,map in LimbMapping do RagdollRelease(map) end
 RagdollClean()
 end
+if Servo then
+ServoCleanAll(true)
+if LimbReanimator.ServoCleanup == ServoCleaner then LimbReanimator.ServoCleanup = nil end
+end
 if Player.Character then
 local h = Player.Character:FindFirstChild("Humanoid")
 if h then
@@ -70099,6 +70552,69 @@ LimbReanimator.RagdollMode = nil
 if not ok then
 warn("[Ragdoll Reanimator] failed to start: " .. tostring(err))
 pcall(Util.Notify, "Ragdoll Reanimator failed to start (see console): " .. tostring(err))
+pcall(Reanimate.DestroyCharacter)
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+Reanimate.Stopping = false
+end
+end
+end
+do
+local RS = SaveData.Reanimator
+if RS.ServoTune ~= 3 then
+RS.ServoTune = 3
+local sp0 = tonumber(RS.ServoSpeed)
+if sp0 == 40 or sp0 == 16 then RS.ServoSpeed = nil end
+end
+RS.ServoTorque = math.clamp(tonumber(RS.ServoTorque) or 100, 1, 1000)
+RS.ServoSpeed = math.clamp(tonumber(RS.ServoSpeed) or 80, 1, 200)
+RS.ServoLimitsOn = RS.ServoLimitsOn ~= false
+RS.ServoLimitDeg = math.clamp(tonumber(RS.ServoLimitDeg) or 170, 10, 180)
+local SC = {Torque = RS.ServoTorque, Speed = RS.ServoSpeed, Limits = RS.ServoLimitsOn, LimitDeg = RS.ServoLimitDeg, Ver = 0}
+LimbReanimator.ServoCfg = SC
+local ServoJointReanimator = setmetatable({Name = "Servo-Joint"}, {__index = LimbReanimator})
+Reanimate.ServoJointReanimator = ServoJointReanimator
+function ServoJointReanimator.Config(parent)
+UI.CreateText(parent, "Servo-Joint Reanimation: every limb joint becomes a physical rig of HingeConstraints in Servo mode (one hinge per rotation axis, joined by intermediary carriers). Animations are converted to smoothed, speed-limited servo target angles (per-joint anatomical limits) and the torque / speed limited result is what gets replicated.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "-=+ Servo-Joint Settings +=-", 12, Enum.TextXAlignment.Center)
+UI.CreateSlider(parent, "Servo Strength (max torque = value x 20 x joint mass)", SC.Torque, 1, 1000, 1).Changed:Connect(function(val)
+val = math.clamp(val, 1, 1000)
+SC.Torque = val
+RS.ServoTorque = val
+SC.Ver += 1
+end)
+UI.CreateSlider(parent, "Max Angular Speed (rad/s)", SC.Speed, 1, 200, 1).Changed:Connect(function(val)
+val = math.clamp(val, 1, 200)
+SC.Speed = val
+RS.ServoSpeed = val
+SC.Ver += 1
+end)
+UI.CreateSwitch(parent, "Anatomical Joint Limits", SC.Limits).Changed:Connect(function(val)
+SC.Limits = val and true or false
+RS.ServoLimitsOn = SC.Limits
+SC.Ver += 1
+end)
+UI.CreateSlider(parent, "Joint Limit Cap (+/- degrees, caps every joint range)", SC.LimitDeg, 10, 180, 1).Changed:Connect(function(val)
+val = math.clamp(val, 10, 180)
+SC.LimitDeg = val
+RS.ServoLimitDeg = val
+SC.Ver += 1
+end)
+UI.CreateText(parent, "^^^ strength, speed and limits apply live. Strength scales with the mass each joint drives. Each joint type (root, neck, shoulder, elbow, hip, knee) uses its own anatomical range, and the middle axis of every joint is always limited to +/- 86 degrees to avoid gimbal flips.", 10, Enum.TextXAlignment.Center)
+UI.CreateSeparator(parent)
+UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, Enum.TextXAlignment.Center)
+LimbReanimator.Config(parent)
+end
+function ServoJointReanimator.Start()
+LimbReanimator.ServoMode = true
+local ok, err = pcall(LimbReanimator.Start)
+LimbReanimator.ServoMode = nil
+if not ok then
+warn("[Servo-Joint Reanimator] failed to start: " .. tostring(err))
+pcall(Util.Notify, "Servo-Joint Reanimator failed to start (see console): " .. tostring(err))
+local cl = LimbReanimator.ServoCleanup
+LimbReanimator.ServoCleanup = nil
+if cl then pcall(cl) end
 pcall(Reanimate.DestroyCharacter)
 Reanimate.Starting = false
 repeat task.wait() until Reanimate.Stopping
@@ -76309,7 +76825,7 @@ end
 function U.LimbRunning()
 local cur = Reanimate.Current
 local n = cur and cur.Name
-return cur ~= nil and cur.Running == true and (n == "Limbs" or n == "Ragdoll") and Reanimate.Character ~= nil and not Reanimate.Stopping
+return cur ~= nil and cur.Running == true and (n == "Limbs" or n == "Ragdoll" or n == "Servo-Joint") and Reanimate.Character ~= nil and not Reanimate.Stopping
 end
 -- switch flipped while a Limb / Ragdoll run is active: start or stop the extra system immediately
 function U.ExtraToggle()
@@ -76400,7 +76916,7 @@ if not SaveData.ReanimSelRagdoll then
 SaveData.ReanimSelRagdoll = true
 if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end
 end
-if SaveData.SelectedReanimator > 5 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
+if SaveData.SelectedReanimator > 6 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
 Util.FCMark("reanim")
 
 local ReanimMethods = {
@@ -76409,6 +76925,7 @@ local ReanimMethods = {
 {Reanimate.ToolReanimator, "Tool Reanimation"},
 {Reanimate.RagdollReanimator, "Ragdoll Reanimator"},
 {Reanimate.UnanchoredReanimator, "Unanchored Reanimation"},
+{Reanimate.ServoJointReanimator, "Servo-Joint Reanimator"},
 }
 local ReanimMethodNames = {}
 for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
@@ -76416,9 +76933,20 @@ local ReanimateMethodSelect = UI.CreateDropdown(MainPage, "Reanimator", ReanimMe
 local ReanimatorConfigTitle = UI.CreateText(MainPage, "-=+ " .. ReanimMethodNames[SaveData.SelectedReanimator] .. " Config +=-", 15, Enum.TextXAlignment.Center)
 local SelectedReanimator = ReanimMethods[SaveData.SelectedReanimator][1]
 local ReanimatorConfigCanvas = UI.CreateCanvas(MainPage)
+local LastReanimSel = SaveData.SelectedReanimator
 ReanimateMethodSelect.Changed:Connect(function(value)
+local picked = ReanimMethods[value][1]
+if picked.CanSelect then
+local okSel, msgSel = picked.CanSelect()
+if not okSel then
+pcall(Util.UINotify, msgSel)
+ReanimateMethodSelect.Value = LastReanimSel
+return
+end
+end
+LastReanimSel = value
 SaveData.SelectedReanimator = value
-SelectedReanimator = ReanimMethods[value][1]
+SelectedReanimator = picked
 ReanimatorConfigTitle.Text = "-=+ " .. ReanimMethodNames[value] .. " Config +=-"
 Util.ClearAllChildrenGui(ReanimatorConfigCanvas)
 SelectedReanimator.Config(ReanimatorConfigCanvas)
@@ -76444,6 +76972,14 @@ ReanimateText.Text = "Running: NONE"
 task.wait(1)
 ReanimateStartButtonText.Text = "* Reanimate *"
 else
+if SelectedReanimator.CanStart then
+local okStart, msgStart = SelectedReanimator.CanStart()
+if not okStart then
+pcall(Util.UINotify, msgStart)
+ReanimateStartButton.Interactable = true
+return
+end
+end
 ReanimateStartButtonText.Text = "Starting..."
 if not Util.MapsPresent() then
 ReanimateStartButtonText.Text = "Waiting for maps..."
@@ -77959,7 +78495,7 @@ end
 local hats
 if cur == HatReanimator then
 hats = true
-elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator then
+elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator then
 hats = false
 else
 hats = (SaveData.SelectedReanimator == 2)
