@@ -276,6 +276,17 @@ hiddenproperty = not ismissing(gethiddenproperty),
 setscriptable = not ismissing(setscriptable),
 replicatesignal = not ismissing(replicatesignal),
 }
+-- Section: Security Protection (executor capability detection)
+
+Util.Capabilities.loadstring = not ismissing(loadstring)
+Util.Capabilities.hookfunction = not ismissing(hookfunction)
+Util.Capabilities.hookmetamethod = not ismissing(hookmetamethod)
+Util.Capabilities.newcclosure = not ismissing(newcclosure)
+Util.Capabilities.namecall = not (ismissing(getnamecallmethod) or ismissing(setnamecallmethod))
+Util.Capabilities.callerinfo = type(debug) == "table" and (type(debug.info) == "function" or type(debug.getinfo) == "function")
+Util.Capabilities.clipboard = not (ismissing(setclipboard) and ismissing(toclipboard) and ismissing(set_clipboard))
+Util.Capabilities.teleportqueue = not (ismissing(queue_on_teleport) and ismissing(queueonteleport) and ismissing(queueteleport))
+
 if ismissing(isfile) then isfile = function() return false end end
 if ismissing(isfolder) then isfolder = function() return false end end
 if ismissing(listfiles) then listfiles = function() return {} end end
@@ -39983,6 +39994,19 @@ if type(E) ~= "table" or type(E.Source) ~= "string" or #E.Parts == 0 then error(
 if not E.Unpacked then for i = 1, #E.Parts do E.Parts[i] = NA.Unpack(E.Parts[i]) end for k, v in pairs(E.Modules) do E.Modules[k] = NA.Unpack(v) end E.Unpacked = true end
 rawset(host(), "__UhNAParts", E.Parts)
 rawset(host(), "__UhNAModules", E.Modules)
+pcall(function()
+local G, SC = Util.ExtGuard, Util.Security
+-- SHA-256 identity first (one failing item never skips the rest), then chunk identity
+local function reg(src, name) if SC and SC.TrustEmbedded then pcall(SC.TrustEmbedded, src, name) end end
+reg(E.Source, "@NamelessAdmin_Source")
+for i = 1, #E.Parts do reg(E.Parts[i], string.format("@NA-split/common/part-%03d.lua", i)) end
+for k, v in pairs(E.Modules) do reg(v, "@" .. tostring(k)) end
+if G and G.TrustEmbedded then
+G.TrustEmbedded("@NamelessAdmin_Source")
+for i = 1, #E.Parts do G.TrustEmbedded(string.format("@NA-split/common/part-%03d.lua", i)) end
+for k in pairs(E.Modules) do G.TrustEmbedded("@" .. tostring(k)) end
+end
+end)
 local fn, cerr = loader(E.Source, "@NamelessAdmin_Source")
 if type(fn) ~= "function" then error(cerr or "Source.lua failed to compile") end
 NA.Stage = "booting"
@@ -69968,6 +69992,11 @@ if not usedplugin then
 rootcf = CFrame.new(RCRootPart.Position + Vector3.new(0, -16, 0))
 end
 end
+local ovr = LimbReanimator.RootOverride
+if ovr then
+local okO, ocf = pcall(ovr, RCRootPart, RCTorso)
+if okO and typeof(ocf) == "CFrame" then rootcf = ocf end
+end
 end
 do
 local q = LimbReanimator.FlingTargets
@@ -73889,6 +73918,8 @@ local RS = SaveData.Reanimator
 do
 local poseCache = setmetatable({}, {__mode = "k"})
 function Reanimate.LimbPoseCFrame(map, v, RC, RootPart)
+local hl = Reanimate.HiddenLimbs
+if hl and hl[map.RPart1] and (map.RPart0 == "ROOT" or not hl[map.RPart0]) then return CFrame.new(0, -250, 0) end
 local e = poseCache[map]
 if not e or e.RC ~= RC then
 e = {RC = RC}
@@ -73956,17 +73987,54 @@ if C.Halo == nil then C.Halo = true end
 if C.AutoSearch == nil then C.AutoSearch = true end
 if C.Confirm == nil then C.Confirm = true end
 if C.Extra == nil then C.Extra = false end
+if C.Tools == nil then C.Tools = true end
+if C.Limbs == nil then C.Limbs = false end
+C.TorsoOffset = (C.TorsoOffset == 2 or C.TorsoOffset == 3) and C.TorsoOffset or 1
 C.WingAnim = C.WingAnim == 2 and 2 or 1
 C.TailAnim = C.TailAnim == 2 and 2 or 1
 C.Radius = math.clamp(tonumber(C.Radius) or 150, 20, 500)
-U.Want = {Wings = 20, Tail = 6, Halo = 8}
-U.Label = {Wings = "Wings", Tail = "Tail", Halo = "Halo Aura"}
-U.Feats = {"Wings", "Tail", "Halo"}
+U.Want = {Wings = 20, Tail = 6, Halo = 8, Limbs = 6}
+U.Label = {Wings = "Wings", Tail = "Tail", Halo = "Halo Aura", Limbs = "Limb"}
+U.Feats = {"Wings", "Tail", "Halo", "Limbs"}
+-- Limbs only exist during an unanchored limb run; Wings / Tail / Halo go through the existing tool-style handling, which "Use unanchored parts as tools" switches (plain Extra mode inside the Limb / Ragdoll reanimator is not affected by it)
+function U.On(S, f)
+if f == "Limbs" then return S.LimbRun == true and C.Limbs == true end
+if (S.LimbRun or not S.Extra) and C.Tools == false then return false end
+return C[f] and true or false
+end
+-- limb slots on the fake character, filled in this order (the Torso slot is last so the real torso keeps carrying the real limbs until every other limb is replaced)
+U.Slots = {"Left Arm", "Right Arm", "Left Leg", "Right Leg", "Head", "Torso"}
+function U.NextSlot(S)
+local used = {}
+for _, r in S.G.Limbs do
+if r.Slot then used[r.Slot] = true end
+end
+for _, sl in U.Slots do
+if not used[sl] then return sl end
+end
+return nil
+end
+-- real limbs are only hidden while the unanchored part that replaces them is owned, attached AND settled in its slot (rec.Ready); after a real ownership loss the real limb is shown again once U.HideHold has passed
+function U.Hidden(S)
+local h = {}
+local hnow = os.clock()
+for _, rec in S.G.Limbs do
+if rec.Slot and rec.Ready and rec.Held and not rec.Dead and (rec.Owned or (rec.LostAt and hnow - rec.LostAt < U.HideHold)) then h[rec.Slot] = true end
+end
+-- an equipped real Tool is welded to the real Right Arm: that arm stays where it is so the Tool and its Handle are never moved away
+local hch = Player.Character
+if hch and hch:FindFirstChildOfClass("Tool") then h["Right Arm"] = nil end
+if h.Torso and not (h["Left Arm"] and h["Right Arm"] and h["Left Leg"] and h["Right Leg"] and h.Head) then h.Torso = nil end
+Reanimate.HiddenLimbs = h
+end
 U.Near, U.Hot, U.OwnWait = 45, 0.7, 10
 -- U.OwnConfirm = ReceiveAge 0 must hold this long before a part is touched, U.RecoverWait = how long a previously live part may stay without ownership before it is released, U.Drift = studs of unexpected displacement that re-bases the smoothing
 U.OwnConfirm, U.RecoverWait, U.Drift = 0.35, 25, 10
 -- OwnGrace = how long ReceiveAge may flicker away from 0 before an owned part counts as lost (the controller stays enabled through blips so nothing drops), MaxPend = parts that may wait for their first ownership confirmation at once
-U.OwnGrace, U.MaxPend = 0.3, 5
+U.OwnGrace, U.MaxPend = 1.5, 5
+-- ConfirmBlip = longest ReceiveAge flicker that does not restart the OwnConfirm run of a part that is not confirmed yet, RecoverConfirm = ReceiveAge 0 run needed to re-accept a part that was live before, Prove = how long a part must hold ownership after (re)acceptance before it counts as controllable,
+-- Settle = studs from its slot target at which a part counts as in place, HideHold = how long the real limb stays hidden after ownership of its replacement was lost, ProbeWait = how long a limb part that never settled may wait for ownership before its slot is given to another candidate
+U.ConfirmBlip, U.RecoverConfirm, U.Prove, U.Settle, U.HideHold, U.ProbeWait = 0.12, 0.1, 0.6, 5, 1.2, 8
 -- Top = candidates examined per selection pass, ReserveTTL = longest a reservation may wait for the character to come within reach (the ownership clock then takes over), PromptMin = closest distance still worth a teleport prompt
 U.Top, U.ReserveTTL, U.PromptMin = 8, 20, 12
 -- attachment tuning: PosResp / RotResp = AlignPosition / AlignOrientation responsiveness, MaxVel / MaxAng = speed caps (studs/s, rad/s), ForceK / TorqueK = finite force / torque caps per unit of assembly mass (x gravity, x length^2)
@@ -73994,6 +74062,8 @@ if f == "Wings" then
 return U.Fit(mx, 1.2, 16, 5) * 0.6 + math.clamp(mx / mn / 4, 0, 1) * 0.4
 elseif f == "Tail" then
 return U.Fit(mx, 0.8, 12, 3) * 0.7 + math.clamp(mx / mn / 3, 0, 1) * 0.3
+elseif f == "Limbs" then
+return U.Fit(mx, 0.8, 8, 3) * 0.7 + math.clamp(mx / mn / 2, 0, 1) * 0.3
 end
 return U.Fit(mx, 0.4, 6, 1.5) * 0.7 + math.clamp(mn / mx, 0, 1) * 0.3
 end
@@ -74108,10 +74178,18 @@ end
 -- per-record ownership read for the Heartbeat drive: ReceiveAge / Anchored every frame, the pcall'd grounded check only a few times per second
 function U.RecOwns(rec, now)
 local p = rec.P
-if p.Parent == nil or p.Anchored or p.ReceiveAge ~= 0 then return false end
+if p.Parent == nil or p.Anchored or p.ReceiveAge ~= 0 then
+-- OwnRun = start of the current ReceiveAge 0 run: a flicker shorter than ConfirmBlip does not break it, a longer one restarts it
+rec.OffAt = rec.OffAt or now
+if now - rec.OffAt > U.ConfirmBlip then rec.OwnRun = nil end
+return false
+end
+rec.OffAt = nil
+rec.OwnRun = rec.OwnRun or now
 if now >= rec.GrAt then
 rec.GrAt = now + 0.25
 rec.Gr = U.Grounded(p)
+if rec.Gr then rec.GrSince = rec.GrSince or now else rec.GrSince = nil end
 end
 return not rec.Gr
 end
@@ -74159,6 +74237,11 @@ if U.Tainted(p) then return nil end
 local ar = p.AssemblyRootPart
 if ar and S.Asm[ar] then return nil end
 local s = p.Size
+local slot
+if f == "Limbs" then
+slot = U.NextSlot(S)
+if not slot then return nil end
+end
 local rec = {P = p, F = f, Born = now, Rsv = rsv == true, LastOwned = now, WakeAt = 0, Owned = false, WasLive = false, GrAt = 0, RefAt = 0, LiveAt = now, AR = ar, CF = p.CFrame, Len = math.max(s.X, s.Y, s.Z)}
 if s.X >= s.Y and s.X >= s.Z then
 rec.AX, rec.AZ = CFrame.identity, CFrame.Angles(0, math.rad(90), 0)
@@ -74172,6 +74255,8 @@ table.sort(d, function(x, y) return x > y end)
 rec.Wid, rec.Thk, rec.Thick = d[2], d[3], math.min(d[3], 6)
 rec.AX = U.Align(s, Vector3.xAxis, Vector3.yAxis, Vector3.zAxis)
 rec.AH = U.Align(s, Vector3.zAxis, Vector3.xAxis, Vector3.yAxis)
+rec.AL = U.Align(s, Vector3.yAxis, Vector3.xAxis, Vector3.zAxis)
+rec.Slot = slot
 S.Rec[p] = rec
 if ar then S.Asm[ar] = rec end
 rec.AM = p.AssemblyMass
@@ -74198,7 +74283,13 @@ end
 end
 -- genuine attachment: one Attachment on the part (A), one target Attachment on the character part that hosts the feature (T), one AlignPosition + one AlignOrientation between them
 -- (reaction force / torque off, so the character is never pushed) and one VectorForce that only cancels the assembly's weight. Animation only moves T's CFrame; the controller is built once per part.
-function U.Host(S, f)
+function U.Host(S, f, rec)
+if f == "Limbs" then
+local ch = Reanimate.Character
+local lp = ch and rec and rec.Slot and ch:FindFirstChild(rec.Slot)
+if lp and lp:IsA("BasePart") and lp.Parent then return lp end
+return nil
+end
 local h = f == "Tail" and S.LowT or S.Tor
 if h and h.Parent then return h end
 return S.Root
@@ -74227,7 +74318,7 @@ end
 -- returns the host part while the controller is intact. Every piece (part attachment, target attachment, AlignPosition, AlignOrientation, VectorForce) is checked on its own: valid pieces are kept untouched (no duplicates, no needless rebuilds),
 -- only missing / destroyed / foreign-parented pieces are recreated, and the target attachment is re-hosted after a respawn. Only UhUA_* instances created by this system are ever touched; Tool welds and other constraints are never modified.
 function U.Attach(S, rec)
-local p, host = rec.P, U.Host(S, rec.F)
+local p, host = rec.P, U.Host(S, rec.F, rec)
 if not (host and host.Parent) then return nil end
 local a0, a1, ap, ao, vf = rec.A, rec.T, rec.AP, rec.AO, rec.VF
 if a0 and a0.Parent == p and a1 and a1.Parent == host and ap and ap.Parent == p and ao and ao.Parent == p and vf and vf.Parent == p
@@ -74306,6 +74397,8 @@ end
 -- first confirmed ownership saves the original physics state once; every later confirmation (recovery) only re-asserts it and re-enables the existing controller. Returns true once the controller exists and is enabled.
 function U.Apply(S, rec)
 local p = rec.P
+-- nothing is built or written before ownership is genuinely confirmed (U.DriveRec only gets here once rec.Owned is set)
+if rec.Dead or not rec.Owned then return false end
 if not rec.Applied then
 rec.Applied = true
 local ok, prev = pcall(gethiddenproperty, p, "PhysicsRepRootRef")
@@ -74314,11 +74407,14 @@ end
 U.NoCollide(rec)
 U.SetRef(rec, S.RepRoot or U.RepRef(U.RepSource(S, S.Root)))
 if U.Attach(S, rec) then
--- control starts from rest so leftover free-fall velocity never fights the constraints
+-- control starts from rest once (leftover free-fall velocity never fights the constraints); later re-assertions never touch the velocity again
+if not rec.Rested and p.ReceiveAge == 0 then
+rec.Rested = true
 pcall(function()
 rec.P.AssemblyLinearVelocity = Vector3.zero
 rec.P.AssemblyAngularVelocity = Vector3.zero
 end)
+end
 U.Hold(rec, true)
 rec.Held = true
 return true
@@ -74361,7 +74457,9 @@ end
 -- -> OWNERSHIP LOST (no writes, record + feature kept, recovery watched) -> live again after re-confirmation. The work runs protected so one broken record never stops the Heartbeat step for the other parts; a record that keeps failing is released by U.Validate.
 function U.Drive(S, rec, tgt, a, now)
 local ok, err = pcall(U.DriveRec, S, rec, tgt, a, now)
-if not ok then
+if ok then
+rec.Errs = nil
+else
 rec.Errs = (rec.Errs or 0) + 1
 if not S.Warned then
 S.Warned = true
@@ -74376,46 +74474,46 @@ if rec.Dead or not p.Parent then return end
 if not rec.WasLive and not rec.WaitAt and (p.Position - S.Origin).Magnitude <= U.Near + 25 then rec.WaitAt = now end
 if U.RecOwns(rec, now) then
 rec.BlipAt = nil
-elseif (rec.Owned or rec.OwnSince) and now - (rec.BlipAt or now) < U.OwnGrace then
--- ReceiveAge flickers on healthy parts: keep the confirmation clock / controller on and keep driving through the blip so the part (and anything welded to it) never falls
+elseif (rec.Owned or rec.OwnRun) and now - (rec.BlipAt or now) < U.OwnGrace then
+-- ReceiveAge flickers on healthy parts: keep the controller on and keep driving through the blip so the part (and anything welded to it) never falls; a part that is not confirmed yet only waits (its OwnConfirm run restarts when the flicker outlasts U.ConfirmBlip)
 rec.BlipAt = rec.BlipAt or now
 U.Wake(rec, now)
 if not rec.Owned then return end
 else
 rec.BlipAt = nil
+rec.OwnRun = nil
 if rec.Owned then
 rec.Owned = false
-rec.Held = nil
 rec.LostAt = now
--- stop manipulating while the engine does not report us as simulator; the controller and all metadata stay for recovery
-U.Hold(rec, false)
+-- no writes while the engine does not report us as simulator; the controllers stay built AND enabled (constraints made on this client do nothing without ownership), so the part resumes the moment ownership returns instead of being torn down and rebuilt
 end
-rec.OwnSince = nil
 local cd = S.Cand[p]
 if cd then cd.Own = false end
 U.Wake(rec, now)
 return
 end
-local cd = S.Cand[p]
-if cd then cd.Own, cd.Fails = true, 0 end
 if not rec.Owned then
-rec.OwnSince = rec.OwnSince or now
--- first acquisition has to hold ReceiveAge 0 for OwnConfirm; a part that was already live resumes the moment the engine reports us as simulator again
-if not rec.WasLive and now - rec.OwnSince < U.OwnConfirm then return end
+-- first acquisition needs an uninterrupted ReceiveAge 0 run of OwnConfirm; a part that was live before is re-accepted after a short RecoverConfirm run so one stray reading never flips it back
+if now - (rec.OwnRun or now) < (rec.WasLive and U.RecoverConfirm or U.OwnConfirm) then return end
 local lost = rec.LostAt and now - rec.LostAt or 0
 rec.Owned = true
+rec.OwnedAt = now
 rec.LostAt = nil
 if not rec.WasLive or lost > 1 then
 rec.CF = p.CFrame
 rec.LiveAt = now
 end
+-- after a real loss the part has to settle in its slot again before its real limb is hidden again
+if lost > U.HideHold then rec.Ready, rec.NearAt = nil, nil end
 rec.WasLive = true
-rec.Held = nil
 rec.WaitAt = rec.WaitAt or now
 rec.ApplyAt = now + 0.25
-U.Apply(S, rec)
+if rec.Held then U.Hold(rec, true) else U.Apply(S, rec) end
 end
 rec.LastOwned = now
+-- the candidate only counts as owned once ownership is confirmed
+local cd = S.Cand[p]
+if cd then cd.Own, cd.Fails = true, 0 end
 -- Apply is retried until the controller really exists (e.g. the host part was missing during a respawn)
 if not rec.Held and now >= (rec.ApplyAt or 0) then
 rec.ApplyAt = now + 0.25
@@ -74425,8 +74523,11 @@ if rec.Rsv and rec.Held and not rec.Noted then
 rec.Noted = true
 U.Note(("Ownership of \"%s\" confirmed - attached as %s."):format((p.Name:gsub("[<>&]", "?")), U.Label[rec.F]))
 end
+local tp = tgt.Position
+if tp.X ~= tp.X or tp.Y ~= tp.Y or tp.Z ~= tp.Z then return end
 local cur = p.CFrame
-if (cur.Position - rec.CF.Position).Magnitude > U.Drift then
+local rp = rec.CF.Position
+if rp.X ~= rp.X or rp.Y ~= rp.Y or rp.Z ~= rp.Z or (cur.Position - rp).Magnitude > U.Drift then
 -- displaced by something else (server correction, collision, teleport): glide back from where the part really is instead of snapping
 rec.CF = cur
 rec.LiveAt = now
@@ -74444,6 +74545,21 @@ local host = U.Attach(S, rec)
 if host then
 rec.T.CFrame = host.CFrame:ToObjectSpace(cf)
 U.Tune(rec)
+end
+-- Ready (limbs): owned, controller built and enabled, ownership held for U.Prove since (re)acceptance and the part is physically at its slot. Only then is the real limb hidden (U.Hidden); a part that drifts far off its slot stops being ready until it settles again
+if host and rec.Held and rec.F == "Limbs" then
+local dist = (p.Position - tgt.Position).Magnitude
+local lim = math.max(U.Settle, rec.Len * 0.5 + 1)
+if dist <= lim then
+rec.NearAt = rec.NearAt or now
+elseif dist > lim * 3 then
+rec.NearAt, rec.Ready = nil, nil
+elseif not rec.Ready then
+rec.NearAt = nil
+end
+if not rec.Ready and rec.NearAt and now - rec.NearAt >= 0.25 and now - (rec.OwnedAt or now) >= U.Prove then
+rec.Ready, rec.Proven = true, true
+end
 end
 if now >= rec.RefAt then
 rec.RefAt = now + 2
@@ -74651,8 +74767,56 @@ for i = 1, n do lay.List[i] = g[i] end
 return lay
 end
 
+-- Auto spreadness for unanchored limbs: every part is spaced by its own real size (re-read each frame, so size changes are followed). Only size beyond the standard limb (and, for the limbs around it, a bigger torso part) adds spacing:
+-- normal-sized parts keep their usual position, bigger parts get proportionally more room, and the spacing stops at contact (K < 1) so limbs never drift apart. Parts are never resized, replaced or detached; hosts (and so Torso Offset) are untouched.
+U.LimbSign = {["Left Arm"] = -1, ["Right Arm"] = 1, ["Left Leg"] = -1, ["Right Leg"] = 1}
+function U.LimbDims(rec)
+local s = rec.P.Size
+if rec.LSz == s then return end
+rec.LSz = s
+local d = {s.X, s.Y, s.Z}
+table.sort(d, function(x, y) return x > y end)
+rec.Len, rec.Wid, rec.Thk, rec.Thick = d[1], d[2], d[3], math.min(d[3], 6)
+rec.AL = U.Align(s, Vector3.yAxis, Vector3.xAxis, Vector3.zAxis)
+end
+function U.LimbRefs(sz)
+local a, b = sz.X, sz.Y
+local c = sz.Z
+if a < b then a, b = b, a end
+if b < c then b = c end
+if a < b then a, b = b, a end
+return a, b
+end
+function U.LimbTarget(S, rec, lp, tor, gw, gh)
+U.LimbDims(rec)
+local cf = lp.CFrame * rec.AL
+local sl = rec.Slot
+if sl == "Torso" then return cf end
+local K = 0.92
+local refLen, refWid = U.LimbRefs(lp.Size)
+local el = math.max(0, rec.Len - refLen) * 0.5 * K
+local ew = math.max(0, rec.Wid - refWid) * 0.5 * K
+local sg = U.LimbSign[sl]
+local lat, ly, ty = 0, 0, 0
+if sl == "Head" then
+ly, ty = el, gh * 0.5 * K
+elseif sg then
+if sl == "Left Arm" or sl == "Right Arm" then
+lat, ly, ty = sg * (ew + gw * 0.5 * K), -el, gh * 0.5 * K
+else
+lat, ly, ty = sg * (ew + gw * 0.25 * K), -el, -gh * 0.5 * K
+end
+end
+if ly ~= 0 then cf = lp.CFrame * CFrame.new(0, ly, 0) * rec.AL end
+if (lat ~= 0 or ty ~= 0) and tor and tor.Parent then
+cf = cf + tor.CFrame:VectorToWorldSpace(Vector3.new(lat, ty, 0))
+elseif lat ~= 0 or ty ~= 0 then
+cf = cf + lp.CFrame:VectorToWorldSpace(Vector3.new(lat, ty, 0))
+end
+return cf
+end
 function U.Step(S, dt)
-if not S.Alive then return end
+if not S.Alive or S.Scout then return end
 local root = S.Root
 if not (root and root.Parent) then
 local ch = U.HostChar(S)
@@ -74803,6 +74967,31 @@ local pos = c + Vector3.new(cos(th) * R, sin(t * 2 + k) * 0.12, sin(th) * R)
 U.Drive(S, rec, CFrame.lookAt(pos, pos + Vector3.new(-sin(th), 0, cos(th))) * rec.AH, a, now)
 end
 end
+-- Limbs: every part owns one slot of the fake character (Torso / Head / arms / legs) and follows that limb's CFrame; the real limb of the same slot is hidden while its part is attached
+if S.LimbRun then
+g = S.G.Limbs
+n = #g
+if C.Limbs then
+local lch = Reanimate.Character
+local ltor = lch and lch:FindFirstChild("Torso")
+local gw, gh = 0, 0
+for k = 1, n do
+local tr = g[k]
+if tr.Slot == "Torso" and tr.Held and not tr.Dead and ltor and ltor.Parent then
+U.LimbDims(tr)
+local rl, rw = U.LimbRefs(ltor.Size)
+gw, gh = math.max(0, tr.Wid - rw), math.max(0, tr.Len - rl)
+break
+end
+end
+for k = 1, n do
+local rec = g[k]
+local lp = U.Host(S, "Limbs", rec)
+if lp then U.Drive(S, rec, U.LimbTarget(S, rec, lp, ltor, gw, gh), a, now) end
+end
+end
+U.Hidden(S)
+end
 end
 
 function U.ClosePrompt(S)
@@ -74817,7 +75006,7 @@ local d = S.Root and (pr.P.Position - S.Root.Position).Magnitude or pr.D
 pr.Info.Text = ("Part: %s\nDistance: %d studs\nWhy: %s\nIntended use: %s"):format(pr.P.Name, math.floor(d), pr.Why, U.Label[pr.F])
 end
 -- one window at a time (S.Prompt guard + stale windows of an earlier run are removed); returns true only when the YES / NO window is really on screen
-function U.ShowPrompt(S, e, f)
+function U.ShowPrompt(S, e, f, opts)
 if S.Prompt then return false end
 local g = Instance.new("ScreenGui")
 g.Name = "UhUnanchoredPrompt"
@@ -74887,9 +75076,9 @@ b.Parent = fr
 Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
 return b
 end
-lbl("A suitable unanchored part has been found! Would you like to teleport to it?", 10, 44, 14, true)
+lbl(opts and opts.Title or "A suitable unanchored part has been found! Would you like to teleport to it?", 10, 44, 14, true)
 local p = e.P
-local pr = {P = p, F = f, D = e.D, Gui = g, Conns = {}, Why = U.Why(p, f, e[f])}
+local pr = {P = p, F = f, D = e.D, Gui = g, Conns = {}, Why = U.Why(p, f, e[f]), Fixed = opts ~= nil}
 pr.Info = lbl("", 58, 102, 12, false)
 local yes = btn("YES — TELEPORT", 0, 12, Color3.fromRGB(46, 160, 90))
 local no = btn("NO — DECLINE", 0.5, 6, Color3.fromRGB(190, 64, 64))
@@ -74902,12 +75091,14 @@ if not okA then
 S.NextChoose = 0
 U.Note("Teleport failed (" .. tostring(errA) .. "). Searching for another part...")
 end
+if opts and opts.Cb then task.spawn(opts.Cb, true) end
 end)
 pr.Conns[2] = no.Activated:Connect(function()
 if S.Prompt ~= pr then return end
 U.ClosePrompt(S)
 S.Declined[p] = os.clock() + 300
 S.NextPrompt = os.clock() + 2
+if opts and opts.Cb then task.spawn(opts.Cb, false) end
 end)
 S.Prompt = pr
 end)
@@ -75033,12 +75224,14 @@ end
 function U.Validate(S)
 local now = os.clock()
 local pr = S.Prompt
-if pr then
+if pr and pr.Fixed then
+U.PromptText(S, pr)
+elseif pr then
 local cd = S.Cand[pr.P]
 local rec = S.Rec[pr.P]
 local root = S.Root
 -- the window only closes when it can no longer be answered meaningfully; selecting other candidates never touches it
-if not (root and root.Parent) or not C.Confirm or not C.AutoSearch or not C[pr.F] or not cd or cd.Own or (rec and rec.Owned) or cd.D <= U.PromptMin or #S.G[pr.F] >= U.Want[pr.F] or not U.Valid(S, pr.P) then
+if not (root and root.Parent) or not C.Confirm or not C.AutoSearch or not U.On(S, pr.F) or not cd or cd.Own or (rec and rec.Owned) or cd.D <= U.PromptMin or #S.G[pr.F] >= U.Want[pr.F] or not U.Valid(S, pr.P) then
 U.ClosePrompt(S)
 S.NextPrompt = now + 1
 else
@@ -75053,9 +75246,9 @@ U.Release(S, rec, 15)
 elseif rec.AM ~= p.AssemblyMass and U.Taint(rec) then
 -- a Tool part or a character got welded into this assembly: let go cleanly, nothing of theirs is touched
 U.Release(S, rec, 30)
-elseif not C[rec.F] then
+elseif not U.On(S, rec.F) then
 U.Release(S, rec, 0)
-elseif rec.Gr then
+elseif rec.Gr and rec.GrSince and now - rec.GrSince > 2 then
 U.Release(S, rec, 30)
 else
 local ar = p.AssemblyRootPart
@@ -75076,7 +75269,8 @@ U.Release(S, rec, 3)
 elseif not rec.Owned then
 if rec.WasLive then
 -- ownership lost after it was confirmed: keep the record and its feature slot while the engine may hand ownership back, release only after RecoverWait
-if now - (rec.LostAt or rec.LastOwned) > U.RecoverWait then U.Release(S, rec, 8) end
+local lim = (rec.F == "Limbs" and not rec.Proven) and U.ProbeWait or U.RecoverWait
+if now - (rec.LostAt or rec.LastOwned) > lim then U.Release(S, rec, 8) end
 elseif rec.WaitAt then
 if now - rec.WaitAt > U.OwnWait then U.Fail(S, rec) end
 elseif now - rec.Born > U.ReserveTTL then
@@ -75134,7 +75328,7 @@ if c then U.Drop(S, c) end
 return nil
 end
 if not c then
-c = {P = p, Born = now, Wings = 0, Tail = 0, Halo = 0, Fails = 0}
+c = {P = p, Born = now, Wings = 0, Tail = 0, Halo = 0, Limbs = 0, Fails = 0}
 S.Cand[p] = c
 local list = S.CL
 local i = #list + 1
@@ -75154,6 +75348,7 @@ local vis = p.Transparency >= 0.9 and 0.3 or 1
 c.Wings = U.Score(s, "Wings") * vis
 c.Tail = U.Score(s, "Tail") * vis
 c.Halo = U.Score(s, "Halo") * vis
+c.Limbs = U.Score(s, "Limbs") * vis
 return c
 end
 function U.Take(S, list, now)
@@ -75334,7 +75529,7 @@ rv = nil
 end
 local open, tc, tf, tv = S.Open, S.TC, S.TF, S.TV
 local top = U.Top
-for _, f in U.Feats do open[f] = (C[f] and #S.G[f] < U.Want[f]) and true or false end
+for _, f in U.Feats do open[f] = (U.On(S, f) and #S.G[f] < U.Want[f]) and true or false end
 for i = 1, top do
 tc[i] = false
 tv[i] = -math.huge
@@ -75343,17 +75538,18 @@ local nf, ns = 0, 0
 local bc, bfe, bv
 local pc, pf, pv
 local rad = math.max(C.Radius, 1)
-local conf = C.Confirm and not S.Prompt and now >= S.NextPrompt
+local conf = C.Confirm and not S.NoTp and not S.Prompt and now >= S.NextPrompt
 for _, c in S.CL do
 nf += 1
 local p = c.P
 local base = (1 - math.min(c.D / rad, 1)) * 0.22 + c.Front * 0.12 + c.Ind * 0.08 + (c.Own and 0.08 or 0) - math.min(c.Fails, 6) * 0.04
 local f1, v1, f2, v2
 for _, f in U.Feats do
-if C[f] then
+if U.On(S, f) then
 local fit = c[f]
 if fit > U.Min then
 local v = fit * 0.45 + base
+if f == "Limbs" then v += 0.4 end
 if rv and rv.P == p and rv.F == f then v += 10 end
 if not v1 or v > v1 then f1, v1 = f, v end
 if open[f] and (not v2 or v > v2) then f2, v2 = f, v end
@@ -75450,7 +75646,7 @@ local cd = S.Cand[p]
 if not cd then return "DISCOVERED" end
 local suit = false
 for _, f in U.Feats do
-if C[f] and cd[f] > U.Min then
+if U.On(S, f) and cd[f] > U.Min then
 suit = true
 break
 end
@@ -75540,7 +75736,7 @@ local far = now >= S.NextFar
 if far then S.NextFar = now + 3 end
 U.Guard(S, "query", U.Query, S, now, far)
 end
-if now >= S.NextChoose then
+if now >= S.NextChoose and not S.Scout then
 S.NextChoose = now + 0.5
 U.Guard(S, "choose", U.Choose, S, now)
 end
@@ -75562,6 +75758,7 @@ function U.Cleanup()
 local S = U.Run
 if not S then return end
 U.Run = nil
+Reanimate.HiddenLimbs = nil
 S.Alive = false
 for _, c in S.Conns do pcall(c.Disconnect, c) end
 U.ClosePrompt(S)
@@ -75579,9 +75776,9 @@ if S.PrevSleep ~= nil then pcall(function() settings().Physics.AllowSleep = S.Pr
 if S.PrevSim then pcall(sethiddenproperty, Player, "SimulationRadius", S.PrevSim) end
 if S.PrevMax then pcall(sethiddenproperty, Player, "MaximumSimulationRadius", S.PrevMax) end
 end
-function U.Init(extra)
+function U.Init(extra, mode)
 U.Cleanup()
-local S = {Alive = true, Extra = extra == true, T0 = os.clock(), Rec = {}, G = {Wings = {}, Tail = {}, Halo = {}}, Conns = {}, NextPrompt = 0, RefDirty = true, Asm = {}, RefChkAt = 0}
+local S = {Alive = true, Extra = extra == true, Scout = mode == "scout", LimbRun = mode == "limbs", NoTp = mode == "limbs" and U.NoTp == true, T0 = os.clock(), Rec = {}, G = {Wings = {}, Tail = {}, Halo = {}, Limbs = {}}, Conns = {}, NextPrompt = 0, RefDirty = true, Asm = {}, RefChkAt = 0}
 S.Cand, S.CL, S.VI = {}, {}, 1
 S.Q, S.QH, S.QT = {}, 0, 0
 S.Pass, S.Scans, S.ListI, S.NextList = 0, 0, 0, 0
@@ -75623,6 +75820,7 @@ end)
 task.spawn(U.Worker, S)
 end
 function U.Start()
+if C.Limbs then return U.StartLimbs() end
 local ok, err = pcall(U.Init)
 if not ok then
 warn("[Unanchored Reanimation] failed to start: " .. tostring(err))
@@ -75632,6 +75830,449 @@ Reanimate.Starting = false
 repeat task.wait() until Reanimate.Stopping
 pcall(U.Cleanup)
 Reanimate.Stopping = false
+end
+
+-- ===== Unanchored Limb Reanimation: its own lifecycle (U.LimbLife); the used unanchored parts become the limbs of the fake character. LimbReanimator.Start is never called =====
+-- Torso Offset: 1 Nooby's Method, 2 RootPart Streamed (Limb mode "Keep RootPart Streamed"), 3 RootPart in Sky/Void (Limb modes "RootPart in sky" / "RootPart in void")
+function U.NoobyRoot(root)
+return CFrame.new(root.Position + Vector3.new(8, -8, 0)) * CFrame.Angles(math.pi * 0.5, 0, 0)
+end
+function U.TorsoMode()
+local t = C.TorsoOffset
+if t == 2 then return 2 end
+if t == 3 then return math.random(2) == 1 and 1 or 5 end
+return nil
+end
+-- best suitable limb part: fit + closeness + how many other suitable parts sit around it (so the teleport lands in a spot with enough parts for all the limbs)
+function U.ScoutPick(S)
+local list, ok = S.CL, {}
+for i = 1, #list do
+local c = list[i]
+if c.Limbs > U.Min and (S.Declined[c.P] or 0) < os.clock() and #ok < 400 then ok[#ok + 1] = c end
+end
+local best, bv
+for i = 1, #ok do
+local c = ok[i]
+local near = 0
+for j = 1, #ok do
+if i ~= j and (ok[j].P.Position - c.P.Position).Magnitude < 40 then near += 1 end
+end
+local v = c.Limbs * 0.45 + math.min(near, 5) * 0.12 + (1 - math.min(c.D / math.max(C.Radius, 1), 1)) * 0.1
+if not bv or v > bv then best, bv = c, v end
+end
+return best
+end
+-- before the reset: look for a suitable part, ask YES / NO, teleport only on YES. NO or nothing found: reanimation simply continues from the current position
+function U.Scout()
+U.NoTp = false
+if not C.AutoSearch then
+U.Note("Automatic Part Search is OFF - unanchored limbs can only use parts that are already in reach.")
+return
+end
+if not pcall(U.Init, false, "scout") then return end
+local S = U.Run
+if not (S and S.Scout) then return end
+local t0, pick = os.clock(), nil
+while S.Alive and os.clock() - t0 < 7 do
+task.wait(0.5)
+if os.clock() - t0 >= 2.5 then
+pick = U.ScoutPick(S)
+if pick then break end
+end
+end
+if not (S.Alive and pick) then
+U.Note("No suitable unanchored part found within the search radius - reanimating from your current position.")
+U.Cleanup()
+return
+end
+if pick.D <= U.PromptMin then
+U.Cleanup()
+return
+end
+local done, yes = false, false
+local shown = U.ShowPrompt(S, pick, "Limbs", {Title = "Teleport to a suitable unanchored part before reanimation?", Cb = function(v) yes, done = v, true end})
+if not shown then
+U.Note("Could not show the teleport question - reanimating from your current position.")
+U.NoTp = true
+U.Cleanup()
+return
+end
+local tw = os.clock()
+while not done and S.Alive and os.clock() - tw < 120 do task.wait(0.1) end
+if not done then U.ClosePrompt(S) end
+U.NoTp = not yes
+if yes then task.wait(1.2) end
+U.Cleanup()
+end
+function U.LimbLife()
+U.Scout()
+local torso = U.TorsoMode()
+local LimbMapping = loadstring(readfile("UhhhhhhReanim/BuiltinModules/d_limbmap.lua"))()
+local LR = LimbReanimator
+table.clear(LR.FlingTargets)
+table.clear(LR._TempNotFling)
+local voidPos = Vector3.new(math.random(-2048, 2048), math.random(-500, -100) + FallenPartsDestroyHeight, math.random(-2048, 2048))
+local skyPos = Vector3.new(math.random(-2048, 2048), math.random(1000, 2000), math.random(-2048, 2048))
+local initCF
+do
+local ch = Player.Character
+local h = ch and ch:FindFirstChildOfClass("Humanoid")
+local r = h and h.RootPart
+if r then
+initCF = r.CFrame
+if h:GetState() ~= Enum.HumanoidStateType.Dead then
+h:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+h:ChangeState(Enum.HumanoidStateType.Dead)
+end
+end
+end
+local parts, unknown, fakeTools, conns = {}, {}, {}, {}
+local info = setmetatable({}, {__mode = "k"})
+local kids = setmetatable({}, {__mode = "k"})
+local vz, idcf, lastspawn = Vector3.zero, CFrame.identity, 0
+local limbSet = {Head = true, Torso = true, ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true}
+local function kid(parent, key, cls)
+local c = kids[parent]
+if not c then
+c = {}
+kids[parent] = c
+end
+local o = c[key]
+if not o or o.Parent ~= parent then
+if cls then o = parent:FindFirstChildOfClass(key) else o = parent:FindFirstChild(key) end
+c[key] = o
+end
+return o
+end
+-- the real Tool stays untouched in the real character; the fake rig only gets a mirror of it
+local function newFakeTool()
+local ft = Instance.new("Tool")
+ft.Name = "faketool"
+local h = Instance.new("Part")
+h.Name, h.Transparency, h.Color, h.CanCollide, h.Massless = "Handle", 1, Color3.new(0, 0, 1), false, true
+h.Parent = ft
+ft.Parent = Reanimate.Character
+local g = Instance.new("Weld")
+g.Name = "RightGrip"
+g.Parent = h
+g.Part0 = Reanimate.Character and Reanimate.Character:FindFirstChild("Right Arm")
+g.Part1 = h
+g.C0 = RIGHTGRIP_C0
+Util.LinkDestroyI2C(ft, ft:GetPropertyChangedSignal("Grip"):Connect(function() g.C1 = ft.Grip end))
+g.C1 = ft.Grip
+return ft
+end
+local function onDesc(v)
+if v:IsA("BasePart") then
+if not table.find(parts, v) then
+table.insert(parts, v)
+v.CanCollide = false
+v:GetPropertyChangedSignal("CanCollide"):Connect(function()
+if v.CanCollide then v.CanCollide = false end
+end)
+end
+elseif v:IsA("Motor6D") then
+repeat task.wait() until (not v:IsDescendantOf(workspace)) or (v.Part0 and v.Part1)
+if not v:IsDescendantOf(workspace) then return end
+local a, b = v.Part0.Name, v.Part1.Name
+for _, map in LimbMapping do
+if map.Part0 == a and map.Part1 == b then
+map.Reference = v
+return
+end
+end
+table.insert(unknown, v)
+elseif v:IsA("Animator") then
+task.defer(v.Destroy, v)
+elseif v:IsA("LocalScript") and v.Parent == Player.Character then
+v.Enabled = false
+v:GetPropertyChangedSignal("Enabled"):Connect(function() if v.Enabled then v.Enabled = false end end)
+v:GetPropertyChangedSignal("Disabled"):Connect(function() if not v.Disabled then v.Disabled = true end end)
+elseif v:IsA("Tool") and v.Parent == Player.Character then
+if not fakeTools[v] then
+fakeTools[v] = true
+local fake = newFakeTool()
+fake.Grip = v.Grip
+local h0 = v:FindFirstChild("Handle")
+if h0 then fake.Handle.Size = h0.Size end
+Util.LinkDestroyI2C(fake, RunService.PreSimulation:Connect(function()
+if v.Parent == Player.Character then
+fake.Grip = v.Grip
+local h1 = v:FindFirstChild("Handle")
+if h1 then fake.Handle.Size = h1.Size end
+else
+fake:Destroy()
+fakeTools[v] = nil
+end
+end))
+Util.LinkDestroyI2C(fake, v.ChildAdded:Connect(function(c)
+if c.ClassName == "StringValue" and c.Name == "toolanim" then
+local w = Instance.new("StringValue")
+w.Name = "toolanim"
+w.Value = c.Value
+w.Parent = fake
+Debris:AddItem(c, 1)
+Debris:AddItem(w, 1)
+end
+end))
+fake.Handle.Touched:Connect(function(t)
+local h1 = v:FindFirstChild("Handle")
+if h1 and t and h1:IsDescendantOf(workspace) and t:IsDescendantOf(workspace) then
+h1.CanTouch = true
+pcall(firetouchinterest, h1, t, 0)
+end
+end)
+fake.Handle.TouchEnded:Connect(function(t)
+local h1 = v:FindFirstChild("Handle")
+if h1 and t and h1:IsDescendantOf(workspace) and t:IsDescendantOf(workspace) then
+h1.CanTouch = true
+pcall(firetouchinterest, h1, t, 1)
+end
+end)
+end
+end
+end
+local function onChar(character)
+local camcfr = Camera.CFrame
+RunService.PreRender:Once(function()
+RunService.PreAnimation:Wait()
+Camera.CFrame = camcfr
+end)
+lastspawn = os.clock()
+table.clear(parts)
+table.clear(unknown)
+for _, map in LimbMapping do
+map.Reference = nil
+map.RG, map.RT = nil, nil
+end
+character.DescendantAdded:Connect(onDesc)
+for _, v in character:GetDescendants() do task.spawn(onDesc, v) end
+local hum = character:WaitForChild("Humanoid", 5)
+local an = hum and hum:FindFirstChildWhichIsA("Animator")
+if an then an:Destroy() end
+if not Reanimate.UseLoadAnimationHook then
+local t0, a = os.clock(), character:FindFirstChild("Animate")
+while not a and os.clock() - t0 < 10 do
+task.wait(0.1)
+a = character:FindFirstChild("Animate")
+end
+if a then a:Destroy() end
+end
+end
+local lastRoot = {}
+local refDirty, refAt = true, 0
+local function update(rig, root, rootcf, rootvel, ft, fcf)
+if not root:IsGrounded() then
+if ft then
+Util.Fling.ApplyRoot(root, ft, fcf)
+pcall(sethiddenproperty, root, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(ft.Target) or nil)
+refDirty = true
+else
+root.CFrame = rootcf + Vector3.new(0, 0, math.random(0, 1) * 0.005)
+root.Velocity, root.RotVelocity = rootvel, vz
+local n = os.clock()
+if refDirty or n - refAt > 0.5 then
+refDirty, refAt = false, n
+pcall(sethiddenproperty, root, "PhysicsRepRootRef", nil)
+end
+end
+end
+for _, v in unknown do Util.SetMotor6DTransform(v, idcf) end
+local pose = Reanimate.LimbPoseCFrame
+for _, map in LimbMapping do
+local v = map.Reference
+if v then
+if ft then
+Util.SetMotor6DTransform(v, idcf)
+else
+map.CFrame = pose(map, v, rig, root)
+Util.SetMotor6DOffset(v, map.CFrame)
+end
+end
+end
+end
+local rbStart, rbCount, rbLast, rbGaveUp = 0, 0, 0, false
+local function frame()
+RunService.PreSimulation:Wait()
+workspace.FallenPartsDestroyHeight = 0 / 0
+do
+local rc = Reanimate.Character
+if rc and not rc:IsDescendantOf(workspace) then
+local now = os.clock()
+if now - rbStart > 20 then rbStart, rbCount = now, 0 end
+if rbCount < 3 and now - rbLast > 0.5 then
+rbCount += 1
+rbLast = now
+pcall(Util.Notify, "Unanchored Limb Reanimation: the fake character was removed from the workspace by something else, rebuilding it (" .. rbCount .. "/3).")
+Reanimate.CreateCharacter()
+elseif not rbGaveUp and rbCount >= 3 then
+rbGaveUp = true
+pcall(Util.Notify, "Unanchored Limb Reanimation: the game keeps removing the fake character; not rebuilding it any more.")
+end
+end
+end
+local character = Player.Character
+local hum, root, okay = nil, nil, false
+if character then
+hum = kid(character, "Humanoid", true)
+if hum then
+if hum.AutoRotate then hum.AutoRotate = false end
+if hum.WalkSpeed < 1 then hum.WalkSpeed = 16 end
+if hum.JumpPower < 1 then hum.JumpPower = 50 end
+root = hum.RootPart
+if root and hum:GetState() ~= Enum.HumanoidStateType.Dead then
+hum:ChangeState(Enum.HumanoidStateType.Physics)
+okay = LR.FlingTargets[1] == nil
+end
+end
+end
+local rig = Reanimate.Character
+if not rig then return end
+local rrh, rroot, rtor = kid(rig, "Humanoid", true), kid(rig, "HumanoidRootPart"), kid(rig, "Torso")
+if Camera and rrh and Camera.CameraSubject ~= rrh then Camera.CameraSubject = rrh end
+local nowc, fpb, ltm = os.clock(), Reanimate.FirstPersonBody and true or false, Reanimate.LocalTransparencyModifier
+for _, v in parts do
+if v.CanCollide then v.CanCollide = false end
+local inf = info[v]
+if not inf or nowc - inf.at > 1 or inf.fpb ~= fpb then
+inf = {at = nowc, fpb = fpb, tool = v:FindFirstAncestorWhichIsA("Tool") ~= nil, head = false}
+if fpb and v.Name ~= "Head" then
+local w = v:FindFirstChild("AccessoryWeld")
+inf.head = (w and w:IsA("Weld") and w.Part1 and w.Part1.Name == "Head") and true or false
+end
+info[v] = inf
+end
+if not inf.tool then
+if v.Velocity ~= vz then v.Velocity = vz end
+if v.RotVelocity ~= vz then v.RotVelocity = vz end
+local l = ltm
+if fpb and v.Name ~= "Head" and not inf.head then l = 0 end
+if v.LocalTransparencyModifier ~= l then v.LocalTransparencyModifier = l end
+end
+end
+local wantT = okay and 1 or Reanimate.PlaceholderTransparency
+for _, v in rig:GetChildren() do
+if limbSet[v.Name] and v:IsA("BasePart") and v.Transparency ~= wantT then v.Transparency = wantT end
+end
+local rootcf, rootvel = CFrame.new(voidPos), vz
+if character and hum and root then
+RunService.Heartbeat:Wait()
+local t = os.clock()
+if rroot and rtor then
+if torso == nil then
+local okO, ocf = pcall(U.NoobyRoot, rroot, rtor)
+rootcf = (okO and typeof(ocf) == "CFrame") and ocf or CFrame.new(rroot.Position + Vector3.new(0, -16, 0))
+elseif torso == 1 then
+rootcf = CFrame.new(voidPos)
+elseif torso == 5 then
+rootcf = CFrame.new(skyPos)
+end
+if torso == 2 or (torso ~= nil and workspace.StreamingEnabled) then
+rootcf = CFrame.new(rroot.Position + Vector3.new(0, -16, 0))
+end
+local q = LR.FlingTargets
+for qi = #q, 2, -1 do
+local qt = q[qi] and q[qi].Target
+if typeof(qt) == "Instance" then
+local qp = Util.Fling.GetPart(qt)
+local gone = (not qp) or (not qp:IsDescendantOf(workspace))
+if not gone then
+local pp = qp.Position
+gone = pp.X ~= pp.X or pp.Y ~= pp.Y or pp.Z ~= pp.Z
+end
+if gone then table.remove(q, qi) end
+end
+end
+local ft, fcf = Util.Fling.Step(q, t, Util.Fling.UseGlue() and 0.5 or 2)
+if ft then
+local fpos, frv = fcf.Position, fcf.RightVector
+if fpos.X ~= fpos.X or fpos.Y ~= fpos.Y or fpos.Z ~= fpos.Z or fpos.Magnitude > 1e7 or frv.X ~= frv.X then
+table.remove(q, 1)
+ft, fcf = nil, idcf
+end
+end
+update(rig, root, rootcf, rootvel, ft, fcf)
+if ft then
+Util.Fling.ApplyHumanoid(hum, ft, lastspawn)
+else
+if Util.Fling.Method == 4 then pcall(sethiddenproperty, hum, "MoveDirectionInternal", Vector3.zero) end
+pcall(sethiddenproperty, hum, "NetworkHumanoidState", Enum.HumanoidStateType.Flying.Value)
+end
+end
+end
+RunService.PreRender:Wait()
+if Reanimate:ShouldRotationType() then Reanimate:CameraLockCharacter() end
+if character and hum and root then update(rig, root, rootcf, rootvel, nil, idcf) end
+end
+local function shutdown(failed)
+pcall(U.Cleanup)
+for _, c in conns do pcall(c.Disconnect, c) end
+table.clear(LR.FlingTargets)
+table.clear(LR._TempNotFling)
+pcall(function()
+if type(FallenPartsDestroyHeight) == "number" and FallenPartsDestroyHeight == FallenPartsDestroyHeight then workspace.FallenPartsDestroyHeight = FallenPartsDestroyHeight end
+end)
+local ch = Player.Character
+local h = ch and ch:FindFirstChildOfClass("Humanoid")
+if h then
+pcall(function()
+h:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+h:ChangeState(Enum.HumanoidStateType.Dead)
+end)
+end
+if not failed then Reanimate.Stopping = false end
+pcall(Reanimate.DestroyCharacter)
+end
+local okRun, errRun = pcall(function()
+conns[1] = Player.CharacterAdded:Connect(onChar)
+local got = false
+local rc = Player.CharacterAdded:Connect(function() got = true end)
+local timeout = 15
+pcall(function() timeout = math.clamp((tonumber(Players.RespawnTime) or 5) + 10, 15, 40) end)
+local w0 = os.clock()
+while not got and os.clock() - w0 < timeout do task.wait() end
+rc:Disconnect()
+if not got then
+pcall(Util.Notify, "Unanchored Limb Reanimation: the game did not respawn your character after the reset (waited " .. math.floor(os.clock() - w0) .. "s). Continuing in placeholder mode so you can still move and jump.")
+local cur = Player.Character
+if cur then task.spawn(onChar, cur) end
+end
+Reanimate.CreateCharacter(initCF)
+local okI, errI = pcall(U.Init, true, "limbs")
+if not okI then
+warn("[Unanchored Reanimation] limb system failed to start: " .. tostring(errI))
+U.Note("Unanchored limb system failed to start (see console): " .. tostring(errI))
+end
+Reanimate.Starting = false
+local fails, lastErr, lastErrT = 0, nil, 0
+while not Reanimate.Stopping do
+local ok, e = pcall(frame)
+if ok then
+fails = 0
+else
+fails += 1
+e = tostring(e)
+if e ~= lastErr or os.clock() - lastErrT > 10 then
+lastErr, lastErrT = e, os.clock()
+warn("[Unanchored Limb Reanimation] frame step failed (x" .. fails .. "): " .. e)
+pcall(Util.Notify, "Unanchored Limb Reanimation frame error (see console): " .. e)
+end
+end
+end
+end)
+shutdown(not okRun)
+if not okRun then error(errRun, 0) end
+end
+function U.StartLimbs()
+local ok, err = pcall(U.LimbLife)
+if not ok then
+warn("[Unanchored Reanimation] limb reanimation failed to start: " .. tostring(err))
+U.Note("Unanchored limb reanimation failed to start (see console): " .. tostring(err))
+pcall(Reanimate.DestroyCharacter)
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+Reanimate.Stopping = false
+end
 end
 
 -- ===== Extra Unanchored Reanimation (runs inside the Limb / Ragdoll reanimator, hosted on the FAKE character) =====
@@ -75654,8 +76295,9 @@ local ch = Player.Character
 return ch and (ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso") or ch:FindFirstChild("HumanoidRootPart")) or nil
 end
 function U.StartExtra()
-if not C.Extra then return end
-local ok, err = pcall(U.Init, true)
+local lim = U.LimbFlag == true
+if not C.Extra and not lim then return end
+local ok, err = pcall(U.Init, true, lim and "limbs" or nil)
 if not ok then
 warn("[Unanchored Reanimation] extra mode failed to start: " .. tostring(err))
 U.Note("Extra Unanchored Reanimation failed to start (see console): " .. tostring(err))
@@ -75673,7 +76315,7 @@ end
 function U.ExtraToggle()
 if C.Extra then
 if U.LimbRunning() and not (U.Run and U.Run.Extra) then U.StartExtra() end
-else
+elseif not (U.Run and U.Run.LimbRun) then
 U.StopExtra()
 end
 end
@@ -75690,6 +76332,18 @@ if C.Extra then U.Options(parent) end
 end
 function U.Config(parent)
 UI.CreateText(parent, "Unanchored Reanimation: no tools, hats, reset or respawn. Finds loose unanchored parts near you, only moves them once the engine confirms you simulate them, and turns them into Wings, a Tail and a Halo.", 10, Enum.TextXAlignment.Center)
+local function refresh() task.defer(function() pcall(Util.RefreshReanimatorConfig) end) end
+UI.CreateSwitch(parent, "Use unanchored parts as tools", C.Tools).Changed:Connect(function(v)
+C.Tools = v
+end)
+UI.CreateSwitch(parent, "Use unanchored parts as limbs", C.Limbs).Changed:Connect(function(v)
+C.Limbs = v
+refresh()
+end)
+UI.CreateDropdown(parent, "Torso Offset", {"Nooby's Method", "RootPart Streamed", "RootPart in Sky/Void"}, C.TorsoOffset).Changed:Connect(function(v)
+C.TorsoOffset = (v == 2 or v == 3) and v or 1
+end)
+UI.CreateText(parent, "^^^ Tools: loose parts become Wings / Tail / Halo. Limbs: pressing Reanimate asks whether to teleport to a suitable part, resets your character like the Limb Reanimator and uses up to 6 parts (5, 4... if fewer exist) as the limbs of your reanimated character; one part is never used twice. Torso Offset decides where your real root / torso is placed during that run.", 10, Enum.TextXAlignment.Center)
 U.Options(parent)
 end
 -- shared option list: standalone method + Extra Unanchored Reanimation
@@ -83714,6 +84368,10 @@ SkipDirs = {
 ReportOnlyDirs = {"uhhhhhhreanim/builtinmodules"},
 Extensions = {lua = true, luau = true, txt = true},
 QuarantineDir = "UhhhhhhReanim/Quarantine",
+SyncMax = 32768,
+BannerZone = 16384,
+LargeView = 262144,
+ObfNear = 131072,
 }
 Security.Config = cfg
 local function K(s) return (s:gsub("|", ""):lower()) end
@@ -83767,7 +84425,7 @@ local function log(text)
 pcall(function() InitLogsText.Add("\n[SECURITY] " .. text) end)
 end
 local function notify(text)
-pcall(Util.UINotify, text)
+task.defer(pcall, Util.UINotify, text)
 end
 local function status(prefix)
 local text = string.format("%s | scanned this pass: %d | flagged: %d | deleted: %d", prefix, Stats.PassScanned, Stats.Flagged, Stats.Deleted)
@@ -83791,7 +84449,7 @@ local budget = cfg.SliceBudget
 if Security._frame > cfg.MaxFrameTime then budget = budget * 0.5 end
 if os.clock() - state.t0 >= budget then
 task.wait()
-if Security._gen ~= gen then return false end
+if gen ~= true and Security._gen ~= gen then return false end
 state.t0 = os.clock()
 end
 return true
@@ -83820,7 +84478,7 @@ local nl = content:find("\n", s + 2, true)
 e = nl and nl - 1 or n
 end
 local body = content:sub(s, e)
-if not state.banner and #body < 600 then
+if not state.banner and s <= cfg.BannerZone and #body < 600 then
 local lb = body:lower()
 if lb:find(K("lur|aph"), 1, true) or lb:find(K("moon|sec"), 1, true) or lb:find(K("iron|brew"), 1, true) or lb:find("obfuscat", 1, true) then
 state.banner = s
@@ -84155,11 +84813,15 @@ return a.id < b.id
 end
 local function evaluate(state)
 local ev, fl = state.ev, state.flags
-if state.esc >= cfg.EscapeLimit and state.escRuns >= cfg.EscapeRuns then
+local vlen = #(state.view or "")
+local big = vlen > cfg.LargeView
+-- the obfuscation counters are cumulative: they are judged per size so a large legitimate script does not trip them just by being large
+local scale = math.max(1, vlen / 131072)
+if state.esc >= cfg.EscapeLimit * scale and state.escRuns >= cfg.EscapeRuns * scale then
 add(state, "esc_dense", "obf", 30, "is packed with escape-sequence encoded strings")
 end
-if state.hexid >= cfg.HexIdentLimit then add(state, "obf_ident", "obf", 20, "uses machine-generated identifier names") end
-if state.tiny >= cfg.TinyJoinLimit then add(state, "concat_build", "obf", 20, "assembles strings from many tiny fragments") end
+if state.hexid >= cfg.HexIdentLimit * scale then add(state, "obf_ident", "obf", 20, "uses machine-generated identifier names") end
+if state.tiny >= cfg.TinyJoinLimit * scale then add(state, "concat_build", "obf", 20, "assembles strings from many tiny fragments") end
 if state.banner then add(state, "obfuscator", "obf", 25, "is hidden by a script obfuscator", state.banner) end
 if fl.b64a and fl.b64b then add(state, "b64_payload", "obf", 20, "bundles a base64 decoder with a large encoded blob", fl.b64b) end
 local list, best = {}, {}
@@ -84181,6 +84843,16 @@ for _, id in ipairs({...}) do
 if ev[id] then return ev[id].abs end
 end
 end
+-- in a large file a loader only counts as obfuscated when obfuscation evidence sits next to it (small files keep the original whole-file rule)
+local function near(pos)
+if not big then return true end
+if type(pos) ~= "number" then return false end
+for id in pairs(OBF) do
+local e = ev[id]
+if e and type(e.abs) == "number" and math.abs(e.abs - pos) <= cfg.ObfNear then return true end
+end
+return type(fl.b64b) == "number" and math.abs(fl.b64b - pos) <= cfg.ObfNear
+end
 local net = ev.webhook or ev.ip_logger or fl.send or fl.remote
 local combos = {}
 local function combo(id, w, desc, abs, crit)
@@ -84198,14 +84870,14 @@ end
 if ev.stealer_words and (ev.webhook or fl.send) then
 combo("stealer_send", 35, "stealer keywords together with outbound data sending", A("stealer_words"))
 end
-if fl.ls and obfCount >= 3 then
+if fl.ls and obfCount >= 3 and near(fl.ls) then
 combo("obf_exec", 30, "hides code behind obfuscation and executes it", fl.ls)
 if obfCount >= 6 then combo("obf_layers", 25, "several layered obfuscation techniques feed an execution call", fl.ls) end
 end
 if ev.remote_exec and (ev.paste_host or ev.raw_ip) then
 combo("remote_untrusted", 25, "downloads and runs code from an editable paste or bare IP host", A("remote_exec"))
 end
-if ev.remote_exec and obfCount >= 2 then
+if ev.remote_exec and obfCount >= 2 and near(A("remote_exec")) then
 combo("remote_obf", 30, "obfuscated remote loader", A("remote_exec"))
 end
 if ev.autoexec_write and (fl.ls or ev.remote_exec) then
@@ -84273,12 +84945,34 @@ return {verdict = verdict, score = math.floor(total + 0.5), confidence = conf, s
 end
 function Security.Analyze(content, gen)
 if type(content) ~= "string" then error("Security.Analyze expects a string") end
+-- anything bigger than a few KB is analysed in bounded slices whenever the caller can yield, so a large source can never monopolise the frame
+if gen == nil and #content > cfg.SyncMax and coroutine.isyieldable() then gen = true end
 local state = {ev = {}, flags = {}, esc = 0, escRuns = 0, hexid = 0, tiny = 0, t0 = os.clock()}
 local view = prepare(content, state, gen)
 if not view then return nil end
 state.view = view
 if not scanView(view, state, gen) then return nil end
 return evaluate(state)
+end
+Security._emb, Security._embLen = {}, {}
+-- internal only: the embedded Nameless Admin runner registers its own embedded sources (verified SHA-256 identity, so a modified or external copy never matches); the optional name is the verified chunk identity of that source
+function Security.TrustEmbedded(src, name)
+local x = Util.ExtGuard
+if type(src) ~= "string" or #src < 64 or not (x and x.CanHash and x.CanHash()) then return end
+local h = x.SecHash(src)
+if h then
+if Security._emb[h] == nil or Security._emb[h] == true then Security._emb[h] = (type(name) == "string" and name ~= "") and name or true end
+Security._embLen[#src] = true
+return true
+end
+end
+-- returns (isEmbedded, verifiedChunkName or nil)
+function Security.IsEmbedded(content)
+if type(content) ~= "string" or not Security._embLen[#content] then return false end
+local x = Util.ExtGuard
+local h = x and x.SecHash and x.SecHash(content)
+if h == nil or Security._emb[h] == nil then return false end
+return true, type(Security._emb[h]) == "string" and Security._emb[h] or nil
 end
 function Security.Enabled() return SaveData.SecurityScan ~= false end
 function Security.AutoDelete() return SaveData.SecurityAutoDelete == true end
@@ -84410,6 +85104,7 @@ noteSkip(path, msg)
 if cfg.BlockOversize then return msg end
 return nil
 end
+if Security.IsEmbedded(content) then return nil end
 local ok, report = pcall(Security.Analyze, content)
 if not ok or type(report) ~= "table" then
 Stats.Errors += 1
@@ -84459,6 +85154,11 @@ return
 end
 if size > cfg.MaxFileBytes then
 noteSkip(path, "larger than " .. cfg.MaxFileBytes .. " bytes (" .. size .. ")")
+return
+end
+if Security.IsEmbedded(content) then
+Stats.Scanned += 1
+Stats.PassScanned += 1
 return
 end
 local key, fp = normalize(path):lower(), fingerprint(content)
@@ -84606,6 +85306,1746 @@ else
 warn("[Uhhhhhh] Security module failed to load: " .. tostring(sec))
 end
 end
+-- Section: Security Protection - Part 1/5: external protection core (state, registry, caller identification, history)
+
+do
+local okA, errA = pcall(function()
+local X = {
+	Stats = {Intercepted = 0, Scanned = 0, MaliciousBlocked = 0, SuspiciousDetected = 0, PhishingBlocked = 0, RuntimeBlocked = 0},
+	Findings = {}, History = {}, List = {}, Map = {}, Downloads = {}, NDown = 0, Trusted = {}, Approved = {}, CapLines = {},
+	Limits = {
+		"Scripts run from the executor's editor, clipboard or script hub are compiled by the executor itself before UH can see them: their source cannot be inspected (UNVERIFIED). Only their later calls through guarded functions are monitored.",
+		"A script that cached an original function before UH loaded, or that reaches executor internals directly, can bypass a guard.",
+		"Redirect chains are judged from the address text only: following hops would need requests, and UH Security makes none.",
+		"require(assetId) and native Roblox services that are not reached through a guarded call are not intercepted.",
+		"UH Admin's own runners (P.execute, runUrl, Nameless Admin, built-in modules) are intentionally excluded.",
+		"CLEAN only means no known pattern was found. It is not a guarantee of safety.",
+	},
+	NScripts = 0, Seq = 0, NTrust = 0, Active = false,
+	MaxFindings = 60, MaxHistory = 120, MaxSource = 4 * 1024 * 1024,
+}
+X.Overflow = {id = "EXT-OVER", name = "(too many scripts tracked)", origin = "overflow", verdict = "UNVERIFIED", status = "monitored", ops = 0, threads = setmetatable({}, {__mode = "k"}), allow = {}}
+Util.ExtGuard = X
+X.Rank = {CLEAN = 0, UNVERIFIED = 1, SUSPICIOUS = 2, MALICIOUS = 3}
+
+function X.On(key) return SaveData[key] ~= false end
+function X.Esc(s)
+	return (tostring(s):gsub("[&<>\"']", {["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ["\""] = "&quot;", ["'"] = "&apos;"}))
+end
+local pend = false
+function X.Touch()
+	if pend or not X.OnUpdate then return end
+	pend = true
+	task.delay(0.5, function()
+		pend = false
+		pcall(X.OnUpdate)
+	end)
+end
+local function push(list, item, max)
+	table.insert(list, 1, item)
+	if #list > max then list[#list] = nil end
+end
+function X.Hist(kind, text, id)
+	text = tostring(text)
+	push(X.History, {t = os.time(), kind = kind, text = text:sub(1, 160), id = id}, X.MaxHistory)
+	pcall(function() InitLogsText.Add("\n[EXTGUARD] " .. kind .. ": " .. text:sub(1, 200)) end)
+	X.Touch()
+end
+function X.AddFinding(f)
+	f.t = os.time()
+	push(X.Findings, f, X.MaxFindings)
+	X.Touch()
+end
+function X.Notify(text) task.defer(pcall, Util.UINotify, text) end
+
+function X.FP(s)
+	local n = #s
+	local step = math.max(1, n // 2048)
+	local h = 5381
+	for i = 1, n, step do h = (h * 33 + string.byte(s, i)) % 4294967296 end
+	return n .. ":" .. h
+end
+-- X.Hash (weak 32-bit) removed: it can no longer be used as an approval identity. X.FP stays for download association only.
+-- X.SecHash returns "sha256:<length>:<hex>" or nil. An executor digest API is trusted only after it reproduces two NIST SHA-256
+-- known-answer vectors, its output shape (hex / raw / base64) is verified, and it hashes "a\0b" and "a\0c" differently.
+X.ApproveMax = 64
+local SHA_KAT = {
+	{"abc", "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+	{"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"},
+}
+local B64V = {}
+do
+	local a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	for i = 1, 64 do B64V[a:byte(i)] = i - 1 end
+end
+local function digestHex(r, fmt)
+	if type(r) ~= "string" then return nil end
+	if fmt == "hex" then
+		if #r == 64 and not r:find("%X") then return r:lower() end
+	elseif fmt == "raw" then
+		if #r == 32 then return (r:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
+	elseif fmt == "b64" then
+		local s = (r:gsub("=+$", ""))
+		if #s == 43 then
+			local out, acc, bits = {}, 0, 0
+			for i = 1, #s do
+				local v = B64V[s:byte(i)]
+				if not v then return nil end
+				acc = acc * 64 + v
+				bits += 6
+				if bits >= 8 then
+					bits -= 8
+					out[#out + 1] = string.format("%02x", math.floor(acc / 2 ^ bits) % 256)
+					acc = acc % 2 ^ bits
+				end
+			end
+			if #out == 32 then return table.concat(out) end
+		end
+	end
+	return nil
+end
+local function probeSha()
+	local g = (type(getgenv) == "function" and getgenv()) or _G
+	local cand = {}
+	local function add(label, f) cand[#cand + 1] = {label, f} end
+	local cr = g.crypt
+	if type(cr) == "table" then
+		if type(cr.hash) == "function" then
+			local hf = cr.hash
+			add("crypt.hash", function(d) return hf(d, "sha256") end)
+		end
+		local cu = cr.custom
+		if type(cu) == "table" and type(cu.hash) == "function" then
+			local hf = cu.hash
+			add("crypt.custom.hash", function(d) return hf("sha256", d) end)
+		end
+	end
+	local sy = g.syn
+	local sc = type(sy) == "table" and sy.crypt or nil
+	if type(sc) == "table" then
+		local cu = sc.custom
+		if type(cu) == "table" and type(cu.hash) == "function" then
+			local hf = cu.hash
+			add("syn.crypt.custom.hash", function(d) return hf("sha256", d) end)
+		end
+		if type(sc.hash) == "function" then
+			local hf = sc.hash
+			add("syn.crypt.hash", function(d) return hf(d, "sha256") end)
+		end
+	end
+	for _, c in ipairs(cand) do
+		local f = c[2]
+		local ok, r = pcall(f, SHA_KAT[1][1])
+		local fmt
+		if ok then
+			for _, ft in ipairs({"hex", "raw", "b64"}) do
+				if digestHex(r, ft) == SHA_KAT[1][2] then
+					fmt = ft
+					break
+				end
+			end
+		end
+		local good = fmt ~= nil
+		if good then
+			for i = 2, #SHA_KAT do
+				local ok2, r2 = pcall(f, SHA_KAT[i][1])
+				if not ok2 or digestHex(r2, fmt) ~= SHA_KAT[i][2] then
+					good = false
+					break
+				end
+			end
+		end
+		if good then
+			local o1, r1 = pcall(f, "a\0b")
+			local o2, r2 = pcall(f, "a\0c")
+			local h1, h2 = o1 and digestHex(r1, fmt), o2 and digestHex(r2, fmt)
+			good = (h1 and h2 and h1 ~= h2) and true or false
+		end
+		if good then return {f = f, fmt = fmt, label = c[1]} end
+	end
+	return nil
+end
+local shaCache
+local function sha()
+	if shaCache == nil then
+		local okp, st = pcall(probeSha)
+		shaCache = (okp and st) or false
+	end
+	return shaCache
+end
+function X.CanHash()
+	local st = sha()
+	if st then return true, st.label end
+	return false
+end
+function X.SecHash(s)
+	if type(s) ~= "string" then return nil end
+	local st = sha()
+	if not st then return nil end
+	local ok, r = pcall(st.f, s)
+	local hex = ok and digestHex(r, st.fmt) or nil
+	if not hex then return nil end
+	return "sha256:" .. #s .. ":" .. hex
+end
+function X.Download(url, body)
+	if type(url) ~= "string" or type(body) ~= "string" or #body < 40 or #body > 8 * 1024 * 1024 then return end
+	if X.NDown >= 200 then
+		X.Downloads, X.NDown = {}, 0
+	end
+	X.Downloads[X.FP(body)] = url
+	X.NDown += 1
+end
+
+local function norm(s)
+	if type(s) ~= "string" then return nil end
+	return (s:gsub("^[=@]", ""))
+end
+X.Norm = norm
+local dinfo = (type(debug) == "table" and type(debug.info) == "function") and debug.info or nil
+local dget = (type(debug) == "table" and type(debug.getinfo) == "function") and debug.getinfo or nil
+local probe
+if dinfo then
+	probe = function(l) return dinfo(l, "fs") end
+elseif dget then
+	probe = function(l)
+		local t = dget(l, "fS")
+		if type(t) ~= "table" then return nil end
+		return t.func, t.source
+	end
+end
+X.CanIdentify = probe ~= nil
+-- Returns the chunk name of whoever called the hook function "me" (first non-C frame above it).
+function X.Caller(me)
+	if not probe then return nil end
+	local found = false
+	for l = 3, 40 do
+		local ok, f, s = pcall(probe, l)
+		if not ok or f == nil then return nil end
+		if found then
+			s = norm(s)
+			if s and s ~= "[C]" then return s end
+		elseif f == me then
+			found = true
+		end
+	end
+	return nil
+end
+-- some executors prefix the chunk name they report back (e.g. "JJIQp@NA-split/common/part-001.lua" for a chunk compiled as "@NA-split/common/part-001.lua"); the tag is stripped for the lookup only, and an external script can never obtain a trusted name because X.Compile renames any requested chunk name whose stripped form is trusted
+local function undeco(c)
+	local tag, rest = c:match("^(%w+)[@=](.+)$")
+	if tag and #tag >= 3 and #tag <= 12 then return rest end
+	return nil
+end
+local function ownChunk(c) return c == "UhAdmin" or X.Trusted[c] == true or c:sub(1, 8) == "UhTrust#" end
+function X.IsUH(chunk)
+	if type(chunk) ~= "string" then return false end
+	if ownChunk(chunk) then return true end
+	local rest = undeco(chunk)
+	return rest ~= nil and ownChunk(rest)
+end
+-- internal only: the embedded Nameless Admin runner registers its own chunk identities through this call before it compiles them
+function X.TrustEmbedded(name)
+	if type(name) == "string" and name ~= "" then X.Trusted[X.Norm(name)] = true end
+end
+-- internal only: called solely for functions compiled from a SHA-256-verified embedded source; records the chunk identity the executor really reports for them (accepted only when it is derived from the requested name, never a generic one)
+X.NAlias = X.NAlias or 0
+function X.TrustCompiled(f, req)
+	if type(f) ~= "function" or type(req) ~= "string" or #req < 4 or X.NAlias >= 512 then return end
+	local s
+	if dinfo then
+		local ok, r = pcall(dinfo, f, "s")
+		if ok then s = r end
+	elseif dget then
+		local ok, r = pcall(dget, f, "S")
+		if ok and type(r) == "table" then s = r.source end
+	end
+	if type(s) ~= "string" then return end
+	s = X.Norm(s)
+	if s and s ~= req and not X.Trusted[s] and s:sub(-#req) == req then
+		X.NAlias += 1
+		X.Trusted[s] = true
+	end
+end
+function X.NameOf(chunk)
+	chunk = tostring(chunk or "?")
+	local first = chunk:match('^%[string "(.-)"%]$')
+	if first then chunk = "chunk: " .. first end
+	return chunk:sub(1, 48)
+end
+function X.NewScript(name, origin)
+	if X.NScripts >= 600 then return X.Overflow end
+	X.Seq += 1
+	X.NScripts += 1
+	local s = {id = string.format("EXT-%04d", X.Seq), name = name, origin = origin, verdict = "UNVERIFIED", status = "monitored", ops = 0, threads = setmetatable({}, {__mode = "k"}), allow = {}, t0 = os.time()}
+	X.List[#X.List + 1] = s
+	X.Stats.Intercepted += 1
+	X.Hist("intercept", s.id .. " " .. name .. " <- " .. origin, s.id)
+	return s
+end
+function X.Actor(who)
+	local key = who or "?"
+	local s = X.Map[key]
+	if not s then
+		s = X.NewScript(X.NameOf(key), "executor-compiled script (editor / clipboard / hub): source not visible")
+		X.Map[key] = s
+		if type(getcallingscript) == "function" then
+			local ok, inst = pcall(getcallingscript)
+			if ok and typeof(inst) == "Instance" then
+				s.inst = inst
+				pcall(function() s.name = X.NameOf(inst:GetFullName()) end)
+			end
+		end
+	end
+	s.ops += 1
+	local th = coroutine.running()
+	if th then s.threads[th] = true end
+	if s.killed then error("[UH Security] " .. s.id .. " was terminated by UH Security", 0) end
+	return s
+end
+-- nil = UH's own call (or protection off): pass through untouched.
+function X.Gate(who)
+	if not X.Active or X.IsUH(who) or not X.On("ExtProtect") then return nil end
+	return X.Actor(who)
+end
+function X.Kill(s)
+	if s == X.Overflow or s.killed then return end
+	s.killed = true
+	s.status = "terminated"
+	local cur = coroutine.running()
+	for th in pairs(s.threads) do
+		if th ~= cur then pcall(task.cancel, th) end
+	end
+	if s.inst then pcall(function() s.inst.Disabled = true end) end
+end
+function X.Incident(s, kind, detail, sev, critical, phish, url)
+	local st = X.Stats
+	if phish then st.PhishingBlocked += 1 else st.RuntimeBlocked += 1 end
+	local host = "?"
+	if url and X.ParseURL then host = (X.ParseURL(url) or {}).host or "?" end
+	X.AddFinding({kind = kind, id = s.id, name = s.name, origin = s.origin, severity = sev, verdict = "BLOCKED", evidence = {{desc = detail}}, urls = url and {{url = url, host = host, verdict = "BLOCKED"}} or nil, decision = "BLOCKED" .. (critical and " + script terminated" or "")})
+	X.Hist("runtime", s.id .. " blocked " .. kind .. ": " .. detail, s.id)
+	if phish and url then
+		X.Notify(string.format("[UH Security] PHISHING BLOCKED\nDestination: %s\nHost: %s\nReason: %s\nScript: %s (%s)", url:sub(1, 90), host, detail:sub(1, 100), s.name, s.id))
+	else
+		X.Notify(string.format("[UH Security] %s blocked (%s): %s", kind, s.id, detail:sub(1, 110)))
+	end
+	if critical then X.Kill(s) end
+end
+function X.Unverified(note)
+	return {verdict = "UNVERIFIED", severity = "none", score = 0, reasons = {}, urls = {}, critical = false, note = note}
+end
+end)
+if not okA then warn("[UH Security] external protection core failed: " .. tostring(errA)) end
+end
+
+-- Section: Security Protection - Part 2/5: anti-phishing URL analysis and URL extraction (decodes escapes, string joins and base64)
+
+do
+local okB, errB = pcall(function()
+local X = Util.ExtGuard
+local function S(t) local o = {} for _, v in ipairs(t) do o[v] = true end return o end
+local OFFICIAL = S{"roblox.com", "rbxcdn.com", "robloxlabs.com"}
+local TRUSTED = S{"github.com", "githubusercontent.com", "gitlab.com", "jsdelivr.net"}
+local SHORT = S{"bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "cutt.ly", "rb.gy", "shorturl.at", "tiny.cc", "bit.do", "rebrand.ly", "v.gd", "t.ly", "s.id", "buff.ly", "clck.ru", "qr.net", "adf.ly", "shorte.st", "soo.gd", "u.to", "t2m.io"}
+local IPLOG = S{"grabify.link", "iplogger.org", "iplogger.com", "iplogger.ru", "2no.co", "yip.su", "blasze.tk", "blasze.com", "leancoding.co", "stopify.co", "ps3cfw.com", "bmwforum.co", "quickmessage.us", "spottyfly.com", "freegiftcards.co", "joinmy.site", "curiouscat.club", "gamingfun.me", "02ip.ru", "iplis.ru", "ipgrabber.ru"}
+local DISCORD = S{"discord.com", "discordapp.com"}
+local HOOKPX = S{"webhook.lewisakura.moe", "hooks.hyra.io"}
+local SENS = S{"auth.roblox.com", "accountsettings.roblox.com", "billing.roblox.com", "trades.roblox.com", "premiumfeatures.roblox.com"}
+local BADTLD = S{"tk", "ml", "ga", "cf", "gq", "xyz", "top", "click", "icu", "buzz", "rest", "zip", "work", "cyou", "monster", "cam", "sbs", "cfd"}
+local REDIR = S{"url", "u", "r", "redirect", "redirect_uri", "redirecturl", "return", "returnurl", "next", "dest", "destination", "goto", "target", "link", "to", "continue", "out"}
+local TLD2 = S{"co", "com", "org", "net", "gov", "edu", "ac", "or", "ne"}
+local CREDW = {"login", "log-in", "signin", "sign-in", "verify", "verification", "authenticate", "2fa", "captcha", "security-check", "recover", "unlock", "appeal", "validate"}
+local LUREW = {"free-robux", "freerobux", "robux-gen", "get-robux", "robux-generator", "free-rbx", "rbx-gen", "free-limited", "robux4free", "claim-robux", "gift-card"}
+local STEALW = {"cookie", "roblosecurity", "grabber", "stealer", "logger"}
+
+local function hostIn(set, host)
+	local l = {}
+	for p in host:gmatch("[^%.]+") do l[#l + 1] = p end
+	for i = 1, #l do
+		if set[table.concat(l, ".", i)] then return true end
+	end
+	return false
+end
+local function unpct(s) return (s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)) end
+local function privIP(ip)
+	if ip:find("^127%.") or ip:find("^10%.") or ip:find("^192%.168%.") or ip:find("^0%.") then return true end
+	local b = tonumber(ip:match("^172%.(%d+)%."))
+	return b ~= nil and b >= 16 and b <= 31
+end
+local function deglyph(s)
+	return (s:gsub("0", "o"):gsub("1", "l"):gsub("3", "e"):gsub("5", "s"):gsub("7", "t"):gsub("%$", "s"):gsub("@", "a"):gsub("|", "l"))
+end
+local function lev(a, b)
+	local la, lb = #a, #b
+	if math.abs(la - lb) > 2 then return 3 end
+	local prev = {}
+	for j = 0, lb do prev[j] = j end
+	for i = 1, la do
+		local cur = {[0] = i}
+		for j = 1, lb do
+			local c = (a:byte(i) == b:byte(j)) and 0 or 1
+			cur[j] = math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + c)
+		end
+		prev = cur
+	end
+	return prev[lb]
+end
+local function regDomain(host)
+	local l = {}
+	for p in host:gmatch("[^%.]+") do l[#l + 1] = p end
+	local n = #l
+	if n <= 2 then return host, l[1] or host end
+	if #l[n] == 2 and TLD2[l[n - 1]] then
+		return l[n - 2] .. "." .. l[n - 1] .. "." .. l[n], l[n - 2]
+	end
+	return l[n - 1] .. "." .. l[n], l[n - 1]
+end
+local function parseURL(u)
+	if type(u) ~= "string" then return nil end
+	local scheme, rest = u:match("^%s*(%a[%w%+%.%-]*)://(.*)$")
+	if not scheme then return nil end
+	local auth = rest:match("^([^/?#\\]*)") or ""
+	local tail = rest:sub(#auth + 1)
+	local userinfo, hostport = auth:match("^(.*)@(.*)$")
+	hostport = hostport or auth
+	local host = (hostport:gsub(":%d*$", "")):lower():gsub("%.$", "")
+	local path, query = tail:match("^([^?#]*)%??([^#]*)")
+	return {scheme = scheme:lower(), userinfo = userinfo, host = host, path = path or "", query = query or "", full = u}
+end
+X.ParseURL = parseURL
+
+function X.AnalyzeURL(url, depth)
+	depth = depth or 0
+	local res = {url = tostring(url), host = "?", score = 0, reasons = {}, crit = false, verdict = "CLEAN", severity = "none"}
+	local p = parseURL(url)
+	if not p then return res end
+	local host = p.host
+	res.host = host
+	local function R(id, w, desc, crit)
+		res.score += w
+		res.reasons[#res.reasons + 1] = {id = id, w = w, desc = desc}
+		if crit then res.crit = true end
+	end
+	local reg, label = regDomain(host)
+	local official = hostIn(OFFICIAL, host)
+	local trusted = official or hostIn(TRUSTED, host)
+	local hay = unpct(unpct(host .. p.path .. "?" .. p.query)):lower()
+	if hostIn(IPLOG, host) then R("iplogger", 100, "IP-logger domain " .. reg) end
+	if p.userinfo and p.userinfo ~= "" then
+		if p.userinfo:find("%.") or p.userinfo:lower():find("roblox", 1, true) then
+			R("userinfo", 70, "address hides the real host behind a user@ prefix")
+		else
+			R("userinfo", 20, "address embeds login-style user info")
+		end
+	end
+	if host:find("^%d+%.%d+%.%d+%.%d+$") then
+		R("iphost", privIP(host) and 10 or 45, "destination is a raw IP address")
+	elseif host:find("^%[") or host:find("^0x%x+$") or host:find("^%d+$") then
+		R("iphost", 55, "destination is an obfuscated or IPv6 literal address")
+	end
+	if host:find("xn%-%-") or host:find("[\128-\255]") then
+		R("punycode", 55, "punycode / non-ASCII hostname (look-alike risk)")
+	end
+	if hostIn(SHORT, host) then R("shortener", 40, "URL shortener hides the real destination") end
+	local tld = host:match("%.([%w%-]+)$")
+	if tld and BADTLD[tld] and not trusted then R("tld", 15, "high-abuse top-level domain ." .. tld) end
+	if not official then
+		local flat = deglyph((host:gsub("[%-%.]", "")))
+		local lab = deglyph((label:gsub("%-", "")))
+		if lab:find("roblox", 1, true) or lab:find("rbxcdn", 1, true) then
+			R("impersonation", 80, "impersonates a Roblox domain (" .. reg .. ")")
+		elseif flat:find("roblox", 1, true) or flat:find("rbxcdn", 1, true) then
+			R("brand_sub", 75, "uses the Roblox name inside another site's address (" .. reg .. ")")
+		elseif #lab >= 5 and lab ~= "roblox" and (lev(lab, "roblox") <= 1 or lev(lab, "rbxcdn") <= 1) then
+			R("typosquat", 70, "look-alike of a Roblox domain (" .. reg .. ")")
+		end
+	end
+	if not trusted then
+		for i = 1, #CREDW do
+			if hay:find(CREDW[i], 1, true) then
+				R("credwords", 25, "login / verification wording on a non-Roblox site")
+				break
+			end
+		end
+		for i = 1, #LUREW do
+			if hay:find(LUREW[i], 1, true) then
+				R("lure", 45, "free-Robux / giveaway lure")
+				break
+			end
+		end
+		for i = 1, #STEALW do
+			if hay:find(STEALW[i], 1, true) then
+				R("stealwords", 50, "cookie / stealer wording in the address")
+				break
+			end
+		end
+		if hay:find("roblox", 1, true) then R("brandtext", 20, "mentions Roblox but is not a Roblox site") end
+	end
+	if hay:find("roblosecurity", 1, true) or hay:find("_|warning:-do-not-share-this", 1, true) then
+		R("cookie", 100, "address carries or asks for the Roblox login cookie", true)
+	end
+	local ck = p.query:match("[Cc][Oo][Oo][Kk][Ii][Ee]=([^&]+)")
+	if ck and #ck > 40 then R("cookie", 100, "address sends a long cookie value", true) end
+	if hay:find("authticket", 1, true) or hay:find("authenticationticket", 1, true) or hay:find("rbx-authentication-ticket", 1, true) then
+		R("authticket", 100, "address carries a Roblox authentication ticket", true)
+	end
+	if official and (hostIn(SENS, host) or hay:find("/purchases/", 1, true) or hay:find("/payouts", 1, true)) then
+		R("sensitive", 70, "touches a Roblox account / auth / billing endpoint")
+	end
+	if (hostIn(DISCORD, host) and hay:find("/api/webhooks/", 1, true)) or hostIn(HOOKPX, host) then
+		R("webhook", 60, "Discord webhook endpoint (data leaves your device)")
+	end
+	if depth < 3 and p.query ~= "" then
+		for k, v in p.query:gmatch("([^&=]+)=([^&]*)") do
+			if REDIR[k:lower()] then
+				local d = unpct(v)
+				if d:find("^%a[%w%+%.%-]*://") then
+					local sub = X.AnalyzeURL(d, depth + 1)
+					R("redirect", 20 + (sub.score >= 40 and 40 or 0), "redirect parameter '" .. k .. "' leads to " .. sub.host)
+					if sub.crit then res.crit = true end
+					for _, r in ipairs(sub.reasons) do
+						res.reasons[#res.reasons + 1] = {id = "via_" .. r.id, w = 0, desc = "(via " .. sub.host .. ") " .. r.desc}
+					end
+					break
+				end
+			end
+		end
+	end
+	if res.crit or res.score >= 90 then
+		res.verdict, res.severity = "MALICIOUS", res.crit and "critical" or "high"
+	elseif res.score >= 40 then
+		res.verdict, res.severity = "SUSPICIOUS", "medium"
+	elseif res.score > 0 then
+		res.severity = "low"
+	end
+	return res
+end
+
+local B64 = {}
+do
+	local a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	for i = 1, 64 do B64[a:byte(i)] = i - 1 end
+end
+local function unb64(s)
+	s = s:gsub("=+$", "")
+	local out, bits, acc = {}, 0, 0
+	for i = 1, #s do
+		local v = B64[s:byte(i)]
+		if not v then return nil end
+		acc = acc * 64 + v
+		bits += 6
+		if bits >= 8 then
+			bits -= 8
+			local b = math.floor(acc / 2 ^ bits)
+			out[#out + 1] = string.char(b % 256)
+			acc = acc % (2 ^ bits)
+		end
+	end
+	return table.concat(out)
+end
+local URLPAT = "[Hh][Tt][Tt][Pp][Ss]?://[%w%-%._~:/%?#@!%$&%*%+,;=%%%[%]]+"
+-- Returns {url, line} entries found in plain text, \x / \ddd escapes, "a".."b" joins and base64 strings.
+function X.ExtractURLs(src)
+	local out, seen, n, nb = {}, {}, 0, 0
+	local function add(u, ln)
+		u = u:gsub("[%.,;:%)%]}\"']+$", "")
+		if #u > 10 and not seen[u] and n < 60 then
+			seen[u] = true
+			n += 1
+			out[n] = {url = u, line = ln}
+		end
+	end
+	local ln = 0
+	for l in src:gmatch("([^\n]*)\n?") do
+		ln += 1
+		if ln % 1500 == 0 and coroutine.isyieldable() then task.wait() end
+		if #l > 9 and n < 60 then
+			local d = l
+			if d:find("\\", 1, true) then
+				d = d:gsub("\\x(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+				d = d:gsub("\\(%d%d?%d?)", function(c)
+					local v = tonumber(c)
+					if v and v < 256 then return string.char(v) end
+				end)
+			end
+			if d:find("..", 1, true) then
+				for _ = 1, 8 do
+					local c
+					d, c = d:gsub("([\"'])%s*%.%.%s*([\"'])", "")
+					if c == 0 then break end
+				end
+			end
+			for u in d:gmatch(URLPAT) do add(u, ln) end
+			if nb < 30 and #d >= 40 then
+				for tok in d:gmatch("[A-Za-z0-9%+/=]+") do
+					local tl = #tok
+					if tl >= 40 and tl <= 8192 then
+						nb += 1
+						local dec = unb64(tok)
+						if dec and dec:find("://", 1, true) then
+							for u in dec:gmatch(URLPAT) do add(u, ln) end
+						end
+						if nb >= 30 then break end
+					end
+				end
+			end
+		end
+	end
+	return out
+end
+end)
+if not okB then warn("[UH Security] anti-phishing module failed: " .. tostring(errB)) end
+end
+
+-- Section: Security Protection - Part 3/5: universal third-party script checker (extends Util.Security.Analyze)
+
+do
+local okC, errC = pcall(function()
+local X = Util.ExtGuard
+local RANK = X.Rank
+local SKIPURL = {webhook = true, sensitive = true, tld = true}
+-- Relational rules (A trigger + B capability) match within WINDOW lines of comment-stripped code: same line / within NEAR lines = full weight, farther = 60%.
+-- "code" rules ignore strings and comments, resolve ["name"] indexing, "a".."b" joins, escapes and simple "local alias = name" indirection.
+-- Both lines (hook operation and related operation) are recorded as evidence with snippets.
+local NEAR, WINDOW, MAXLINE = 6, 40, 100000
+local EXTRA = {
+	{id = "sec_hook", cat = "bypass", w = 60, code = true, desc = "hooks or restores functions that security tools guard, near code-execution, network, file, clipboard or persistence calls (security bypass)", la = "hook / restore operation", lb = "dangerous capability near the hook",
+		A = {"hookfunction", "restorefunction", "replaceclosure"},
+		B = {"loadstring", "request", "httpget", "httppost", "setclipboard", "toclipboard", "writefile", "appendfile", "queue_on_teleport", "queueonteleport"}},
+	{id = "uh_tamper", cat = "bypass", w = 70, desc = "references UH Admin / UH Security internals (tampering attempt)",
+		B = {"uhhhhhhloaded", "uhhhhhhsource", "util.security", "extguard", "uhtrust#"}},
+	{id = "autoexec_persist", cat = "persist", w = 70, desc = "writes into an auto-execute folder (persistence)", la = "auto-execute folder reference", lb = "file write",
+		A = {"autoexec"}, B = {"writefile", "appendfile"}},
+	{id = "tele_remote", cat = "persist", w = 30, desc = "queues a remote or dynamic payload to re-run after teleport", la = "queue-on-teleport call", lb = "remote or dynamic payload",
+		A = {"queue_on_teleport", "queueonteleport", "queueteleport"}, B = {"http", "loadstring"}},
+	{id = "fs_wipe", cat = "fs", w = 90, desc = "deletes the whole workspace folder",
+		B = {"delfolder(\"\")", "delfolder('')", "delfolder(\".\")", "delfolder('.')", "delfolder(\"/\")", "delfolder('/')"}},
+	{id = "fs_walk_delete", cat = "fs", w = 45, code = true, desc = "walks the file list while deleting files", la = "file listing", lb = "file deletion",
+		A = {"listfiles"}, B = {"delfile", "delfolder"}},
+	{id = "debug_tamper", cat = "bypass", w = 30, desc = "rewrites other code at runtime (debug.setupvalue / setconstant)",
+		B = {"debug.setupvalue", "setupvalue(", "debug.setconstant", "setconstant(", "setstack("}},
+	{id = "clip_read", cat = "intel", w = 20, desc = "reads the clipboard", B = {"getclipboard", "readclipboard"}},
+	{id = "auth_ticket", cat = "cred", w = 80, desc = "handles Roblox authentication tickets", B = {"rbx-authentication-ticket", "authenticationticket"}},
+}
+-- Identifier-like tokens of the "code" rules: these can be aliased through "local x = token".
+local ATOK = {}
+for _, r in ipairs(EXTRA) do
+	if r.A and r.code then
+		for _, list in ipairs({r.A, r.B}) do
+			for _, t in ipairs(list) do
+				if t:find("^[%a_][%w_]*$") then ATOK[t] = true end
+			end
+		end
+	end
+end
+local function has(v, list)
+	for i = 1, #list do
+		if v:find(list[i], 1, true) then return true end
+	end
+	return false
+end
+local function link(s, al, asn, bl, bsn)
+	s.count += 1
+	local d = al > bl and al - bl or bl - al
+	if not s.best or d < s.best.d then
+		s.best = {d = d, al = al, asn = asn, bl = bl, bsn = bsn}
+	end
+end
+-- Removes comments (line and long-bracket) while respecting string literals. cst.close carries an open block comment across lines.
+local function cstrip(line, cst)
+	if not cst.close and not line:find("--", 1, true) then return line end
+	local n, pos, parts = #line, 1, {}
+	while pos <= n do
+		if cst.close then
+			local e = line:find(cst.close, pos, true)
+			if not e then return table.concat(parts) end
+			pos = e + #cst.close
+			cst.close = nil
+		else
+			local q = line:find("[\"']", pos)
+			local c = line:find("--", pos, true)
+			if c and (not q or c < q) then
+				parts[#parts + 1] = line:sub(pos, c - 1)
+				local eq = line:match("^%[(=*)%[", c + 2)
+				if not eq then return table.concat(parts) end
+				cst.close = "]" .. eq .. "]"
+				pos = c + 2 + #eq + 2
+			elseif q then
+				local qc = line:sub(q, q)
+				local k, closed = q + 1, false
+				while k <= n do
+					local m = line:find("[\\" .. qc .. "]", k)
+					if not m then break end
+					if line:sub(m, m) == "\\" then
+						k = m + 2
+					else
+						k = m + 1
+						closed = true
+						break
+					end
+				end
+				if not closed then
+					parts[#parts + 1] = line:sub(pos)
+					return table.concat(parts)
+				end
+				parts[#parts + 1] = line:sub(pos, k - 1)
+				pos = k
+			else
+				parts[#parts + 1] = line:sub(pos)
+				break
+			end
+		end
+	end
+	return table.concat(parts)
+end
+-- Decodes \x / \ddd escapes and joins "a".."b" literals.
+local function prep(c)
+	if c:find("\\", 1, true) then
+		c = c:gsub("\\x(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+		c = c:gsub("\\(%d%d?%d?)", function(d)
+			local v = tonumber(d)
+			if v and v < 256 then return string.char(v) end
+		end)
+	end
+	if c:find("..", 1, true) then
+		for _ = 1, 8 do
+			local n
+			c, n = c:gsub("([\"'])%s*%.%.%s*([\"'])", "")
+			if n == 0 then break end
+		end
+	end
+	return c
+end
+-- Code-only view: ["name"] becomes .name, string literals are removed, lowercase.
+local function codeOf(base)
+	local v = base:gsub("%[%s*[\"']([%w_]+)[\"']%s*%]", ".%1")
+	v = v:gsub("%[(=*)%[.-%]%1%]", "")
+	v = v:gsub("\"[^\"]*\"", "")
+	v = v:gsub("'[^']*'", "")
+	return v:lower()
+end
+
+-- Inspects source text before it runs. Verdicts: CLEAN / SUSPICIOUS / MALICIOUS / UNVERIFIED.
+local checkRaw
+-- identical sources are analysed once (verified SHA-256 identity); a large source on a thread that cannot yield is analysed in the background instead of freezing the game
+X.CheckCache, X.CheckOrder = {}, {}
+function X.Check(src, meta)
+	if type(src) == "string" and Util.Security and Util.Security.IsEmbedded and Util.Security.IsEmbedded(src) then
+		local m = type(meta) == "table" and meta or {}
+		return {verdict = "CLEAN", severity = "none", score = 0, reasons = {}, urls = {}, critical = false, name = m.name, origin = m.origin, note = "Verified embedded Nameless Admin source (byte-identical SHA-256 match): trusted, not inspected."}
+	end
+	if type(src) == "string" and #src > 4096 and #src <= X.MaxSource and X.CanHash() then
+		local key = X.SecHash(src)
+		local function put(r)
+			if key and type(r) == "table" and r.verdict ~= "UNVERIFIED" then
+				if not X.CheckCache[key] then
+					X.CheckOrder[#X.CheckOrder + 1] = key
+					if #X.CheckOrder > 64 then X.CheckCache[table.remove(X.CheckOrder, 1)] = nil end
+				end
+				X.CheckCache[key] = r
+			end
+		end
+		local hit = key and X.CheckCache[key]
+		if hit then return hit end
+		if not coroutine.isyieldable() and #src > 262144 then
+			task.spawn(function()
+				local ok, r = pcall(checkRaw, src, meta)
+				if ok then put(r) end
+			end)
+			return X.Unverified("script is larger than 256 KB and cannot be inspected without yielding: it is being scanned in the background and was not inspected yet")
+		end
+		local r = checkRaw(src, meta)
+		put(r)
+		return r
+	end
+	return checkRaw(src, meta)
+end
+function checkRaw(src, meta)
+	meta = meta or {}
+	if type(src) ~= "string" or src == "" then return X.Unverified("source not visible") end
+	if #src > X.MaxSource then return X.Unverified("script is larger than " .. X.MaxSource .. " bytes: not inspected") end
+	local sec = Util.Security
+	if not sec or type(sec.Analyze) ~= "function" then return X.Unverified("the static analysis engine is not available") end
+	local ok, erep = pcall(sec.Analyze, src, coroutine.isyieldable() and true or nil)
+	if not ok or type(erep) ~= "table" then return X.Unverified("static analysis failed or was interrupted: source inspection incomplete") end
+	local reasons, cats = {}, {}
+	local total, crit = erep.score or 0, erep.severity == "critical"
+	local want = {}
+	for _, r in ipairs(erep.reasons or {}) do
+		reasons[#reasons + 1] = {id = r.id, cat = r.cat, desc = r.desc, line = r.line, w = r.weight or 0, src = "engine"}
+		cats[r.cat or "?"] = true
+		if r.line then want[r.line] = true end
+	end
+	local urls, urlScore = {}, 0
+	for _, u in ipairs(X.ExtractURLs(src)) do
+		local a = X.AnalyzeURL(u.url)
+		local pw = 0
+		for _, r in ipairs(a.reasons) do
+			if not SKIPURL[r.id] then pw += r.w end
+		end
+		if pw >= 40 or a.crit then
+			urls[#urls + 1] = {url = u.url, host = a.host, line = u.line, verdict = a.verdict}
+			urlScore += math.min(100, pw)
+			cats.phish = true
+			if a.crit then crit = true end
+			local best
+			for _, r in ipairs(a.reasons) do
+				if not SKIPURL[r.id] and (not best or r.w > best.w) then best = r end
+			end
+			reasons[#reasons + 1] = {id = "url", cat = "phish", desc = "suspicious address " .. a.host .. ": " .. (best and best.desc or "flagged"), line = u.line, w = math.min(100, pw), src = "url"}
+			want[u.line] = true
+		end
+	end
+	local snips = {}
+	local st = {}
+	for i = 1, #EXTRA do st[i] = {count = 0} end
+	local cst = {close = nil}
+	local aliasOf, nAlias = {}, 0
+	local canYield = coroutine.isyieldable()
+	local function scan(ln, l)
+		local c = cstrip(l, cst)
+		if not c:find("%S") then return end
+		local base = prep(c)
+		local rawv = (base:lower():gsub("%s+", ""))
+		local codev = codeOf(base)
+		local ex = codev
+		if nAlias > 0 then
+			local pad, add = " " .. codev, nil
+			for name, tk in pairs(aliasOf) do
+				if pad:find("[^%w_%.:]" .. name .. "%f[^%w_]") then
+					add = add or {}
+					add[#add + 1] = tk
+				end
+			end
+			if add then ex = codev .. " " .. table.concat(add, " ") end
+		end
+		local snip
+		for i = 1, #EXTRA do
+			local r, s = EXTRA[i], st[i]
+			local v = r.code and ex or rawv
+			if r.A then
+				local ha, hb = has(v, r.A), has(v, r.B)
+				if ha or hb then snip = snip or (l:gsub("^%s+", "")):sub(1, 140) end
+				if ha then
+					s.aLine, s.aSnip = ln, snip
+					if not hb and s.bLine and ln - s.bLine <= WINDOW then link(s, ln, snip, s.bLine, s.bSnip) end
+				end
+				if hb then
+					s.bLine, s.bSnip = ln, snip
+					if s.aLine and ln - s.aLine <= WINDOW then link(s, s.aLine, s.aSnip, ln, snip) end
+				end
+			elseif has(v, r.B) then
+				snip = snip or (l:gsub("^%s+", "")):sub(1, 140)
+				s.count += 1
+				if not s.first then s.first = {line = ln, snip = snip} end
+			end
+		end
+		if nAlias < 24 then
+			local nm, rhs = codev:match("^%s*local%s+([%a_][%w_]*)%s*=%s*(.+)$")
+			if not nm then nm, rhs = codev:match("^%s*([%a_][%w_]*)%s*=%s*(.+)$") end
+			if nm and #nm >= 2 and not aliasOf[nm] and rhs:sub(1, 1) ~= "=" then
+				local r2 = rhs:gsub("get[gfr]env%s*%(%s*%d*%s*%)", "")
+				if not r2:find("[%w_]%s*%(") then
+					for tk in pairs(ATOK) do
+						local a, b = rhs:find(tk, 1, true)
+						if a and nm ~= tk and not rhs:find("^%s*%(", b + 1) then
+							aliasOf[nm] = tk
+							nAlias += 1
+							break
+						end
+					end
+				end
+			end
+		end
+	end
+	local ln = 0
+	for l in src:gmatch("([^\n]*)\n?") do
+		ln += 1
+		if want[ln] then snips[ln] = (l:gsub("^%s+", "")):sub(1, 140) end
+		if #l <= MAXLINE then
+			scan(ln, l)
+		else
+			for i = 1, #l, MAXLINE do scan(ln, l:sub(i, i + MAXLINE - 1)) end
+		end
+		if canYield and ln % 3000 == 0 then task.wait() end
+	end
+	local mine = 0
+	for i, r in ipairs(EXTRA) do
+		local s = st[i]
+		if r.A then
+			local b = s.best
+			if b then
+				local w = b.d <= NEAR and r.w or math.floor(r.w * 0.6 + 0.5)
+				local far = b.d > NEAR and (" (related code is " .. b.d .. " lines apart)") or ""
+				mine += w
+				cats[r.cat] = true
+				if b.al == b.bl then
+					reasons[#reasons + 1] = {id = r.id, cat = r.cat, desc = r.desc, line = b.al, w = w, snippet = b.asn, count = s.count, src = "extra"}
+				else
+					reasons[#reasons + 1] = {id = r.id, cat = r.cat, desc = r.desc .. " [" .. r.la .. "]" .. far, line = b.al, w = w, snippet = b.asn, count = s.count, src = "extra"}
+					reasons[#reasons + 1] = {id = r.id .. "_rel", cat = r.cat, desc = r.desc .. " [" .. r.lb .. "]" .. far, line = b.bl, w = w - 0.01, snippet = b.bsn, src = "extra"}
+				end
+			end
+		elseif s.first then
+			mine += r.w
+			cats[r.cat] = true
+			reasons[#reasons + 1] = {id = r.id, cat = r.cat, desc = r.desc, line = s.first.line, w = r.w, snippet = s.first.snip, count = s.count, src = "extra"}
+		end
+	end
+	for _, r in ipairs(reasons) do
+		if not r.snippet and r.line then r.snippet = snips[r.line] end
+	end
+	table.sort(reasons, function(a, b) return (a.w or 0) > (b.w or 0) end)
+	total = total + mine + urlScore
+	local ncat = 0
+	for _ in pairs(cats) do ncat += 1 end
+	local v = "CLEAN"
+	if crit or (total >= 100 and ncat >= 2) then
+		v = "MALICIOUS"
+	elseif total >= 60 then
+		v = "SUSPICIOUS"
+	end
+	if (RANK[erep.verdict] or 0) > RANK[v] then v = erep.verdict end
+	local sev = "none"
+	if crit then sev = "critical" elseif v == "MALICIOUS" then sev = "high" elseif v == "SUSPICIOUS" then sev = "medium" elseif #reasons > 0 then sev = "low" end
+	return {
+		verdict = v, severity = sev, score = math.floor(total + 0.5), reasons = reasons, urls = urls, critical = crit,
+		name = meta.name, origin = meta.origin,
+		note = v == "CLEAN" and "CLEAN means no known malicious pattern was found. It is not a guarantee of safety." or nil,
+	}
+end
+end)
+if not okC then warn("[UH Security] script checker failed: " .. tostring(errC)) end
+end
+
+-- Section: Security Protection - Part 4/5: execution firewall (pause, findings panel, two typed confirmations)
+
+do
+local okD, errD = pcall(function()
+local X = Util.ExtGuard
+local PHRASE1, PHRASE2 = "I UNDERSTAND THE SECURITY RISKS", "RUN ANYWAY"
+local function trim(s) return (tostring(s):gsub("^%s+", ""):gsub("%s+$", "")) end
+local function mk(class, props, parent)
+	local o = Instance.new(class)
+	for k, v in pairs(props) do o[k] = v end
+	o.Parent = parent
+	return o
+end
+local function guiParent()
+	local ok, p = pcall(function() return gethiddengui and gethiddengui() end)
+	if ok and p then return p end
+	return CoreGui
+end
+
+function X.Subject(s, rep)
+	local items = {}
+	for _, r in ipairs(rep.reasons) do items[#items + 1] = {desc = r.desc, line = r.line, snippet = r.snippet} end
+	for _, u in ipairs(rep.urls) do items[#items + 1] = {desc = "address " .. u.host .. " (" .. u.verdict .. ")", line = u.line, snippet = u.url:sub(1, 110)} end
+	if #items == 0 then items[1] = {desc = rep.note or "no further detail"} end
+	return {id = s.id, name = s.name, origin = s.origin, verdict = rep.verdict, severity = rep.severity, items = items, note = rep.note}
+end
+
+local function prompt(sub)
+	local dec
+	local WHITE = Color3.new(1, 1, 1)
+	local gui = mk("ScreenGui", {Name = "UhExtGuard", ResetOnSpawn = false, DisplayOrder = 2147483000, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling})
+	local dim = mk("TextButton", {Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.35, AutoButtonColor = false, Text = "", BorderSizePixel = 0}, gui)
+	local card = mk("Frame", {AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromScale(0.94, 0.92), BackgroundColor3 = Color3.fromRGB(22, 22, 28), BorderSizePixel = 0}, dim)
+	mk("UISizeConstraint", {MaxSize = Vector2.new(520, 720)}, card)
+	mk("UICorner", {CornerRadius = UDim.new(0, 8)}, card)
+	mk("UIStroke", {Color = sub.verdict == "MALICIOUS" and Color3.fromRGB(235, 70, 70) or Color3.fromRGB(240, 170, 50), Thickness = 2}, card)
+	local function lbl(text, pos, size, ts, parent)
+		return mk("TextLabel", {BackgroundTransparency = 1, Position = pos, Size = size, Text = text, RichText = true, TextWrapped = true, Font = Enum.Font.Code, TextSize = ts, TextColor3 = WHITE, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top}, parent or card)
+	end
+	lbl("<b>UH SECURITY - EXECUTION PAUSED</b>", UDim2.new(0, 10, 0, 8), UDim2.new(1, -20, 0, 22), 15)
+	lbl(string.format("Script: <b>%s</b>\nID: %s    Verdict: <b>%s</b>    Severity: %s\nOrigin: %s\nStatus: <b>PAUSED</b> - nothing runs until you decide", X.Esc(sub.name), sub.id, sub.verdict, sub.severity, X.Esc(sub.origin)), UDim2.new(0, 10, 0, 34), UDim2.new(1, -20, 0, 74), 13)
+	local scroll = mk("ScrollingFrame", {Position = UDim2.new(0, 10, 0, 112), Size = UDim2.new(1, -20, 1, -270), BackgroundColor3 = Color3.fromRGB(14, 14, 18), BorderSizePixel = 0, ScrollBarThickness = 6, AutomaticCanvasSize = Enum.AutomaticSize.Y, CanvasSize = UDim2.new()}, card)
+	local parts = {}
+	if sub.note then parts[#parts + 1] = "<b>" .. X.Esc(sub.note) .. "</b>\n" end
+	for i, it in ipairs(sub.items or {}) do
+		if i > 14 then
+			parts[#parts + 1] = "... +" .. (#sub.items - 14) .. " more findings"
+			break
+		end
+		parts[#parts + 1] = string.format('<b>%s</b>%s\n<font color="#9aa0aa">%s</font>', X.Esc(it.desc or ""), it.line and ("  (line " .. it.line .. ")") or "", it.snippet and ("  > " .. X.Esc(it.snippet)) or "")
+	end
+	local body = lbl(table.concat(parts, "\n\n"), UDim2.fromOffset(4, 2), UDim2.new(1, -8, 0, 0), 13, scroll)
+	body.AutomaticSize = Enum.AutomaticSize.Y
+	local stageLabel = lbl("", UDim2.new(0, 10, 1, -152), UDim2.new(1, -20, 0, 44), 13)
+	local box = mk("TextBox", {Position = UDim2.new(0, 10, 1, -104), Size = UDim2.new(1, -20, 0, 40), Text = "", PlaceholderText = "type the phrase here", ClearTextOnFocus = false, Font = Enum.Font.Code, TextSize = 14, TextColor3 = WHITE, PlaceholderColor3 = Color3.fromRGB(130, 130, 140), BackgroundColor3 = Color3.fromRGB(40, 40, 50), BorderSizePixel = 0}, card)
+	local block = mk("TextButton", {Position = UDim2.new(0, 10, 1, -56), Size = UDim2.new(0.48, -10, 0, 44), Text = "BLOCK", Font = Enum.Font.Code, TextSize = 16, TextColor3 = WHITE, BackgroundColor3 = Color3.fromRGB(60, 140, 80), BorderSizePixel = 0}, card)
+	local confirm = mk("TextButton", {Position = UDim2.new(0.52, 0, 1, -56), Size = UDim2.new(0.48, -10, 0, 44), Text = "CONFIRM", Font = Enum.Font.Code, TextSize = 16, TextColor3 = WHITE, BackgroundColor3 = Color3.fromRGB(170, 60, 60), BorderSizePixel = 0}, card)
+	local stage = 1
+	local function setStage()
+		stageLabel.Text = "Type exactly: <b>" .. (stage == 1 and PHRASE1 or PHRASE2) .. "</b>  then press CONFIRM (" .. stage .. "/2)"
+		box.Text = ""
+	end
+	setStage()
+	confirm.Activated:Connect(function()
+		local want = stage == 1 and PHRASE1 or PHRASE2
+		if trim(box.Text) ~= want then
+			stageLabel.Text = '<font color="#eb4646">Text does not match. Type exactly: <b>' .. want .. "</b></font>"
+			return
+		end
+		if stage == 1 then
+			X.Hist("confirm", sub.id .. ": confirmation 1/2 accepted", sub.id)
+			stage = 2
+			setStage()
+		else
+			dec = true
+		end
+	end)
+	block.Activated:Connect(function() dec = false end)
+	gui.Parent = guiParent()
+	local deadline = os.clock() + 120
+	while dec == nil and os.clock() < deadline and gui.Parent do task.wait(0.1) end
+	pcall(function() gui:Destroy() end)
+	X.Hist("confirm", sub.id .. (dec == true and ": confirmation 2/2 accepted, run authorized" or (dec == false and ": user chose BLOCK" or ": no response, blocked")), sub.id)
+	return dec == true
+end
+
+-- Returns true to allow, false to block. Fails closed whenever it cannot pause or the prompt cannot show.
+function X.Decide(sub)
+	if not coroutine.isyieldable() then return false, "cannot pause this call to ask you: blocked" end
+	local t0 = os.clock()
+	while X.PromptBusy and os.clock() < X.PromptBusy and os.clock() - t0 < 130 do task.wait(0.2) end
+	X.PromptBusy = os.clock() + 125
+	local ok, res = pcall(prompt, sub)
+	X.PromptBusy = nil
+	if not ok then return false, "authorization prompt failed: " .. tostring(res) end
+	if res then return true, "authorized by you (2 confirmations)" end
+	return false, "blocked by you (or no response)"
+end
+end)
+if not okD then warn("[UH Security] execution firewall failed: " .. tostring(errD)) end
+end
+
+-- Section: Security Protection - Part 5/5: interception hooks, runtime monitoring, capability report, install
+
+do
+local okE, errE = pcall(function()
+local X = Util.ExtGuard
+local ncc = (type(newcclosure) == "function") and newcclosure or function(f) return f end
+local seen, guard, fallbacks = {}, {}, {}
+local C = {}
+
+local function mkHook(core)
+	return function(call)
+		local W
+		W = function(...)
+			return core(X.Caller(W), call, ...)
+		end
+		return W
+	end
+end
+-- One reusable wrapper per original function (seen[f]); every table/key alias is guarded and tracked independently.
+-- Returns: ok (this exact slot is guarded), route ("hookfunction" | "table" | nil), why (reason when not guarded).
+local slotOf = setmetatable({}, {__mode = "k"})
+local function hookTarget(f, tbl, key, build)
+	if type(f) ~= "function" then return false, nil, "not a function" end
+	local slotted = type(tbl) == "table" and key ~= nil
+	if slotted then
+		local rec = slotOf[tbl] and slotOf[tbl][key]
+		if rec then return rec.ok, rec.route, rec.why end
+	end
+	local e = seen[f]
+	if not e then
+		local holder = {old = f}
+		e = {holder = holder, wrapper = ncc(build(function(...) return holder.old(...) end)), hooked = false, nslots = 0}
+		seen[f] = e
+		if type(hookfunction) ~= "function" then
+			e.hookWhy = "hookfunction is not available"
+		else
+			local okh, old = pcall(hookfunction, f, e.wrapper)
+			if okh and type(old) == "function" then
+				holder.old = old
+				e.hooked = true
+			else
+				e.hookWhy = okh and "hookfunction did not return the original function" or ("hookfunction refused: " .. tostring(old):sub(1, 60))
+				if okh and type(restorefunction) == "function" then pcall(restorefunction, f) end
+			end
+		end
+	end
+	local ok, route, why = false, nil, nil
+	if e.hooked then
+		if not slotted then
+			ok, route = true, "hookfunction"
+		else
+			local okr, cur = pcall(function() return tbl[key] end)
+			if okr and (cur == f or cur == e.wrapper) then ok, route = true, "hookfunction" end
+		end
+	end
+	if not ok then
+		if slotted then
+			local okw = pcall(function() tbl[key] = e.wrapper end)
+			local okr, cur = pcall(function() return tbl[key] end)
+			if okw and okr and cur == e.wrapper then
+				ok, route = true, "table"
+				e.nslots += 1
+				fallbacks[#fallbacks + 1] = {t = tbl, k = key, w = e.wrapper}
+			else
+				why = (e.hookWhy or "hookfunction did not cover this alias") .. "; table replacement failed"
+			end
+		else
+			why = (e.hookWhy or "hook not applied") .. "; no replaceable table slot for this function"
+		end
+	end
+	if ok then guard[f], guard[e.wrapper] = true, true end
+	if slotted then
+		slotOf[tbl] = slotOf[tbl] or {}
+		slotOf[tbl][key] = {ok = ok, route = route, why = why}
+	end
+	return ok, route, why
+end
+
+local CRED = {"_|warning:-do-not-share-this", "roblosecurity", "rbx-authentication-ticket"}
+local function credHit(v, depth)
+	if type(v) == "table" then
+		if (depth or 0) > 2 then return false end
+		for k, x in pairs(v) do
+			if credHit(k, (depth or 0) + 1) or credHit(x, (depth or 0) + 1) then return true end
+		end
+		return false
+	end
+	if type(v) ~= "string" then return false end
+	if #v > 1048576 then v = v:sub(1, 1048576) end
+	local l = v:lower()
+	for i = 1, #CRED do
+		if l:find(CRED[i], 1, true) then return true end
+	end
+	return false
+end
+local function lowp(p) return (tostring(p):gsub("\\", "/"):lower()) end
+
+-- Central network guard. Returns nil to allow, or a message to block with.
+function X.GuardNet(s, via, method, url, body, headers)
+	if type(url) ~= "string" then return nil end
+	local rt, ph = X.On("ExtRuntime"), X.On("ExtPhish")
+	if not rt and not ph then return nil end
+	local p = X.ParseURL(url)
+	local host = p and p.host or "?"
+	if rt and (credHit(body) or credHit(headers)) then
+		X.Incident(s, "credential exfiltration", via .. " to " .. host .. " carries Roblox login / authentication data", "critical", true, false, url)
+		return "Roblox login data may not leave this device"
+	end
+	local a = ph and X.AnalyzeURL(url) or nil
+	if not a or a.verdict == "CLEAN" then
+		if rt then
+			s.net = s.net or {}
+			if not s.net[host] then
+				s.net[host] = true
+				X.Hist("net", string.format("%s %s %s %s", s.id, via, method, url:sub(1, 90)), s.id)
+			end
+		end
+		return nil
+	end
+	local hook, phishy, best = false, false, nil
+	for _, r in ipairs(a.reasons) do
+		if r.id == "webhook" then hook = true end
+		if r.w > 0 and r.id ~= "webhook" and r.id ~= "sensitive" then phishy = true end
+		if not best or r.w > best.w then best = r end
+	end
+	local why = best and best.desc or "suspicious destination"
+	if hook and rt then
+		local lb = type(body) == "string" and body:lower() or ""
+		if lb:find("hwid", 1, true) or lb:find("clientid", 1, true) or lb:find("%d+%.%d+%.%d+%.%d+") then
+			X.Incident(s, "webhook exfiltration", "device or IP identifiers sent to a webhook (" .. host .. ")", "high", true, false, url)
+			return "device identifiers may not be sent to a webhook"
+		end
+	end
+	if a.verdict == "MALICIOUS" then
+		X.Incident(s, phishy and "phishing / dangerous link" or "dangerous destination", host .. ": " .. why, a.crit and "critical" or "high", a.crit, phishy, url)
+		return "destination " .. host .. " is blocked"
+	end
+	if s.allow[host] then return nil end
+	if not X.On("ExtFirewall") then
+		X.Hist("net", s.id .. " suspicious destination allowed (firewall off): " .. host, s.id)
+		return nil
+	end
+	local items = {}
+	for _, r in ipairs(a.reasons) do items[#items + 1] = {desc = r.desc} end
+	items[#items + 1] = {desc = "full address", snippet = url:sub(1, 160)}
+	X.Stats.SuspiciousDetected += 1
+	local okd, dwhy = X.Decide({id = s.id, name = s.name, origin = s.origin, verdict = "SUSPICIOUS", severity = "medium", items = items, note = "Network destination: " .. host})
+	if okd then
+		s.allow[host] = true
+		X.Hist("decision", s.id .. " allowed destination " .. host .. " (" .. tostring(dwhy) .. ")", s.id)
+		return nil
+	end
+	X.Incident(s, "suspicious destination", host .. ": " .. why, "medium", false, phishy, url)
+	return "destination " .. host .. " was not authorized"
+end
+
+function X.Compile(call, s, chunk, src, ...)
+	local cn = (type(chunk) == "string" and chunk ~= "") and chunk or ("=ExtScript#" .. s.id)
+	-- an external script can never run under a trusted (UH / embedded Nameless Admin) chunk identity, even when it asks for the same name
+	if X.IsUH(X.Norm(cn)) then cn = "=ExtScript#" .. s.id end
+	s.chunk = X.Norm(cn)
+	X.Map[s.chunk] = s
+	local f, e = call(src, cn, ...)
+	if f == nil and chunk == nil then f, e = call(src, chunk, ...) end
+	return f, e
+end
+
+-- Compile-time firewall: inspect, decide, then compile with a unique chunk name so later calls are attributed to this script.
+-- Approval identity is a verified SHA-256 (X.SecHash) only; without one nothing is cached and both phrases are required every time.
+-- Critical threats are checked first and can never be overridden. File execution (loadfile/dofile) with an UNVERIFIED verdict is blocked.
+function X.Approve(id)
+	if type(id) ~= "string" or X.Approved[id] then return end
+	local o = X.ApprovedOrder
+	if not o then
+		o = {}
+		X.ApprovedOrder = o
+	end
+	o[#o + 1] = id
+	X.Approved[id] = true
+	while #o > X.ApproveMax do
+		X.Approved[table.remove(o, 1)] = nil
+	end
+end
+
+function X.GateLoad(call, kind, parent, origin, src, chunk, ...)
+	-- the embedded Nameless Admin runtime: byte-identical to a source registered through Security.TrustEmbedded (verified SHA-256), so it keeps a trusted chunk identity even when its caller could not be identified; a modified or external copy never matches and is inspected as usual
+	local isEmb, embName
+	if type(src) == "string" and Util.Security and Util.Security.IsEmbedded then isEmb, embName = Util.Security.IsEmbedded(src) end
+	if isEmb then
+		local cn = chunk
+		if type(cn) ~= "string" or not cn:find("^[=@]") then
+			if embName then
+				cn = embName
+			else
+				X.NTrust += 1
+				cn = "=UhTrust#" .. X.NTrust
+			end
+		end
+		X.Trusted[X.Norm(cn)] = true
+		local f, e = call(src, cn, ...)
+		X.TrustCompiled(f, X.Norm(cn))
+		return f, e
+	end
+	local url = type(src) == "string" and X.Downloads[X.FP(src)] or nil
+	local nm = url and (url:match("^%a+://([^?#]*)") or url) or origin or ("dynamic chunk from " .. parent.name)
+	nm = tostring(nm):sub(1, 60)
+	local s = X.NewScript(nm, url and ("URL: " .. url) or origin or ("compiled in memory by " .. parent.name .. " (" .. parent.id .. ")"))
+	if not X.On("ExtChecker") then return X.Compile(call, s, chunk, src, ...) end
+	X.Stats.Scanned += 1
+	local rep
+	if type(src) == "string" then
+		local ok, r = pcall(X.Check, src, {name = nm, origin = s.origin})
+		rep = ok and r or X.Unverified("scan error: " .. tostring(r))
+	else
+		rep = X.Unverified("the chunk source is not a string, so it cannot be inspected")
+	end
+	s.verdict = rep.verdict
+	X.Hist("scan", string.format("%s %s -> %s (%s) via %s", s.id, nm, rep.verdict, rep.severity, kind), s.id)
+	if rep.verdict == "CLEAN" then return X.Compile(call, s, chunk, src, ...) end
+	if rep.verdict == "SUSPICIOUS" then X.Stats.SuspiciousDetected += 1 end
+	local strictFile = (kind == "loadfile" or kind == "dofile") and rep.verdict == "UNVERIFIED"
+	local allow, why, prompted = false, "", false
+	local id = (not rep.critical and not strictFile and type(src) == "string") and X.SecHash(src) or nil
+	if rep.critical then
+		why = "critical threat: cannot be overridden"
+	elseif strictFile then
+		why = "UNVERIFIED (" .. tostring(rep.note or "inspection incomplete") .. "): blocked by the strict fail-closed policy for file execution"
+	elseif id and X.Approved[id] then
+		allow, why = true, "authorized earlier this session (same verified SHA-256)"
+	elseif not X.On("ExtFirewall") then
+		if rep.verdict == "MALICIOUS" then why = "malicious verdict (firewall is off, so there is no override prompt)" else allow, why = true, "firewall off: allowed without a prompt" end
+	else
+		allow, why = X.Decide(X.Subject(s, rep))
+		prompted = true
+		if allow and not id then why = tostring(why) .. "; approval not cached (no verified SHA-256 on this executor)" end
+	end
+	X.AddFinding({kind = "script", id = s.id, name = nm, origin = s.origin, severity = rep.severity, verdict = rep.verdict, evidence = rep.reasons, urls = rep.urls, note = rep.note, decision = (allow and "ALLOWED: " or "BLOCKED: ") .. tostring(why)})
+	X.Hist(allow and "decision" or "blocked", s.id .. " " .. nm .. " " .. (allow and "allowed" or "blocked") .. ": " .. tostring(why), s.id)
+	if allow then
+		if prompted and id then X.Approve(id) end
+		return X.Compile(call, s, chunk, src, ...)
+	end
+	s.status = "blocked"
+	if rep.verdict == "MALICIOUS" then X.Stats.MaliciousBlocked += 1 end
+	X.Notify(string.format("[UH Security] %s blocked (%s): %s", nm, rep.verdict, tostring(why)))
+	return nil, "[UH Security] " .. s.id .. " blocked: " .. tostring(why)
+end
+
+C.load = function(kind)
+	return function(who, call, src, chunk, ...)
+		X.LastWho = who
+		if not X.Active then return call(src, chunk, ...) end
+		if X.IsUH(who) then
+			if type(src) == "string" then
+				local cn = chunk
+				if type(cn) ~= "string" or cn == "" then
+					X.NTrust += 1
+					cn = "=UhTrust#" .. X.NTrust
+				end
+				X.Trusted[X.Norm(cn)] = true
+				local f, e = call(src, cn, ...)
+				if f == nil and chunk == nil then return call(src, chunk, ...) end
+				return f, e
+			end
+			return call(src, chunk, ...)
+		end
+		local parent = X.Gate(who)
+		if not parent then return call(src, chunk, ...) end
+		return X.GateLoad(call, kind, parent, nil, src, chunk, ...)
+	end
+end
+-- Fail-closed: with the Script Checker on, an unreadable / unidentifiable file is UNVERIFIED, recorded and blocked (never passed to the original).
+-- UH's own calls (X.Gate == nil) and "checker intentionally off" keep the original pass-through behaviour.
+C.loadfile = function(kind)
+	return function(who, call, path, ...)
+		local s = X.Gate(who)
+		if not s then return call(path, ...) end
+		local compile = X.RawLoad
+		if not compile then
+			local genv = (type(getgenv) == "function" and getgenv()) or _G
+			if type(genv.loadstring) == "function" then compile = genv.loadstring end
+		end
+		local content, why
+		if type(path) ~= "string" then
+			why = "the file path is not a string, so the file cannot be identified"
+		elseif type(readfile) ~= "function" then
+			why = "this executor exposes no readfile, so the source cannot be read for inspection"
+		elseif not compile then
+			why = "no compile function is available to run the inspected source"
+		else
+			local ok, c = pcall(readfile, path)
+			if ok and type(c) == "string" then
+				content = c
+			else
+				why = "the file could not be read: " .. (ok and "readfile returned no text" or tostring(c):sub(1, 80))
+			end
+		end
+		if not content then
+			if not X.On("ExtChecker") then return call(path, ...) end
+			local nm = type(path) == "string" and path or ("<" .. type(path) .. ">")
+			nm = nm:sub(1, 60)
+			local fs = X.NewScript(nm, "file: " .. nm .. " (requested by " .. tostring(s.name) .. " " .. s.id .. ")")
+			if fs ~= X.Overflow then fs.verdict, fs.status = "UNVERIFIED", "blocked" end
+			local msg = "[UH Security] " .. fs.id .. " blocked (UNVERIFIED): " .. why
+			X.AddFinding({kind = "script", id = fs.id, name = nm, origin = fs.origin, severity = "medium", verdict = "UNVERIFIED", evidence = {{desc = why}}, urls = {}, note = "The source could not be inspected before execution.", decision = "BLOCKED: " .. why .. " (strict fail-closed policy; caller " .. s.id .. ")"})
+			X.Hist("blocked", fs.id .. " " .. nm .. " UNVERIFIED -> blocked: " .. why .. " (caller " .. s.id .. ")", fs.id)
+			X.Notify(string.format("[UH Security] %s blocked (UNVERIFIED): %s", nm, why:sub(1, 100)))
+			if kind == "dofile" then error(msg, 0) end
+			return nil, msg
+		end
+		local f, e = X.GateLoad(compile, kind, s, "file: " .. path, content, "=" .. path)
+		if kind == "dofile" then
+			if not f then error(e, 0) end
+			return f()
+		end
+		return f, e
+	end
+end
+C.request = function(who, call, opts, ...)
+	local s = X.Gate(who)
+	if not s or type(opts) ~= "table" then return call(opts, ...) end
+	local url = opts.Url or opts.URL or opts.url
+	local m = X.GuardNet(s, "request", tostring(opts.Method or "GET"):upper(), url, opts.Body, opts.Headers)
+	if m then error("[UH Security] " .. m, 0) end
+	local res = call(opts, ...)
+	if type(res) == "table" then X.Download(url, res.Body) end
+	return res
+end
+C.reqAsync = function(who, call, self, opts, ...)
+	local s = X.Gate(who)
+	if not s or type(opts) ~= "table" then return call(self, opts, ...) end
+	local url = opts.Url or opts.URL or opts.url
+	local m = X.GuardNet(s, "RequestAsync", tostring(opts.Method or "GET"):upper(), url, opts.Body, opts.Headers)
+	if m then error("[UH Security] " .. m, 0) end
+	local res = call(self, opts, ...)
+	if type(res) == "table" then X.Download(url, res.Body) end
+	return res
+end
+C.get = function(name)
+	return function(who, call, self, url, ...)
+		local s = X.Gate(who)
+		if not s then return call(self, url, ...) end
+		local m = X.GuardNet(s, name, "GET", url)
+		if m then error("[UH Security] " .. m, 0) end
+		local res = call(self, url, ...)
+		X.Download(url, res)
+		return res
+	end
+end
+C.post = function(name)
+	return function(who, call, self, url, data, ...)
+		local s = X.Gate(who)
+		if not s then return call(self, url, data, ...) end
+		local m = X.GuardNet(s, name, "POST", url, data)
+		if m then error("[UH Security] " .. m, 0) end
+		local res = call(self, url, data, ...)
+		X.Download(url, res)
+		return res
+	end
+end
+C.nav = function(who, call, self, url, ...)
+	local s = X.Gate(who)
+	if not s or type(url) ~= "string" or not X.On("ExtPhish") then return call(self, url, ...) end
+	local a = X.AnalyzeURL(url)
+	if a.verdict ~= "CLEAN" then
+		local best
+		for _, r in ipairs(a.reasons) do
+			if not best or r.w > best.w then best = r end
+		end
+		X.Incident(s, "browser navigation", a.host .. ": " .. (best and best.desc or "suspicious address"), a.crit and "critical" or "high", a.crit, true, url)
+		error("[UH Security] navigation to " .. a.host .. " blocked", 0)
+	end
+	X.Hist("net", s.id .. " opened browser: " .. url:sub(1, 90), s.id)
+	return call(self, url, ...)
+end
+C.setclip = function(who, call, text, ...)
+	local s = X.Gate(who)
+	if not s or not X.On("ExtRuntime") then return call(text, ...) end
+	if credHit(text) then
+		X.Incident(s, "clipboard", "Roblox login data copied to the clipboard", "critical", true)
+		error("[UH Security] login data may not be copied", 0)
+	end
+	if type(text) == "string" and X.On("ExtPhish") then
+		local u = text:match("[Hh][Tt][Tt][Pp][Ss]?://%S+")
+		if u then
+			local a = X.AnalyzeURL(u)
+			if a.verdict == "MALICIOUS" then
+				X.Incident(s, "clipboard hijack", a.host .. ": " .. ((a.reasons[1] or {}).desc or "dangerous link"), a.crit and "critical" or "high", a.crit, true, u)
+				error("[UH Security] dangerous link blocked from the clipboard", 0)
+			end
+		end
+	end
+	s.clipN = (s.clipN or 0) + 1
+	if s.clipN <= 3 then X.Hist("clipboard", s.id .. " wrote " .. (type(text) == "string" and #text or 0) .. " bytes to the clipboard", s.id) end
+	return call(text, ...)
+end
+C.getclip = function(who, call, ...)
+	local s = X.Gate(who)
+	if s and X.On("ExtRuntime") and not s.clipRead then
+		s.clipRead = true
+		X.Hist("clipboard", s.id .. " read the clipboard", s.id)
+	end
+	return call(...)
+end
+
+local function inspectDrop(s, path, data)
+	if not X.On("ExtChecker") or type(data) ~= "string" or #data < 40 or #data > X.MaxSource then return nil end
+	local ext = lowp(path):match("%.([%w_]+)$")
+	local allowed = (Util.Security and Util.Security.Config and Util.Security.Config.Extensions) or {lua = true, luau = true, txt = true}
+	if not ext or not allowed[ext] then return nil end
+	if ext == "txt" and not (data:find("loadstring", 1, true) or data:find("HttpGet", 1, true)) then return nil end
+	local ok, rep = pcall(X.Check, data, {name = path, origin = s.id})
+	if not ok then return nil end
+	X.Stats.Scanned += 1
+	if rep.verdict == "CLEAN" then return nil end
+	local blockIt = rep.verdict == "MALICIOUS" or rep.critical
+	X.AddFinding({kind = "payload", id = s.id, name = tostring(path), origin = s.origin, severity = rep.severity, verdict = rep.verdict, evidence = rep.reasons, urls = rep.urls, decision = blockIt and "BLOCKED (payload not written)" or "ALLOWED (flagged)"})
+	if blockIt then
+		X.Incident(s, "malicious payload", "refused to write " .. tostring(path):sub(1, 60) .. ": " .. ((rep.reasons[1] or {}).desc or rep.verdict), rep.severity, rep.critical, false)
+		return "writing a malicious payload is blocked"
+	end
+	X.Stats.SuspiciousDetected += 1
+	X.Hist("scan", s.id .. " wrote a suspicious payload: " .. tostring(path):sub(1, 60), s.id)
+	return nil
+end
+C.write = function(op)
+	return function(who, call, path, data, ...)
+		local s = X.Gate(who)
+		if not s or not X.On("ExtRuntime") then return call(path, data, ...) end
+		local p = lowp(path)
+		local m
+		if p:find("uhhhhhhreanim", 1, true) then
+			X.Incident(s, "file tampering", op .. " inside UH Admin's folder (" .. tostring(path):sub(1, 60) .. ")", "high", false)
+			m = "writing into UH Admin's folder is blocked"
+		elseif p:find("autoexec", 1, true) then
+			X.Incident(s, "auto-execute persistence", op .. " into an auto-execute folder (" .. tostring(path):sub(1, 60) .. ")", "high", false)
+			m = "writing into an auto-execute folder is blocked"
+		elseif credHit(data) then
+			X.Incident(s, "credential write", "Roblox login data written to " .. tostring(path):sub(1, 60), "critical", true)
+			m = "login data may not be written to disk"
+		else
+			m = inspectDrop(s, path, data)
+		end
+		if m then error("[UH Security] " .. m, 0) end
+		return call(path, data, ...)
+	end
+end
+C.del = function(op)
+	return function(who, call, path, ...)
+		local s = X.Gate(who)
+		if not s or not X.On("ExtRuntime") then return call(path, ...) end
+		local p = lowp(path)
+		local m
+		if p == "" or p == "." or p == "./" or p == "/" or p == "workspace" or p == "workspace/" then
+			X.Incident(s, "file deletion", op .. " would wipe the whole workspace folder", "high", false)
+			m = "wiping the workspace folder is blocked"
+		elseif p:find("uhhhhhhreanim", 1, true) or p:find("autoexec", 1, true) then
+			X.Incident(s, "file deletion", op .. " inside UH Admin / auto-execute folders (" .. tostring(path):sub(1, 60) .. ")", "high", false)
+			m = "deleting inside UH Admin / auto-execute folders is blocked"
+		else
+			local now = os.clock()
+			local d = s.del
+			if not d or now - d.t0 > 10 then
+				d = {t0 = now, n = 0}
+				s.del = d
+			end
+			d.n += 1
+			if d.n > 12 then
+				X.Incident(s, "mass deletion", "more than 12 files deleted in 10 seconds", "high", false)
+				m = "mass file deletion is blocked"
+			end
+		end
+		if m then error("[UH Security] " .. m, 0) end
+		return call(path, ...)
+	end
+end
+C.queue = function(who, call, code, ...)
+	local s = X.Gate(who)
+	if not s or not X.On("ExtRuntime") or type(code) ~= "string" then return call(code, ...) end
+	local ok, rep = pcall(X.Check, code, {name = "queued teleport script", origin = s.id})
+	if not ok then rep = X.Unverified("scan error") end
+	X.Hist("persistence", s.id .. " queued a script for the next teleport (" .. rep.verdict .. ")", s.id)
+	if rep.verdict == "MALICIOUS" or rep.critical then
+		X.AddFinding({kind = "persistence", id = s.id, name = s.name, origin = s.origin, severity = rep.severity, verdict = rep.verdict, evidence = rep.reasons, urls = rep.urls, decision = "BLOCKED"})
+		X.Incident(s, "persistence", "queued teleport script is " .. rep.verdict, rep.severity, rep.critical, false)
+		error("[UH Security] queued script blocked", 0)
+	elseif rep.verdict ~= "CLEAN" and X.On("ExtFirewall") then
+		X.Stats.SuspiciousDetected += 1
+		if not X.Decide(X.Subject(s, rep)) then
+			X.Incident(s, "persistence", "queued teleport script (" .. rep.verdict .. ") was not authorized", "medium", false)
+			error("[UH Security] queued script blocked", 0)
+		end
+	end
+	return call(code, ...)
+end
+C.hookguard = function(who, call, target, ...)
+	local s = X.Gate(who)
+	if s and X.On("ExtRuntime") and guard[target] then
+		X.Incident(s, "security bypass", "tried to hook or restore a function that UH Security guards", "high", false)
+		error("[UH Security] hooking guarded functions is blocked", 0)
+	end
+	return call(target, ...)
+end
+
+-- __namecall route (game:HttpGet(...) style calls). Only used when getnamecallmethod and setnamecallmethod exist.
+local NC = {
+	HttpGet = C.get("HttpGet"), HttpGetAsync = C.get("HttpGetAsync"), HttpPost = C.post("HttpPost"), HttpPostAsync = C.post("HttpPostAsync"),
+	RequestAsync = C.reqAsync, GetAsync = C.get("HttpService.GetAsync"), PostAsync = C.post("HttpService.PostAsync"), OpenBrowserWindow = C.nav,
+	__UhProbe = function(who) X.ProbeWho = who return true end,
+}
+local HSVC = {RequestAsync = true, GetAsync = true, PostAsync = true}
+local function installNamecall()
+	if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" or type(setnamecallmethod) ~= "function" then return false end
+	local old, inner
+	inner = function(self, ...)
+		local m = getnamecallmethod()
+		local core = NC[m]
+		if not core or not X.Active or not X.NCOK then return old(self, ...) end
+		if HSVC[m] then
+			local okc, cn = pcall(function() return self.ClassName end)
+			if not (okc and cn == "HttpService") then
+				setnamecallmethod(m)
+				return old(self, ...)
+			end
+		end
+		local who = X.Caller(inner)
+		if m == "__UhProbe" then return core(who) end
+		return core(who, function(...)
+			setnamecallmethod(m)
+			return old(...)
+		end, self, ...)
+	end
+	X.NCOK = true
+	local ok, prev = pcall(hookmetamethod, game, "__namecall", ncc(inner))
+	if not ok or type(prev) ~= "function" then
+		X.NCOK = false
+		return false
+	end
+	old = prev
+	X.ProbeWho = nil
+	pcall(function() return game:__UhProbe() end)
+	if not X.ProbeWho or not X.IsUH(X.ProbeWho) then
+		X.NCOK = false
+		return false, "caller identification through __namecall failed"
+	end
+	return true
+end
+
+function X.Install()
+	if X.Installed then return end
+	X.Installed = true
+	local L = X.CapLines
+	if not X.CanIdentify then
+		L[#L + 1] = "[DISABLED] this executor has no debug.info / debug.getinfo, so UH Security cannot tell UH's own calls from third-party calls. Interception is OFF to keep UH working."
+		return
+	end
+	local g = (type(getgenv) == "function" and getgenv()) or _G
+	local function T(x) return type(x) == "table" and x or nil end
+	local sy, ht, fl = T(g.syn), T(g.http), T(g.fluxus)
+	local TN = {[g] = ""}
+	if sy then TN[sy] = "syn." end
+	if ht then TN[ht] = "http." end
+	if fl then TN[fl] = "fluxus." end
+	local function group(label, list)
+		local have, okc = 0, 0
+		local gHave, gOk, tHave, tOk, viaH, viaT = 0, 0, 0, 0, 0, 0
+		local fns, nfn, bad = {}, 0, {}
+		for _, j in ipairs(list) do
+			local f, tbl, key = j[1], j[2], j[3]
+			if type(f) == "function" then
+				have += 1
+				if not fns[f] then
+					fns[f] = true
+					nfn += 1
+				end
+				local nested = tbl ~= g
+				if nested then tHave += 1 else gHave += 1 end
+				local ok, route, why = hookTarget(f, tbl, key, j[4])
+				if ok then
+					okc += 1
+					if nested then tOk += 1 else gOk += 1 end
+					if route == "hookfunction" then viaH += 1 else viaT += 1 end
+				else
+					bad[#bad + 1] = (TN[tbl] or "?.") .. tostring(key) .. " (" .. tostring(why or "not guarded") .. ")"
+				end
+			end
+		end
+		if have == 0 then
+			L[#L + 1] = "[N/A] " .. label .. ": not provided by this executor"
+			return
+		end
+		local fh, ft = 0, 0
+		for f in pairs(fns) do
+			local e = seen[f]
+			if e and e.hooked then
+				fh += 1
+			elseif e and e.nslots > 0 then
+				ft += 1
+			end
+		end
+		local tag = okc == have and "[OK]" or (okc > 0 and "[PARTIAL]" or "[NOT INTERCEPTABLE]")
+		L[#L + 1] = string.format("%s %s: aliases guarded %d/%d (global %d/%d, executor-table %d/%d; via hookfunction %d, table replacement %d) | underlying functions: %d, hooked %d, table-only %d, unguarded %d", tag, label, okc, have, gOk, gHave, tOk, tHave, viaH, viaT, nfn, fh, ft, nfn - fh - ft)
+		for _, b in ipairs(bad) do
+			L[#L + 1] = "[NOT INTERCEPTABLE] " .. label .. " alias " .. b
+		end
+	end
+	local function bLoad(kind)
+		local b = mkHook(C.load(kind))
+		return function(call)
+			if kind == "loadstring" then X.RawLoad = call end
+			return b(call)
+		end
+	end
+	group("loadstring / load (dynamic + nested compile, firewall)", {{g.loadstring, g, "loadstring", bLoad("loadstring")}, {g.load, g, "load", bLoad("load")}})
+	group("loadfile / dofile (file execution)", {{g.loadfile, g, "loadfile", mkHook(C.loadfile("loadfile"))}, {g.dofile, g, "dofile", mkHook(C.loadfile("dofile"))}})
+	local rq = mkHook(C.request)
+	group("HTTP requests (request / http_request)", {{g.request, g, "request", rq}, {g.http_request, g, "http_request", rq}, {sy and sy.request, sy, "request", rq}, {ht and ht.request, ht, "request", rq}, {fl and fl.request, fl, "request", rq}})
+	group("clipboard write", {{g.setclipboard, g, "setclipboard", mkHook(C.setclip)}, {g.toclipboard, g, "toclipboard", mkHook(C.setclip)}, {g.set_clipboard, g, "set_clipboard", mkHook(C.setclip)}})
+	group("clipboard read", {{g.getclipboard, g, "getclipboard", mkHook(C.getclip)}, {g.readclipboard, g, "readclipboard", mkHook(C.getclip)}})
+	group("file writes (writefile / appendfile)", {{g.writefile, g, "writefile", mkHook(C.write("writefile"))}, {g.appendfile, g, "appendfile", mkHook(C.write("appendfile"))}})
+	group("file deletes (delfile / delfolder)", {{g.delfile, g, "delfile", mkHook(C.del("delfile"))}, {g.delfolder, g, "delfolder", mkHook(C.del("delfolder"))}})
+	local qb = mkHook(C.queue)
+	group("teleport persistence (queue_on_teleport)", {{g.queue_on_teleport, g, "queue_on_teleport", qb}, {g.queueonteleport, g, "queueonteleport", qb}, {g.queueteleport, g, "queueteleport", qb}, {sy and sy.queue_on_teleport, sy, "queue_on_teleport", qb}, {fl and fl.queue_on_teleport, fl, "queue_on_teleport", qb}})
+
+	-- Calibration: a call made by UH itself must be recognised as UH. If not, interception is switched off so UH keeps working.
+	X.Active = true
+	local who
+	if type(g.loadstring) == "function" and guard[g.loadstring] then
+		X.LastWho = nil
+		pcall(g.loadstring, "return 1")
+		who = X.LastWho
+	else
+		local P
+		P = function() return X.Caller(P) end
+		local okp, w = pcall(ncc(P))
+		who = okp and w or nil
+	end
+	if not who or who == "[C]" then
+		X.Active = false
+		L[#L + 1] = "[DISABLED] UH Security could not identify the caller of a hooked function on this executor, so all interception is OFF to keep UH working."
+		return
+	end
+	X.Trusted[who] = true
+	do
+		local okh, how = X.CanHash()
+		if okh then
+			L[#L + 1] = "[OK] approval cache: verified SHA-256 via " .. tostring(how) .. " (bounded to " .. X.ApproveMax .. " entries)"
+		else
+			L[#L + 1] = "[LIMIT] approval cache DISABLED: no verified SHA-256 API on this executor, so both confirmation phrases are required again for every suspicious script"
+		end
+	end
+
+	local okn, nwhy = installNamecall()
+	if okn then
+		L[#L + 1] = "[OK] game:HttpGet / HttpPost / HttpService / OpenBrowserWindow colon-calls (__namecall hook)"
+	else
+		L[#L + 1] = "[NOT INTERCEPTABLE] colon-call form game:HttpGet(...): " .. (nwhy or "this executor lacks hookmetamethod / getnamecallmethod / setnamecallmethod")
+	end
+	-- Colon-call coverage = __namecall hook only. Dot-call coverage = direct hookfunction, or table replacement ONLY for plain Lua tables.
+	local MR = {}
+	local function method(obj, label, name, builder)
+		local r = {label = label, name = name, colon = okn == true and NC[name] ~= nil}
+		local okf, f = pcall(function() return obj[name] end)
+		if okf and type(f) == "function" then
+			r.present = true
+			local tbl = type(obj) == "table" and obj or nil
+			r.dot, r.route, r.why = hookTarget(f, tbl, tbl and name or nil, builder)
+		end
+		MR[#MR + 1] = r
+	end
+	method(game, "game", "HttpGet", mkHook(C.get("HttpGet")))
+	method(game, "game", "HttpGetAsync", mkHook(C.get("HttpGetAsync")))
+	method(game, "game", "HttpPost", mkHook(C.post("HttpPost")))
+	method(game, "game", "HttpPostAsync", mkHook(C.post("HttpPostAsync")))
+	method(HttpService, "HttpService", "RequestAsync", mkHook(C.reqAsync))
+	method(HttpService, "HttpService", "GetAsync", mkHook(C.get("HttpService.GetAsync")))
+	method(HttpService, "HttpService", "PostAsync", mkHook(C.post("HttpService.PostAsync")))
+	method(GuiService, "GuiService", "OpenBrowserWindow", mkHook(C.nav))
+	L[#L + 1] = "[INFO] method-hook capabilities: hookfunction=" .. tostring(type(hookfunction) == "function") .. ", newcclosure=" .. tostring(type(newcclosure) == "function") .. ", __namecall hook=" .. tostring(okn == true) .. ", table-slot fallback=plain Lua tables only (Roblox objects are never overwritten)"
+	local order, groups = {}, {}
+	for _, r in ipairs(MR) do
+		local sig = r.present and (tostring(r.colon) .. "|" .. tostring(r.dot) .. "|" .. tostring(r.route or r.why)) or "NA"
+		local gp = groups[sig]
+		if not gp then
+			gp = {r = r, names = {}}
+			groups[sig] = gp
+			order[#order + 1] = gp
+		end
+		gp.names[#gp.names + 1] = r.label .. ":" .. r.name
+	end
+	for _, gp in ipairs(order) do
+		local r = gp.r
+		local names = table.concat(gp.names, ", ")
+		if not r.present then
+			L[#L + 1] = "[N/A] " .. names .. ": method not exposed by this executor"
+		else
+			local cs = r.colon and "OK (__namecall)" or "[NOT INTERCEPTABLE] (no verified __namecall hook)"
+			local ds = r.dot and ("OK (" .. (r.route == "hookfunction" and "direct hookfunction" or "table replacement") .. ")") or ("[NOT INTERCEPTABLE] (" .. tostring(r.why) .. ")")
+			local tag = (r.colon and r.dot) and "[OK]" or ((r.colon or r.dot) and "[PARTIAL]" or "[NOT INTERCEPTABLE]")
+			L[#L + 1] = string.format("%s %s | colon-call obj:Method(): %s | dot-call obj.Method(obj, ...): %s", tag, names, cs, ds)
+		end
+	end
+	group("hook protection (hookfunction / restorefunction)", {{g.hookfunction, g, "hookfunction", mkHook(C.hookguard)}, {g.restorefunction, g, "restorefunction", mkHook(C.hookguard)}})
+	L[#L + 1] = "[LIMIT] editor / clipboard / script-hub scripts are compiled by the executor before UH sees them: UNVERIFIED, runtime monitoring only"
+
+	task.spawn(function()
+		while X.Active do
+			task.wait(2)
+			for _, fb in ipairs(fallbacks) do
+				local okr, cur = pcall(function() return fb.t[fb.k] end)
+				if okr and cur ~= fb.w then
+					pcall(function() fb.t[fb.k] = fb.w end)
+					X.Stats.RuntimeBlocked += 1
+					X.Hist("runtime", "guarded function '" .. tostring(fb.k) .. "' was replaced by another script: attempt to disable monitoring, guard restored")
+				end
+			end
+			if Util.ExtGuard ~= X then Util.ExtGuard = X end
+		end
+	end)
+	X.Hist("setting", "external script protection installed")
+end
+X.Install()
+end)
+if not okE then warn("[UH Security] external script hooks failed: " .. tostring(errE)) end
+end
+
 local UserModulesListor = {}
 Util.ModuleProgress = {Done = 0, Total = 7}
 Util.StaleBuiltins = {}
@@ -85727,6 +88167,206 @@ end)
 else
 UI.CreateText(MainPage, "Security module failed to load.", 12, Enum.TextXAlignment.Left)
 end
+-- Section: Security Dashboard (External Script Protection)
+
+do
+local X = Util.ExtGuard
+UI.CreateSeparator(MainPage)
+UI.CreateText(MainPage, "<b>EXTERNAL SCRIPT PROTECTION</b>", 15, Enum.TextXAlignment.Center)
+if not X then
+	UI.CreateText(MainPage, "External script protection failed to load.", 12, Enum.TextXAlignment.Left)
+else
+	UI.CreateText(MainPage, "Guards third-party scripts (editor, hubs, clipboard, ScriptBlox, GitHub, Pastebin). UH Admin's own scripts are not touched.", 11, Enum.TextXAlignment.Left)
+	-- Turning a protection OFF is never silent: a confirmation dialog is shown first and SaveData is only changed after the user confirms.
+	local confirmOpen = false
+	local function confirmOff(title, message, onKeep, onOff)
+		if confirmOpen then pcall(onKeep) return end
+		confirmOpen = true
+		local decided = false
+		local gui
+		local function decide(off)
+			if decided then return end
+			decided = true
+			confirmOpen = false
+			if gui then pcall(function() gui:Destroy() end) end
+			if off then pcall(onOff) else pcall(onKeep) end
+		end
+		local built = pcall(function()
+			local WHITE = Color3.new(1, 1, 1)
+			gui = Util.Instance("ScreenGui")
+			gui.ResetOnSpawn = false
+			gui.DisplayOrder = 2147483000
+			gui.IgnoreGuiInset = true
+			gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+			local dim = Util.Instance("TextButton", gui)
+			dim.Size = UDim2.fromScale(1, 1)
+			dim.BackgroundColor3 = Color3.new(0, 0, 0)
+			dim.BackgroundTransparency = 0.35
+			dim.AutoButtonColor = false
+			dim.Text = ""
+			dim.BorderSizePixel = 0
+			local card = Util.Instance("Frame", dim)
+			card.Active = true
+			card.AnchorPoint = Vector2.new(0.5, 0.5)
+			card.Position = UDim2.fromScale(0.5, 0.5)
+			card.Size = UDim2.new(0.94, 0, 0, 0)
+			card.AutomaticSize = Enum.AutomaticSize.Y
+			card.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+			card.BorderSizePixel = 0
+			local cons = Util.Instance("UISizeConstraint", card)
+			cons.MaxSize = Vector2.new(480, 100000)
+			Util.Instance("UICorner", card).CornerRadius = UDim.new(0, 8)
+			local stroke = Util.Instance("UIStroke", card)
+			stroke.Color = Color3.fromRGB(235, 70, 70)
+			stroke.Thickness = 2
+			local pad = Util.Instance("UIPadding", card)
+			pad.PaddingTop, pad.PaddingBottom = UDim.new(0, 12), UDim.new(0, 12)
+			pad.PaddingLeft, pad.PaddingRight = UDim.new(0, 12), UDim.new(0, 12)
+			local list = Util.Instance("UIListLayout", card)
+			list.Padding = UDim.new(0, 10)
+			list.SortOrder = Enum.SortOrder.LayoutOrder
+			local function label(text, size, order)
+				local l = Util.Instance("TextLabel", card)
+				l.LayoutOrder = order
+				l.BackgroundTransparency = 1
+				l.Size = UDim2.new(1, 0, 0, 0)
+				l.AutomaticSize = Enum.AutomaticSize.Y
+				l.RichText = true
+				l.TextWrapped = true
+				l.Font = Enum.Font.Code
+				l.TextSize = size
+				l.TextColor3 = WHITE
+				l.TextXAlignment = Enum.TextXAlignment.Left
+				l.TextYAlignment = Enum.TextYAlignment.Top
+				l.Text = text
+				return l
+			end
+			label("<b>" .. title .. "</b>", 17, 1)
+			label(message, 14, 2)
+			local function button(text, color, order)
+				local b = Util.Instance("TextButton", card)
+				b.LayoutOrder = order
+				b.Size = UDim2.new(1, 0, 0, 46)
+				b.BackgroundColor3 = color
+				b.BorderSizePixel = 0
+				b.Font = Enum.Font.Code
+				b.TextSize = 16
+				b.TextColor3 = WHITE
+				b.TextWrapped = true
+				b.Text = text
+				Util.Instance("UICorner", b).CornerRadius = UDim.new(0, 6)
+				return b
+			end
+			local keep = button("KEEP PROTECTION ON", Color3.fromRGB(60, 140, 80), 3)
+			local off = button("TURN OFF PROTECTION", Color3.fromRGB(170, 60, 60), 4)
+			keep.Activated:Connect(function() decide(false) end)
+			off.Activated:Connect(function() decide(true) end)
+			dim.Activated:Connect(function() decide(false) end)
+			local parented = false
+			if gethiddengui then
+				parented = pcall(function() gui.Parent = gethiddengui() end) and gui.Parent ~= nil
+			end
+			if not parented then gui.Parent = CoreGui end
+		end)
+		-- Fail safe: if the dialog cannot be shown, protection stays ON.
+		if not built or not gui or not gui.Parent then decide(false) end
+	end
+	local function sw(label, key, title, warn)
+		local lever = UI.CreateSwitch(MainPage, label, X.On(key))
+		if SaveData[key] == nil then SaveData[key] = true end
+		lever.Changed:Connect(function(value)
+			-- Same as the saved setting (e.g. the switch being restored after a cancel): nothing to do.
+			if value == X.On(key) then return end
+			if value then
+				SaveData[key] = true
+				X.Hist("setting", label .. " ON")
+				return
+			end
+			-- Switch was flipped OFF: SaveData is NOT changed until the user confirms.
+			confirmOff(title, warn, function()
+				lever.Value = true
+				X.Hist("setting", label .. " OFF cancelled, kept ON")
+			end, function()
+				SaveData[key] = false
+				lever.Value = false
+				X.Hist("setting", label .. " OFF (confirmed by user)")
+			end)
+		end)
+	end
+	sw("External Script Protection", "ExtProtect", "TURN OFF EXTERNAL SCRIPT PROTECTION?",
+		"Turning this off disables UH's external-script protection for third-party scripts. Scripts may run without the protection system's guarded scanning and runtime monitoring. Malicious scripts, phishing attempts, or unwanted file and network activity may go undetected.\n\nAre you sure you want to turn External Script Protection OFF?")
+	sw("Anti-Phishing", "ExtPhish", "TURN OFF ANTI-PHISHING?",
+		"Turning this off disables Anti-Phishing analysis of the web addresses found in third-party scripts. Phishing, credential-stealing or look-alike links may go undetected and will no longer be blocked.\n\nAre you sure you want to turn Anti-Phishing OFF?")
+	sw("Script Checker", "ExtChecker", "TURN OFF SCRIPT CHECKER?",
+		"Turning this off disables the Script Checker that scans third-party script source for malicious or suspicious patterns. Scripts may run without being checked first.\n\nAre you sure you want to turn Script Checker OFF?")
+	sw("Execution Firewall", "ExtFirewall", "TURN OFF EXECUTION FIREWALL?",
+		"Turning this off disables the Execution Firewall that pauses suspicious or malicious third-party scripts until you decide. Flagged scripts may run without asking you.\n\nAre you sure you want to turn Execution Firewall OFF?")
+	sw("Runtime Monitoring", "ExtRuntime", "TURN OFF RUNTIME MONITORING?",
+		"Turning this off disables Runtime Monitoring of what third-party scripts do while they run through guarded functions, such as file and network activity. Unwanted activity may go undetected and will not be blocked.\n\nAre you sure you want to turn Runtime Monitoring OFF?")
+	local stat = UI.CreateText(MainPage, "", 12, Enum.TextXAlignment.Left)
+	local fnd = UI.CreateText(MainPage, "", 11, Enum.TextXAlignment.Left)
+	local his = UI.CreateText(MainPage, "", 11, Enum.TextXAlignment.Left)
+	local cap = UI.CreateText(MainPage, "", 11, Enum.TextXAlignment.Left)
+	fnd.Parent.Visible, his.Parent.Visible, cap.Parent.Visible = false, false, false
+	local function refresh()
+		local st = X.Stats
+		local mon = 0
+		for _, s in ipairs(X.List) do
+			if s.status == "monitored" then mon += 1 end
+		end
+		stat.Text = string.format("<b>Statistics</b>  [%s]\nScripts intercepted: %d | scanned: %d\nMalicious blocked: %d | suspicious detected: %d\nPhishing links blocked: %d | runtime ops blocked: %d\nCurrently monitored scripts: %d", X.Active and "ACTIVE" or "INACTIVE - see capabilities", st.Intercepted, st.Scanned, st.MaliciousBlocked, st.SuspiciousDetected, st.PhishingBlocked, st.RuntimeBlocked, mon)
+		if fnd.Parent.Visible then
+			local out = {"<b>Security Findings</b> (latest " .. math.min(6, #X.Findings) .. ")"}
+			for i = 1, math.min(6, #X.Findings) do
+				local f = X.Findings[i]
+				out[#out + 1] = string.format("\n[%s] %s %s | %s\norigin: %s\ndecision: %s", string.upper(f.severity or "?"), f.id or "?", X.Esc(f.name or "?"), f.verdict or f.kind or "", X.Esc(f.origin or "?"), X.Esc(f.decision or "?"))
+				local ev = f.evidence or {}
+				for j = 1, math.min(3, #ev) do
+					local e = ev[j]
+					out[#out + 1] = "  - " .. X.Esc(e.desc or "") .. (e.line and (" (line " .. e.line .. ")") or "") .. (e.snippet and ("\n    > " .. X.Esc(string.sub(e.snippet, 1, 90))) or "")
+				end
+				local us = f.urls or {}
+				for j = 1, math.min(2, #us) do
+					out[#out + 1] = "  url: " .. X.Esc(string.sub(us[j].url or "", 1, 90))
+				end
+			end
+			fnd.Text = table.concat(out, "\n")
+		end
+		if his.Parent.Visible then
+			local out = {"<b>Security History</b> (latest " .. math.min(12, #X.History) .. ")"}
+			for i = 1, math.min(12, #X.History) do
+				local h = X.History[i]
+				out[#out + 1] = os.date("%H:%M:%S", h.t) .. " " .. h.kind .. ": " .. X.Esc(h.text)
+			end
+			his.Text = table.concat(out, "\n")
+		end
+		if cap.Parent.Visible then
+			local out = {"<b>Executor capabilities</b>"}
+			for _, l in ipairs(X.CapLines) do out[#out + 1] = X.Esc(l) end
+			out[#out + 1] = "\n<b>Limits</b>"
+			for _, l in ipairs(X.Limits) do out[#out + 1] = "- " .. X.Esc(l) end
+			cap.Text = table.concat(out, "\n")
+		end
+	end
+	local function toggle(text, label)
+		UI.CreateButton(MainPage, text, 15).Activated:Connect(function()
+			label.Parent.Visible = not label.Parent.Visible
+			refresh()
+		end)
+	end
+	toggle("Security Findings", fnd)
+	toggle("Security History", his)
+	toggle("Executor Capabilities & Limits", cap)
+	UI.CreateButton(MainPage, "Clear Findings & History", 15).Activated:Connect(function()
+		table.clear(X.Findings)
+		table.clear(X.History)
+		refresh()
+	end)
+	X.OnUpdate = refresh
+	refresh()
+end
+end
+
 UI.CreateText(MainPage, "\n\n\n<b>DANGER ZONE</b>", 15, Enum.TextXAlignment.Center)
 local clearcontenthash, clearcontenthashtext = UI.CreateButton(MainPage, "CLEAR ALL DOWNLOADED CONTENT", 15)
 local clearcontenthashclicks = 0
