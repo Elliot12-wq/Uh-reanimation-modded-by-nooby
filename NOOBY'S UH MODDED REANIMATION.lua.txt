@@ -67618,6 +67618,7 @@ Util.Fling.Names = {
 "Fling 2 (Carpet)",
 "Fling 3 (Hidden / Flight)",
 "Alt-fling (Nameless Admin alt)",
+"Instant Fling (Character Nuke)",
 }
 Util.Fling.Descriptions = {
 "default fling: spins into the target at crazy velocity and sends them flying",
@@ -67628,7 +67629,9 @@ Util.Fling.Descriptions = {
 "Fling 2: adapted from the carpet-animation target-following fling sequence",
 "Fling 3: adapted from the hidden-fling target sweep + flight sequence",
 "Alt-fling: your Nameless Admin alt does the flinging. Your own character never flings.",
+"instant fling: saves your position, snaps your root + limbs onto the target for 1-2 frames with extreme velocity, then snaps straight back",
 }
+Util.Fling.InstantDuration = 0.02
 Util.Fling.WeakDuration = 0.4
 Util.Fling.NaNWindow = 0.6
 Util.Fling.NaNEscalateDistance = 60
@@ -67730,6 +67733,8 @@ elseif ft.Mode == 6 then
 dur = math.max(defaultduration, Util.Fling.SourceFling2Duration, 2.5)
 elseif ft.Mode == 7 then
 dur = Util.Fling.SourceFling3Duration
+elseif ft.Mode == 9 then
+dur = Util.Fling.InstantDuration
 else
 dur = defaultduration
 end
@@ -67771,7 +67776,7 @@ end
 end
 end
 local flingcf, flinged
-if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7) then
+if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9) then
 if ft.Mode == 2 then
 local wv = part.AssemblyLinearVelocity
 if wv.Magnitude > 60 then wv = wv.Unit * 60 end
@@ -67886,6 +67891,22 @@ elseif mode == 7 then
 RootPart.CFrame = flingcf + jitter
 RootPart.Velocity = Vector3.new(9e7, 9e8, 9e7)
 RootPart.RotVelocity = Vector3.new(9e8, 9e8, 9e8)
+elseif mode == 9 then
+local parts = {}
+for _, p in RootPart.Parent:GetChildren() do
+if p:IsA("BasePart") then parts[p] = p.CFrame end
+end
+for p in parts do
+p.CFrame = flingcf
+p.AssemblyLinearVelocity = Vector3.new(9e8, 9e8, 9e8)
+p.AssemblyAngularVelocity = Vector3.new(9e8, 9e8, 9e8)
+end
+RunService.PostSimulation:Once(function()
+for p, cf in parts do
+p.CFrame = cf
+p.AssemblyLinearVelocity, p.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+end
+end)
 else
 local df = (math.floor(t * 120) % 2 == 0) and 1 or -1
 RootPart.CFrame = flingcf + jitter
