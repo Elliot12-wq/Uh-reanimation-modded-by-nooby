@@ -59038,6 +59038,7 @@ end
 end
 game:GetService("RunService").Heartbeat:Connect(function()
 local n, t0 = 0, os.clock()
+if qh > qt and t0 - lastAt < 0.1 then qh, qt = 1, 0 return end
 while qh <= qt and n < 120 do
 local d = queue[qh]
 queue[qh] = nil
