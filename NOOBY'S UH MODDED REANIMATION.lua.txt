@@ -85622,7 +85622,7 @@ local ReanimMethods = {
 {Reanimate.HybridJointReanimator, "Hybrid Limb Reanimation"},
 {Reanimate.SkeletalRetargetReanimator, "Skeletal Retargeting Reanimation"},
 {Reanimate.HairReanimator, "Hair Reanimation"},
-{Reanimate.HatHairReanimator, "Hair Reanimation"},
+{Reanimate.HatHairReanimator, "Hat Reanimation X Hair Reanimation"},
 {Reanimate.AccessoriesReanimator, "Accessories Reanimation"},
 }
 local ReanimMethodNames = {}
