@@ -69644,7 +69644,11 @@ local SERVO_TAU, SERVO_RAD, SERVO_DEG = math.pi * 2, math.rad, math.deg
 local SJ = {
 TQ = 20, -- max torque per unit of driven mass at Strength 1 (stud^2/s^2)
 RESP = 100, -- hinge servo responsiveness: high so the physical joint tracks the animated target without a smoothing lag
-DEV = 0.35, -- max radians the replicated angle may stray from the commanded target
+DEV = 0.06, -- max radians the replicated angle may stray from the commanded animation target: the animation target is authoritative, the physical servo only adds a small bounded residual
+DEAD = 0.012, -- physical residuals below this (radians) are ignored, so servo jitter, solver noise and settling never reach the animation
+GIM = SERVO_RAD(80), -- middle-stage angle (rad) from which the outer X / Z stages count as gimbal-coupled
+Seq = 0, -- physics-step counter: a joint is only driven by an animation snapshot stamped with the current step
+Snap = {}, SnapHj = {}, -- scratch tables for the one-pass animation snapshot
 MID = 88, -- middle-axis limit (deg), keeps the Euler decomposition away from gimbal lock
 CAP = 178, -- hinge angle safety range (deg), avoids the +/-180 wrap
 CARRIER = 4, -- carrier density, keeps carrier / limb mass ratios solver friendly
@@ -69794,9 +69798,18 @@ h.LimitsEnabled = on or i == 2
 end
 end
 end
+-- joint limits applied as one coordinated rotation instead of three independent axis clamps. When the middle (Y) stage is pushed against a limit next to gimbal lock, only the sum (y > 0) or difference (y < 0) of the outer X / Z stages still defines the rotation: that combined angle is kept and its redundant split is taken from the current target, so the two outer axes never flip against each other.
 local function ServoClamp(sv, x, y, z)
 local lo, hi = sv.Lo, sv.Hi
-return math.clamp(x, lo[1], hi[1]), math.clamp(y, lo[2], hi[2]), math.clamp(z, lo[3], hi[3])
+local cy = math.clamp(y, lo[2], hi[2])
+if cy ~= y and math.abs(cy) >= SJ.GIM then
+local T = sv.T
+local d
+if y > 0 then d = (x + z - T[1] - T[3]) * 0.5 else d = (x - z - T[1] + T[3]) * 0.5 end
+d -= math.pi * math.round(d / math.pi)
+x, z = T[1] + d, T[3] + (y > 0 and d or -d)
+end
+return math.clamp(x, lo[1], hi[1]), cy, math.clamp(z, lo[3], hi[3])
 end
 -- desired joint rotation (Motor6D transform) -> XYZ euler angles = one angle per hinge stage, unwrapped against the previous target; translation is kept separately
 local function ServoDesired(sv, mcf)
@@ -69814,6 +69827,8 @@ local function ServoRelease(map, restore)
 local sv = map.SV
 if not sv then return end
 map.SV = nil
+-- the animation snapshot never outlives the rig it drove: a rebuilt servo waits for a fresh one
+map.CFrame, map.PS = nil, nil
 if ServoByPart[sv.P1] == map then ServoByPart[sv.P1] = nil end
 for _,o in {sv.PX, sv.CR1, sv.CR2, sv.PA} do
 pcall(o.Destroy, o)
@@ -69845,9 +69860,10 @@ CR1 = ServoPart("ServoCarrierX", cs, true, SJ.CARRIER),
 CR2 = ServoPart("ServoCarrierY", cs, true, SJ.CARRIER),
 }
 ServoByPart[p1] = map
--- one central physics-step connection drives every servo target
+-- one central physics-step connection drives every servo target: the step counter advances first, SJ.Pose stamps every joint with it, and ServoDrive / ServoSample only trust poses carrying the current stamp
 if not ServoConn then
 ServoConn = RunService.PreSimulation:Connect(function(dt)
+SJ.Seq += 1
 local rp = SJ.Root
 if rp then pcall(SJ.Pose, Reanimate.Character, rp) end
 pcall(ServoDrive, dt)
@@ -69901,44 +69917,46 @@ if not (sv.PX.Parent and sv.CR1.Parent and sv.CR2.Parent and h1.Parent and H[2].
 local a0 = h1.Attachment0
 return a0 ~= nil and a0.Parent ~= nil and sv.Motor.C0 == sv.C0 and sv.Motor.C1 == sv.C1
 end
--- measured servo angles -> joint pose that gets replicated through the original Motor6D (angles may not stray far from the commanded target, non-finite readings fall back to it)
+-- physical residual (measured - commanded): deadbanded and limited so the physical hinges can never pull a joint away from the animation
+function SJ.Resid(r, dead, dev)
+if r > dead then return math.min(r - dead, dev) end
+if r < -dead then return math.max(r + dead, -dev) end
+return 0
+end
+-- joint pose that gets replicated through the original Motor6D. The commanded animation target (sv.T) is the authority; the measured hinge angles only add a small bounded residual, and only while the joint's snapshot is current. Non-finite readings and a stale snapshot fall back to the pure target.
 local function ServoSample()
-local dev = SJ.DEV
+local dead, dev, seq = SJ.DEAD, SJ.DEV, SJ.Seq
 for _,map in LimbMapping do
 local sv = map.SV
 if sv then
 sv.Act = nil
 if sv.Linked then
-local H = sv.H
+local T, H = sv.T, sv.H
+local a1, a2, a3 = T[1], T[2], T[3]
 local h1, h2, h3 = H[1], H[2], H[3]
-if h1.Parent and h2.Parent and h3.Parent then
-local T, S = sv.T, sv.S
-local a1, a2, a3 = SERVO_RAD(h1.CurrentAngle) * S[1], SERVO_RAD(h2.CurrentAngle) * S[2], SERVO_RAD(h3.CurrentAngle) * S[3]
-if a1 ~= a1 then a1 = T[1] end
-if a2 ~= a2 then a2 = T[2] end
-if a3 ~= a3 then a3 = T[3] end
-a1 = T[1] + math.clamp(a1 - T[1], -dev, dev)
-a2 = T[2] + math.clamp(a2 - T[2], -dev, dev)
-a3 = T[3] + math.clamp(a3 - T[3], -dev, dev)
+if map.PS == seq and h1.Parent and h2.Parent and h3.Parent then
+local S = sv.S
+a1 += SJ.Resid(SERVO_RAD(h1.CurrentAngle) * S[1] - a1, dead, dev)
+a2 += SJ.Resid(SERVO_RAD(h2.CurrentAngle) * S[2] - a2, dead, dev)
+a3 += SJ.Resid(SERVO_RAD(h3.CurrentAngle) * S[3] - a3, dead, dev)
+end
 local act = sv.C0 * (CFrame.new(sv.Pos) * (sv.Hj or CFrame.identity) * CFrame.Angles(a1, a2, a3)) * sv.C1i
 if RagdollFiniteCF(act) then sv.Act = act end
 end
 end
 end
 end
-end
--- animation -> servo snapshot: the pose the active moveset + dance just produced becomes every servo limb's authoritative target pose, sampled each physics step (never behind the dorep / ReplicateFPS10 throttle). A missing or non-finite pose holds the last good one so a limb is never left uncontrolled.
--- LimbPoseCFrame also returns identity for a joint whose parts cannot be found: only that case is an invalid pose, a real neutral pose is accepted
+-- animation -> servo snapshot: the pose the active moveset + dance just produced becomes every servo limb's authoritative target pose. The whole snapshot is built first and committed in one pass, stamped with the current physics step; if building it fails nothing is committed and every joint holds its last good target. LimbPoseCFrame also returns identity for a joint whose parts cannot be found: only that case is an invalid pose, a real neutral pose is accepted
 function SJ.PoseValid(map, RC, RootPart)
 if not RC then return false end
 local p0 = map.RPart0 == "ROOT" and RootPart or RC:FindFirstChild(map.RPart0)
 return p0 ~= nil and RC:FindFirstChild(map.RPart1) ~= nil
 end
 function SJ.Pose(RC, RootPart)
+if not (RC and RC.Parent and RootPart and RootPart.Parent) then return false end
 local pose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
 -- heading (yaw) of the animated character relative to the real RootPart: the root joint carries it kinematically so a turning character never runs the root hinges through gimbal / +-180 wrap
 local H, Fr
-if RC and RootPart and RootPart.Parent then
 local hrp = RC:FindFirstChild("HumanoidRootPart")
 if hrp then
 local rcf = RootPart.CFrame
@@ -69946,31 +69964,43 @@ local _, a0 = rcf:ToEulerAnglesYXZ()
 local _, a1 = hrp.CFrame:ToEulerAnglesYXZ()
 if a0 == a0 and a1 == a1 then H, Fr = CFrame.Angles(0, a1 - a0, 0), rcf.Rotation end
 end
-end
+local snap, hjs = SJ.Snap, SJ.SnapHj
+table.clear(snap)
+table.clear(hjs)
 for _,map in LimbMapping do
-local sv = map.SV
-if sv and map.Reference then
-local cf = pose(map, map.Reference, RC, RootPart)
-if RagdollFiniteCF(cf) and (cf ~= idcf or SJ.PoseValid(map, RC, RootPart)) then map.CFrame = cf end
+local sv, ref = map.SV, map.Reference
+if sv and ref then
+local cf = pose(map, ref, RC, RootPart)
+if RagdollFiniteCF(cf) and (cf ~= idcf or SJ.PoseValid(map, RC, RootPart)) then
+snap[map] = cf
 if map.RPart0 == "ROOT" then
 if H then
 local F = Fr * sv.C0.Rotation
-sv.Hj = F:Inverse() * H * F
+hjs[map] = F:Inverse() * H * F
 else
-sv.Hj = nil
+hjs[map] = false
 end
 end
 end
 end
 end
--- Coordinated rig update. Every joint's goal comes from the one animation snapshot SJ.Pose just produced. Each joint tracks its own goal directly (all three axes of a joint move together at one shared fraction, so the joint is never distorted) and is limited only by its own angular speed: a slow or extreme joint never time-dilates the rest of the rig, and there is no extra smoothing on top of the servo.
+local seq = SJ.Seq
+for map, cf in snap do
+map.CFrame, map.PS = cf, seq
+local hj = hjs[map]
+if hj ~= nil then map.SV.Hj = hj or nil end
+end
+return true
+end
+-- Coordinated rig update. Every joint's goal comes from the one animation snapshot SJ.Pose just committed (a joint without a current snapshot holds its last commanded target). Each joint tracks its own goal directly (all three axes of a joint move together at one shared fraction, so the joint is never distorted) and is limited only by its own angular speed. The measured physical angles are never read here, so they cannot become a target.
 ServoDrive = function(dt)
 local cfg = LimbReanimator.ServoCfg
 if dt > 0.1 then dt = 0.1 elseif dt < 0.002 then dt = 0.002 end
-local now = os.clock()
+local now, seq = os.clock(), SJ.Seq
 for _,map in LimbMapping do
 local sv = map.SV
 if sv then
+local fresh = map.PS == seq
 if not sv.Linked then
 local pp, psv
 if map.RPart0 == "ROOT" then
@@ -69980,7 +70010,8 @@ local pm = ServoByPart[sv.P0]
 psv = pm and pm.SV
 if psv and psv.Linked and psv.PX.Parent then pp = psv.PX end
 end
-local mcf = map.CFrame
+-- a servo is only ever built at the current animation pose, never at a cached one
+local mcf = fresh and map.CFrame
 if pp and mcf and RagdollFiniteCF(mcf) and now - (sv.Try or 0) > 0.25 then
 if not pcall(ServoLink, map, sv, pp, psv) then
 local m = sv.Motor
@@ -69997,9 +70028,9 @@ ServoRelease(map)
 pcall(ServoBuild, map, m)
 end
 else
-local mcf = map.CFrame
-if mcf and RagdollFiniteCF(mcf) then
 if sv.Ver ~= cfg.Ver then ServoApply(sv, cfg) end
+local mcf = fresh and map.CFrame
+if mcf and RagdollFiniteCF(mcf) then
 local H, T, W, S = sv.H, sv.T, sv.W, sv.S
 -- one-time check of the hinge angle direction against the pose the limb was placed in
 if sv.Cal == false then
@@ -70802,7 +70833,7 @@ end
 if Ragdoll then RagdollSample(RootPart) end
 if Servo then
 SJ.Root = RootPart
-ServoSample()
+pcall(ServoSample)
 end
 if Hybrid then
 HJ.Root = RootPart
