@@ -70060,6 +70060,557 @@ local stale = LimbReanimator.ServoCleanup
 if stale then pcall(stale) end
 LimbReanimator.ServoCleanup = ServoCleaner
 end
+local Hybrid = LimbReanimator.HybridMode and true or false
+-- Hybrid-Joint: every R6 joint becomes a physical chain built from its own constraint type. Native joints (RootJoint = waist, Neck, shoulders, hips) get BallSocketConstraints; R6 has no elbow / wrist / knee / ankle Motor6Ds, so each limb gets an internal three-segment proxy chain (upper / lower / end) joined by virtual elbow-wrist / knee-ankle joints. The chain is simulated in an isolated anchored rig; its weighted pose is written back through the ORIGINAL Motor6D (replicated path), never relying on client constraints replicating.
+local HJ = {
+ByPart = {}, Folder = nil, Base = nil, Conn = nil, Root = nil,
+Anchor = CFrame.new(math.random(-512, 512), math.random(3200, 3600), math.random(-512, 512)),
+TQ = 20, -- max torque per unit of driven mass at Strength 1
+HEAD = 1.5, -- speed headroom over the commanded rate so a joint never trails its target
+DEV = 0.35, -- max radians the replicated limb rotation may stray from the commanded target
+SEG = {0.45, 0.35, 0.2}, -- length fractions of the upper / lower / end proxy segments of a limb
+Spec = {
+neck = {"neck"},
+waist = {"waist"},
+shoulder = {"shoulder", "elbow", "wrist"},
+hip = {"hip", "knee", "ankle"},
+},
+-- Ball = {swing cone, twist} deg, Hinge = {lower, upper} flexion deg, Sign = flexion direction about the character's right axis
+Lim = {
+neck = {Ball = {80, 70}, Hinge = {-60, 60}, Sign = 1},
+shoulder = {Ball = {180, 120}, Hinge = {-175, 175}, Sign = 1},
+elbow = {Ball = {150, 60}, Hinge = {-10, 150}, Sign = 1},
+wrist = {Ball = {80, 80}, Hinge = {-70, 70}, Sign = 1},
+waist = {Ball = {85, 100}, Hinge = {-90, 70}, Sign = 1},
+hip = {Ball = {130, 80}, Hinge = {-120, 150}, Sign = 1},
+knee = {Ball = {150, 40}, Hinge = {-10, 150}, Sign = -1},
+ankle = {Ball = {60, 40}, Hinge = {-35, 35}, Sign = 1},
+},
+}
+function HJ.Set(o, k, v)
+o[k] = v
+end
+function HJ.Kind(map, v, p1)
+if map.RPart0 == "ROOT" then return "waist" end
+local nm = string.lower(v.Name .. " " .. p1.Name)
+if string.find(nm, "neck", 1, true) or string.find(nm, "head", 1, true) then return "neck" end
+if string.find(nm, "shoulder", 1, true) or string.find(nm, "arm", 1, true) then return "shoulder" end
+if string.find(nm, "hip", 1, true) or string.find(nm, "leg", 1, true) then return "hip" end
+return "waist"
+end
+function HJ.Part(name, size, density)
+local p = Instance.new("Part")
+p.Name = name
+p.Size = Vector3.new(math.max(size.X, 0.2), math.max(size.Y, 0.2), math.max(size.Z, 0.2))
+p.Transparency = 1
+p.Anchored = true
+p.CanCollide, p.CanTouch, p.CanQuery = false, false, false
+p.CustomPhysicalProperties = PhysicalProperties.new(math.clamp(density, 0.05, 100), 0, 0, 0, 0)
+p.CFrame = HJ.Anchor
+if not (HJ.Folder and HJ.Folder.Parent) then
+HJ.Folder = Instance.new("Folder")
+HJ.Folder.Name = "HJR" .. math.random(100000, 999999)
+HJ.Folder.Parent = workspace
+end
+p.Parent = HJ.Folder
+return p
+end
+function HJ.GetBase()
+if not (HJ.Base and HJ.Base.Parent) then
+HJ.Base = HJ.Part("HybridBase", Vector3.one, 1)
+end
+return HJ.Base
+end
+function HJ.Attach(hy, part, cf, name)
+local a = Instance.new("Attachment")
+a.Name = name
+a.CFrame = cf
+a.Parent = part
+hy.Objs[#hy.Objs + 1] = a
+return a
+end
+-- rotation whose X axis is the unit vector a (attachment primary axis for hinge / cylinder / ball twist)
+function HJ.Axis(a)
+local p = math.abs(a.Y) < 0.9 and Vector3.yAxis or Vector3.xAxis
+local z = a:Cross(p).Unit
+return CFrame.fromMatrix(Vector3.zero, a, z:Cross(a), z)
+end
+-- twist angle of rotation q about unit axis a (swing-twist: q = swing * twist)
+function HJ.Twist(q, a)
+local ax, an = q:ToAxisAngle()
+local th = 2 * math.atan2(ax:Dot(a) * math.sin(an / 2), math.cos(an / 2))
+if th ~= th then return 0 end
+if th > math.pi then th -= math.pi * 2 elseif th < -math.pi then th += math.pi * 2 end
+return th
+end
+-- measured hinge angle (rad) about the shared attachment X axis, read from the real part orientations
+function HJ.HingeAngle(j)
+local rel = (j.Par.CFrame * j.A0.CFrame):ToObjectSpace(j.Child.CFrame * j.A1.CFrame)
+local _, _, _, _, _, _, _, e, _, _, h = rel:GetComponents()
+return math.atan2(h, e)
+end
+-- mass of segments from joint index `from` outward, the extension carrier and every limb hanging off this one
+function HJ.Mass(hy, from)
+local m = 0
+for i = from, hy.N do m += hy.Seg[i].Mass end
+if hy.Ext then m += hy.Ext.Mass end
+for _,map in LimbMapping do
+local c = map.HY
+if c and c ~= hy and c.Linked and c.P0 == hy.P1 then m += HJ.Mass(c, 1) end
+end
+return m
+end
+-- limits / torque / speed / spring / extension configuration pushed to the physical joints
+function HJ.Apply(hy, cfg)
+hy.Ver = cfg.Ver
+local on = cfg.Limits
+local cap = on and cfg.LimitDeg or 180
+local tqk, sp = cfg.Torque * HJ.TQ, cfg.Speed
+for i = 1, hy.N do
+local j = hy.J[i]
+local lim = HJ.Lim[j.Section]
+local m = HJ.Mass(hy, i)
+if j.Type == 1 then
+local bs, ao = j.Con, j.AO
+local cone, twist = math.min(lim.Ball[1], cap), math.min(lim.Ball[2], cap)
+bs.LimitsEnabled = on
+bs.UpperAngle = cone
+bs.TwistLimitsEnabled = on
+bs.TwistLowerAngle = -twist
+bs.TwistUpperAngle = twist
+pcall(HJ.Set, bs, "MaxFrictionTorque", cfg.Friction * HJ.TQ * m)
+ao.Responsiveness = cfg.Stiffness
+ao.MaxTorque = tqk * m
+ao.MaxAngularVelocity = sp * HJ.HEAD
+else
+local h = j.Con
+local lo, hi = math.max(lim.Hinge[1], -cap), math.min(lim.Hinge[2], cap)
+if j.S < 0 then lo, hi = -hi, -lo end
+if lo > h.UpperAngle then
+h.UpperAngle = hi
+h.LowerAngle = lo
+else
+h.LowerAngle = lo
+h.UpperAngle = hi
+end
+h.LimitsEnabled = on
+h.ServoMaxTorque = tqk * m
+h.AngularSpeed = sp * HJ.HEAD
+pcall(HJ.Set, h, "AngularResponsiveness", cfg.Responsiveness)
+pcall(HJ.Set, h, "MaxFrictionTorque", cfg.Friction * HJ.TQ * m)
+end
+end
+local c = hy.Cyl
+if c then
+local me = hy.Ext.Mass
+c.LimitsEnabled = true
+c.LowerLimit = -cfg.ExtRange
+c.UpperLimit = cfg.ExtRange
+pcall(HJ.Set, c, "ActuatorType", Enum.ActuatorType.Servo)
+pcall(HJ.Set, c, "TargetPosition", 0)
+pcall(HJ.Set, c, "ServoMaxForce", tqk * me)
+pcall(HJ.Set, c, "LinearResponsiveness", cfg.Responsiveness)
+pcall(HJ.Set, c, "Speed", sp)
+pcall(HJ.Set, c, "AngularActuatorType", Enum.ActuatorType.Servo)
+pcall(HJ.Set, c, "TargetAngle", 0)
+pcall(HJ.Set, c, "ServoMaxTorque", tqk * me)
+pcall(HJ.Set, c, "AngularResponsiveness", cfg.Responsiveness)
+pcall(HJ.Set, c, "AngularSpeed", sp)
+end
+local s = hy.Spring
+if s then
+local ms = HJ.Mass(hy, 2)
+s.Stiffness = cfg.SpringStiff * ms
+s.Damping = cfg.SpringDamp * ms
+end
+end
+function HJ.Release(map, restore)
+local hy = map.HY
+if not hy then return end
+map.HY = nil
+if HJ.ByPart[hy.P1] == map then HJ.ByPart[hy.P1] = nil end
+for _,o in hy.Objs do pcall(o.Destroy, o) end
+if restore and hy.Motor then
+pcall(function() hy.Motor.Enabled = true end)
+pcall(Util.SetMotor6DTransform, hy.Motor, CFrame.identity)
+if hy.MV then pcall(function() hy.Motor.MaxVelocity = hy.MV end) end
+end
+end
+-- proxy segments only; the physical joints are created once the parent chain exists (HJ.Link)
+function HJ.Build(map, v)
+local p0, p1 = v.Part0, v.Part1
+if not (p0 and p1) then return end
+local old = map.HY
+if old and old.P1 == p1 and old.Seg[1].Parent then
+old.Motor, old.P0 = v, p0
+return
+end
+if old then HJ.Release(map) end
+local cfg = LimbReanimator.HybridCfg
+local kind = HJ.Kind(map, v, p1)
+local names = HJ.Spec[kind]
+local n, sz, dens = #names, p1.Size, cfg.Density
+local hy = {
+P0 = p0, P1 = p1, Motor = v, Kind = kind, Names = names, N = n,
+C0 = v.C0, C1 = v.C1, C0i = v.C0:Inverse(), C1i = v.C1:Inverse(),
+Q = CFrame.identity, PT = Vector3.zero, Pos = Vector3.zero, Ay = Vector3.yAxis, R1 = CFrame.identity,
+Ver = -1, TV = cfg.TV, Built = os.clock(), MV = v.MaxVelocity,
+Seg = {}, SO = {}, YC = {}, YB = {}, J = {}, Objs = {},
+}
+if n == 1 then
+hy.SO[1], hy.YC[1] = CFrame.identity, 0
+hy.Seg[1] = HJ.Part("HybridSeg1", sz, dens)
+else
+local y = sz.Y / 2
+for i = 1, n do
+local h = sz.Y * HJ.SEG[i]
+hy.YC[i] = y - h / 2
+hy.SO[i] = CFrame.new(0, hy.YC[i], 0)
+hy.YB[i + 1] = y - h
+hy.Seg[i] = HJ.Part("HybridSeg" .. i, Vector3.new(sz.X, h, sz.Z), dens)
+y -= h
+end
+if cfg.ExtOn then hy.Ext = HJ.Part("HybridExt", Vector3.new(0.4, 0.4, 0.4), math.max(dens, 1)) end
+end
+for _,s in hy.Seg do hy.Objs[#hy.Objs + 1] = s end
+if hy.Ext then hy.Objs[#hy.Objs + 1] = hy.Ext end
+map.HY = hy
+HJ.ByPart[p1] = map
+-- one central physics-step connection drives every hybrid joint
+if not HJ.Conn then
+HJ.Conn = RunService.PreSimulation:Connect(function(dt)
+local rp = HJ.Root
+if rp then pcall(HJ.Pose, Reanimate.Character, rp) end
+pcall(HJ.Drive, dt)
+end)
+end
+end
+-- joint 1 = parent -> upper segment (the original Motor6D pivot C0 / C1), joint 2 / 3 = virtual elbow-wrist / knee-ankle between the proxy segments. Every segment starts exactly at its commanded pose so the first physics step has nothing to correct.
+function HJ.Link(map, hy, pp, psv)
+local cfg = LimbReanimator.HybridCfg
+local c0, c1 = hy.C0, hy.C1
+local r0 = psv and psv.R1 or CFrame.identity
+hy.R1 = r0 * c0.Rotation * c1.Rotation:Inverse()
+local fw = r0 * c0.Rotation
+local ay = fw:VectorToObjectSpace(Vector3.yAxis)
+local ax = fw:VectorToObjectSpace(Vector3.xAxis)
+hy.Ay = ay
+local t = hy.C0i * map.CFrame * c1
+local q = t.Rotation
+if hy.Hj then q = hy.Hj:Inverse() * q end
+if not RagdollFiniteCF(q) then q = CFrame.identity end
+hy.Q, hy.PT, hy.Pos = q, t.Position, t.Position
+local n, segs, names = hy.N, hy.Seg, hy.Names
+local pa1 = (psv and psv.SO[1]:Inverse() or CFrame.identity) * c0
+local qplace, th0 = q, 0
+if cfg.Types[names[1]] == 2 then
+local a1 = ax * HJ.Lim[names[1]].Sign
+th0 = HJ.Twist(q, a1)
+qplace = CFrame.fromAxisAngle(a1, th0)
+end
+local limb = pp.CFrame * pa1 * qplace * hy.C1i
+for i = 1, n do segs[i].CFrame = limb * hy.SO[i] end
+for i = 1, n do
+local sec = names[i]
+local lim = HJ.Lim[sec]
+local jt = cfg.Types[sec]
+local par, pcf0, ccf0
+if i == 1 then
+par, pcf0, ccf0 = pp, pa1, hy.SO[1]:Inverse() * c1
+else
+par = segs[i - 1]
+pcf0 = CFrame.new(0, hy.YB[i] - hy.YC[i - 1], 0) * c1.Rotation
+ccf0 = CFrame.new(0, hy.YB[i] - hy.YC[i], 0) * c1.Rotation
+end
+local axis = ax * lim.Sign
+local H = jt == 1 and HJ.Axis(ay) or HJ.Axis(axis)
+local a0 = HJ.Attach(hy, par, pcf0 * H, "HybA0_" .. i)
+local a1 = HJ.Attach(hy, segs[i], ccf0 * H, "HybA1_" .. i)
+local j = {Section = sec, Type = jt, PA0 = pcf0, H = H, Axis = axis, Par = par, Child = segs[i], A0 = a0, A1 = a1, S = 1, Cal = false, W = 0, Rem = CFrame.identity}
+if jt == 1 then
+local bs = Instance.new("BallSocketConstraint")
+bs.Name = "HybBall" .. i
+bs.Attachment0, bs.Attachment1 = a0, a1
+bs.Parent = segs[i]
+-- BallSocketConstraint has no servo: a separate AlignOrientation drives the child's attachment toward the animation target
+local ao = Instance.new("AlignOrientation")
+ao.Name = "HybAO" .. i
+ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+ao.Attachment0 = a1
+ao.RigidityEnabled = false
+ao.CFrame = par.CFrame * pcf0 * (i == 1 and q or CFrame.identity) * H
+ao.Parent = segs[i]
+j.Con, j.AO = bs, ao
+hy.Objs[#hy.Objs + 1] = bs
+hy.Objs[#hy.Objs + 1] = ao
+else
+local h = Instance.new("HingeConstraint")
+h.Name = "HybHinge" .. i
+h.ActuatorType = Enum.ActuatorType.Servo
+h.Attachment0, h.Attachment1 = a0, a1
+h.Parent = segs[i]
+local d0 = i == 1 and math.deg(th0) or 0
+h.TargetAngle = d0
+j.W, j.Con = d0, h
+hy.Objs[#hy.Objs + 1] = h
+end
+hy.J[i] = j
+end
+-- mechanical extension: a carrier sliding along the limb axis at the tip (CylindricalConstraint)
+if hy.Ext then
+local last = segs[n]
+local ly = last.Size.Y
+local ecf = CFrame.new(0, -ly / 2, 0)
+local H = HJ.Axis(ay)
+hy.Ext.CFrame = last.CFrame * ecf
+hy.E0 = HJ.Attach(hy, last, ecf * c1.Rotation * H, "HybE0")
+hy.E1 = HJ.Attach(hy, hy.Ext, c1.Rotation * H, "HybE1")
+local c = Instance.new("CylindricalConstraint")
+c.Name = "HybCyl"
+c.Attachment0, c.Attachment1 = hy.E0, hy.E1
+c.Parent = hy.Ext
+hy.Cyl = c
+hy.Objs[#hy.Objs + 1] = c
+end
+-- secondary flexible joint: an elastic span across the virtual elbow / knee (never the only structural link)
+if cfg.SpringOn and n >= 2 then
+local off = segs[1].Size.X * 0.4
+local s0 = HJ.Attach(hy, segs[1], CFrame.new(off, 0, 0), "HybS0")
+local s1 = HJ.Attach(hy, segs[n], CFrame.new(off, 0, 0), "HybS1")
+local sp = Instance.new("SpringConstraint")
+sp.Name = "HybSpring"
+sp.Attachment0, sp.Attachment1 = s0, s1
+sp.FreeLength = hy.YC[1] - hy.YC[n]
+sp.LimitsEnabled = false
+sp.Visible = false
+sp.Parent = segs[n]
+hy.Spring = sp
+hy.Objs[#hy.Objs + 1] = sp
+end
+hy.Linked = true
+HJ.Apply(hy, cfg)
+for _,s in segs do s.Anchored = false end
+if hy.Ext then hy.Ext.Anchored = false end
+-- the driven mass of every ancestor changed: refresh their torque on the next step
+local a = psv
+while a do
+a.Ver = -1
+local pm = HJ.ByPart[a.P0]
+a = pm and pm.HY
+end
+end
+function HJ.Alive(hy)
+for i = 1, hy.N do
+local s, j = hy.Seg[i], hy.J[i]
+if not (s.Parent and j.Con.Parent and j.A0.Parent and j.A1.Parent and (not j.AO or j.AO.Parent)) then return false end
+local p = s.Position
+if p.X ~= p.X or p.Y ~= p.Y or p.Z ~= p.Z or (p - HJ.Anchor.Position).Magnitude > 200 then return false end
+end
+if hy.Ext and not (hy.Ext.Parent and hy.Cyl and hy.Cyl.Parent) then return false end
+if hy.Spring and not hy.Spring.Parent then return false end
+return hy.Motor.C0 == hy.C0 and hy.Motor.C1 == hy.C1
+end
+-- animation -> hybrid snapshot: the pose the active moveset + dance just produced becomes every chain's authoritative target pose, sampled each physics step (never behind the dorep / ReplicateFPS10 throttle). A missing or non-finite pose holds the last good one so a limb is never left uncontrolled.
+-- LimbPoseCFrame also returns identity for a joint whose parts cannot be found: only that case is an invalid pose, a real neutral pose is accepted
+function HJ.PoseValid(map, RC, RootPart)
+if not RC then return false end
+local p0 = map.RPart0 == "ROOT" and RootPart or RC:FindFirstChild(map.RPart0)
+return p0 ~= nil and RC:FindFirstChild(map.RPart1) ~= nil
+end
+function HJ.Pose(RC, RootPart)
+local pose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
+-- heading (yaw) of the animated character relative to the real RootPart: the waist carries it kinematically so a turning character never pushes the ball socket through its limits
+local H, Fr
+if RC and RootPart and RootPart.Parent then
+local hrp = RC:FindFirstChild("HumanoidRootPart")
+if hrp then
+local rcf = RootPart.CFrame
+local _, a0 = rcf:ToEulerAnglesYXZ()
+local _, a1 = hrp.CFrame:ToEulerAnglesYXZ()
+if a0 == a0 and a1 == a1 then H, Fr = CFrame.Angles(0, a1 - a0, 0), rcf.Rotation end
+end
+end
+for _,map in LimbMapping do
+local hy = map.HY
+if hy and map.Reference then
+local cf = pose(map, map.Reference, RC, RootPart)
+if RagdollFiniteCF(cf) and (cf ~= idcf or HJ.PoseValid(map, RC, RootPart)) then map.CFrame = cf end
+if map.RPart0 == "ROOT" then
+if H then
+local F = Fr * hy.C0.Rotation
+hy.Hj = F:Inverse() * H * F
+else
+hy.Hj = nil
+end
+end
+end
+end
+end
+-- physical chain -> one R6 limb pose: the joint rotations are composed down the chain and blended by segment length (so a virtual elbow / wrist / knee / ankle flex moves the single-piece limb by its share, never visibly bending the mesh); the extension slide adds a bounded offset along the limb axis. The result is what gets replicated through the original Motor6D.
+function HJ.Sample()
+local cfg = LimbReanimator.HybridCfg
+local dev = HJ.DEV
+local w2 = HJ.SEG[2] / (HJ.SEG[1] + HJ.SEG[2])
+local w3 = HJ.SEG[3]
+for _,map in LimbMapping do
+local hy = map.HY
+if hy then
+hy.Act = nil
+if hy.Linked then
+local ok, acc, rots = true, CFrame.identity, {}
+for i = 1, hy.N do
+local j = hy.J[i]
+if not (j.Par.Parent and j.Child.Parent) then ok = false break end
+local r
+if j.Type == 1 then
+local rel = (j.Par.CFrame * j.A0.CFrame):ToObjectSpace(j.Child.CFrame * j.A1.CFrame)
+r = j.H * rel.Rotation * j.H:Inverse()
+else
+r = j.Rem * CFrame.fromAxisAngle(j.Axis, HJ.HingeAngle(j))
+end
+if not RagdollFiniteCF(r) then ok = false break end
+acc = acc * r
+rots[i] = acc
+end
+if ok then
+local M = rots[1]
+if hy.N >= 3 then
+local s = cfg.Secondary
+M = M:Lerp(rots[2], math.clamp(w2 * s, 0, 1))
+M = M:Lerp(rots[3], math.clamp(w3 * s, 0, 1))
+end
+local ax, an = hy.Q:ToObjectSpace(M):ToAxisAngle()
+if an > dev then M = hy.Q * CFrame.fromAxisAngle(ax, dev) end
+local hj = hy.Hj or CFrame.identity
+local pos = hy.Pos
+local cyl = hy.Cyl
+if cyl and cyl.Parent and hy.E0.Parent and hy.E1.Parent then
+local sl = (hy.Seg[hy.N].CFrame * hy.E0.CFrame):PointToObjectSpace((hy.Ext.CFrame * hy.E1.CFrame).Position).X
+if sl == sl then
+sl = math.clamp(sl, -cfg.LinearLimit, cfg.LinearLimit)
+pos = pos + (hj * M):VectorToWorldSpace(hy.Ay) * sl
+end
+end
+local act = hy.C0 * (CFrame.new(pos) * hj * M) * hy.C1i
+if RagdollFiniteCF(act) then hy.Act = act end
+end
+end
+end
+end
+end
+-- one coordinated step for a linked chain: rate-limited commanded target (no snapping when the animation changes), then ball sockets get their world orientation target, hinges their servo angle
+function HJ.Step(hy, mcf, dt, cfg)
+local t = hy.C0i * mcf * hy.C1
+local rot = t.Rotation
+if hy.Hj then rot = hy.Hj:Inverse() * rot end
+if RagdollFiniteCF(rot) and RagdollFinite(t.Position) then
+local ax, an = hy.Q:ToObjectSpace(rot):ToAxisAngle()
+local mx = cfg.Speed * dt
+if an > mx then rot = hy.Q * CFrame.fromAxisAngle(ax, mx) end
+hy.Q = rot
+hy.PT = t.Position
+end
+hy.Pos = hy.PT
+for i = 1, hy.N do
+local j = hy.J[i]
+local qi = i == 1 and hy.Q or CFrame.identity
+if j.Type == 1 then
+local w = j.Par.CFrame * j.PA0 * qi * j.H
+if RagdollFiniteCF(w) then j.AO.CFrame = w end
+else
+local th, rem = 0, CFrame.identity
+if i == 1 then
+th = HJ.Twist(qi, j.Axis)
+rem = qi * CFrame.fromAxisAngle(j.Axis, -th)
+end
+j.Rem = rem
+-- one-time check of the hinge angle direction against the measured pose
+if not j.Cal and math.abs(th) > 0.07 then
+local c, m = j.Con.CurrentAngle, math.deg(HJ.HingeAngle(j))
+if c == c and m == m and math.abs(c) > 4 and math.abs(m) > 4 then
+j.Cal = true
+local sg = (c * m < 0) and -1 or 1
+if sg ~= j.S then
+j.S = sg
+j.W = math.huge
+hy.Ver = -1
+end
+end
+end
+local deg = math.deg(th) * j.S
+if math.abs(deg - j.W) > 0.004 then
+j.W = deg
+j.Con.TargetAngle = deg
+end
+end
+end
+end
+function HJ.Drive(dt)
+local cfg = LimbReanimator.HybridCfg
+if dt > 0.1 then dt = 0.1 elseif dt < 0.002 then dt = 0.002 end
+local now = os.clock()
+for _,map in LimbMapping do
+local hy = map.HY
+if hy then
+if hy.TV ~= cfg.TV then
+-- joint assignment / density / extension / spring layout changed: rebuild this chain
+local m = hy.Motor
+HJ.Release(map)
+pcall(HJ.Build, map, m)
+elseif not hy.Linked then
+local pp, psv
+if map.RPart0 == "ROOT" then
+pp = HJ.GetBase()
+else
+local pm = HJ.ByPart[hy.P0]
+psv = pm and pm.HY
+if psv and psv.Linked and psv.Seg[1].Parent then pp = psv.Seg[1] end
+end
+local mcf = map.CFrame
+if pp and mcf and RagdollFiniteCF(mcf) and now - (hy.Try or 0) > 0.25 then
+if not pcall(HJ.Link, map, hy, pp, psv) then
+local m = hy.Motor
+HJ.Release(map)
+pcall(HJ.Build, map, m)
+local nh = map.HY
+if nh then nh.Try = now end
+end
+end
+elseif not HJ.Alive(hy) then
+if now - hy.Built > 0.25 then
+local m = hy.Motor
+HJ.Release(map)
+pcall(HJ.Build, map, m)
+end
+else
+local mcf = map.CFrame
+if mcf and RagdollFiniteCF(mcf) then
+if hy.Ver ~= cfg.Ver then HJ.Apply(hy, cfg) end
+HJ.Step(hy, mcf, dt, cfg)
+end
+end
+end
+end
+end
+function HJ.CleanAll(restore)
+if HJ.Conn then
+HJ.Conn:Disconnect()
+HJ.Conn = nil
+end
+for _,map in LimbMapping do HJ.Release(map, restore) end
+if HJ.Folder then
+pcall(HJ.Folder.Destroy, HJ.Folder)
+HJ.Folder = nil
+end
+HJ.Base, HJ.Root = nil, nil
+table.clear(HJ.ByPart)
+end
+local HybridCleaner = function() HJ.CleanAll(true) end
+if Hybrid then
+local stale = LimbReanimator.HybridCleanup
+if stale then pcall(stale) end
+LimbReanimator.HybridCleanup = HybridCleaner
+end
 local CharOnDesc = function(v)
 if v:IsA("BasePart") then
 if not table.find(BaseParts, v) then
@@ -70080,6 +70631,7 @@ if map.Part0 == p0 and map.Part1 == p1 then
 map.Reference = v
 if Ragdoll then pcall(Ragdollize, map, v) end
 if Servo then pcall(ServoBuild, map, v) end
+if Hybrid then pcall(HJ.Build, map, v) end
 return
 end
 end
@@ -70159,6 +70711,7 @@ for _,map in LimbMapping do
 map.Reference = nil
 if map.RG then RagdollRelease(map) end
 if map.SV then ServoRelease(map) end
+if map.HY then HJ.Release(map) end
 map.RG, map.RT = nil, nil
 end
 character.DescendantAdded:Connect(CharOnDesc)
@@ -70251,6 +70804,10 @@ if Servo then
 SJ.Root = RootPart
 ServoSample()
 end
+if Hybrid then
+HJ.Root = RootPart
+HJ.Sample()
+end
 local LimbPose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
 for _,map in LimbMapping do
 local v = map.Reference
@@ -70286,6 +70843,18 @@ end
 local sv = map.SV
 sv.Out = sv.Act or mcf
 if sv.Out then pcall(Util.SetMotor6DOffset, v, sv.Out) end
+end
+elseif map.HY then
+if flingtarget then
+pcall(Util.SetMotor6DTransform, v, CFrame.identity)
+else
+local mcf = map.CFrame
+if not mcf then
+mcf = LimbPose(map, v, ReanimCharacter, RootPart)
+end
+local hy = map.HY
+hy.Out = hy.Act or mcf
+if hy.Out then pcall(Util.SetMotor6DOffset, v, hy.Out) end
 end
 elseif flingtarget then
 Util.SetMotor6DTransform(v, CFrame.identity)
@@ -70519,6 +71088,10 @@ if Servo then
 ServoCleanAll(true)
 if LimbReanimator.ServoCleanup == ServoCleaner then LimbReanimator.ServoCleanup = nil end
 end
+if Hybrid then
+HJ.CleanAll(true)
+if LimbReanimator.HybridCleanup == HybridCleaner then LimbReanimator.HybridCleanup = nil end
+end
 if Player.Character then
 local h = Player.Character:FindFirstChild("Humanoid")
 if h then
@@ -70622,6 +71195,121 @@ Reanimate.Stopping = false
 end
 end
 end
+do
+local RS = SaveData.Reanimator
+local SECT = {
+{"neck", "Neck", 1}, {"shoulder", "Shoulders", 1}, {"elbow", "Elbows", 2}, {"wrist", "Wrists", 1},
+{"waist", "Waist", 1}, {"hip", "Hips", 1}, {"knee", "Knees", 2}, {"ankle", "Ankles", 2},
+}
+local TYPENAMES = {"BallSocketConstraint", "HingeConstraint"}
+local function num(k, d, lo, hi)
+local v = math.clamp(tonumber(RS[k]) or d, lo, hi)
+RS[k] = v
+return v
+end
+RS.HybridLimitsOn = RS.HybridLimitsOn ~= false
+RS.HybridExtOn = RS.HybridExtOn ~= false
+RS.HybridSpringOn = RS.HybridSpringOn ~= false
+local HC = {
+Stiffness = num("HybridStiffness", 100, 10, 200),
+Torque = num("HybridTorque", 100, 1, 1000),
+Responsiveness = num("HybridResponsiveness", 100, 1, 200),
+Speed = num("HybridSpeed", 80, 1, 200),
+Limits = RS.HybridLimitsOn,
+LimitDeg = num("HybridLimitDeg", 180, 10, 180),
+ExtOn = RS.HybridExtOn,
+ExtRange = num("HybridExtRange", 30, 0, 200) / 100,
+LinearLimit = num("HybridLinearLimit", 25, 0, 200) / 100,
+SpringOn = RS.HybridSpringOn,
+SpringStiff = num("HybridSpringStiff", 150, 0, 2000),
+SpringDamp = num("HybridSpringDamp", 12, 0, 200),
+Density = num("HybridDensity", 50, 5, 500) / 100,
+Friction = num("HybridFriction", 10, 0, 200) / 100,
+Secondary = num("HybridSecondary", 100, 0, 200) / 100,
+Types = {},
+TV = 0,
+Ver = 0,
+}
+for _,s in SECT do
+local k = "HybridType_" .. s[1]
+local t = math.clamp(math.floor(tonumber(RS[k]) or s[3]), 1, 2)
+RS[k] = t
+HC.Types[s[1]] = t
+end
+LimbReanimator.HybridCfg = HC
+local HybridJointReanimator = setmetatable({Name = "Hybrid-Joint"}, {__index = LimbReanimator})
+Reanimate.HybridJointReanimator = HybridJointReanimator
+function HybridJointReanimator.Config(parent)
+UI.CreateText(parent, "Hybrid Limb Reanimation: every body section gets its own physical joint type. Native R6 joints (waist / RootJoint, neck, shoulders, hips) become BallSocketConstraints driven by an AlignOrientation (a ball socket has no servo of its own). R6 has no elbow, wrist, knee or ankle Motor6Ds, so each limb gets an internal 3-segment proxy chain (upper / lower / end) with virtual elbow-wrist and knee-ankle joints; the chain's blended pose is converted back into the original R6 Motor6D pose and replicated through the normal Limb Reanimator output path (the visible mesh is never bent).", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "-=+ Hybrid Joint Assignments +=-", 12, Enum.TextXAlignment.Center)
+for _,s in SECT do
+UI.CreateDropdown(parent, s[2] .. " Joint", TYPENAMES, HC.Types[s[1]]).Changed:Connect(function(val)
+val = math.clamp(math.floor(tonumber(val) or s[3]), 1, 2)
+HC.Types[s[1]] = val
+RS["HybridType_" .. s[1]] = val
+HC.TV += 1
+end)
+end
+UI.CreateSwitch(parent, "Mechanical Extensions (CylindricalConstraint at limb tips)", HC.ExtOn).Changed:Connect(function(val)
+HC.ExtOn = val and true or false
+RS.HybridExtOn = HC.ExtOn
+HC.TV += 1
+end)
+UI.CreateSwitch(parent, "Secondary Flexible Joints (SpringConstraint across elbow / knee)", HC.SpringOn).Changed:Connect(function(val)
+HC.SpringOn = val and true or false
+RS.HybridSpringOn = HC.SpringOn
+HC.TV += 1
+end)
+UI.CreateText(parent, "^^^ joint types, extensions and springs rebuild the physical chains live. Default: Neck / Shoulders / Wrists / Waist / Hips = BallSocket, Elbows / Knees / Ankles = Hinge, limb tips = Cylindrical, elbow-knee span = Spring.", 10, Enum.TextXAlignment.Center)
+UI.CreateSeparator(parent)
+UI.CreateText(parent, "-=+ Hybrid Physical Settings +=-", 12, Enum.TextXAlignment.Center)
+local function slider(label, key, lo, hi, field, scale, rebuild)
+UI.CreateSlider(parent, label, RS[key], lo, hi, 1).Changed:Connect(function(val)
+val = math.clamp(val, lo, hi)
+RS[key] = val
+HC[field] = scale and val / scale or val
+if rebuild then HC.TV += 1 else HC.Ver += 1 end
+end)
+end
+slider("Joint Stiffness (ball-socket orientation drive)", "HybridStiffness", 10, 200, "Stiffness")
+slider("Physical Strength (max torque = value x 20 x driven mass)", "HybridTorque", 1, 1000, "Torque")
+slider("Angular Responsiveness (hinge / extension servo)", "HybridResponsiveness", 1, 200, "Responsiveness")
+slider("Max Angular Speed (rad/s)", "HybridSpeed", 1, 200, "Speed")
+UI.CreateSwitch(parent, "Anatomical Angular Limits", HC.Limits).Changed:Connect(function(val)
+HC.Limits = val and true or false
+RS.HybridLimitsOn = HC.Limits
+HC.Ver += 1
+end)
+slider("Angular Limit Cap (+/- degrees)", "HybridLimitDeg", 10, 180, "LimitDeg")
+slider("Mechanical Extension Range (1/100 stud)", "HybridExtRange", 0, 200, "ExtRange", 100)
+slider("Linear Movement Limit (1/100 stud)", "HybridLinearLimit", 0, 200, "LinearLimit", 100)
+slider("Spring Stiffness (per unit mass)", "HybridSpringStiff", 0, 2000, "SpringStiff")
+slider("Spring Damping (per unit mass)", "HybridSpringDamp", 0, 200, "SpringDamp")
+slider("Physical Density (1/100)", "HybridDensity", 5, 500, "Density", 100, true)
+slider("Joint Friction (1/100)", "HybridFriction", 0, 200, "Friction", 100)
+slider("Secondary Flexible Movement Strength (%)", "HybridSecondary", 0, 200, "Secondary", 100)
+UI.CreateText(parent, "^^^ everything except joint types / density applies live. Limits, strength and speed are clamped so the assembly stays stable, and the replicated limb pose never strays far from the animation target.", 10, Enum.TextXAlignment.Center)
+UI.CreateSeparator(parent)
+UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, Enum.TextXAlignment.Center)
+LimbReanimator.Config(parent)
+end
+function HybridJointReanimator.Start()
+LimbReanimator.HybridMode = true
+local ok, err = pcall(LimbReanimator.Start)
+LimbReanimator.HybridMode = nil
+if not ok then
+warn("[Hybrid-Joint Reanimator] failed to start: " .. tostring(err))
+pcall(Util.Notify, "Hybrid Limb Reanimation failed to start (see console): " .. tostring(err))
+local cl = LimbReanimator.HybridCleanup
+LimbReanimator.HybridCleanup = nil
+if cl then pcall(cl) end
+pcall(Reanimate.DestroyCharacter)
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+Reanimate.Stopping = false
+end
+end
+end
 local HatReanimator = {}
 HatReanimator.Name = "Hats"
 SaveData.Reanimator.HatsCollide = not not SaveData.Reanimator.HatsCollide
@@ -70651,7 +71339,6 @@ HatReanimator.ToolHolding = not SaveData.Reanimator.NoToolHolding
 HatReanimator.ToolAnimMethod = SaveData.Reanimator.HatsToolAnim
 HatReanimator.UseNaNFling = true
 HatReanimator.HasPermadeath = false
-HatReanimator.PermadeathMethod = "dolteddown"
 HatReanimator.AutoForceRespawn = SaveData.Reanimator.HatsAutoForceRespawn
 HatReanimator.StuckTimeout = SaveData.Reanimator.HatsStuckTimeout
 HatReanimator.HasHatCollide = false
@@ -70751,8 +71438,8 @@ return true
 end
 HatReanimator.DontFireCharAddOnThisChar = nil
 function HatReanimator.Config(parent)
-UI.CreateText(parent, "Permadeath uses dolteddown's method (the old default method was removed).\nNeeds replicatesignal support from your executor.", 10, Enum.TextXAlignment.Center)
-UI.CreateSwitch(parent, "Permadeath (dolteddown's pd)", HatReanimator.Permadeath).Changed:Connect(function(val)
+UI.CreateText(parent, "Permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.", 10, Enum.TextXAlignment.Center)
+UI.CreateSwitch(parent, "Permadeath", HatReanimator.Permadeath).Changed:Connect(function(val)
 HatReanimator.Permadeath = val
 SaveData.Reanimator.HatsPatchmahub = not val
 end)
@@ -70766,7 +71453,7 @@ val = math.clamp(val, 5, 60)
 HatReanimator.StuckTimeout = val
 SaveData.Reanimator.HatsStuckTimeout = val
 end)
-UI.CreateText(parent, "^^^ if the reanimate never finishes with dolteddown's pd, your character is force respawned after this long", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "^^^ if the reanimate never finishes with permadeath, your character is force respawned after this long", 10, Enum.TextXAlignment.Center)
 UI.CreateDropdown(parent, "respawntp", {
 "The Void",
 "Behind ReanimCharacter",
@@ -70871,13 +71558,13 @@ HatReanimator.RebuildRequired = true
 end)
 UI.CreateText(parent, "^^^ if ur rig built wrong or u switched to a new rig ^^^\nthis button is for you", 10, Enum.TextXAlignment.Center)
 UI.CreateButton(parent, "Force Respawn Now", 20).Activated:Connect(function()
-HatReanimator.ForceRespawn("Manual force respawn.")
+HatReanimator.ForceRespawn("Manual force respawn.", true)
 end)
 UI.CreateSeparator(parent)
 pcall(Reanimate.ToolExtras.BuildConfig, parent, "Hat")
 end
 HatReanimator.LastForceRespawn = 0
-function HatReanimator.ForceRespawn(reason)
+function HatReanimator.ForceRespawn(reason, force)
 local char = Player.Character
 local hum = char and char:FindFirstChildOfClass("Humanoid")
 HatReanimator.LastForceRespawn = os.clock()
@@ -72177,7 +72864,7 @@ local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild
 if torso and torso.Parent then
 task.spawn(function()
 for _=1, 10 do
-if not torso.Parent or not hum.Parent then break end
+if not torso.Parent or not hum.Parent or Player.Character ~= character then break end
 pcall(replicatesignal, hum.ServerBreakJoints)
 task.wait(0.2)
 end
@@ -72998,7 +73685,7 @@ ToolReanimator.StuckTimeout = SaveData.Reanimator.ToolsStuckTimeout
 SaveData.Reanimator.ToolsMethod = SaveData.Reanimator.ToolsMethod == 3 and 3 or 1
 ToolReanimator.Method = SaveData.Reanimator.ToolsMethod
 local ToolMethodInfo = {
-[1] = "Original: equips the tools, breaks the real character's joints server-side and uses the freed handles. Optional dolteddown's permadeath.",
+[1] = "Original: equips the tools, breaks the real character's joints server-side and uses the freed handles. Optional permadeath (dolteddown's pd).",
 [3] = "Corpse Claim: every tool is armed at once, then the character dies on the client, the server-side joint break is requested through the executor's replicatesignal when available (same as Original), and the tools are dropped out of the corpse (no RemoteEvents / RemoteFunctions). Claimed handles are driven like hats (same alignment routine, HatCFrameOverride by tool name, per-handle PhysicsRepRootRef). Client-side local claim only, never server-authoritative: a tool counts as claimed once it is detached AND the engine reports you as its simulator (ReceiveAge 0); other players see it only while the engine keeps you as network owner. Anything unconfirmed stays pending, with bounded retries. The respawned character is parked alive and touch-disabled.",
 }
 ToolReanimator.HasPermadeath = false
@@ -73018,11 +73705,15 @@ task.defer(function() pcall(Util.RefreshReanimatorConfig) end)
 end)
 UI.CreateText(parent, ToolMethodInfo[ToolReanimator.Method] .. (Reanimate.Current == ToolReanimator and "\n(applies on the next Reanimate)" or ""), 10, Enum.TextXAlignment.Center)
 if ToolReanimator.Method == 1 then
-UI.CreateSwitch(parent, "Permadeath (dolteddown's pd)", ToolReanimator.Permadeath).Changed:Connect(function(val)
+UI.CreateSwitch(parent, "Permadeath", ToolReanimator.Permadeath).Changed:Connect(function(val)
 ToolReanimator.Permadeath = val
 SaveData.Reanimator.ToolsPermadeath = val
 end)
-UI.CreateText(parent, "^^^ keeps your real character alive so the tools stay yours. Off = tools are lost when the game respawns you", 10, Enum.TextXAlignment.Center)
+end
+if ToolReanimator.Method == 1 then
+UI.CreateText(parent, "Permadeath keeps your real character alive so the tools stay yours. Off = tools are lost when the game respawns you.", 10, Enum.TextXAlignment.Center)
+else
+UI.CreateText(parent, "Corpse Claim always keeps the body alive on the server when replicatesignal exists.", 10, Enum.TextXAlignment.Center)
 end
 UI.CreateSwitch(parent, "Auto Force Respawn when stuck", ToolReanimator.AutoForceRespawn).Changed:Connect(function(val)
 ToolReanimator.AutoForceRespawn = val
@@ -73033,7 +73724,7 @@ val = math.clamp(val, 5, 60)
 ToolReanimator.StuckTimeout = val
 SaveData.Reanimator.ToolsStuckTimeout = val
 end)
-UI.CreateText(parent, "^^^ if the reanimate never finishes with dolteddown's pd, your character is force respawned after this long", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "^^^ if the reanimate never finishes with permadeath, your character is force respawned after this long", 10, Enum.TextXAlignment.Center)
 UI.CreateDropdown(parent, "respawntp", {
 "The Void",
 "Behind ReanimCharacter",
@@ -73072,7 +73763,7 @@ str = str:sub(1, -2)
 if StatusText.Text ~= str then StatusText.Text = str end
 end))
 UI.CreateButton(parent, "Force Respawn Now", 20).Activated:Connect(function()
-ToolReanimator.ForceRespawn("Manual force respawn.")
+ToolReanimator.ForceRespawn("Manual force respawn.", true)
 end)
 end
 function ToolReanimator.Fling(target, duration)
@@ -73120,9 +73811,9 @@ local p = ToolReanimator.FlingPick
 ToolReanimator.FlingPick = nil
 if p then pcall(sethiddenproperty, p.Handle, "PhysicsRepRootRef", nil) end
 end
-function ToolReanimator.ForceRespawn(reason)
+function ToolReanimator.ForceRespawn(reason, force)
 ToolReanimator.Status.Permadeath = reason or "Force respawn!"
-return HatReanimator.ForceRespawn(reason)
+return HatReanimator.ForceRespawn(reason, force)
 end
 function ToolReanimator.StartAlt()
 local Status = ToolReanimator.Status
@@ -76825,7 +77516,7 @@ end
 function U.LimbRunning()
 local cur = Reanimate.Current
 local n = cur and cur.Name
-return cur ~= nil and cur.Running == true and (n == "Limbs" or n == "Ragdoll" or n == "Servo-Joint") and Reanimate.Character ~= nil and not Reanimate.Stopping
+return cur ~= nil and cur.Running == true and (n == "Limbs" or n == "Ragdoll" or n == "Servo-Joint" or n == "Hybrid-Joint") and Reanimate.Character ~= nil and not Reanimate.Stopping
 end
 -- switch flipped while a Limb / Ragdoll run is active: start or stop the extra system immediately
 function U.ExtraToggle()
@@ -76916,7 +77607,7 @@ if not SaveData.ReanimSelRagdoll then
 SaveData.ReanimSelRagdoll = true
 if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end
 end
-if SaveData.SelectedReanimator > 6 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
+if SaveData.SelectedReanimator > 7 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
 Util.FCMark("reanim")
 
 local ReanimMethods = {
@@ -76926,6 +77617,7 @@ local ReanimMethods = {
 {Reanimate.RagdollReanimator, "Ragdoll Reanimator"},
 {Reanimate.UnanchoredReanimator, "Unanchored Reanimation"},
 {Reanimate.ServoJointReanimator, "Servo-Joint Reanimator"},
+{Reanimate.HybridJointReanimator, "Hybrid Limb Reanimation"},
 }
 local ReanimMethodNames = {}
 for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
@@ -78495,7 +79187,7 @@ end
 local hats
 if cur == HatReanimator then
 hats = true
-elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator then
+elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator or cur == Reanimate.HybridJointReanimator then
 hats = false
 else
 hats = (SaveData.SelectedReanimator == 2)
