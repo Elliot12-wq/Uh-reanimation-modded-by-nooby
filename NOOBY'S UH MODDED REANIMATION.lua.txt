@@ -69672,7 +69672,7 @@ DEV = 0.06, -- max radians the replicated angle may stray from the commanded ani
 DEAD = 0.012, -- physical residuals below this (radians) are ignored, so servo jitter, solver noise and settling never reach the animation
 GIM = SERVO_RAD(80), -- middle-stage angle (rad) from which the outer X / Z stages count as gimbal-coupled
 Seq = 0, -- physics-step counter: a joint is only driven by an animation snapshot stamped with the current step
-Snap = {}, SnapHj = {}, -- scratch tables for the one-pass animation snapshot
+Snap = {}, SnapHj = {}, Live = {}, -- scratch tables for the one-pass animation snapshot / the one synchronized drive pass
 MID = 88, -- middle-axis limit (deg), keeps the Euler decomposition away from gimbal lock
 CAP = 178, -- hinge angle safety range (deg), avoids the +/-180 wrap
 CARRIER = 4, -- carrier density, keeps carrier / limb mass ratios solver friendly
@@ -69934,12 +69934,18 @@ local pm = ServoByPart[a.P0]
 a = pm and pm.SV
 end
 end
-local function ServoAlive(sv)
+local function ServoAlive(sv, map)
 local H = sv.H
 local h1 = H[1]
 if not (sv.PX.Parent and sv.CR1.Parent and sv.CR2.Parent and h1.Parent and H[2].Parent and H[3].Parent) then return false end
 local a0 = h1.Attachment0
-return a0 ~= nil and a0.Parent ~= nil and sv.Motor.C0 == sv.C0 and sv.Motor.C1 == sv.C1
+local host = a0 and a0.Parent
+if not (host and host.Parent and sv.Motor.C0 == sv.C0 and sv.Motor.C1 == sv.C1) then return false end
+-- one skeleton: this joint's first hinge stage must hang off its ACTUAL parent servo limb (the base for the root). A parent that was rebuilt leaves its children on a destroyed limb, so they are rebuilt onto the new parent instead of simulating as detached assemblies
+if map.RPart0 == "ROOT" then return host == ServoBase end
+local pm = ServoByPart[sv.P0]
+local psv = pm and pm.SV
+return psv ~= nil and psv.Linked == true and host == psv.PX
 end
 -- physical residual (measured - commanded): deadbanded and limited so the physical hinges can never pull a joint away from the animation
 function SJ.Resid(r, dead, dev)
@@ -69958,12 +69964,7 @@ if sv.Linked then
 local T, H = sv.T, sv.H
 local a1, a2, a3 = T[1], T[2], T[3]
 local h1, h2, h3 = H[1], H[2], H[3]
-if map.PS == seq and h1.Parent and h2.Parent and h3.Parent then
-local S = sv.S
-a1 += SJ.Resid(SERVO_RAD(h1.CurrentAngle) * S[1] - a1, dead, dev)
-a2 += SJ.Resid(SERVO_RAD(h2.CurrentAngle) * S[2] - a2, dead, dev)
-a3 += SJ.Resid(SERVO_RAD(h3.CurrentAngle) * S[3] - a3, dead, dev)
-end
+-- the replicated pose is the commanded animation target ONLY: measured hinge angles (solver drift, settling, residuals) are never added, so no limb can move on its own or keep moving after the animation stopped
 local act = sv.C0 * (CFrame.new(sv.Pos) * (sv.Hj or CFrame.identity) * CFrame.Angles(a1, a2, a3)) * sv.C1i
 if RagdollFiniteCF(act) then sv.Act = act end
 end
@@ -70021,6 +70022,8 @@ ServoDrive = function(dt)
 local cfg = LimbReanimator.ServoCfg
 if dt > 0.1 then dt = 0.1 elseif dt < 0.002 then dt = 0.002 end
 local now, seq = os.clock(), SJ.Seq
+local live, worst = SJ.Live, 0
+table.clear(live)
 for _,map in LimbMapping do
 local sv = map.SV
 if sv then
@@ -70045,7 +70048,7 @@ local ns = map.SV
 if ns then ns.Try = now end
 end
 end
-elseif not ServoAlive(sv) then
+elseif not ServoAlive(sv, map) then
 if now - sv.Built > 0.25 then
 local m = sv.Motor
 ServoRelease(map)
@@ -70074,23 +70077,31 @@ end
 local x, y, z = ServoDesired(sv, mcf)
 x, y, z = ServoClamp(sv, x, y, z)
 sv.Pos = sv.PT
+sv.GX, sv.GY, sv.GZ = x, y, z
+live[#live + 1] = sv
 local need = math.max(math.abs(x - T[1]), math.abs(y - T[2]), math.abs(z - T[3])) / (sv.Rate * dt)
-if need <= 1 then
-T[1], T[2], T[3] = x, y, z
+if need > worst then worst = need end
+end
+end
+end
+end
+-- apply pass: every joint of the skeleton advances toward the ONE current animation snapshot by the SAME fraction (set by the slowest joint), so the whole rig arrives together and no limb lags, overshoots or keeps moving on its own
+local f = worst > 1 and 1 / worst or 1
+for i = 1, #live do
+local sv = live[i]
+local T, W, S, H = sv.T, sv.W, sv.S, sv.H
+if f >= 1 then
+T[1], T[2], T[3] = sv.GX, sv.GY, sv.GZ
 else
-local f = 1 / need
-T[1] += (x - T[1]) * f
-T[2] += (y - T[2]) * f
-T[3] += (z - T[3]) * f
+T[1] += (sv.GX - T[1]) * f
+T[2] += (sv.GY - T[2]) * f
+T[3] += (sv.GZ - T[3]) * f
 end
 for a = 1, 3 do
 local d = SERVO_DEG(T[a]) * S[a]
 if math.abs(d - W[a]) > 0.004 then
 W[a] = d
 H[a].TargetAngle = d
-end
-end
-end
 end
 end
 end
@@ -90300,9 +90311,17 @@ _CurrentDance = nil
 end
 _MovementStyleIndex = nil
 end
+if CurrentDance and not table.find(DanceableDances, CurrentDance) then CurrentDance = nil end
 if MovementStyleIndex ~= _MovementStyleIndex then
+if _CurrentDance then
+pcall(_CurrentDance.Destroy, ReanimCharacter)
+_CurrentDance = nil
+ReanimCharacter:SetAttribute("IsDancing", nil)
+ReanimCharacter:SetAttribute("DanceInternalName", nil)
+SetOverrideDanceMusic(nil)
+end
 if CurrentMovementStyle then
-CurrentMovementStyle.Destroy(ReanimCharacter)
+pcall(CurrentMovementStyle.Destroy, ReanimCharacter)
 CurrentMovementStyle = nil
 end
 _MovementStyleIndex = MovementStyleIndex
@@ -90350,6 +90369,13 @@ SetOverrideMovesetMusic(nil)
 end
 end
 else
+if _CurrentDance then
+pcall(_CurrentDance.Destroy, ReanimCharacter)
+_CurrentDance = nil
+ReanimCharacter:SetAttribute("IsDancing", nil)
+ReanimCharacter:SetAttribute("DanceInternalName", nil)
+SetOverrideDanceMusic(nil)
+end
 ReanimCharacter:SetAttribute("MovementInit", nil)
 _MovementStyleIndex = nil
 end
