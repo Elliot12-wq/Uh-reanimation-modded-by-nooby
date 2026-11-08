@@ -71341,6 +71341,542 @@ Reanimate.Stopping = false
 end
 end
 end
+-- ===== Skeletal Retargeting Reanimation (R6 only) =====
+-- source animation -> source skeleton reader -> anatomical mapping -> reference-pose relative joint motion -> target R6 joint frames -> proportion compensation -> smoothing -> target R6 pose.
+-- The target pose is returned through Reanimate.LimbPoseCFrame, so it flows through the existing Limb pipeline (replicated Motor6D offsets, optional Servo-Joint actuation) and also drives the internal skeleton rig.
+do
+local RS = SaveData.Reanimator
+RS.SkelShow = RS.SkelShow ~= false
+RS.SkelProportion = RS.SkelProportion ~= false
+RS.SkelServo = RS.SkelServo == true
+RS.SkelSmooth = math.clamp(tonumber(RS.SkelSmooth) or 25, 0, 100)
+if not RS.SkelVisV2 then RS.SkelVisV2, RS.SkelThickness, RS.SkelTransparency = true, 18, 0 end
+RS.SkelOnTop = RS.SkelOnTop ~= false
+RS.SkelThickness = math.clamp(tonumber(RS.SkelThickness) or 18, 5, 40)
+RS.SkelTransparency = math.clamp(tonumber(RS.SkelTransparency) or 15, 0, 90)
+local CFG = {Show = RS.SkelShow, Proportion = RS.SkelProportion, Servo = RS.SkelServo, Smooth = RS.SkelSmooth, Thick = RS.SkelThickness / 100, Trans = RS.SkelTransparency / 100, OnTop = RS.SkelOnTop}
+local SKR = setmetatable({Name = "Skeletal Retargeting"}, {__index = LimbReanimator})
+Reanimate.SkeletalRetargetReanimator = SKR
+local K = {Active = false, T = 0, TM = {}, G = {}, S = {}, L = {}, Role = setmetatable({}, {__mode = "k"})}
+SKR.Core = K
+local V3, CFnew, IDCF = Vector3.new, CFrame.new, CFrame.identity
+local ROLES = {"Root", "Neck", "LS", "RS", "LH", "RH"}
+-- native R6 Motor6Ds of the target character: name -> {role, Part0 name, Part1 name}
+local TGT = {
+RootJoint = {"Root", "HumanoidRootPart", "Torso"},
+Neck = {"Neck", "Torso", "Head"},
+["Left Shoulder"] = {"LS", "Torso", "Left Arm"},
+["Right Shoulder"] = {"RS", "Torso", "Right Arm"},
+["Left Hip"] = {"LH", "Torso", "Left Leg"},
+["Right Hip"] = {"RH", "Torso", "Right Leg"},
+}
+local function roleOf(v)
+local e = TGT[v.Name]
+if not e then return nil end
+local p0, p1 = v.Part0, v.Part1
+if p0 and p1 and p0.Name == e[2] and p1.Name == e[3] then return e[1] end
+return nil
+end
+local function fin(cf)
+local x, y, z = cf.X, cf.Y, cf.Z
+if x ~= x or y ~= y or z ~= z or x > 1e7 or x < -1e7 or y > 1e7 or y < -1e7 or z > 1e7 or z < -1e7 then return false end
+local l = cf.LookVector
+return l.X == l.X and l.Y == l.Y and l.Z == l.Z
+end
+local function fromTo(a, b)
+local d = a:Dot(b)
+if d > 0.99999 then return IDCF end
+if d < -0.99999 then
+local ax = a:Cross(V3(1, 0, 0))
+if ax.Magnitude < 1e-3 then ax = a:Cross(V3(0, 0, 1)) end
+return CFrame.fromAxisAngle(ax.Unit, math.pi)
+end
+return CFrame.fromAxisAngle(a:Cross(b).Unit, math.acos(d))
+end
+local function scaleCF(cf, s)
+if s == 1 then return cf end
+return CFnew(cf.Position * s) * cf.Rotation
+end
+-- anatomical role of a source Motor6D, independent of the exact joint names (R6 / R15 / custom rigs)
+local PARTW = {
+{"shoulder", "S"}, {"upperarm", "S"}, {"elbow", "E"}, {"forearm", "E"}, {"lowerarm", "E"},
+{"wrist", "W"}, {"hand", "W"}, {"hip", "H"}, {"thigh", "H"}, {"upperleg", "H"},
+{"knee", "K"}, {"shin", "K"}, {"calf", "K"}, {"lowerleg", "K"}, {"ankle", "A"}, {"foot", "A"},
+}
+local function classify(name)
+local n = string.lower(name):gsub("[%s_%-%.]", "")
+if n:find("neck", 1, true) then return "Neck" end
+if n:find("waist", 1, true) or n:find("spine", 1, true) or n:find("abdomen", 1, true) then return "Waist" end
+if n:find("root", 1, true) then return "Root" end
+for _, pw in PARTW do
+local i = n:find(pw[1], 1, true)
+if i then
+local pre, suf = n:sub(1, i - 1), n:sub(i + #pw[1])
+if n:find("left", 1, true) or pre == "l" or suf == "l" then return "L" .. pw[2] end
+if n:find("right", 1, true) or pre == "r" or suf == "r" then return "R" .. pw[2] end
+return nil
+end
+end
+return nil
+end
+-- source record: parent part -> child part over one joint (or a joint chain such as RootJoint + Waist), with its reference (rest) pose
+local function newRec(chain, lenMotors)
+local m1, mN = chain[1], chain[#chain]
+local rest = IDCF
+for _, m in chain do rest = rest * (m.C0 * m.C1:Inverse()) end
+local len = 0
+for _, m in lenMotors do len += m.Part1.Size.Y end
+return {P0 = m1.Part0, P1 = mN.Part1, C0 = m1.C0, C1 = mN.C1, Rest = rest, Len0 = len}
+end
+local function buildLimb(sh, el, wr)
+if not sh then return nil end
+local lm = {sh}
+local restEnd = sh.C0 * sh.C1:Inverse()
+local endPart
+if el and el.Part0 == sh.Part1 then
+lm[2] = el
+restEnd = restEnd * (el.C0 * el.C1:Inverse())
+endPart = el.Part1
+if wr and wr.Part0 == el.Part1 then
+lm[3] = wr
+restEnd = restEnd * (wr.C0 * wr.C1:Inverse())
+endPart = wr.Part1
+end
+end
+local rec = newRec({sh}, lm)
+if endPart then rec.Aim = {End = endPart, RestEnd = restEnd} end
+return rec
+end
+-- source skeleton reader: finds the animated joints once and caches them (name-independent anatomical mapping)
+local function buildSource(RC)
+local by = {}
+for _, m in RC:GetDescendants() do
+if m:IsA("Motor6D") and m.Part0 and m.Part1 then
+local r = classify(m.Name)
+if r and not by[r] then by[r] = m end
+end
+end
+local src = {RC = RC, S0 = math.max(RC:GetScale(), 1e-3), Rec = {}}
+local R = src.Rec
+if by.Root then
+local ch, lm = {by.Root}, {by.Root}
+if by.Waist and by.Waist.Part0 == by.Root.Part1 then ch[2], lm[2] = by.Waist, by.Waist end
+R.Root = newRec(ch, lm)
+end
+if by.Neck then R.Neck = newRec({by.Neck}, {by.Neck}) end
+R.LS = buildLimb(by.LS, by.LE, by.LW)
+R.RS = buildLimb(by.RS, by.RE, by.RW)
+R.LH = buildLimb(by.LH, by.LK, by.LA)
+R.RH = buildLimb(by.RH, by.RK, by.RA)
+return src
+end
+local function refreshRec(rec, rs)
+rec.rs = rs
+rec.C0s, rec.C1s = scaleCF(rec.C0, rs), scaleCF(rec.C1, rs)
+rec.C0i = rec.C0s:Inverse()
+rec.TrI = (rec.C0i * scaleCF(rec.Rest, rs) * rec.C1s):Inverse()
+rec.C0R = rec.C0s.Rotation
+rec.C0RI = rec.C0R:Inverse()
+rec.Len = rec.Len0 * rs
+local aim = rec.Aim
+if aim then
+aim.Far = V3(0, -aim.End.Size.Y * 0.5, 0)
+local u = (scaleCF(aim.RestEnd, rs) * aim.Far) - rec.C0s.Position
+aim.U0 = u.Magnitude > 1e-4 and u.Unit or V3(0, -1, 0)
+end
+end
+-- target R6 geometry: the real Motor6D's own C0 / C1 / limb size, plus virtual elbow / wrist / knee / ankle points derived from the limb geometry
+local function buildGeo(role, v)
+local c0, c1, p1 = v.C0, v.C1, v.Part1
+local sz = p1.Size
+local g = {V = v, P1 = p1, Size = sz, C0 = c0, C1 = c1, C1I = c1:Inverse(), C0R = c0.Rotation, C0RI = c0.Rotation:Inverse(), Len = sz.Y}
+if role == "Root" then
+g.Sy = sz.Y
+elseif role == "Neck" then
+g.Pos = c0.Position
+else
+local piv = c1.Position
+local bot = -sz.Y * 0.5
+g.Piv = piv
+g.Mid = V3(0, piv.Y + (bot - piv.Y) * 0.5, 0)
+g.End = V3(0, piv.Y + (bot - piv.Y) * 0.92, 0)
+end
+return g
+end
+-- relative transform: joint motion relative to its parent and reference pose (Part1 = Part0 * C0 * Transform * C1^-1), converted into the target joint frame, proportion compensated
+local function retarget(rec, g, k)
+local p0cf = rec.P0.CFrame
+local T = rec.TrI * (rec.C0i * p0cf:ToObjectSpace(rec.P1.CFrame) * rec.C1s)
+local R = T.Rotation
+local aim = rec.Aim
+if aim and aim.End.Parent then
+-- multi-segment source limb: the R6 limb aims along the source chain (shoulder -> end), keeping the shoulder's twist
+local piv = rec.C0s.Position
+local far = p0cf:PointToObjectSpace(aim.End.CFrame * aim.Far) - piv
+if far.Magnitude > 1e-3 then
+local rp = rec.C0R * R * rec.C0RI
+local u0 = aim.U0
+local twist = fromTo(u0, rp * u0):Inverse() * rp
+R = rec.C0RI * (fromTo(u0, far.Unit) * twist) * rec.C0R
+end
+end
+local fm = g.C0RI * rec.C0R
+local d = fm * (T.Position * k)
+return CFnew(d) * (fm * R * (rec.C0RI * g.C0R))
+end
+-- internal skeleton visualization (local only, parented to the camera); joints / bones are placed from K.L, the same retargeted transforms that drive the Motor6Ds.
+-- Two layers sit on those transforms: neon parts (depth tested) and always-on-top handle adornments, so the rig is drawn overlapping the body and stays visible through it.
+local BA = {3, 1, 2, 4, 2, 2, 3, 3, 6, 8, 7, 9, 12, 14, 13, 15}
+local BB = {1, 2, 4, 5, 6, 7, 12, 13, 8, 10, 9, 11, 14, 16, 15, 17}
+local CORE, LEFT, RIGHT = Color3.fromRGB(255, 225, 60), Color3.fromRGB(60, 225, 255), Color3.fromRGB(255, 90, 200)
+local JLEFT = {[6] = true, [8] = true, [10] = true, [12] = true, [14] = true, [16] = true}
+local JRIGHT = {[7] = true, [9] = true, [11] = true, [13] = true, [15] = true, [17] = true}
+local FCC = Enum.BulkMoveMode.FireCFrameChanged
+function K.VizOff()
+local VZ = K.VZ
+K.VZ = nil
+if VZ and VZ.M then pcall(VZ.M.Destroy, VZ.M) end
+end
+function K.VizStyle(VZ)
+VZ.Th, VZ.Tr, VZ.Top = CFG.Thick, CFG.Trans, CFG.OnTop
+local th, tr, top = CFG.Thick, CFG.Trans, CFG.OnTop
+for i = 1, 17 do
+local s = i == 5 and th * 6 or th * 3
+VZ.P[i].Size = V3(s, s, s)
+VZ.P[i].Transparency = tr
+local ad = VZ.AJ[i]
+ad.Radius = s * 0.5
+ad.Transparency = tr * 0.7
+ad.AlwaysOnTop = top
+end
+for i = 1, 16 do
+VZ.P[17 + i].Transparency = tr
+local ad = VZ.AB[i]
+ad.Transparency = tr * 0.7
+ad.AlwaysOnTop = top
+VZ.L[i] = -1
+end
+if VZ.H then VZ.H.DepthMode = top and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded end
+end
+function K.VizBuild()
+K.VizOff()
+local cam = workspace.CurrentCamera or Camera
+local old = cam:FindFirstChild("UH_SkeletalRig")
+while old do
+old:Destroy()
+old = cam:FindFirstChild("UH_SkeletalRig")
+end
+local m = Instance.new("Model")
+m.Name = "UH_SkeletalRig"
+local VZ = {M = m, Cam = cam, P = {}, C = {}, J = {}, L = {}, AJ = {}, AB = {}}
+local function mk(shape, color)
+local p = Instance.new("Part")
+p.Anchored, p.CanCollide, p.CanTouch, p.CanQuery, p.CastShadow, p.Massless = true, false, false, false, false, true
+p.Material = Enum.Material.Neon
+p.Color = color
+p.Shape = shape
+p.Size = V3(0.2, 0.2, 0.2)
+p.Parent = m
+return p
+end
+-- invisible anchor part: it is moved onto the retargeted torso every frame and every adornment is placed in torso space
+local anchor = mk(Enum.PartType.Block, CORE)
+anchor.Name = "Anchor"
+anchor.Transparency = 1
+local function ad(cls, color)
+local a = Instance.new(cls)
+a.Adornee = anchor
+a.Color3 = color
+a.ZIndex = 5
+a.Parent = anchor
+return a
+end
+for i = 1, 17 do
+local col = JLEFT[i] and LEFT or JRIGHT[i] and RIGHT or CORE
+VZ.P[i] = mk(Enum.PartType.Ball, col)
+VZ.C[i] = IDCF
+VZ.J[i] = Vector3.zero
+VZ.AJ[i] = ad("SphereHandleAdornment", col)
+end
+for i = 1, 16 do
+local jb = BB[i]
+local col = JLEFT[jb] and LEFT or JRIGHT[jb] and RIGHT or CORE
+VZ.P[17 + i] = mk(Enum.PartType.Block, col)
+VZ.C[17 + i] = IDCF
+VZ.L[i] = -1
+local b = ad("BoxHandleAdornment", col)
+b.Size = V3(0.1, 0.1, 0.1)
+VZ.AB[i] = b
+end
+VZ.P[34], VZ.C[34] = anchor, IDCF
+pcall(function()
+local h = Instance.new("Highlight")
+h.Adornee = m
+h.FillColor = Color3.fromRGB(80, 220, 255)
+h.OutlineColor = Color3.new(1, 1, 1)
+h.FillTransparency = 0.5
+h.OutlineTransparency = 0.2
+h.Parent = m
+VZ.H = h
+end)
+K.VizStyle(VZ)
+m.Parent = cam
+K.VZ = VZ
+return VZ
+end
+function K.Viz()
+local L, tw, G = K.L, K.TW, K.G
+local gR, gN, gLS, gRS, gLH, gRH = G.Root, G.Neck, G.LS, G.RS, G.LH, G.RH
+if not (tw and L.Neck and L.LS and L.RS and L.LH and L.RH and gR and gN and gLS and gRS and gLH and gRH) then return end
+local VZ = K.VZ
+if not VZ or VZ.Cam ~= (workspace.CurrentCamera or Camera) or not VZ.M.Parent then VZ = K.VizBuild() end
+if VZ.Th ~= CFG.Thick or VZ.Tr ~= CFG.Trans or VZ.Top ~= CFG.OnTop then K.VizStyle(VZ) end
+local J, P, C, BL, AJ, AB = VZ.J, VZ.P, VZ.C, VZ.L, VZ.AJ, VZ.AB
+local sy = gR.Sy
+-- joint points in torso space: limb frames in K.L are relative to the torso, so no world conversion is needed for the adornments
+local la, ra, ll, rl = L.LS, L.RS, L.LH, L.RH
+J[1] = V3(0, 0, 0)
+J[2] = V3(0, sy * 0.3, 0)
+J[3] = V3(0, -sy * 0.5, 0)
+J[4] = gN.Pos
+J[5] = L.Neck.Position
+J[6], J[8], J[10] = la * gLS.Piv, la * gLS.Mid, la * gLS.End
+J[7], J[9], J[11] = ra * gRS.Piv, ra * gRS.Mid, ra * gRS.End
+J[12], J[14], J[16] = ll * gLH.Piv, ll * gLH.Mid, ll * gLH.End
+J[13], J[15], J[17] = rl * gRH.Piv, rl * gRH.Mid, rl * gRH.End
+for i = 1, 17 do
+local lc = CFnew(J[i])
+C[i] = tw * lc
+AJ[i].CFrame = lc
+end
+local th = VZ.Th
+for i = 1, 16 do
+local a, b = J[BA[i]], J[BB[i]]
+local dv = b - a
+local len = dv.Magnitude
+local bl
+if len < 1e-3 then
+bl = CFnew(a)
+else
+local up = math.abs(dv.Y) > len * 0.99 and V3(1, 0, 0) or V3(0, 1, 0)
+bl = CFrame.lookAt(a, b, up) * CFnew(0, 0, -len * 0.5)
+end
+C[17 + i] = tw * bl
+local ad = AB[i]
+ad.CFrame = bl
+if math.abs(len - BL[i]) > 0.002 then
+BL[i] = len
+local z = math.max(len, 0.05)
+P[17 + i].Size = V3(th, th, z)
+ad.Size = V3(th, th, z)
+end
+end
+C[34] = tw
+if not pcall(workspace.BulkMoveTo, workspace, P, C, FCC) then
+for i = 1, 34 do P[i].CFrame = C[i] end
+end
+K.Drawn = true
+end
+-- one full retargeting pass over the six R6 joints; lazily triggered by the first pose request of every update stage
+function K.Refresh(RC, now)
+local dt = now - K.T
+K.T = now
+if dt < 1 / 240 then dt = 1 / 240 elseif dt > 1 / 15 then dt = 1 / 15 end
+local src = K.Src
+if K.RC ~= RC or not src then
+src = buildSource(RC)
+K.Src, K.RC = src, RC
+table.clear(K.S)
+end
+local rs = RC:GetScale() / src.S0
+local sm = CFG.Smooth
+local a = sm <= 0 and 1 or 1 - math.exp(-(3 + 80 * (1 - sm / 100)) * dt)
+local L, G, S = K.L, K.G, K.S
+for i = 1, 6 do
+local role = ROLES[i]
+local v, rec = K.TM[role], src.Rec[role]
+local out
+if v and rec and v.Parent and v.Part1 and rec.P0.Parent and rec.P1.Parent then
+local g = G[role]
+if not g or g.V ~= v or g.P1 ~= v.Part1 or g.C0 ~= v.C0 or g.C1 ~= v.C1 or g.Size ~= v.Part1.Size then
+g = buildGeo(role, v)
+G[role] = g
+end
+if not rec.rs or math.abs(rec.rs - rs) > 1e-4 then refreshRec(rec, rs) end
+local k = 1
+if CFG.Proportion and rec.Len > 1e-3 and g.Len > 1e-3 then k = math.clamp(g.Len / rec.Len, 0.05, 20) end
+local T = retarget(rec, g, k)
+if fin(T) then
+local prev = S[role]
+if prev and a < 1 then T = prev:Lerp(T, a) end
+S[role] = T
+out = g.C0 * T * g.C1I
+end
+end
+L[role] = out
+end
+local rr = src.Rec.Root
+if L.Root and rr then K.TW = rr.P0.CFrame * L.Root else K.TW = nil end
+if CFG.Show then
+K.Viz()
+if not K.Drawn then
+K.Since = K.Since or now
+if now - K.Since > 4 and not K.Warned then
+K.Warned = true
+local miss = {}
+for i = 1, 6 do
+local role = ROLES[i]
+if not K.TM[role] then miss[#miss + 1] = role .. " (real joint)"
+elseif not src.Rec[role] then miss[#miss + 1] = role .. " (source joint)"
+elseif not L[role] then miss[#miss + 1] = role .. " (pose)" end
+end
+pcall(Util.Notify, "Skeletal Retargeting: the internal skeleton has not been drawn yet. Missing: " .. (#miss > 0 and table.concat(miss, ", ") or "none (see console)"))
+end
+end
+elseif K.VZ then
+K.VizOff()
+end
+end
+-- drop-in replacement for Reanimate.LimbPoseCFrame while the method runs (same signature / meaning: the Motor6D offset Part0 -> Part1 for the real joint)
+function K.Pose(map, v, RC, RootPart)
+local orig = K.Orig
+local hl = Reanimate.HiddenLimbs
+if hl and hl[map.RPart1] and (map.RPart0 == "ROOT" or not hl[map.RPart0]) then return CFnew(0, -250, 0) end
+if K.Active and RC and v then
+local role = K.Role[v]
+if role == nil then
+role = roleOf(v) or false
+K.Role[v] = role
+end
+if role then
+if K.TM[role] ~= v then
+K.TM[role], K.G[role], K.S[role], K.L[role] = v, nil, nil, nil
+K.T = 0
+end
+local now = os.clock()
+if K.RC ~= RC or now - K.T > 0.001 then
+local ok, err = pcall(K.Refresh, RC, now)
+if not ok then
+table.clear(K.L)
+K.TW = nil
+if K.LastErr ~= tostring(err) then
+K.LastErr = tostring(err)
+warn("[Skeletal Retargeting] retarget pass failed, using the plain limb pose: " .. K.LastErr)
+pcall(Util.Notify, "Skeletal Retargeting error (see console): " .. K.LastErr)
+end
+end
+end
+local l = K.L[role]
+if l then
+if role ~= "Root" then return l end
+local tw = K.TW
+if tw and RootPart then return RootPart.CFrame:ToObjectSpace(tw) end
+end
+end
+end
+return orig and orig(map, v, RC, RootPart) or IDCF
+end
+function K.End()
+K.Active = false
+if K.Orig and Reanimate.LimbPoseCFrame == K.Pose then Reanimate.LimbPoseCFrame = K.Orig end
+K.Orig = nil
+K.VizOff()
+table.clear(K.TM)
+table.clear(K.G)
+table.clear(K.S)
+table.clear(K.L)
+K.Src, K.RC, K.TW, K.T, K.LastErr = nil, nil, nil, 0, nil
+K.Drawn, K.Since, K.Warned = nil, nil, nil
+end
+function K.Begin()
+K.End()
+K.Orig = Reanimate.LimbPoseCFrame
+Reanimate.LimbPoseCFrame = K.Pose
+K.Active = true
+end
+-- R6-only gate: nothing is initialised, built or modified unless the current character is R6
+function SKR.CanStart()
+local ch = Player.Character
+local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+if not hum then
+return false, "Skeletal Retargeting Reanimation is R6-only and needs a loaded character: none was found, so nothing was started."
+end
+if hum.RigType ~= Enum.HumanoidRigType.R6 then
+return false, "Skeletal Retargeting Reanimation is R6-only. Your character is R15, so it was not started and your character was not modified."
+end
+if not (ch:FindFirstChild("Torso") and ch:FindFirstChild("HumanoidRootPart")) then
+return false, "Skeletal Retargeting Reanimation needs a complete R6 body (Torso / HumanoidRootPart missing), so it was not started."
+end
+return true
+end
+function SKR.Config(parent)
+UI.CreateText(parent, "-=+ R6 ONLY +=-", 13, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "Skeletal Retargeting Reanimation translates source animation through an internal R6 skeletal rig and reconstructs the resulting pose on the target R6 character. It refuses to start on R15 characters; every other reanimator keeps its R15 support. The retargeted pose is applied through the Limb Reanimator's replicated joint pipeline, so other players see the movement.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "-=+ Skeletal Retargeting Settings +=-", 12, Enum.TextXAlignment.Center)
+UI.CreateSwitch(parent, "Show Internal Skeleton", CFG.Show).Changed:Connect(function(val)
+CFG.Show = val and true or false
+RS.SkelShow = CFG.Show
+end)
+UI.CreateSwitch(parent, "Proportion Compensation", CFG.Proportion).Changed:Connect(function(val)
+CFG.Proportion = val and true or false
+RS.SkelProportion = CFG.Proportion
+end)
+UI.CreateSlider(parent, "Motion Smoothing (0 = raw)", CFG.Smooth, 0, 100, 1).Changed:Connect(function(val)
+val = math.clamp(val, 0, 100)
+CFG.Smooth = val
+RS.SkelSmooth = val
+end)
+UI.CreateSlider(parent, "Skeleton Bone Thickness (1/100 stud)", RS.SkelThickness, 5, 40, 1).Changed:Connect(function(val)
+val = math.clamp(val, 5, 40)
+RS.SkelThickness = val
+CFG.Thick = val / 100
+end)
+UI.CreateSlider(parent, "Skeleton Transparency (%)", RS.SkelTransparency, 0, 90, 1).Changed:Connect(function(val)
+val = math.clamp(val, 0, 90)
+RS.SkelTransparency = val
+CFG.Trans = val / 100
+end)
+UI.CreateSwitch(parent, "Overlay On Top Of Body (see through)", CFG.OnTop).Changed:Connect(function(val)
+CFG.OnTop = val and true or false
+RS.SkelOnTop = CFG.OnTop
+end)
+UI.CreateText(parent, "^^^ the internal skeleton (joints, spine / pelvis, virtual elbows, wrists, knees and ankles) is drawn inside your R6 body from the same retargeted pose that moves the real joints. It is a local visual only.", 10, Enum.TextXAlignment.Center)
+UI.CreateSwitch(parent, "Physical Servo Actuation (applies on next Reanimate)", CFG.Servo).Changed:Connect(function(val)
+CFG.Servo = val and true or false
+RS.SkelServo = CFG.Servo
+end)
+UI.CreateText(parent, "^^^ ON: the retargeted joint angles drive the Servo-Joint hinge controller (strength / speed / limits come from the Servo-Joint Reanimator page). OFF: the retargeted pose is applied directly through the replicated joint offsets.", 10, Enum.TextXAlignment.Center)
+UI.CreateSeparator(parent)
+UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, Enum.TextXAlignment.Center)
+LimbReanimator.Config(parent)
+end
+function SKR.Start()
+local okR6, why = SKR.CanStart()
+if not okR6 then
+pcall(Util.UINotify, why)
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+Reanimate.Stopping = false
+return
+end
+K.Begin()
+LimbReanimator.ServoMode = CFG.Servo and true or nil
+local ok, err = pcall(LimbReanimator.Start)
+LimbReanimator.ServoMode = nil
+K.End()
+if not ok then
+warn("[Skeletal Retargeting] failed to start: " .. tostring(err))
+pcall(Util.Notify, "Skeletal Retargeting Reanimation failed to start (see console): " .. tostring(err))
+local cl = LimbReanimator.ServoCleanup
+LimbReanimator.ServoCleanup = nil
+if cl then pcall(cl) end
+pcall(Reanimate.DestroyCharacter)
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+Reanimate.Stopping = false
+end
+end
+end
 local HatReanimator = {}
 HatReanimator.Name = "Hats"
 SaveData.Reanimator.HatsCollide = not not SaveData.Reanimator.HatsCollide
@@ -77638,7 +78174,7 @@ if not SaveData.ReanimSelRagdoll then
 SaveData.ReanimSelRagdoll = true
 if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end
 end
-if SaveData.SelectedReanimator > 7 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
+if SaveData.SelectedReanimator > 8 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
 Util.FCMark("reanim")
 
 local ReanimMethods = {
@@ -77649,6 +78185,7 @@ local ReanimMethods = {
 {Reanimate.UnanchoredReanimator, "Unanchored Reanimation"},
 {Reanimate.ServoJointReanimator, "Servo-Joint Reanimator"},
 {Reanimate.HybridJointReanimator, "Hybrid Limb Reanimation"},
+{Reanimate.SkeletalRetargetReanimator, "Skeletal Retargeting Reanimation"},
 }
 local ReanimMethodNames = {}
 for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
@@ -79218,7 +79755,7 @@ end
 local hats
 if cur == HatReanimator then
 hats = true
-elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator or cur == Reanimate.HybridJointReanimator then
+elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator or cur == Reanimate.HybridJointReanimator or cur == Reanimate.SkeletalRetargetReanimator then
 hats = false
 else
 hats = (SaveData.SelectedReanimator == 2)
