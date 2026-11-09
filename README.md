@@ -373,6 +373,7 @@ Additional engine and debugging controls covering:
 
 Please respect the original creators and contributors. Give proper credit and do not claim their work as your own.
 
+- coded by Claude. Not mine.
 +==================================================+
 |                                                  |
 |  "The more you use, the more you know.           |
