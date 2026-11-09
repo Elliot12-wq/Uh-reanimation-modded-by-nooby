@@ -67620,6 +67620,7 @@ Util.Fling.Names = {
 "Fling 3 (Hidden / Flight)",
 "Alt-fling (Nameless Admin alt)",
 "Instant Fling (Character Nuke)",
+"Overflow Fling",
 }
 Util.Fling.Descriptions = {
 "default fling: spins into the target at crazy velocity and sends them flying",
@@ -67631,6 +67632,7 @@ Util.Fling.Descriptions = {
 "Fling 3: adapted from the hidden-fling target sweep + flight sequence",
 "Alt-fling: your Nameless Admin alt does the flinging. Your own character never flings.",
 "instant fling: saves your position, snaps your root + limbs onto the target for 1-2 frames with extreme velocity, then snaps straight back",
+"overflow fling: constant 9 sextillion (9e21) finite velocity and angular impulses across all axes with independent per-axis alternation, aperiodic drift, and rapid spin; no NaN, no infinity",
 }
 Util.Fling.InstantDuration = 0.02
 Util.Fling.WeakDuration = 0.4
@@ -67736,6 +67738,8 @@ elseif ft.Mode == 7 then
 dur = Util.Fling.SourceFling3Duration
 elseif ft.Mode == 9 then
 dur = Util.Fling.InstantDuration
+elseif ft.Mode == 10 then
+dur = 1.5
 else
 dur = defaultduration
 end
@@ -67777,7 +67781,7 @@ end
 end
 end
 local flingcf, flinged
-if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9) then
+if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9 or ft.Mode == 10) then
 if ft.Mode == 2 then
 local wv = part.AssemblyLinearVelocity
 if wv.Magnitude > 60 then wv = wv.Unit * 60 end
@@ -67837,6 +67841,8 @@ local interval = 0.04
 local elapsed = math.max(0, t - ft.Start)
 local index = (math.floor(elapsed / interval) % #offsets) + 1
 flingcf = part.CFrame * CFrame.new(offsets[index])
+elseif ft.Mode == 10 then
+flingcf = CFrame.new(part.Position)
 else
 local cv = part.AssemblyLinearVelocity
 if (ft.Mode == 3 or ft.Mode == 4) and cv.Magnitude < 80 then
@@ -67907,6 +67913,24 @@ for p, cf in parts do
 p.CFrame = cf
 p.AssemblyLinearVelocity, p.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
 end
+end)
+elseif mode == 10 then
+-- Overflow Fling: constant 9 sextillion (9e21) finite physics
+local elapsed = math.max(0, t - (ft and ft.Start or t))
+local mag = 9e21
+local flipA = (math.floor(t * 480)             % 2 == 0) and 1 or -1
+local flipB = (math.floor(t * 480 * 1.618034)  % 2 == 0) and 1 or -1
+local flipC = (math.floor(t * 480 * 1.414214)  % 2 == 0) and 1 or -1
+local px = math.sin(elapsed * 331) * 1.5 + math.sin(elapsed * 677) * 0.35
+local py = math.cos(elapsed * 251) * 1.5 + math.cos(elapsed * 503) * 0.35
+local pz = math.sin(elapsed * 419) * 1.5 + math.sin(elapsed * 829) * 0.35
+RootPart.CFrame = CFrame.new(flingcf.Position + Vector3.new(px, py, pz) + jitter)
+	* CFrame.Angles(elapsed * 720, elapsed * 936, elapsed * 511)
+RootPart.Velocity    = Vector3.new(mag * flipA,      mag * flipB,       mag * flipC * -1)
+RootPart.RotVelocity = Vector3.new(mag * flipB,      mag * flipC * -1,  mag * flipA)
+pcall(function()
+RootPart.AssemblyLinearVelocity  = Vector3.new(mag * flipA,      mag * flipB,      mag * flipC * -1)
+RootPart.AssemblyAngularVelocity = Vector3.new(mag * flipC,      mag * flipA * -1, mag * flipB)
 end)
 else
 local df = (math.floor(t * 120) % 2 == 0) and 1 or -1
