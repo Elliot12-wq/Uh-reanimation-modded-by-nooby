@@ -27273,12 +27273,24 @@ end
 end)
 end)
 cmd.add({"ping"}, {"ping", "Shows your ping"}, function()
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+local PlayerGui = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+Util.PingState = Util.PingState or {}
+local pingState = Util.PingState
+if pingState.DestroyConn then pcall(function() pingState.DestroyConn:Disconnect() end) pingState.DestroyConn = nil end
+if pingState.Conn then pcall(function() pingState.Conn:Disconnect() end) pingState.Conn = nil end
+if pingState.Gui then pcall(function() pingState.Gui:Destroy() end) pingState.Gui = nil end
+for _, g in ipairs(PlayerGui:GetChildren()) do
+if g.Name == "Ping" and g:GetAttribute("UhPing") then pcall(function() g:Destroy() end) end
+end
 local Ping = Instance.new("ScreenGui")
 local Pingtext = Instance.new("TextLabel")
 local UICorner = Instance.new("UICorner")
 local UIAspectRatioConstraint = Instance.new("UIAspectRatioConstraint")
 Ping.Name = "Ping"
-Ping.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+Ping:SetAttribute("UhPing", true)
+Ping.Parent = PlayerGui
 Ping.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 Ping.ResetOnSpawn = false
 Pingtext.Name = "Pingtext"
@@ -27288,7 +27300,7 @@ Pingtext.BackgroundTransparency = 0.140
 Pingtext.Position = UDim2.new(0, 0, 0, 48)
 Pingtext.Size = UDim2.new(0, 201, 0, 35)
 Pingtext.Font = Enum.Font.SourceSans
-Pingtext.Text = "FPS:"
+Pingtext.Text = "Ping:"
 Pingtext.TextColor3 = Color3.fromRGB(255, 255, 255)
 Pingtext.TextScaled = true
 Pingtext.TextSize = 14.000
@@ -27297,19 +27309,30 @@ UICorner.CornerRadius = UDim.new(1, 0)
 UICorner.Parent = Pingtext
 UIAspectRatioConstraint.Parent = Pingtext
 UIAspectRatioConstraint.AspectRatio = 5.743
-local script = Instance.new('LocalScript', Pingtext)
-local RunService = game:GetService("RunService")
-local pingConn
-local pingAcc = 0
-pingConn = RunService.RenderStepped:Connect(function(ping)
-pingAcc = pingAcc + ping
+local pingConn, destroyConn
+local pingItem
+local function stopPing()
+if pingConn then pingConn:Disconnect() pingConn = nil end
+if destroyConn then destroyConn:Disconnect() destroyConn = nil end
+if pingState.Gui == Ping then pingState.Conn, pingState.DestroyConn, pingState.Gui = nil, nil, nil end
+end
+local pingAcc = 0.25
+pingConn = RunService.Heartbeat:Connect(function(dt)
+pingAcc = pingAcc + dt
 if pingAcc < 0.25 then return end
 pingAcc = 0
-local lbl = script.Parent
-if not lbl or not lbl:IsDescendantOf(game) then pingConn:Disconnect() return end
-local txt = ("Ping: " ..game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValueString(math.round(2/ping)))
-if lbl.Text ~= txt then lbl.Text = txt end
+if not Pingtext.Parent or not Pingtext:IsDescendantOf(game) then stopPing() return end
+local ok, v = pcall(function()
+pingItem = pingItem or Stats.Network.ServerStatsItem["Data Ping"]
+return pingItem:GetValue()
 end)
+if ok and type(v) == "number" then
+local txt = "Ping: " .. math.floor(v + 0.5) .. " ms"
+if Pingtext.Text ~= txt then Pingtext.Text = txt end
+end
+end)
+destroyConn = Ping.Destroying:Connect(stopPing)
+pingState.Conn, pingState.DestroyConn, pingState.Gui = pingConn, destroyConn, Ping
 end)
 cmd.add({"fps"}, {"fps", "Shows your fps"}, function()
 local Fps = Instance.new("ScreenGui")
@@ -40016,19 +40039,26 @@ task.spawn(function()
 local ok2, e2 = pcall(fn)
 if not ok2 then NA.BootError = tostring(e2) end
 loadDone = true
-NA.Loaded = ready() ~= nil
-if NA.Loaded and NA.SyncExtras then pcall(NA.SyncExtras) end
+if ready() then
+NA.Loaded = true
+if NA.SyncExtras then pcall(NA.SyncExtras) end
+end
 end)
 local t0 = os.clock()
+local doneAt
 while os.clock() - t0 < 90 do
-if loadDone then
+-- success only once the real command core (env.cmd.run) exists
 if ready() then NA.Loaded = true return end
-error(NA.BootError or "Nameless Admin finished loading without a command core")
+if loadDone then
+-- the runtime's initial loading stage can finish before its command core is published: keep waiting
+doneAt = doneAt or os.clock()
+if os.clock() - doneAt >= (NA.BootError and 15 or 60) then break end
 end
 task.wait(0.1)
 end
 if ready() then NA.Loaded = true return end
-error("timed out waiting for NA's command core")
+if loadDone and NA.BootError then error(NA.BootError) end
+error(loadDone and "Nameless Admin finished loading without a command core" or "timed out waiting for NA's command core")
 end)
 booting = false
 rawset(host(), "__UhNAParts", nil)
@@ -100382,49 +100412,11 @@ t[i], t[j] = t[j], t[i]
 end
 end
 local since = os.clock()
-local megadetected = false
-local alerting = false
 if Util.Security then
-Util.Security.OnMalicious = function()
-if megadetected then return end
-megadetected = true
-alerting = true
-task.spawn(function()
-task.wait(math.max(5, 8 - (os.clock() - since)))
-Util.UINotify(rng({
-"uhh...",
-"so... thats not good",
-"hey, uhh...",
-}))
-task.wait(1.5)
-Util.UINotify("i think you got ratted...")
-task.wait(3)
-Util.UINotify("no, seriously.")
-task.wait(1.5)
-Util.UINotify("you definitely got ratted")
-task.wait(3)
-Util.UINotify("check the Init Logs to see which file")
-task.wait(4)
-alerting = false
-end)
-end
 Util.Security.Start()
 end
 if math.random(2) == 1 then
 task.wait(8 - (os.clock() - since))
-while alerting do task.wait(0.5) end
-if not megadetected and math.random() > 0.9 and Util.Security and Util.Security.Stats.Passes > 0 then
-Util.UINotify(rng({
-"uhh...",
-"so... thats not good",
-"hey, uhh...",
-}))
-task.wait(1.5)
-Util.UINotify("i think you got ratted...")
-task.wait(1.5)
-Util.UINotify("just kidding lol")
-task.wait(8)
-end
 local function safeGet(url)
 local ok, res = pcall(game.HttpGet, game, url)
 return ok and res or nil
