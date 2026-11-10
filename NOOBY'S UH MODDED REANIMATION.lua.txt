@@ -38374,7 +38374,7 @@ local word = ((cmdInput.Text:lower()):gsub("^%s*" .. pfx, "")):match("^%s*(%S+)"
 local known = (Commands[word] or Aliases[word]) and true or false
 pcall(Util.UhAdmin.Fire, known and "run" or (word ~= "" and "unknown" or "close"))
 if not known and word:find("fling", 1, true) and not word:find("antifling", 1, true) then
-Notify({Description = "Standalone fling variants are disabled. Choose Fling 1, Fling 2, Fling 3, or NaN State from the Fling Method dropdown."; Title = "Uh Admin"; Duration = 6;})
+Notify({Description = "Standalone fling variants are disabled. Choose Fling 1, Fling 2, Fling 3, NaN State, or Predictive Sine-Wave from the Fling Method dropdown."; Title = "Uh Admin"; Duration = 6;})
 end
 wrap(function()
 local entered=cmdInput.Text or ""
@@ -67621,6 +67621,7 @@ Util.Fling.Names = {
 "Alt-fling (Nameless Admin alt)",
 "Instant Fling (Character Nuke)",
 "Overflow Fling",
+"Predictive Sine-Wave Fling",
 }
 Util.Fling.Descriptions = {
 "default fling: spins into the target at crazy velocity and sends them flying",
@@ -67633,6 +67634,7 @@ Util.Fling.Descriptions = {
 "Alt-fling: your Nameless Admin alt does the flinging. Your own character never flings.",
 "instant fling: saves your position, snaps your root + limbs onto the target for 1-2 frames with extreme velocity, then snaps straight back",
 "overflow fling: constant 9 sextillion (9e21) finite velocity and angular impulses across all axes with independent per-axis alternation, aperiodic drift, and rapid spin; no NaN, no infinity",
+"predictive sine-wave fling: reads target velocity to predict their future position, orbits around it in a smooth sine-wave arc with ease-in/ease-out, saves your position before starting and restores it on stop; designed for controlled authorised demos with consenting participants",
 }
 Util.Fling.InstantDuration = 0.02
 Util.Fling.WeakDuration = 0.4
@@ -67642,6 +67644,9 @@ Util.Fling.NoobyMaxTime = 90
 Util.Fling.SourceFling1Duration = 2.0
 Util.Fling.SourceFling2Duration = 0.9
 Util.Fling.SourceFling3Duration = 1.35
+-- Predictive Sine-Wave Fling: duration is clamped to [1.5, 2.0] seconds
+-- Change Util.Fling.SineWaveDuration at runtime to any value in that range.
+Util.Fling.SineWaveDuration = 1.75
 do
 local saved = SaveData.FlingMethod
 if type(saved) ~= "number" then
@@ -67740,6 +67745,8 @@ elseif ft.Mode == 9 then
 dur = Util.Fling.InstantDuration
 elseif ft.Mode == 10 then
 dur = 1.5
+elseif ft.Mode == 11 then
+dur = math.clamp(Util.Fling.SineWaveDuration, 1.5, 2.0)
 else
 dur = defaultduration
 end
@@ -67781,7 +67788,7 @@ end
 end
 end
 local flingcf, flinged
-if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9 or ft.Mode == 10) then
+if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9 or ft.Mode == 10 or ft.Mode == 11) then
 if ft.Mode == 2 then
 local wv = part.AssemblyLinearVelocity
 if wv.Magnitude > 60 then wv = wv.Unit * 60 end
@@ -67843,6 +67850,19 @@ local index = (math.floor(elapsed / interval) % #offsets) + 1
 flingcf = part.CFrame * CFrame.new(offsets[index])
 elseif ft.Mode == 10 then
 flingcf = CFrame.new(part.Position)
+elseif ft.Mode == 11 then
+-- Predictive Sine-Wave Fling: estimate target's future position using current velocity
+local vel = part.AssemblyLinearVelocity
+local speed = vel.Magnitude
+-- lead time scales with speed: slow target → shorter lead; fast target → longer lead
+local leadTime = math.clamp(speed / 90, 0.12, 0.45)
+local predictedPos = part.Position + vel * leadTime
+-- Clamp predicted position to avoid chasing out-of-bounds locations
+local maxDrift = 40
+if (predictedPos - part.Position).Magnitude > maxDrift then
+predictedPos = part.Position + (predictedPos - part.Position).Unit * maxDrift
+end
+flingcf = CFrame.new(predictedPos)
 else
 local cv = part.AssemblyLinearVelocity
 if (ft.Mode == 3 or ft.Mode == 4) and cv.Magnitude < 80 then
@@ -67932,6 +67952,91 @@ pcall(function()
 RootPart.AssemblyLinearVelocity  = Vector3.new(mag * flipA,      mag * flipB,      mag * flipC * -1)
 RootPart.AssemblyAngularVelocity = Vector3.new(mag * flipC,      mag * flipA * -1, mag * flipB)
 end)
+elseif mode == 11 then
+-- Predictive Sine-Wave: persistent AlignPosition + AlignOrientation attachment
+-- Architecture: Attachment0 on local HRP, Attachment1 on target HRP.
+-- AlignPosition (RigidityEnabled) maintains positional lock.
+-- AlignOrientation (RigidityEnabled) maintains rotational sync.
+-- Sine-wave orbit is driven by updating Attachment1.Position each frame.
+-- ReactionForce/Torque disabled during orbit to avoid disturbing the target.
+-- Final burst: reaction forces enabled + inward att1 offset pushes target outward.
+local maxDur = math.clamp(Util.Fling.SineWaveDuration, 1.5, 2.0)
+local elapsed = math.max(0, t - (ft and ft.Start or t))
+local targetPart = ft and typeof(ft.Target) == "Instance" and Util.Fling.GetPart(ft.Target)
+if not (targetPart and targetPart:IsDescendantOf(workspace)) then return end
+-- ── First-call: build constraints ──
+if ft and not ft.SWInit then
+ft.SWInit = true
+ft.SWDone = false
+Util.Fling.SineWaveSession = (Util.Fling.SineWaveSession or 0) + 1
+local sessionID = Util.Fling.SineWaveSession
+ft.SWSession = sessionID
+local att0 = Instance.new("Attachment"); att0.Position = Vector3.zero; att0.Parent = RootPart
+local att1 = Instance.new("Attachment"); att1.Position = Vector3.zero; att1.Parent = targetPart
+local ap = Instance.new("AlignPosition")
+ap.Attachment0 = att0; ap.Attachment1 = att1
+ap.RigidityEnabled = true; ap.ReactionForceEnabled = false
+ap.Parent = RootPart
+local ao = Instance.new("AlignOrientation")
+ao.Attachment0 = att0; ao.Attachment1 = att1
+ao.RigidityEnabled = true; ao.ReactionTorqueEnabled = false
+ao.Parent = RootPart
+ft.SWAtt0 = att0; ft.SWAtt1 = att1; ft.SWAlignPos = ap; ft.SWAlignOri = ao
+local connT, connC
+local function swCleanup()
+if (Util.Fling.SineWaveSession or 0) ~= sessionID then return end
+if ft.SWDone then return end
+ft.SWDone = true
+pcall(function() if connT then connT:Disconnect() end end)
+pcall(function() if connC then connC:Disconnect() end end)
+pcall(function()
+if att0 and att0.Parent then att0:Destroy() end
+if att1 and att1.Parent then att1:Destroy() end
+if ap   and ap.Parent   then ap:Destroy()   end
+if ao   and ao.Parent   then ao:Destroy()   end
+if RootPart and RootPart.Parent then
+RootPart.AssemblyLinearVelocity  = Vector3.zero
+RootPart.AssemblyAngularVelocity = Vector3.zero
+end
+end)
+end
+ft.SWCleanup = swCleanup
+connT = targetPart.AncestryChanged:Connect(function()
+if not targetPart:IsDescendantOf(workspace) then swCleanup() end
+end)
+connC = Player.CharacterAdded:Connect(swCleanup)
+task.delay(maxDur + 0.4, swCleanup)
+end
+-- Guard: skip if cleanup already ran
+if ft.SWDone then return end
+-- ── Progress / easing ──
+local progress   = math.min(elapsed / maxDur, 1)
+local ease       = 0.5 - 0.5 * math.cos(math.pi * progress)
+local orbitSpeed = math.pi * (2.0 + ease * 2.0)
+local angle      = orbitSpeed * elapsed
+local radius     = 0.05 + 0.3 * math.sin(math.pi * progress)
+local vertOffset = math.sin(angle * 0.65 + math.pi * 0.4) * (0.25 * ease)
+-- ── Orbit: update target-side attachment offset each frame (sine-wave arc) ──
+if ft.SWAtt1 and ft.SWAtt1.Parent then
+ft.SWAtt1.Position = Vector3.new(math.sin(angle) * radius, vertOffset, math.cos(angle) * radius)
+end
+-- ── Final burst (progress 0.75-1.0): enable reaction force, drive target outward ──
+if progress > 0.75 then
+local flingPhase = (progress - 0.75) / 0.25
+local flingEase  = flingPhase * flingPhase * (3 - 2 * flingPhase)
+local outDir  = RootPart.Position - targetPart.Position
+local outUnit = outDir.Magnitude > 0.1 and outDir.Unit
+	or Vector3.new(math.sin(angle), 0.3, math.cos(angle)).Unit
+if ft.SWAlignPos and ft.SWAlignPos.Parent then
+-- Reaction force on: inward att1 offset → constraint pulls us in, pushes target out
+ft.SWAlignPos.ReactionForceEnabled = true
+ft.SWAtt1.Position = -(outUnit * (radius + flingEase * 6))
+end
+pcall(function()
+RootPart.AssemblyLinearVelocity  = (outUnit + Vector3.new(0, 0.5, 0)).Unit * (flingEase * 50000)
+RootPart.AssemblyAngularVelocity = Vector3.new(0, orbitSpeed, 0)
+end)
+end
 else
 local df = (math.floor(t * 120) % 2 == 0) and 1 or -1
 RootPart.CFrame = flingcf + jitter
@@ -69369,7 +69474,7 @@ LimbReanimator.FlingEnabled = val
 SaveData.Reanimator.LimbRoleplay = not val
 end)
 UI.CreateText(parent, "vvv touch player = they lose ownership vvv", 10, Enum.TextXAlignment.Center)
-UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / NaN State / Fling 1 / Fling 2 / Fling 3)", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / NaN State / Fling 1 / Fling 2 / Fling 3 / Predictive Sine-Wave)", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
 do
 local UX = Reanimate.UnanchoredReanimator
@@ -71930,6 +72035,639 @@ pcall(Util.Notify, "Skeletal Retargeting Reanimation failed to start (see consol
 local cl = LimbReanimator.ServoCleanup
 LimbReanimator.ServoCleanup = nil
 if cl then pcall(cl) end
+pcall(Reanimate.DestroyCharacter)
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+Reanimate.Stopping = false
+end
+end
+end
+-- ===== Kinematic Reanimation (R6 only, IK reanimator) =====
+-- procedural R6 targets (gait / idle / air / seated / custom) -> two-bone IK (law of cosines, virtual elbow / knee, pole vectors) -> R6 Motor6D offsets.
+-- The pose is returned through Reanimate.LimbPoseCFrame, so it flows through the existing Limb pipeline (replicated Motor6D offsets). No Instances and no RunService connections are created.
+do
+local RS = SaveData.Reanimator
+RS.KinArms = RS.KinArms ~= false
+RS.KinLegs = RS.KinLegs ~= false
+RS.KinTerrain = RS.KinTerrain ~= false
+RS.KinHandTargets = RS.KinHandTargets == true
+RS.KinFootTargets = RS.KinFootTargets == true
+RS.KinSmooth = math.clamp(tonumber(RS.KinSmooth) or 25, 0, 100)
+RS.KinGait = math.clamp(tonumber(RS.KinGait) or 100, 0, 200)
+RS.KinReach = math.clamp(tonumber(RS.KinReach) or 100, 50, 100)
+local CFG = {Arms = RS.KinArms, Legs = RS.KinLegs, Terrain = RS.KinTerrain, Hands = RS.KinHandTargets, Feet = RS.KinFootTargets, Smooth = RS.KinSmooth, Gait = RS.KinGait / 100, Reach = RS.KinReach / 100}
+local KR = setmetatable({Name = "Kinematic Reanimation"}, {__index = LimbReanimator})
+Reanimate.KinematicReanimator = KR
+local K = {Active = false, T = 0, Au = 0, Tr = 0, MP = {}, A = {}, Seen = {}, TM = {}, G = {}, L = {}, S = {}, Bnd = {}, GY = {}, GN = {}, GT = {}, GNT = {}, W = {}, WP = {}, WL = {}, FT = {}, SWG = {}, Tgt = {}, Role = setmetatable({}, {__mode = "k"})}
+KR.Core = K
+local V3, CFnew, IDCF = Vector3.new, CFrame.new, CFrame.identity
+local ZERO, UPV, DOWNV, RIGHTV = Vector3.zero, Vector3.new(0, 1, 0), Vector3.new(0, -1, 0), Vector3.new(1, 0, 0)
+local PI, PI2 = math.pi, math.pi * 2
+local sqrt, sin, cos, exp, clamp = math.sqrt, math.sin, math.cos, math.exp, math.clamp
+local ROLES = {"Root", "Neck", "LS", "RS", "LH", "RH"}
+-- the six native R6 Motor6Ds: name -> {role, Part0 name, Part1 name}
+local TGT = {
+RootJoint = {"Root", "HumanoidRootPart", "Torso"},
+Neck = {"Neck", "Torso", "Head"},
+["Left Shoulder"] = {"LS", "Torso", "Left Arm"},
+["Right Shoulder"] = {"RS", "Torso", "Right Arm"},
+["Left Hip"] = {"LH", "Torso", "Left Leg"},
+["Right Hip"] = {"RH", "Torso", "Right Leg"},
+}
+local TN = {LeftHand = 1, RightHand = 2, LeftFoot = 3, RightFoot = 4}
+local function roleOf(v)
+local e = TGT[v.Name]
+if not e then return nil end
+local p0, p1 = v.Part0, v.Part1
+if p0 and p1 and p0.Name == e[2] and p1.Name == e[3] then return e[1] end
+return nil
+end
+local function okcf(cf)
+local x, y, z = cf.X, cf.Y, cf.Z
+if x ~= x or y ~= y or z ~= z or x > 1e6 or x < -1e6 or y > 1e6 or y < -1e6 or z > 1e6 or z < -1e6 then return false end
+local l = cf.LookVector
+return l.X == l.X and l.Y == l.Y and l.Z == l.Z
+end
+local function perp(d)
+local p = d:Cross(UPV)
+if p.Magnitude < 1e-3 then p = d:Cross(RIGHTV) end
+return p.Unit
+end
+-- cached R6 joint geometry: the real Motor6D's own C0 / C1 / limb size. Len = pivot -> limb end, Half = virtual elbow / knee distance from the pivot
+local function buildGeo(role, v)
+local c0, c1, sz = v.C0, v.C1, v.Part1.Size
+local g = {V = v, P1 = v.Part1, Size = sz, C0 = c0, C1 = c1, Piv = c0.Position, CP = c1.Position, Q0 = c0.Rotation * c1.Rotation:Inverse(), Q0I = c1.Rotation * c0.Rotation:Inverse(), Rest = c0 * c1:Inverse()}
+if role ~= "Root" and role ~= "Neck" then
+g.Len = math.max(g.CP.Y + sz.Y * 0.5, 0.2)
+g.Half = g.Len * 0.5
+g.Off = g.Q0 * V3(-g.CP.X, 0, -g.CP.Z)
+end
+return g
+end
+-- two-bone IK. S = shoulder / hip pivot, virtual elbow / knee at Half, end effector T (all torso-local).
+-- R6 limbs are rigid (no elbow / knee Motor6D), so the solved virtual joint is mapped onto the real shoulder / hip: the limb aims between the chord S->T and the upper bone S->joint (kb), and rolls so its bend plane stays stable.
+local function ik(role, g, T, hint, sign, kb, reach, nrm, nw, look, a, S0, az, aw)
+local S, Ln = S0 or g.Piv, g.Len
+local l1 = g.Half
+local l2 = Ln - l1
+local ch = T - S
+local d0 = ch.Magnitude
+local cd = d0 > 1e-3 and ch / d0 or DOWNV
+local d = clamp(d0, Ln * 0.12, Ln * reach)
+local ca = clamp((l1 * l1 + d * d - l2 * l2) / (2 * l1 * d), -1, 1)
+local sa = sqrt(1 - ca * ca)
+-- bend plane: the stored plane is carried onto the new chord (parallel transport) and only nudged towards the pole hint; the hint fades out as it becomes parallel to the chord and a flipped hint is ignored, so the virtual elbow / knee never snaps across
+local prev = K.Bnd[role]
+local pb = hint - cd * hint:Dot(cd)
+local pm = pb.Magnitude
+local hv = pm > 1e-3 and pb / pm or nil
+local pp = prev and (prev - cd * prev:Dot(cd)) or nil
+local ppm = pp and pp.Magnitude or 0
+local bd
+if ppm > 1e-3 then
+pp = pp / ppm
+if hv and hv:Dot(pp) > -0.5 then
+local m = pp:Lerp(hv, a * clamp(pm / 0.3, 0, 1))
+local mm = m.Magnitude
+bd = mm > 1e-3 and m / mm or pp
+else
+bd = pp
+end
+else
+bd = hv or perp(cd)
+end
+K.Bnd[role] = bd
+local ud = cd * ca + bd * sa
+local u = cd * (1 - kb) + ud * kb
+if nw > 0 and nrm then u = u * (1 - nw) - nrm * nw end
+local um = u.Magnitude
+u = um > 1e-3 and u / um or cd
+-- roll: explicit orientation (custom target) > authored roll (az, weighted by aw) > bend plane
+local zr = look and -look or bd * sign
+if az and aw and aw > 0.001 then
+local dz = zr:Dot(az)
+if aw >= 0.999 or (dz < -0.85 and aw > 0.5) then
+zr = az
+elseif dz >= -0.85 then
+zr = zr:Lerp(az, aw)
+end
+end
+zr -= u * zr:Dot(u)
+if zr.Magnitude < 1e-3 then zr = bd - u * bd:Dot(u) end
+if zr.Magnitude < 1e-3 then zr = perp(u) end
+zr = zr.Unit
+local Y = -u
+local Q = CFrame.fromMatrix(ZERO, Y:Cross(zr), Y, zr) * g.Q0
+return CFnew(S) * Q * CFnew(-g.CP)
+end
+-- authored joint pose (the real Motor6D's Part0 -> Part1 offset, torso space) -> solver inputs: pivot, end-effector target (pivot + limb axis * limb length) and roll direction. It is the inverse of what ik() returns, so feeding these back with kb = 0 rebuilds the authored limb pose exactly
+local function authPose(g, cf)
+local R = cf.Rotation * g.Q0I
+local Sa = cf:PointToWorldSpace(g.CP)
+return Sa, Sa - R.YVector * g.Len, R.ZVector
+end
+local CNAME = {"LeftHand", "RightHand", "LeftFoot", "RightFoot"}
+-- custom target state for slot wi (1-2 hands, 3-4 feet): root-space position / orientation, blended in and out smoothly. Runs for every update so explicit targets override authored and procedural motion alike
+local function custom(rcf, kc, wi, on)
+local ct = K.Tgt[CNAME[wi]]
+local live = on and ct
+if live then
+K.WP[wi] = ct.World and rcf:PointToObjectSpace(ct.Pos) or ct.Pos
+K.WL[wi] = ct.Ori and (ct.World and rcf:VectorToObjectSpace(ct.Ori.LookVector) or ct.Ori.LookVector) or nil
+end
+local cw = K.W[wi] or 0
+cw += ((live and 1 or 0) - cw) * kc
+K.W[wi] = cw
+if cw <= 0.001 or not K.WP[wi] then K.WP[wi], K.WL[wi] = nil, nil end
+end
+local function put(role, cf, ka)
+if okcf(cf) then
+local pv = K.S[role]
+if pv and ka < 1 then cf = pv:Lerp(cf, ka) end
+K.S[role] = cf
+K.L[role] = cf
+else
+K.L[role] = nil
+end
+end
+local function resetRun()
+for _, t in {K.S, K.Bnd, K.GY, K.GN, K.GT, K.GNT, K.W, K.WP, K.WL, K.FT, K.SWG, K.A, K.Seen} do table.clear(t) end
+K.Ph, K.Mv, K.Sp, K.Air, K.Seat, K.Drop, K.Dir, K.RayAt = 0, 0, 0, 0, 0, 0, V3(0, 0, -1), 0
+K.RR, K.Hum, K.RP, K.RPch, K.TW = nil, nil, nil, nil, nil
+K.Au, K.Tr, K.Key, K.New = 0, 0, nil, true
+end
+resetRun()
+-- internal target interface. limb: "LeftHand" | "RightHand" | "LeftFoot" | "RightFoot". pos: Vector3 (or a CFrame, whose rotation is then the orientation). ori: optional CFrame, the limb's front face is turned along its LookVector. world ~= false: world space, world == false: relative to the reanimator root.
+-- Used only while the matching Custom Hand / Foot Targets switch is on; targets blend in and out smoothly and are cleared when the method stops.
+function KR.SetTarget(limb, pos, ori, world)
+if not TN[limb] then return false end
+if typeof(pos) == "CFrame" then
+if ori == nil then ori = pos end
+pos = pos.Position
+end
+if typeof(pos) ~= "Vector3" or pos.X ~= pos.X or pos.Y ~= pos.Y or pos.Z ~= pos.Z then return false end
+K.Tgt[limb] = {Pos = pos, Ori = typeof(ori) == "CFrame" and ori or nil, World = world ~= false}
+return true
+end
+function KR.ClearTarget(limb) K.Tgt[limb] = nil end
+function KR.ClearTargets() table.clear(K.Tgt) end
+-- one full IK pass over the six R6 joints; lazily triggered by the first pose request of every update stage
+function K.Refresh(RC, now)
+local dt = now - K.T
+K.T = now
+if dt < 1 / 240 then dt = 1 / 240 elseif dt > 1 / 15 then dt = 1 / 15 end
+if K.RC ~= RC then
+resetRun()
+K.RC = RC
+end
+if not K.RR or K.RR.Parent ~= RC then
+K.RR = RC:FindFirstChild("HumanoidRootPart")
+K.Hum = RC:FindFirstChildOfClass("Humanoid")
+end
+local L, G, TM, AU = K.L, K.G, K.TM, K.A
+local rr, hum = K.RR, K.Hum
+local ready = rr ~= nil and hum ~= nil
+for i = 1, 6 do
+local role = ROLES[i]
+local v = TM[role]
+if v and v.Parent and v.Part1 then
+local g = G[role]
+if not g or g.V ~= v or g.P1 ~= v.Part1 or g.C0 ~= v.C0 or g.C1 ~= v.C1 or g.Size ~= v.Part1.Size then
+G[role] = buildGeo(role, v)
+end
+else
+ready = false
+end
+end
+if not ready then
+table.clear(L)
+table.clear(AU)
+K.TW = nil
+return
+end
+local gR, gN, gLS, gRS, gLH, gRH = G.Root, G.Neck, G.LS, G.RS, G.LH, G.RH
+local sm = CFG.Smooth
+local ka = sm <= 0 and 1 or 1 - exp(-(3 + 80 * (1 - sm / 100)) * dt)
+local kw = 1 - exp(-(3 + 22 * (1 - sm / 100)) * dt)
+local kc = 1 - exp(-(2 + 18 * (1 - sm / 100)) * dt)
+local gi, reach = CFG.Gait, CFG.Reach
+local armsOn, legsOn = CFG.Arms, CFG.Legs
+local rcf = rr.CFrame
+-- ===== authored animation (Moveset / Dance) =====
+-- priority: explicit custom targets > authored animation pose > procedural gait / idle. au = how much the authored pose owns the limbs (snaps on a fresh animated character, eases in / out otherwise); K.Tr is a short window after a dance / moveset change in which the authored pose is eased from the previous output instead of snapping
+local auOn = (RC:GetAttribute("MovementInit") or RC:GetAttribute("IsDancing")) and true or false
+local akey = tostring(RC:GetAttribute("MovesetInternalName")) .. "|" .. tostring(RC:GetAttribute("DanceInternalName"))
+local fresh = K.New
+K.New = false
+if fresh then
+K.Au = auOn and 1 or 0
+elseif akey ~= K.Key then
+K.Tr = 0.4
+end
+K.Key = akey
+if K.Tr > 0 then K.Tr = math.max(K.Tr - dt, 0) end
+K.Au += ((auOn and 1 or 0) - K.Au) * (1 - exp(-(auOn and 20 or 8) * dt))
+if K.Au > 0.995 then K.Au = 1 elseif K.Au < 0.005 then K.Au = 0 end
+local au = K.Au
+-- one coherent sample of all six authored joint poses per update (the pose the existing animation system produced on the animated character)
+if auOn or au > 0 then
+local orig, rt, hl = K.Orig, K.Root, Reanimate.HiddenLimbs
+for i = 1, 6 do
+local role = ROLES[i]
+local m = K.MP[role]
+local cf
+if orig and m and not (hl and hl[m.RPart1] and (m.RPart0 == "ROOT" or not hl[m.RPart0])) then
+cf = orig(m, TM[role], RC, rt)
+if not okcf(cf) then cf = nil end
+end
+AU[role] = cf
+end
+else
+table.clear(AU)
+end
+local ROa = AU.Root and K.Root and rcf:ToObjectSpace(K.Root.CFrame * AU.Root) or nil
+local proc = au < 1 or not (ROa and AU.Neck and AU.LS and AU.RS and AU.LH and AU.RH)
+local aR = ROa and au or 0
+ka += ((K.Tr > 0 and 1 - exp(-16 * dt) or 1) - ka) * au
+-- motion inputs from the control character (root space: forward = -Z)
+local vel = rr.AssemblyLinearVelocity
+local sc = math.max(RC:GetScale(), 0.05)
+local hv = rcf:VectorToObjectSpace(V3(vel.X, 0, vel.Z))
+local lvx, lvz = hv.X, hv.Z
+local sp = sqrt(lvx * lvx + lvz * lvz) / sc
+K.Sp += (sp - K.Sp) * (1 - exp(-12 * dt))
+local spS = K.Sp
+if sp > 0.3 then
+local nd = V3(lvx, 0, lvz).Unit
+local md = K.Dir:Lerp(nd, 1 - exp(-10 * dt))
+K.Dir = md.Magnitude > 1e-3 and md.Unit or nd
+end
+K.Mv += (clamp((spS - 0.6) / 1.4, 0, 1) - K.Mv) * (1 - exp(-8 * dt))
+local mv = K.Mv
+local sit = hum.Sit
+local air = (not sit) and hum.FloorMaterial == Enum.Material.Air
+K.Air += ((air and 1 or 0) - K.Air) * (1 - exp(-10 * dt))
+K.Seat += ((sit and 1 or 0) - K.Seat) * (1 - exp(-10 * dt))
+local wA, wS = K.Air, K.Seat
+local legL = gLH.Len
+local lu = legL * 0.5
+local A = math.min(clamp(0.5 + 0.045 * spS, 0.45, 1.15) * gi * lu, legL * 0.85)
+local H = math.min((0.2 + 0.03 * spS) * gi * lu, legL * 0.45)
+if mv > 0.02 then K.Ph = (K.Ph + dt * clamp(spS * sc / (4 * math.max(A, 0.05)), 0.4, 3.2)) % 1 end
+local ph = K.Ph
+local rest = gR.Rest
+local dir = K.Dir
+local dx, dz = dir.X, dir.Z
+-- explicit custom hand / foot targets (slots 1-2 hands, 3-4 feet)
+custom(rcf, kc, 1, CFG.Hands)
+custom(rcf, kc, 2, CFG.Hands)
+custom(rcf, kc, 3, CFG.Feet)
+custom(rcf, kc, 4, CFG.Feet)
+local FT, SWG = K.FT, K.SWG
+local RO
+local rayOn = false
+if proc then
+-- terrain probing: at most two rays per tick, rate follows the active performance profile (off while an authored animation owns the legs)
+rayOn = legsOn and CFG.Terrain and wA < 0.5 and wS < 0.5 and au < 0.5
+local doRay = false
+if rayOn and now >= K.RayAt then
+doRay = true
+local pf = Util.FX and Util.FX.Perf
+local rs = pf and tonumber(pf.RayStride) or 1
+if rs < 1 then rs = 1 end
+K.RayAt = now + (mv > 0.05 and 0.033 or 0.25) * rs
+local pc = Player.Character
+if not K.RP or K.RPch ~= pc then
+K.RPch = pc
+local rp = RaycastParams.new()
+rp.FilterType = Enum.RaycastFilterType.Exclude
+rp.RespectCanCollide = true
+rp.IgnoreWater = true
+rp.FilterDescendantsInstances = pc and {RC, pc} or {RC}
+K.RP = rp
+end
+end
+-- foot targets (root space) + pelvis height needed to keep both rigid legs on their targets
+local drop = 0
+for i = 1, 2 do
+local g = i == 1 and gLH or gRH
+local hip = rest * g.Piv
+local p = (ph + (i == 2 and 0.5 or 0)) % 1
+local z, lift, swg
+if p < 0.5 then
+z, lift, swg = A * (1 - 4 * p), 0, 0
+else
+local t = (p - 0.5) * 2
+z = A * (2 * (0.5 - 0.5 * cos(PI * t)) - 1)
+swg = sin(PI * t)
+lift = H * swg
+end
+local fx, fz = hip.X + dx * z * mv, hip.Z + dz * z * mv
+local ty, nrm = hip.Y - g.Len, UPV
+if rayOn then
+if doRay then
+local hit = workspace:Raycast(rcf:PointToWorldSpace(V3(fx, hip.Y + 1, fz)), V3(0, -(g.Len + 4.5), 0), K.RP)
+local gy, gn = hip.Y - g.Len, UPV
+if hit then
+gy = rcf:PointToObjectSpace(hit.Position).Y
+local n = rcf:VectorToObjectSpace(hit.Normal)
+if n.Y > 0.5 then gn = n end
+end
+K.GT[i], K.GNT[i] = gy, gn
+if not K.GY[i] then K.GY[i], K.GN[i] = gy, gn end
+end
+local cy = K.GY[i]
+if cy then
+local ag = 1 - exp(-22 * dt)
+cy += (K.GT[i] - cy) * ag
+K.GY[i] = cy
+local nn = K.GN[i]:Lerp(K.GNT[i], ag)
+K.GN[i] = nn.Magnitude > 1e-3 and nn.Unit or UPV
+ty, nrm = cy, K.GN[i]
+end
+end
+local clr = 0.04 + 0.35 * sqrt(math.max(0, 1 - nrm.Y * nrm.Y))
+local F = V3(fx, ty + clr + lift * mv, fz)
+if wA > 0.001 then
+local fall = clamp(-vel.Y / 40, 0, 1)
+F = F:Lerp(V3(hip.X, hip.Y - legL * (0.8 + 0.1 * fall), hip.Z + (i == 1 and -0.32 or 0.3) * legL), wA)
+end
+if wS > 0.001 then F = F:Lerp(V3(hip.X, hip.Y - 0.12 * legL, hip.Z - 0.97 * legL), wS) end
+local wi = 2 + i
+local cw = K.WP[wi] and K.W[wi] or 0
+if cw > 0.001 then F = F:Lerp(K.WP[wi], cw) end
+FT[i], SWG[i] = F, swg * mv
+if legsOn then
+local hx, hz = F.X - hip.X, F.Z - hip.Z
+local mx = g.Len * g.Len - hx * hx - hz * hz
+local need = (hip.Y - F.Y) - (mx > 0.04 and sqrt(mx) or 0.2)
+if need > drop then drop = need end
+end
+end
+drop = clamp(drop, -0.06 * lu, legL * 0.55)
+K.Drop += (drop - K.Drop) * (1 - exp(-(6 + 60 * (1 - sm / 100)) * dt))
+-- pelvis (RootJoint): height, forward lean along the movement direction, small counter twist
+local lean = clamp(spS * 0.008, 0, 0.16) * gi * mv * (1 - wA * 0.6)
+local O = CFnew(0, -K.Drop, 0) * CFrame.Angles(0, sin(PI2 * ph) * 0.1 * gi * mv, 0)
+if lean > 1e-4 then O = O * CFrame.fromAxisAngle(UPV:Cross(dir), lean) end
+RO = O * rest
+if aR > 0 then RO = RO:Lerp(ROa, aR) end
+else
+-- authored animation owns the pelvis: no procedural lean / height / twist
+K.Drop += (0 - K.Drop) * (1 - exp(-8 * dt))
+RO = ROa
+end
+if armsOn or legsOn then
+local pr = K.S.Root
+if pr and aR > 0 and K.Tr > 0 then RO = pr:Lerp(RO, 1 - exp(-16 * dt)) end
+K.S.Root = RO
+if aR >= 1 and K.Tr <= 0 then
+-- exact authored RootJoint (the original pose callback supplies it)
+L.Root, K.TW = nil, nil
+elseif okcf(RO) then
+L.Root = RO
+K.TW = rcf * RO
+else
+L.Root, K.TW = nil, nil
+end
+else
+L.Root, K.TW, K.S.Root = nil, nil, nil
+end
+-- neck: authored neck pose when an authored animation is active, otherwise it keeps the head mostly upright against the pelvis lean / twist
+if armsOn or legsOn then
+local an = AU.Neck
+local nk = proc and CFnew(gN.Piv) * (IDCF:Lerp(RO.Rotation:Inverse(), 0.8) * gN.Q0) * CFnew(-gN.CP) or nil
+if an and au > 0 then nk = nk and nk:Lerp(an, au) or an end
+put("Neck", nk, ka)
+else
+L.Neck, K.S.Neck = nil, nil
+end
+-- legs: authored foot pose and / or procedural foot target -> torso space -> two-bone IK (virtual knee, pole = forward); a custom foot target overrides both
+if legsOn then
+for i = 1, 2 do
+local role = i == 1 and "LH" or "RH"
+local g = i == 1 and gLH or gRH
+local wi = 2 + i
+local cw = K.WP[wi] and K.W[wi] or 0
+local ac = AU[role]
+local aw = ac and au or 0
+local T, S0, az, nrm
+local kb, nw = 0, 0
+if aw < 1 then
+T = RO:PointToObjectSpace(FT[i])
+if cw > 0.001 then T -= g.Off * cw end
+kb = math.max(SWG[i], clamp((1 - (T - g.Piv).Magnitude / g.Len) * 1.5, 0, 0.5), wA * 0.5)
+if rayOn and K.GN[i] then
+nrm = RO:VectorToObjectSpace(K.GN[i])
+nw = (1 - SWG[i]) * 0.3 * (1 - wA) * (1 - wS)
+end
+end
+if aw > 0 then
+local Sa, Ta, za = authPose(g, ac)
+local kba = 0
+if cw > 0.001 then
+Ta = Ta:Lerp(RO:PointToObjectSpace(K.WP[wi]), cw) - g.Off * cw
+kba = cw * clamp((1 - (Ta - Sa).Magnitude / g.Len) * 1.5, 0, 0.5)
+end
+if T then
+T, S0 = T:Lerp(Ta, aw), g.Piv:Lerp(Sa, aw)
+else
+T, S0 = Ta, Sa
+end
+kb, nw, az = kb * (1 - aw) + kba * aw, nw * (1 - aw), za
+end
+local look = (cw > 0.5 and K.WL[wi]) and RO:VectorToObjectSpace(K.WL[wi]) or nil
+if look then az = nil end
+put(role, ik(role, g, T, V3((i == 1 and -1 or 1) * 0.12, 0, -1), -1, kb, reach, nrm, nw, look, kw, S0, az, aw), ka)
+end
+else
+L.LH, L.RH, K.S.LH, K.S.RH = nil, nil, nil, nil
+end
+-- arms: authored arm pose and / or procedural swing (opposite to the same-side leg) / idle sway / air / seated -> torso space -> two-bone IK (virtual elbow, pole = back + out); a custom hand target overrides both
+if armsOn then
+for i = 1, 2 do
+local role = i == 1 and "LS" or "RS"
+local g = i == 1 and gLS or gRS
+local s = i == 1 and -1 or 1
+local cw = K.WP[i] and K.W[i] or 0
+local ac = AU[role]
+local aw = ac and au or 0
+local T, S0, az
+local kb = 0.4
+if aw < 1 then
+local Sp, La = g.Piv, g.Len
+local swing = cos(PI2 * ((ph + (i == 1 and 0.5 or 0)) % 1))
+local ang = clamp((0.22 + 0.04 * spS) * gi, 0, 1.3) * swing * mv
+local flex = (0.05 + 0.18 * math.max(0, swing)) * mv * math.min(spS / 16, 1)
+local rl = La * (0.985 - flex)
+local sway = (1 - mv) * (1 - wA) * 0.012 * La
+local Hd = V3(Sp.X + s * 0.08 * La + s * sin(now * 1.3 + i) * sway, Sp.Y - rl * cos(ang) + cos(now * 1.7 + i) * sway, Sp.Z - 0.03 * La) + V3(dx, 0, dz) * (rl * sin(ang))
+if wA > 0.001 then Hd = Hd:Lerp(V3(Sp.X + s * 0.75 * La, Sp.Y + 0.55 * La, Sp.Z - 0.15 * La), wA) end
+if wS > 0.001 then Hd = Hd:Lerp(V3(Sp.X - s * 0.2 * La, Sp.Y - 0.78 * La, Sp.Z - 0.5 * La), wS) end
+if cw > 0.001 then Hd = Hd:Lerp(RO:PointToObjectSpace(K.WP[i]), cw) - g.Off * cw end
+T = Hd
+end
+if aw > 0 then
+local Sa, Ta, za = authPose(g, ac)
+local kba = 0
+if cw > 0.001 then
+Ta = Ta:Lerp(RO:PointToObjectSpace(K.WP[i]), cw) - g.Off * cw
+kba = cw * 0.4
+end
+if T then
+T, S0 = T:Lerp(Ta, aw), g.Piv:Lerp(Sa, aw)
+else
+T, S0 = Ta, Sa
+end
+kb, az = kb * (1 - aw) + kba * aw, za
+end
+local look = (cw > 0.5 and K.WL[i]) and RO:VectorToObjectSpace(K.WL[i]) or nil
+if look then az = nil end
+put(role, ik(role, g, T, V3(s * 0.35, -0.1, 0.9), 1, kb, reach, nil, 0, look, kw, S0, az, aw), ka)
+end
+else
+L.LS, L.RS, K.S.LS, K.S.RS = nil, nil, nil, nil
+end
+end
+-- drop-in replacement for Reanimate.LimbPoseCFrame while the method runs (same signature / meaning: the Motor6D offset Part0 -> Part1 for the real joint)
+function K.Pose(map, v, RC, RootPart)
+local orig = K.Orig
+local hl = Reanimate.HiddenLimbs
+if hl and hl[map.RPart1] and (map.RPart0 == "ROOT" or not hl[map.RPart0]) then return CFnew(0, -250, 0) end
+if K.Active and RC and v then
+local role = K.Role[v]
+if role == nil then
+role = roleOf(v) or false
+K.Role[v] = role
+end
+if role then
+if K.TM[role] ~= v then
+K.TM[role], K.G[role], K.S[role], K.L[role] = v, nil, nil, nil
+K.T = 0
+end
+K.MP[role] = map
+if RootPart then K.Root = RootPart end
+local now = os.clock()
+local since = now - K.T
+-- a new update stage starts when a joint is requested a second time (or after a stall): the whole stage then shares one pose sample / IK pass
+if K.RC ~= RC or K.T == 0 or since > 0.05 or (since > 0.001 and K.Seen[role]) then
+table.clear(K.Seen)
+local ok, err = pcall(K.Refresh, RC, now)
+if not ok then
+table.clear(K.L)
+K.TW = nil
+if K.LastErr ~= tostring(err) then
+K.LastErr = tostring(err)
+warn("[Kinematic Reanimation] IK pass failed, using the plain limb pose: " .. K.LastErr)
+pcall(Util.Notify, "Kinematic Reanimation error (see console): " .. K.LastErr)
+end
+end
+end
+K.Seen[role] = true
+-- the solved pose already consumed the authored Dance / Moveset pose (see K.Refresh); only joints it did not solve fall back to the original pose callback
+local l = K.L[role]
+if l then
+if role ~= "Root" then return l end
+local tw = K.TW
+if tw and RootPart then return RootPart.CFrame:ToObjectSpace(tw) end
+end
+end
+end
+return orig and orig(map, v, RC, RootPart) or IDCF
+end
+-- restores the previous pose callback and drops every cached reference / temporary state
+function K.Reset()
+K.Active = false
+if K.Orig and Reanimate.LimbPoseCFrame == K.Pose then Reanimate.LimbPoseCFrame = K.Orig end
+K.Orig = nil
+table.clear(K.TM)
+table.clear(K.G)
+table.clear(K.L)
+table.clear(K.MP)
+K.Root = nil
+resetRun()
+K.RC, K.T, K.LastErr = nil, 0, nil
+end
+function K.End()
+K.Reset()
+table.clear(K.Tgt)
+end
+function K.Begin()
+K.Reset()
+K.Orig = Reanimate.LimbPoseCFrame
+Reanimate.LimbPoseCFrame = K.Pose
+K.Active = true
+end
+-- R6-only gate: nothing is initialised, built or modified unless the current character is a complete R6 rig
+function KR.CanStart()
+local ch = Player.Character
+local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+if not (hum and hum.RigType == Enum.HumanoidRigType.R6 and ch:FindFirstChild("HumanoidRootPart") and ch:FindFirstChild("Torso") and ch:FindFirstChild("Head") and ch:FindFirstChild("Left Arm") and ch:FindFirstChild("Right Arm") and ch:FindFirstChild("Left Leg") and ch:FindFirstChild("Right Leg")) then
+return false, "Kinematic Reanimation only supports R6 characters."
+end
+return true
+end
+function KR.Config(parent)
+UI.CreateText(parent, "-=+ R6 ONLY +=-", 13, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "Kinematic Reanimation generates its own hand and foot targets (walk / run gait, idle, air, seated) and solves them with a two-bone IK solver: virtual elbows and knees (law of cosines, pole vectors, reach clamping) are mapped onto the six native R6 Motor6D joints. Active Dances and Movesets are read from the animated character and rebuilt through the solver (priority: custom targets > authored Dance / Moveset pose > procedural gait). It refuses to start on R15 characters; every other reanimator is unchanged.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "-=+ Kinematic IK Settings +=-", 12, Enum.TextXAlignment.Center)
+UI.CreateSwitch(parent, "Procedural Arms", CFG.Arms).Changed:Connect(function(val)
+CFG.Arms = val and true or false
+RS.KinArms = CFG.Arms
+end)
+UI.CreateSwitch(parent, "Procedural Legs", CFG.Legs).Changed:Connect(function(val)
+CFG.Legs = val and true or false
+RS.KinLegs = CFG.Legs
+end)
+UI.CreateSwitch(parent, "Terrain-Adaptive Feet", CFG.Terrain).Changed:Connect(function(val)
+CFG.Terrain = val and true or false
+RS.KinTerrain = CFG.Terrain
+end)
+UI.CreateText(parent, "^^^ OFF arms / legs: that limb pair keeps the plain animated pose. Terrain-Adaptive Feet raycasts the ground under each foot (two rays per tick, rate follows the performance profile) to place feet, tilt them to the slope and lower the pelvis.", 10, Enum.TextXAlignment.Center)
+UI.CreateSlider(parent, "Motion Smoothing (0 = raw)", CFG.Smooth, 0, 100, 1).Changed:Connect(function(val)
+val = clamp(val, 0, 100)
+CFG.Smooth = val
+RS.KinSmooth = val
+end)
+UI.CreateSlider(parent, "Gait Intensity (%)", RS.KinGait, 0, 200, 1).Changed:Connect(function(val)
+val = clamp(val, 0, 200)
+RS.KinGait = val
+CFG.Gait = val / 100
+end)
+UI.CreateSlider(parent, "IK Reach Limiting (% of limb length)", RS.KinReach, 50, 100, 1).Changed:Connect(function(val)
+val = clamp(val, 50, 100)
+RS.KinReach = val
+CFG.Reach = val / 100
+end)
+UI.CreateText(parent, "^^^ gait intensity scales stride, foot lift, arm swing and lean. Reach limiting caps how far the solver extends a limb, lower values keep the virtual elbows / knees more bent.", 10, Enum.TextXAlignment.Center)
+UI.CreateSwitch(parent, "Custom Hand Targets", CFG.Hands).Changed:Connect(function(val)
+CFG.Hands = val and true or false
+RS.KinHandTargets = CFG.Hands
+end)
+UI.CreateSwitch(parent, "Custom Foot Targets", CFG.Feet).Changed:Connect(function(val)
+CFG.Feet = val and true or false
+RS.KinFootTargets = CFG.Feet
+end)
+UI.CreateText(parent, "^^^ with these ON, targets supplied through Reanimate.KinematicReanimator.SetTarget(\"LeftHand\" | \"RightHand\" | \"LeftFoot\" | \"RightFoot\", position, optionalOrientationCFrame, worldSpace) replace the procedural ones (blended in and out smoothly). Limbs without a supplied target keep their procedural default. ClearTarget(name) / ClearTargets() release them.", 10, Enum.TextXAlignment.Center)
+UI.CreateSeparator(parent)
+UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, Enum.TextXAlignment.Center)
+LimbReanimator.Config(parent)
+end
+function KR.Start()
+local okR6, why = KR.CanStart()
+if not okR6 then
+pcall(Util.UINotify, why)
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+Reanimate.Stopping = false
+return
+end
+K.Begin()
+local ok, err = pcall(LimbReanimator.Start)
+K.End()
+if not ok then
+warn("[Kinematic Reanimation] failed to start: " .. tostring(err))
+pcall(Util.Notify, "Kinematic Reanimation failed to start (see console): " .. tostring(err))
 pcall(Reanimate.DestroyCharacter)
 Reanimate.Starting = false
 repeat task.wait() until Reanimate.Stopping
@@ -85666,7 +86404,7 @@ if not SaveData.ReanimSelRagdoll then
 SaveData.ReanimSelRagdoll = true
 if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end
 end
-if SaveData.SelectedReanimator > 11 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
+if SaveData.SelectedReanimator > 12 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
 Util.FCMark("reanim")
 
 local ReanimMethods = {
@@ -85681,6 +86419,7 @@ local ReanimMethods = {
 {Reanimate.HairReanimator, "Hair Reanimation"},
 {Reanimate.HatHairReanimator, "Hat Reanimation X Hair Reanimation"},
 {Reanimate.AccessoriesReanimator, "Accessories Reanimation"},
+{Reanimate.KinematicReanimator, "Kinematic Reanimation"},
 }
 local ReanimMethodNames = {}
 for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
@@ -87254,7 +87993,7 @@ end
 local hats
 if cur == HatReanimator then
 hats = true
-elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator or cur == Reanimate.HybridJointReanimator or cur == Reanimate.SkeletalRetargetReanimator then
+elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator or cur == Reanimate.HybridJointReanimator or cur == Reanimate.SkeletalRetargetReanimator or cur == Reanimate.KinematicReanimator then
 hats = false
 else
 hats = (SaveData.SelectedReanimator == 2)
