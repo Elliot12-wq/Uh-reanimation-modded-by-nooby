@@ -38859,7 +38859,7 @@ local word = ((cmdInput.Text:lower()):gsub("^%s*" .. pfx, "")):match("^%s*(%S+)"
 local known = (Commands[word] or Aliases[word]) and true or false
 pcall(Util.UhAdmin.Fire, known and "run" or (word ~= "" and "unknown" or "close"))
 if not known and word:find("fling", 1, true) and not word:find("antifling", 1, true) then
-Notify({Description = "Standalone fling variants are disabled. Choose Fling 1, Fling 2, Fling 3, NaN State, or Predictive Sine-Wave from the Fling Method dropdown."; Title = "Uh Admin"; Duration = 6;})
+Notify({Description = "Standalone fling variants are disabled. Choose Fling 1, Fling 2, Fling 3, or NaN State from the Fling Method dropdown."; Title = "Uh Admin"; Duration = 6;})
 end
 wrap(function()
 local entered=cmdInput.Text or ""
@@ -68113,7 +68113,6 @@ Util.Fling.Names = {
 "Alt-fling (Nameless Admin alt)",
 "Instant Fling (Character Nuke)",
 "Overflow Fling",
-"Predictive Sine-Wave Fling",
 }
 Util.Fling.Descriptions = {
 "default fling: spins into the target at crazy velocity and sends them flying",
@@ -68126,7 +68125,6 @@ Util.Fling.Descriptions = {
 "Alt-fling: your Nameless Admin alt does the flinging. Your own character never flings.",
 "instant fling: saves your position, snaps your root + limbs onto the target for 1-2 frames with extreme velocity, then snaps straight back",
 "overflow fling: constant 9 sextillion (9e21) finite velocity and angular impulses across all axes with independent per-axis alternation, aperiodic drift, and rapid spin; no NaN, no infinity",
-"predictive sine-wave fling: reads target velocity to predict their future position, orbits around it in a smooth sine-wave arc with ease-in/ease-out, saves your position before starting and restores it on stop; designed for controlled authorised demos with consenting participants",
 }
 Util.Fling.InstantDuration = 0.02
 Util.Fling.WeakDuration = 0.4
@@ -68136,14 +68134,12 @@ Util.Fling.NoobyMaxTime = 90
 Util.Fling.SourceFling1Duration = 2.0
 Util.Fling.SourceFling2Duration = 0.9
 Util.Fling.SourceFling3Duration = 1.35
--- Predictive Sine-Wave Fling: duration is clamped to [1.5, 2.0] seconds
--- Change Util.Fling.SineWaveDuration at runtime to any value in that range.
-Util.Fling.SineWaveDuration = 1.75
 do
 local saved = SaveData.FlingMethod
 if type(saved) ~= "number" then
 saved = (SaveData.Reanimator and SaveData.Reanimator.LimbUseNaNFling) and 4 or 1
 end
+if saved == 11 then saved = 1 end
 Util.Fling.Method = math.clamp(math.floor(saved), 1, #Util.Fling.Names)
 end
 Util.Fling.SetMethod = function(m)
@@ -68237,8 +68233,6 @@ elseif ft.Mode == 9 then
 dur = Util.Fling.InstantDuration
 elseif ft.Mode == 10 then
 dur = 1.5
-elseif ft.Mode == 11 then
-dur = math.clamp(Util.Fling.SineWaveDuration, 1.5, 2.0)
 else
 dur = defaultduration
 end
@@ -68280,7 +68274,7 @@ end
 end
 end
 local flingcf, flinged
-if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9 or ft.Mode == 10 or ft.Mode == 11) then
+if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9 or ft.Mode == 10) then
 if ft.Mode == 2 then
 local wv = part.AssemblyLinearVelocity
 if wv.Magnitude > 60 then wv = wv.Unit * 60 end
@@ -68342,19 +68336,6 @@ local index = (math.floor(elapsed / interval) % #offsets) + 1
 flingcf = part.CFrame * CFrame.new(offsets[index])
 elseif ft.Mode == 10 then
 flingcf = CFrame.new(part.Position)
-elseif ft.Mode == 11 then
--- Predictive Sine-Wave Fling: estimate target's future position using current velocity
-local vel = part.AssemblyLinearVelocity
-local speed = vel.Magnitude
--- lead time scales with speed: slow target → shorter lead; fast target → longer lead
-local leadTime = math.clamp(speed / 90, 0.12, 0.45)
-local predictedPos = part.Position + vel * leadTime
--- Clamp predicted position to avoid chasing out-of-bounds locations
-local maxDrift = 40
-if (predictedPos - part.Position).Magnitude > maxDrift then
-predictedPos = part.Position + (predictedPos - part.Position).Unit * maxDrift
-end
-flingcf = CFrame.new(predictedPos)
 else
 local cv = part.AssemblyLinearVelocity
 if (ft.Mode == 3 or ft.Mode == 4) and cv.Magnitude < 80 then
@@ -68444,91 +68425,6 @@ pcall(function()
 RootPart.AssemblyLinearVelocity  = Vector3.new(mag * flipA,      mag * flipB,      mag * flipC * -1)
 RootPart.AssemblyAngularVelocity = Vector3.new(mag * flipC,      mag * flipA * -1, mag * flipB)
 end)
-elseif mode == 11 then
--- Predictive Sine-Wave: persistent AlignPosition + AlignOrientation attachment
--- Architecture: Attachment0 on local HRP, Attachment1 on target HRP.
--- AlignPosition (RigidityEnabled) maintains positional lock.
--- AlignOrientation (RigidityEnabled) maintains rotational sync.
--- Sine-wave orbit is driven by updating Attachment1.Position each frame.
--- ReactionForce/Torque disabled during orbit to avoid disturbing the target.
--- Final burst: reaction forces enabled + inward att1 offset pushes target outward.
-local maxDur = math.clamp(Util.Fling.SineWaveDuration, 1.5, 2.0)
-local elapsed = math.max(0, t - (ft and ft.Start or t))
-local targetPart = ft and typeof(ft.Target) == "Instance" and Util.Fling.GetPart(ft.Target)
-if not (targetPart and targetPart:IsDescendantOf(workspace)) then return end
--- ── First-call: build constraints ──
-if ft and not ft.SWInit then
-ft.SWInit = true
-ft.SWDone = false
-Util.Fling.SineWaveSession = (Util.Fling.SineWaveSession or 0) + 1
-local sessionID = Util.Fling.SineWaveSession
-ft.SWSession = sessionID
-local att0 = Instance.new("Attachment"); att0.Position = Vector3.zero; att0.Parent = RootPart
-local att1 = Instance.new("Attachment"); att1.Position = Vector3.zero; att1.Parent = targetPart
-local ap = Instance.new("AlignPosition")
-ap.Attachment0 = att0; ap.Attachment1 = att1
-ap.RigidityEnabled = true; ap.ReactionForceEnabled = false
-ap.Parent = RootPart
-local ao = Instance.new("AlignOrientation")
-ao.Attachment0 = att0; ao.Attachment1 = att1
-ao.RigidityEnabled = true; ao.ReactionTorqueEnabled = false
-ao.Parent = RootPart
-ft.SWAtt0 = att0; ft.SWAtt1 = att1; ft.SWAlignPos = ap; ft.SWAlignOri = ao
-local connT, connC
-local function swCleanup()
-if (Util.Fling.SineWaveSession or 0) ~= sessionID then return end
-if ft.SWDone then return end
-ft.SWDone = true
-pcall(function() if connT then connT:Disconnect() end end)
-pcall(function() if connC then connC:Disconnect() end end)
-pcall(function()
-if att0 and att0.Parent then att0:Destroy() end
-if att1 and att1.Parent then att1:Destroy() end
-if ap   and ap.Parent   then ap:Destroy()   end
-if ao   and ao.Parent   then ao:Destroy()   end
-if RootPart and RootPart.Parent then
-RootPart.AssemblyLinearVelocity  = Vector3.zero
-RootPart.AssemblyAngularVelocity = Vector3.zero
-end
-end)
-end
-ft.SWCleanup = swCleanup
-connT = targetPart.AncestryChanged:Connect(function()
-if not targetPart:IsDescendantOf(workspace) then swCleanup() end
-end)
-connC = Player.CharacterAdded:Connect(swCleanup)
-task.delay(maxDur + 0.4, swCleanup)
-end
--- Guard: skip if cleanup already ran
-if ft.SWDone then return end
--- ── Progress / easing ──
-local progress   = math.min(elapsed / maxDur, 1)
-local ease       = 0.5 - 0.5 * math.cos(math.pi * progress)
-local orbitSpeed = math.pi * (2.0 + ease * 2.0)
-local angle      = orbitSpeed * elapsed
-local radius     = 0.05 + 0.3 * math.sin(math.pi * progress)
-local vertOffset = math.sin(angle * 0.65 + math.pi * 0.4) * (0.25 * ease)
--- ── Orbit: update target-side attachment offset each frame (sine-wave arc) ──
-if ft.SWAtt1 and ft.SWAtt1.Parent then
-ft.SWAtt1.Position = Vector3.new(math.sin(angle) * radius, vertOffset, math.cos(angle) * radius)
-end
--- ── Final burst (progress 0.75-1.0): enable reaction force, drive target outward ──
-if progress > 0.75 then
-local flingPhase = (progress - 0.75) / 0.25
-local flingEase  = flingPhase * flingPhase * (3 - 2 * flingPhase)
-local outDir  = RootPart.Position - targetPart.Position
-local outUnit = outDir.Magnitude > 0.1 and outDir.Unit
-	or Vector3.new(math.sin(angle), 0.3, math.cos(angle)).Unit
-if ft.SWAlignPos and ft.SWAlignPos.Parent then
--- Reaction force on: inward att1 offset → constraint pulls us in, pushes target out
-ft.SWAlignPos.ReactionForceEnabled = true
-ft.SWAtt1.Position = -(outUnit * (radius + flingEase * 6))
-end
-pcall(function()
-RootPart.AssemblyLinearVelocity  = (outUnit + Vector3.new(0, 0.5, 0)).Unit * (flingEase * 50000)
-RootPart.AssemblyAngularVelocity = Vector3.new(0, orbitSpeed, 0)
-end)
-end
 else
 local df = (math.floor(t * 120) % 2 == 0) and 1 or -1
 RootPart.CFrame = flingcf + jitter
@@ -70064,7 +69960,7 @@ LimbReanimator.FlingEnabled = val
 SaveData.Reanimator.LimbRoleplay = not val
 end)
 UI.CreateText(parent, "vvv touch player = they lose ownership vvv", 10, Enum.TextXAlignment.Center)
-UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / NaN State / Fling 1 / Fling 2 / Fling 3 / Predictive Sine-Wave)", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / NaN State / Fling 1 / Fling 2 / Fling 3)", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
 do
 local UX = Reanimate.UnanchoredReanimator
@@ -70166,6 +70062,7 @@ end
 local BaseParts = {}
 local UnknownMotor6Ds = {}
 local Ragdoll = LimbReanimator.RagdollMode and true or false
+local VelInterp = LimbReanimator.VelInterpMode and LimbReanimator.VelInterpCore or false
 local RagdollParts, RagdollByPart, RGWC, RagdollWarned = {}, {}, {}, {}
 local RagdollZero = Vector3.zero
 local function RagdollFinite(p)
@@ -71415,6 +71312,7 @@ p0, p1 = p0.Name, p1.Name
 for _,map in LimbMapping do
 if map.Part0 == p0 and map.Part1 == p1 then
 map.Reference = v
+if VelInterp then VelInterp.Reset(map) end
 if Ragdoll then pcall(Ragdollize, map, v) end
 if Servo then pcall(ServoBuild, map, v) end
 if Hybrid then pcall(HJ.Build, map, v) end
@@ -71499,6 +71397,7 @@ if map.RG then RagdollRelease(map) end
 if map.SV then ServoRelease(map) end
 if map.HY then HJ.Release(map) end
 map.RG, map.RT = nil, nil
+if VelInterp then VelInterp.Reset(map) end
 end
 character.DescendantAdded:Connect(CharOnDesc)
 for _,v in character:GetDescendants() do
@@ -71595,6 +71494,7 @@ HJ.Root = RootPart
 HJ.Sample()
 end
 local LimbPose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
+local vnow = VelInterp and os.clock() or 0
 for _,map in LimbMapping do
 local v = map.Reference
 if v then
@@ -71643,13 +71543,17 @@ hy.Out = hy.Act or mcf
 if hy.Out then pcall(Util.SetMotor6DOffset, v, Reanimate.LimbHider.Void(map, hy.Out)) end
 end
 elseif flingtarget then
+if VelInterp then VelInterp.Reset(map) end
 Util.SetMotor6DTransform(v, CFrame.identity)
 else
 local mcf = map.CFrame
+local fresh = false
 if dorep or not mcf then
 mcf = LimbPose(map, v, ReanimCharacter, RootPart)
 map.CFrame = mcf
+fresh = true
 end
+if VelInterp then mcf = VelInterp.Step(map, mcf, fresh, vnow) end
 Util.SetMotor6DOffset(v, Reanimate.LimbHider.Void(map, mcf))
 end
 end
@@ -71877,6 +71781,9 @@ end
 if Hybrid then
 HJ.CleanAll(true)
 if LimbReanimator.HybridCleanup == HybridCleaner then LimbReanimator.HybridCleanup = nil end
+end
+if VelInterp then
+for _,map in LimbMapping do VelInterp.Clear(map) end
 end
 if Player.Character then
 local h = Player.Character:FindFirstChild("Humanoid")
@@ -73258,6 +73165,323 @@ K.End()
 if not ok then
 warn("[Kinematic Reanimation] failed to start: " .. tostring(err))
 pcall(Util.Notify, "Kinematic Reanimation failed to start (see console): " .. tostring(err))
+pcall(Reanimate.DestroyCharacter)
+Reanimate.Starting = false
+repeat task.wait() until Reanimate.Stopping
+Reanimate.Stopping = false
+end
+end
+end
+-- ===== Velocity-Interpolated Reanimation =====
+-- Every mapped limb owns a continuous movement state. The ORIGINAL animation target (map.CFrame, Motor6D transform space, never modified) is the only authoritative destination. The limb is moved toward it by a bounded, monotonic, critically damped tracker that works along the straight / shortest-rotation path to the target: it cannot overshoot, oscillate or swing, and it keeps no momentum that is not directed at the current target (sideways and away-from-target velocity is discarded every step, a reversed target brakes the limb instead of being crossed). Target velocity is only MEASURED (successive original targets, same local space, no world-space velocities) to raise responsiveness and relax the limits while the animation really moves fast; it is never a velocity the limb must follow. Discontinuous samples (animation switch, teleport, stalls) clear the movement state so an old animation's momentum never leaks into a new one. Slow motion is smoothed harder and fast motion is followed tighter; a sudden reversal adds temporary damping and drops part of the carried velocity. Prediction (small default lead, 0 = off) is confidence weighted, faded out on reversals and deceleration, scaled per joint and tightly bounded. Each joint type (root, torso, head, arm, leg, hand / foot) has its own responsiveness and angular limits. map.CFrame keeps the raw target; the interpolated pose only replaces it at the final (pre-LimbHider) Motor6D write.
+do
+local RS = SaveData.Reanimator
+local function num(k, d, lo, hi)
+local v = math.clamp(tonumber(RS[k]) or d, lo, hi)
+RS[k] = v
+return v
+end
+-- tuning revision 4 (adaptive smoothing, confidence weighted prediction, reversal damping): the movement controller was reworked, values saved by older builds (tuned for the old momentum based controller) are reset to the new defaults once
+if RS.VelInterpTune ~= 4 then
+RS.VelInterpTune = 4
+RS.VelInterpResp, RS.VelInterpPredictMs, RS.VelInterpMaxAcc, RS.VelInterpMaxSpeed, RS.VelInterpAngResp, RS.VelInterpMaxAngAcc = nil, nil, nil, nil, nil, nil
+end
+local VC = {
+Resp = num("VelInterpResp", 24, 1, 60),
+Predict = num("VelInterpPredictMs", 4, 0, 10) / 1000,
+MaxAcc = num("VelInterpMaxAcc", 250, 10, 1000),
+MaxSpeed = num("VelInterpMaxSpeed", 14, 1, 60),
+AngResp = num("VelInterpAngResp", 24, 1, 60),
+MaxAngAcc = num("VelInterpMaxAngAcc", 220, 10, 800),
+}
+LimbReanimator.VelInterpCfg = VC
+local exp, sqrt, abs, PI = math.exp, math.sqrt, math.abs, math.pi
+local ZERO, IDCF = Vector3.zero, CFrame.identity
+-- MAX_DT: largest integrated step; HITCH: frame time above which the state restarts on the current target; MIN_SAMPLE: shortest interval used for a target speed measurement; GAP: longest interval a measurement is trusted over; FILTER: measurement filter time constant; STALE / STALE10: time without a fresh sample after which the measured target motion expires (normal / ReplicateFPS10); BRAKE: share of the acceleration limit the limb may rely on to stop inside the remaining distance; GAIN / X0 / W0: how far (x GAIN) and how quickly (half-speed X0 studs/s, W0 rad/s) responsiveness rises with the measured target speed; OM_MAX: responsiveness ceiling; OM10: responsiveness floor while the animation is only sampled 10 times per second; JUMP_LIN / TELEPORT: linear speed / distance of a target step that is a pose jump, not motion; LEAD_CAP / ANG_LEAD_CAP / LEAD_STEP: prediction limits (studs, rad, share of the last real target step); EPS_POS / EPS_ANG: settle distance / angle; HYST / HYST_V: near-half-turn error angle and counter-rotation speed above which the current rotation direction is kept
+local MAX_DT, HITCH, MIN_SAMPLE, GAP, FILTER, STALE, STALE10 = 0.1, 0.25, 0.006, 0.2, 0.04, 0.05, 0.14
+local BRAKE, GAIN, X0, W0, OM_MAX, OM10 = 0.8, 1.6, 3, 3, 90, 32
+local JUMP_LIN, TELEPORT = 45, 12
+local LEAD_CAP, ANG_LEAD_CAP, LEAD_STEP = 0.03, 0.03, 0.5
+local EPS_POS, EPS_ANG = 5e-4, 2.5e-4
+local HYST, HYST_V = 2.8, 0.5
+-- adaptive smoothing: FILT_SLOW / FILT_FAST = velocity measurement filter time constants for slow / fast target motion; CONF_RISE = time of consistent motion until prediction reaches full confidence; SLOW_OM = share of the base responsiveness used for (almost) still / slow motion (SLOW_X / SLOW_WX = linear / angular speed at which it is half way back to 1)
+local FILT_SLOW, FILT_FAST, CONF_RISE, SLOW_OM, SLOW_X, SLOW_WX = 0.08, 0.025, 0.06, 0.65, 1.5, 0.8
+-- sudden direction change: REV_L / REV_A = minimum linear / angular speed on both sides of a reversal, TURN_TIME = duration of the extra damping, TURN_OM / TURN_ACC = responsiveness / acceleration reduction at its start, TURN_KEEP = share of the carried velocity kept
+local REV_L, REV_A, TURN_TIME, TURN_OM, TURN_ACC, TURN_KEEP = 2, 1.5, 0.15, 0.35, 0.25, 0.5
+-- per joint type: rm / am / sm scale the linear responsiveness / acceleration / speed settings, wr / wa scale the angular responsiveness / acceleration settings, wmax = angular speed limit for catching up (rad/s), jw = angular speed (rad/s) above which a target step is a pose jump
+local PROFILE = {
+Root = {rm = 0.85, am = 0.8, sm = 0.9, wr = 0.85, wa = 0.8, wmax = 9, jw = 30, pm = 0.5},
+Torso = {rm = 0.9, am = 0.9, sm = 0.95, wr = 0.9, wa = 0.85, wmax = 10, jw = 32, pm = 0.7},
+Head = {rm = 1, am = 0.9, sm = 1, wr = 1, wa = 0.9, wmax = 12, jw = 38, pm = 0.8},
+Arm = {rm = 1, am = 1, sm = 1.15, wr = 1.1, wa = 1, wmax = 16, jw = 45, pm = 1},
+Leg = {rm = 1, am = 1.05, sm = 1.1, wr = 1.05, wa = 1, wmax = 15, jw = 42, pm = 1},
+Distal = {rm = 1.15, am = 1.1, sm = 1.3, wr = 1.2, wa = 1.2, wmax = 20, jw = 55, pm = 1.25},
+}
+local function classify(map)
+if map.RPart0 == "ROOT" or map.Part0 == "HumanoidRootPart" then return PROFILE.Root end
+local n = string.lower(tostring(map.Part1 or map.RPart1 or ""))
+if n:find("head", 1, true) then return PROFILE.Head end
+if n:find("hand", 1, true) or n:find("foot", 1, true) then return PROFILE.Distal end
+if n:find("arm", 1, true) then return PROFILE.Arm end
+if n:find("leg", 1, true) then return PROFILE.Leg end
+return PROFILE.Torso
+end
+local function finite(v)
+local m = v.Magnitude
+return m == m and m < 1e9
+end
+local function finiteCF(cf)
+return finite(cf.Position) and finite(cf.XVector) and finite(cf.YVector)
+end
+local function clampMag(v, m)
+local l = v.Magnitude
+if l > m then return v * (m / l) end
+return v
+end
+local function rotVec(r)
+local axis, ang = r:ToAxisAngle()
+if ang > PI then ang -= 2 * PI end
+if abs(ang) < 1e-7 then return ZERO end
+return axis * ang
+end
+local function rotFromVec(w)
+local a = w.Magnitude
+if a < 1e-9 then return IDCF end
+return CFrame.fromAxisAngle(w / a, a)
+end
+-- one monotonic critically damped step along the line to the target (frame-rate independent closed form). d = remaining distance / angle (>= 0), vs = closing speed toward the target. The closing speed is first limited to om * d, the exact bound above which a critically damped step would cross the target, and to the speed from which the limited acceleration can still stop inside d, so the target can never be passed. Speed and acceleration limits are applied on top; when one of them acts the step is integrated with the limited speeds, and the remaining distance never goes below zero. Returns the new remaining distance and closing speed.
+local function track(d, vs, om, amax, smax, dt)
+if vs < 0 then vs = 0 end
+local cap = om * d
+if vs > cap then vs = cap end
+local allow = sqrt(2 * BRAKE * amax * d)
+if vs > allow then vs = allow end
+if vs > smax then vs = smax end
+local ex = exp(-om * dt)
+local j = om * d - vs
+local dn = (d + j * dt) * ex
+local vn = (vs + om * j * dt) * ex
+local exact = true
+local lim = amax * dt
+if vn > vs + lim then
+vn, exact = vs + lim, false
+elseif vn < vs - lim then
+vn, exact = vs - lim, false
+end
+local a2 = sqrt(2 * BRAKE * amax * dn)
+if vn > a2 then vn, exact = a2, false end
+if vn > smax then vn, exact = smax, false end
+if not exact then
+dn = d - (vs + vn) * 0.5 * dt
+if dn < 0 then dn, vn = 0, 0 end
+end
+return dn, vn
+end
+local Core = {}
+LimbReanimator.VelInterpCore = Core
+function Core.Reset(map)
+local st = map.VI
+if st then st.Ready = false end
+end
+function Core.Clear(map)
+map.VI = nil
+end
+-- tgt = original animation target (never modified), fresh = tgt was just sampled this call (a cached target is never a new sample), now = os.clock(); returns the interpolated pose
+function Core.Step(map, tgt, fresh, now)
+local st = map.VI
+if not st then
+st = {Ready = false, P = classify(map), Cur = tgt, Tgt = tgt, PrevT = tgt, LV = ZERO, AV = ZERO, TV = ZERO, TA = ZERO, SS = 0, SW = 0, SL = 0, SA = 0, CL = 0, CA = 0, TN = 0, TT = now, IT = now}
+map.VI = st
+end
+local hl = Reanimate.HiddenLimbs
+if hl and hl[map.RPart1] and (map.RPart0 == "ROOT" or not hl[map.RPart0]) then
+st.Ready = false
+return tgt
+end
+if not finiteCF(tgt) then
+if not st.Ready then return tgt end
+tgt, fresh = st.Tgt, false
+end
+if not st.Ready then
+st.Ready = true
+st.Cur, st.Tgt, st.PrevT = tgt, tgt, tgt
+st.LV, st.AV, st.TV, st.TA = ZERO, ZERO, ZERO, ZERO
+st.SS, st.SW, st.SL, st.SA = 0, 0, 0, 0
+st.CL, st.CA, st.TN = 0, 0, 0
+st.TT, st.IT = now, now
+return tgt
+end
+local P = st.P
+if fresh then
+st.Tgt = tgt
+local ds = now - st.TT
+if ds >= MIN_SAMPLE then
+local pp = st.PrevT
+local dp = tgt.Position - pp.Position
+local dr = rotVec(tgt.Rotation * pp.Rotation:Inverse())
+if finite(dp) and finite(dr) then
+local ml, ma = dp.Magnitude, dr.Magnitude
+if ds > GAP or ml > TELEPORT or ml > JUMP_LIN * ds or ma > P.jw * ds then
+-- discontinuity (animation switch, pose jump, teleport, sampling gap): no speed is measured from it and every old velocity is dropped, the limb eases from where it is (or lands directly after a teleport)
+if ml > TELEPORT then st.Cur = tgt end
+st.LV, st.AV, st.TV, st.TA = ZERO, ZERO, ZERO, ZERO
+st.SS, st.SW, st.CL, st.CA, st.TN = 0, 0, 0, 0, 0
+else
+local rl, ra = dp / ds, dr / ds
+local il, ia = ml / ds, ma / ds
+local tv, ta = st.TV, st.TA
+local tl, tal = tv.Magnitude, ta.Magnitude
+local sl0, sw0 = st.SS, st.SW
+-- adaptive measurement filter: slow target motion is averaged over a longer window (smoother, less noise), fast motion is followed closely
+local fl = il > sl0 and il or sl0
+local fa = ia > sw0 and ia or sw0
+local kl = 1 - exp(-ds / (FILT_FAST + (FILT_SLOW - FILT_FAST) * X0 / (fl + X0)))
+local ka = 1 - exp(-ds / (FILT_FAST + (FILT_SLOW - FILT_FAST) * W0 / (fa + W0)))
+local dl, da = tv:Dot(rl), ta:Dot(ra)
+-- a reversal (or a first sample after rest) replaces the old estimate outright instead of blending through it, and is never predicted from
+local cl = dl > 0.5 * tl * il
+local ca = da > 0.5 * tal * ia
+-- prediction confidence: builds up while the measured motion keeps its direction AND speed, collapses on a direction change and drops quickly while the target speeds up or slows down (a decelerating target must not be led)
+local cf = st.CL
+if not cl then cf = 0
+elseif il < 0.7 * tl or il > 1.5 * tl then cf *= 0.35
+else cf = math.min(1, cf + ds / CONF_RISE) end
+st.CL = cf
+cf = st.CA
+if not ca then cf = 0
+elseif ia < 0.7 * tal or ia > 1.5 * tal then cf *= 0.35
+else cf = math.min(1, cf + ds / CONF_RISE) end
+st.CA = cf
+-- sudden direction change (fast on both sides, not the smooth speed-zero crossing of an ordinary swing): start temporary extra damping and drop part of the carried velocity so the limb is redirected smoothly
+if (tl > REV_L and il > REV_L and dl < 0.1 * tl * il) or (tal > REV_A and ia > REV_A and da < 0.1 * tal * ia) then
+st.TN = 1
+st.LV, st.AV = st.LV * TURN_KEEP, st.AV * TURN_KEEP
+end
+st.TV = cl and tv:Lerp(rl, kl) or rl
+st.TA = ca and ta:Lerp(ra, ka) or ra
+st.SS += (il - sl0) * kl
+st.SW += (ia - sw0) * ka
+end
+st.SL, st.SA = ml, ma
+st.PrevT, st.TT = tgt, now
+end
+end
+end
+local dt = now - st.IT
+st.IT = now
+if not (dt > 0) then return st.Cur end
+if dt > HITCH then
+st.Ready = false
+return st.Tgt
+end
+if dt > MAX_DT then dt = MAX_DT end
+local ten = LimbReanimator.ReplicateFPS10
+local stale = ten and STALE10 or STALE
+local age = now - st.TT
+local ss, sw = st.SS, st.SW
+if age >= stale then
+-- the animation stopped changing: the measured target motion is expired and relaxes every limit back to its base value
+if ss ~= 0 or sw ~= 0 or st.TV ~= ZERO or st.TA ~= ZERO then
+st.SS, st.SW, st.TV, st.TA, st.CL, st.CA = 0, 0, ZERO, ZERO, 0, 0
+end
+ss, sw = 0, 0
+end
+local tn = st.TN
+if tn > 0 then
+tn -= dt / TURN_TIME
+if tn < 0 then tn = 0 end
+st.TN = tn
+end
+local cfg = VC
+-- responsiveness rises smoothly with the measured target speed (the faster the animation really moves, the tighter it is followed); catch-up speed / acceleration limits only grow with the same measured speed, so they never restrict the animation's own motion
+-- slow motion: softer (SLOW_OM of the base responsiveness), rising to the full base value and beyond as the measured speed grows; a recent reversal adds temporary damping
+local dmp = 1 - TURN_OM * tn
+local om = cfg.Resp * P.rm * dmp * (SLOW_OM + (1 - SLOW_OM) * ss / (ss + SLOW_X)) * (1 + GAIN * ss / (ss + X0))
+local omr = cfg.AngResp * P.wr * dmp * (SLOW_OM + (1 - SLOW_OM) * sw / (sw + SLOW_WX)) * (1 + GAIN * sw / (sw + W0))
+if ten then
+if om < OM10 then om = OM10 end
+if omr < OM10 then omr = OM10 end
+end
+if om > OM_MAX then om = OM_MAX end
+if omr > OM_MAX then omr = OM_MAX end
+local smax = cfg.MaxSpeed * P.sm + 1.5 * ss
+local amax = (cfg.MaxAcc * P.am + om * ss) * (1 - TURN_ACC * tn)
+local wmax = P.wmax + 1.5 * sw
+local wamax = (cfg.MaxAngAcc * P.wa + omr * sw) * (1 - TURN_ACC * tn)
+local base = st.Tgt
+local gp, gr = base.Position, base.Rotation
+local pr = cfg.Predict
+if pr > 0 then
+-- optional prediction: only along a consistent, steady (not decelerating) measured direction, weighted by its confidence, faded out after a reversal, scaled per joint and never more than a share of the last real target step (the absolute cap grows a little with the measured speed)
+local cl, ca = st.CL * (1 - tn), st.CA * (1 - tn)
+if cl > 0 then gp += clampMag(st.TV * (pr * P.pm * cl), math.min(st.SL * LEAD_STEP, LEAD_CAP * (1 + ss / (ss + X0)))) end
+if ca > 0 then gr = rotFromVec(clampMag(st.TA * (pr * P.pm * ca), math.min(st.SA * LEAD_STEP, ANG_LEAD_CAP * (1 + sw / (sw + W0))))) * gr end
+end
+local cur = st.Cur
+local cp = cur.Position
+local e = cp - gp
+local d = e.Magnitude
+local np, nv
+if d < EPS_POS then
+np, nv = gp, ZERO
+else
+local u = e / d
+local dn, vn = track(d, -st.LV:Dot(u), om, amax, smax, dt)
+np, nv = gp + u * dn, -u * vn
+end
+local er = rotVec(cur.Rotation * gr:Inverse())
+local th = er.Magnitude
+local nr, nav
+if th < EPS_ANG then
+nr, nav = gr, ZERO
+else
+local ax = er / th
+local vs = -st.AV:Dot(ax)
+if th > HYST and vs < -HYST_V then
+-- almost a half turn away and already rotating the other way round: keep that direction instead of reversing it
+ax, th, vs = -ax, 2 * PI - th, -vs
+end
+local thn, vn = track(th, vs, omr, wamax, wmax, dt)
+nr, nav = rotFromVec(ax * thn) * gr, -ax * vn
+end
+if not (finite(np) and finite(nv) and finite(nav) and finite(nr.XVector) and finite(nr.YVector)) then
+st.Ready = false
+return st.Tgt
+end
+local out = CFrame.new(np) * nr
+st.Cur, st.LV, st.AV = out, nv, nav
+return out
+end
+local VelInterpReanimator = setmetatable({Name = "Velocity-Interpolated", HiderKey = "VelInterp"}, {__index = LimbReanimator})
+Reanimate.VelocityInterpolatedReanimator = VelInterpReanimator
+function VelInterpReanimator.Config(parent)
+UI.CreateText(parent, "Velocity-Interpolated Reanimation: every limb keeps its own continuous movement state and is moved toward the animation's current pose by a bounded, critically damped tracker that cannot overshoot, swing or carry momentum, using real frame time. Responsiveness follows how fast the animation really moves and differs per joint (root, torso, head, arms, legs, hands / feet); pose jumps and animation switches clear the movement state. The animation's own pose is never overwritten, and it works with the Limb Reanimator's RootPart, init, fling and limb hider options.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "-=+ Velocity-Interpolated Settings +=-", 12, Enum.TextXAlignment.Center)
+local function slider(label, key, lo, hi, field, scale)
+UI.CreateSlider(parent, label, RS[key], lo, hi, 1).Changed:Connect(function(val)
+val = math.clamp(val, lo, hi)
+RS[key] = val
+VC[field] = scale and val / scale or val
+end)
+end
+slider("Interpolation Responsiveness (1/s)", "VelInterpResp", 1, 60, "Resp")
+slider("Prediction Time (ms)", "VelInterpPredictMs", 0, 10, "Predict", 1000)
+slider("Maximum Linear Acceleration (studs/s^2)", "VelInterpMaxAcc", 10, 1000, "MaxAcc")
+slider("Maximum Linear Speed (studs/s)", "VelInterpMaxSpeed", 1, 60, "MaxSpeed")
+slider("Angular Responsiveness (1/s)", "VelInterpAngResp", 1, 60, "AngResp")
+slider("Maximum Angular Acceleration (rad/s^2)", "VelInterpMaxAngAcc", 10, 800, "MaxAngAcc")
+UI.CreateText(parent, "^^^ all settings apply live. Responsiveness is the base smoothing speed (limbs automatically follow faster animation motion more tightly); prediction (0 = off) only adds a small lead that is bounded by the measured motion and fades out on reversals and deceleration; the acceleration / speed limits only shape catch-up after pose jumps and never restrict the animation's own motion. Lower values = softer, heavier transitions.", 10, Enum.TextXAlignment.Center)
+UI.CreateSeparator(parent)
+UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, Enum.TextXAlignment.Center)
+LimbReanimator.Config(parent, "VelInterp")
+end
+function VelInterpReanimator.Start()
+LimbReanimator.VelInterpMode = true
+local ok, err = pcall(LimbReanimator.Start)
+LimbReanimator.VelInterpMode = nil
+if not ok then
+warn("[Velocity-Interpolated Reanimator] failed to start: " .. tostring(err))
+pcall(Util.Notify, "Velocity-Interpolated Reanimator failed to start (see console): " .. tostring(err))
 pcall(Reanimate.DestroyCharacter)
 Reanimate.Starting = false
 repeat task.wait() until Reanimate.Stopping
@@ -86999,7 +87223,7 @@ if not SaveData.ReanimSelRagdoll then
 SaveData.ReanimSelRagdoll = true
 if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end
 end
-if SaveData.SelectedReanimator > 12 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
+if SaveData.SelectedReanimator > 13 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
 Util.FCMark("reanim")
 
 local ReanimMethods = {
@@ -87015,6 +87239,7 @@ local ReanimMethods = {
 {Reanimate.HatHairReanimator, "Hat Reanimation X Hair Reanimation"},
 {Reanimate.AccessoriesReanimator, "Accessories Reanimation"},
 {Reanimate.KinematicReanimator, "Kinematic Reanimation"},
+{Reanimate.VelocityInterpolatedReanimator, "Velocity-Interpolated Reanimation"},
 }
 local ReanimMethodNames = {}
 for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
@@ -88588,7 +88813,7 @@ end
 local hats
 if cur == HatReanimator then
 hats = true
-elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator or cur == Reanimate.HybridJointReanimator or cur == Reanimate.SkeletalRetargetReanimator or cur == Reanimate.KinematicReanimator then
+elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator or cur == Reanimate.HybridJointReanimator or cur == Reanimate.SkeletalRetargetReanimator or cur == Reanimate.KinematicReanimator or cur == Reanimate.VelocityInterpolatedReanimator then
 hats = false
 else
 hats = (SaveData.SelectedReanimator == 2)
