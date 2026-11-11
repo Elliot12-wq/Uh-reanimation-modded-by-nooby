@@ -595,10 +595,10 @@ local t = d.Tier or 4
 return t <= 1 or (t == 2 and d.Mobile == true)
 end
 do
--- Adaptive Performance Engine: 5 profiles, device-seeded start, FPS governor, manual override, VFX scaling
+-- Adaptive Performance Engine v2: 5 profiles, multi-source device seed, windowed FPS governor (sustained drops, stability, cap-aware, hysteresis, gated probing), priority-ordered budgeted workload scaling
 local Perf = {}
 FX.Perf = Perf
-local floor, max, min, clock = math.floor, math.max, math.min, os.clock
+local floor, max, min, clock, sqrt = math.floor, math.max, math.min, os.clock, math.sqrt
 local NAMES = {"Ultra", "High", "Balanced", "Low", "Potato"}
 Perf.Names = NAMES
 Gov.Level = 1
@@ -621,13 +621,23 @@ Perf.RayStride = 1
 -- ---------- instance scaling (particles / trails / beams / lights / post effects) ----------
 local CLS = {ParticleEmitter = 1, Trail = 2, Beam = 3, PointLight = 4, SpotLight = 4, SurfaceLight = 4, BloomEffect = 5, SunRaysEffect = 5, DepthOfFieldEffect = 5}
 local POST = {BloomEffect = "bloom", SunRaysEffect = "sun", DepthOfFieldEffect = "dof"}
+-- tracked instances live in 6 buckets, most expensive first: 1 post fx, 2 lights, 3 heavy emitters, 4 emitters, 5 beams, 6 trails
+local NB = 6
+local BKT = {[1] = 4, [2] = 6, [3] = 5, [4] = 2, [5] = 1}
 local Rec = setmetatable({}, {__mode = "k"})
-local Mod = {}
-local Q, qh, qt = {}, 1, 0
-local active, modI, modPrune, restoring = false, nil, false, false
-local scanList, scanI, pruneT = nil, 1, 0
-local addedA, addedB, conn
-local BUDGET = 0.0012
+local L, LN, dirty = {{}, {}, {}, {}, {}, {}}, {0, 0, 0, 0, 0, 0}, {false, false, false, false, false, false}
+local G, GA = {}, {gs = false, q = false, m = false, deco = false, cap = false}
+local wN, wS, wQ, wM = 0, 0, 0, 0
+local S = {
+qh = 1, qt = 0, Q = {}, dq = {}, dqN = 0, active = false, restoring = false, PA = P[1],
+sweepOn = false, prune = false, swB = 1, swI = 1, scOn = false, scD = 0, scL = {}, scI = {}, lastScan = 0,
+rescan = false, pruneT = 0, bAp = 0.0012, bDi = 0.0012, simT = 0,
+ring = {0, 0, 0, 0, 0, 0}, tmp = {0, 0, 0, 0, 0, 0}, rn = 0, ri = 0, cv = 0,
+badS = 0, goodS = 0, headS = 0, lastChange = 0, lastDir = 0, settleUntil = 0, lastUp = -1e9,
+holdUntil = 0, holdDur = 300, flaps = 0, bonus = 0, spikeAt = -1e9,
+cap = 0, capAt = -1e9, lockN = 0, lockC = 0, seedAt = 0, memP = 0, probeT = 15, stress = 0, stab = 1, T = 60,
+gI = 1, gT = 0,
+}
 local function offBool(inst, r, prop, off)
 if off then
 if inst[prop] == true then inst[prop] = false r[prop] = true end
@@ -639,8 +649,7 @@ end
 local function applyOne(inst, p)
 local r = Rec[inst]
 if not r then return end
-local cn = inst.ClassName
-local k = CLS[cn]
+local k = r.k
 if k == 1 then
 local cur, a = inst.Rate, r.a
 if p.vfx >= 1 then
@@ -658,115 +667,230 @@ elseif k == 2 then offBool(inst, r, "Enabled", not p.trail)
 elseif k == 3 then offBool(inst, r, "Enabled", not p.beam)
 elseif k == 4 then
 offBool(inst, r, "Shadows", not p.shad)
-if cn ~= "PointLight" then offBool(inst, r, "Enabled", not p.spot) end
-elseif k == 5 then offBool(inst, r, "Enabled", not p[POST[cn]])
+if r.nl then offBool(inst, r, "Enabled", not p.spot) end
+else offBool(inst, r, "Enabled", not p[r.pk]) end
 end
+-- O(1) removal: swap the last entry into the freed slot (a moved, not-yet-swept entry is applied right away)
+local function untrack(inst, r)
+local b, i = r.b, r.i
+local list, n = L[b], LN[b]
+local last = list[n]
+if last ~= inst then
+list[i] = last
+local rl = Rec[last]
+if rl then rl.i = i end
+if dirty[b] and b == S.swB and i < S.swI then pcall(applyOne, last, S.PA) end
 end
-local function track(inst, p)
-if Rec[inst] == nil then
-Rec[inst] = {}
-Mod[#Mod + 1] = inst
+list[n] = nil
+LN[b] = n - 1
+Rec[inst] = nil
 end
-pcall(applyOne, inst, p)
+local function track(inst)
+if Rec[inst] ~= nil then return end
+local cn = inst.ClassName
+local k = CLS[cn]
+if not k then return end
+local b = BKT[k]
+if k == 1 and inst.Rate >= 20 then b = 3 end
+local n = LN[b] + 1
+LN[b] = n
+L[b][n] = inst
+local r = {k = k, b = b, i = n}
+if k == 4 then r.nl = cn ~= "PointLight" elseif k == 5 then r.pk = POST[cn] end
+Rec[inst] = r
+pcall(applyOne, inst, S.PA)
 end
 local function onAdded(d)
 if CLS[d.ClassName] then
-if qt - qh > 3000 then
-Perf._rescan = true
-return
-end
+local qt = S.qt
+if qt - S.qh > 3000 then S.rescan = true return end
 qt = qt + 1
-Q[qt] = d
+S.qt = qt
+S.Q[qt] = d
+end
+end
+local function onRemoving(d)
+if Rec[d] ~= nil then
+local n = S.dqN + 1
+S.dqN = n
+S.dq[n] = d
+end
+end
+local function drainDQ()
+local dq, n = S.dq, S.dqN
+S.dqN = 0
+for i = 1, n do
+local inst = dq[i]
+dq[i] = nil
+local r = Rec[inst]
+if r then
+if inst.Parent == nil then
+untrack(inst, r)
+elseif not inst:IsDescendantOf(game) then
+pcall(applyOne, inst, P[1])
+untrack(inst, r)
+end
+end
 end
 end
 local function startScan()
-local l = {}
-pcall(function() l = workspace:GetDescendants() end)
-pcall(function()
-local b = Lighting:GetDescendants()
-for i = 1, #b do l[#l + 1] = b[i] end
-end)
-scanList, scanI = l, 1
+S.lastScan = clock()
+S.scOn = true
+local sl, si = S.scL, S.scI
+for i = #sl, 1, -1 do sl[i] = nil end
+sl[1], si[1], S.scD = {workspace, Lighting}, 1, 1
+end
+-- incremental depth-first scan: no giant GetDescendants table, always time-sliced
+local function scanStep(t0, bud)
+local sl, si = S.scL, S.scI
+local d, n = S.scD, 0
+while d > 0 do
+local l, i = sl[d], si[d]
+local inst = l[i]
+if inst == nil then
+sl[d] = nil
+d = d - 1
+else
+si[d] = i + 1
+if CLS[inst.ClassName] then track(inst) end
+local kids = inst:GetChildren()
+if kids[1] ~= nil then
+d = d + 1
+sl[d], si[d] = kids, 1
+end
+n = n + 1
+if n % 48 == 0 and clock() - t0 > bud then S.scD = d return end
+end
+end
+S.scD = 0
+S.scOn = false
 end
 local function startAdded()
-if not addedA then addedA = workspace.DescendantAdded:Connect(onAdded) end
-if not addedB then addedB = Lighting.DescendantAdded:Connect(onAdded) end
+if not S.cA then S.cA = workspace.DescendantAdded:Connect(onAdded) end
+if not S.cB then S.cB = Lighting.DescendantAdded:Connect(onAdded) end
+if not S.cC then S.cC = workspace.DescendantRemoving:Connect(onRemoving) end
+if not S.cD then S.cD = Lighting.DescendantRemoving:Connect(onRemoving) end
 end
 local function stopAdded()
-if addedA then addedA:Disconnect() addedA = nil end
-if addedB then addedB:Disconnect() addedB = nil end
+if S.cA then S.cA:Disconnect() S.cA = nil end
+if S.cB then S.cB:Disconnect() S.cB = nil end
+if S.cC then S.cC:Disconnect() S.cC = nil end
+if S.cD then S.cD:Disconnect() S.cD = nil end
 end
-local function work()
-local t0 = clock()
-local p = restoring and P[1] or Cur
-if modI then
-local i, n = modI, #Mod
-while i <= n do
-local inst = Mod[i]
-if inst.Parent == nil then
-Rec[inst] = nil
-Mod[i] = Mod[n]
-Mod[n] = nil
-n = n - 1
-else
-if not modPrune then pcall(applyOne, inst, p) end
-i = i + 1
+function S.clearQ()
+local Q = S.Q
+for i = S.qh, S.qt do Q[i] = nil end
+S.qh, S.qt = 1, 0
 end
-if i % 32 == 0 and clock() - t0 > BUDGET then modI = i return end
+local function resetTracking()
+for b = 1, NB do
+local l = L[b]
+for i = LN[b], 1, -1 do l[i] = nil end
+LN[b] = 0
+dirty[b] = false
 end
-modI, modPrune = nil, false
-if restoring then
-restoring = false
-if not active then
-Mod = {}
 Rec = setmetatable({}, {__mode = "k"})
 end
-end
-end
-if Perf._rescan and active then Perf._rescan = nil Q, qh, qt = {}, 1, 0 startScan() end
-if scanList and active then
-local l, i, n = scanList, scanI, #scanList
-while i <= n do
-local inst = l[i]
+-- re-applies only the buckets whose profile fields changed, most expensive bucket first, inside a time budget
+local function sweep(bud)
+local t0, p, c = clock(), S.PA, 0
+local pr = S.prune
+while S.swB <= NB do
+local b = S.swB
+if dirty[b] then
+local list = L[b]
+local i = S.swI
+while i <= LN[b] do
+local inst = list[i]
+if inst.Parent == nil then
+untrack(inst, Rec[inst])
+else
+if not pr then pcall(applyOne, inst, p) end
 i = i + 1
-if CLS[inst.ClassName] then track(inst, Cur) end
-if i % 64 == 0 and clock() - t0 > BUDGET then scanI = i return end
 end
-scanList = nil
+c = c + 1
+if c % 32 == 0 and clock() - t0 > bud then S.swI = i return true end
 end
-local c = 0
-while qh <= qt and active do
+dirty[b] = false
+end
+S.swB = b + 1
+S.swI = 1
+end
+S.sweepOn, S.prune, S.swB, S.swI = false, false, 1, 1
+if S.restoring then
+S.restoring = false
+if not S.active then resetTracking() end
+end
+return false
+end
+local function work()
+if S.dqN > 0 then drainDQ() end
+if S.sweepOn and sweep(S.bAp) then return end
+if not S.active then return end
+local t0 = clock()
+if S.rescan and not S.scOn and t0 - S.lastScan > 30 then
+S.rescan = false
+S.clearQ()
+startScan()
+end
+local Q, bud, c = S.Q, S.bDi, 0
+while S.qh <= S.qt do
+local qh = S.qh
 local inst = Q[qh]
 Q[qh] = nil
-qh = qh + 1
-if inst.Parent ~= nil then track(inst, Cur) end
+S.qh = qh + 1
+if inst.Parent ~= nil then track(inst) end
 c = c + 1
-if c % 32 == 0 and clock() - t0 > BUDGET then return end
+if c % 32 == 0 and clock() - t0 > bud then return end
 end
-if qh > qt and qt > 0 then Q, qh, qt = {}, 1, 0 end
+if S.qt > 0 then S.qh, S.qt = 1, 0 end
+if S.scOn then scanStep(t0, bud) end
 end
-local function retarget()
-local on = level ~= nil and level >= 2
-if on then
-restoring = false
-if not active then
-active = true
+local function markDirty(old, p)
+local any = false
+if old.vfx ~= p.vfx then dirty[3], dirty[4], any = true, true, true end
+if old.shad ~= p.shad or old.spot ~= p.spot then dirty[2], any = true, true end
+if old.bloom ~= p.bloom or old.sun ~= p.sun or old.dof ~= p.dof then dirty[1], any = true, true end
+if old.beam ~= p.beam then dirty[5], any = true, true end
+if old.trail ~= p.trail then dirty[6], any = true, true end
+return any
+end
+local function retarget(old)
+if level ~= nil and level >= 2 then
+local wasR = S.restoring
+S.restoring, S.PA = false, Cur
+local fresh = not S.active
+if fresh then
+S.active = true
 startAdded()
 startScan()
 end
-modI, modPrune = 1, false
-elseif active then
-active = false
+local any = false
+if wasR then
+for b = 1, NB do dirty[b] = true end
+any = true
+elseif not fresh then
+any = markDirty(old, Cur)
+end
+if any then S.sweepOn, S.prune, S.swB, S.swI = true, false, 1, 1 end
+elseif S.active then
+S.active = false
 stopAdded()
-scanList, Q, qh, qt = nil, {}, 1, 0
-modI, modPrune, restoring = 1, false, true
+S.scOn, S.scD = false, 0
+S.clearQ()
+S.restoring, S.PA = true, P[1]
+for b = 1, NB do dirty[b] = true end
+S.sweepOn, S.prune, S.swB, S.swI = true, false, 1, 1
 end
 end
--- ---------- global rendering knobs (originals saved lazily, restored when no longer overridden) ----------
-local G = {}
-local function applyGlobals(p)
+-- ---------- global rendering knobs (originals saved lazily; each knob only writes when its state really changes) ----------
+local KN = {dn = {"gs", "deco", "q", "m", "cap"}, up = {"cap", "m", "q", "deco", "gs"}}
+function KN.gs(p)
+local want = p.gs == false
+if GA.gs == want then return false end
+GA.gs = want
 pcall(function()
-if p.gs == false then
+if want then
 if G.gs == nil then G.gs = Lighting.GlobalShadows end
 Lighting.GlobalShadows = false
 elseif G.gs ~= nil then
@@ -774,16 +898,31 @@ Lighting.GlobalShadows = G.gs
 G.gs = nil
 end
 end)
+return true
+end
+function KN.q(p)
+local want = p.q or false
+if GA.q == want then return false end
+GA.q = want
 pcall(function()
 local R = settings().Rendering
-if p.q then
+if want then
 if G.q == nil then G.q = R.QualityLevel end
-R.QualityLevel = string.format("Level%02d", p.q)
+R.QualityLevel = string.format("Level%02d", want)
 elseif G.q ~= nil then
 R.QualityLevel = G.q
 G.q = nil
 end
-if p.mesh then
+end)
+return true
+end
+function KN.m(p)
+local want = p.mesh == true
+if GA.m == want then return false end
+GA.m = want
+pcall(function()
+local R = settings().Rendering
+if want then
 if G.m == nil then G.m = R.MeshPartDetailLevel end
 R.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04
 elseif G.m ~= nil then
@@ -791,10 +930,16 @@ R.MeshPartDetailLevel = G.m
 G.m = nil
 end
 end)
+return true
+end
+function KN.deco(p)
+local want = p.deco == false
+if GA.deco == want then return false end
+local done = false
 pcall(function()
 local T = workspace:FindFirstChildOfClass("Terrain")
 if not T then return end
-if p.deco == false then
+if want then
 if not G.t then G.t = {T.Decoration, T.WaterWaveSize, T.WaterWaveSpeed, T.WaterReflectance} end
 T.Decoration, T.WaterWaveSize, T.WaterWaveSpeed, T.WaterReflectance = false, 0, 0, 0
 elseif G.t then
@@ -802,11 +947,18 @@ local t = G.t
 G.t = nil
 T.Decoration, T.WaterWaveSize, T.WaterWaveSpeed, T.WaterReflectance = t[1], t[2], t[3], t[4]
 end
+GA.deco = want
+done = true
 end)
-pcall(function()
-if type(setfpscap) ~= "function" then return end
+return done
+end
+function KN.cap(p)
+if type(setfpscap) ~= "function" then return false end
 local d = FX.Device
-local want = d and d.Mobile == true and p.capM or nil
+local want = (d and d.Mobile == true and p.capM) or false
+if GA.cap == want then return false end
+local done = false
+pcall(function()
 if want then
 if G.cap == nil then G.cap = (type(getfpscap) == "function" and tonumber(getfpscap())) or false end
 setfpscap(want)
@@ -815,19 +967,44 @@ local o = G.cap
 G.cap = nil
 setfpscap((o and o > 0) and o or ((d and d.Mobile == true) and 120 or 999))
 end
+GA.cap = want
+done = true
 end)
+return done
+end
+-- staged apply: first changing knob now, the rest ~0.12s apart (most expensive first when degrading, cheapest first when recovering)
+local function gStep()
+local ord, p = S.gO, S.gP
+while S.gI <= #ord do
+local key = ord[S.gI]
+S.gI = S.gI + 1
+if KN[key](p) then S.gT = 0.12 return end
+end
+S.gP = nil
+end
+local function applyGlobals(p, dir)
+S.gO, S.gP, S.gI, S.gT = (dir and dir < 0) and KN.up or KN.dn, p, 1, 0
+gStep()
+end
+local function applyAllNow(p)
+S.gP = nil
+for _, key in ipairs(KN.dn) do KN[key](p) end
 end
 -- ---------- profile switching ----------
-local avg, evalT, badT, goodT = nil, 0, 0, 0
-local cap, capAt = 0, -1e9
-local lastChange, settleUntil, lastUp, holdLevel, holdUntil, holdDur = 0, 0, -1e9, nil, 0, 300
+local conn
 local function emit()
 for i = 1, #listeners do pcall(listeners[i], level, mode) end
+end
+local function resetGov()
+wN, wS, wQ, wM = 0, 0, 0, 0
+S.rn, S.badS, S.goodS, S.headS, S.avg, S.fps, S.capAt, S.stress = 0, 0, 0, 0, nil, nil, -1e9, 0
 end
 local function setLevel(n)
 n = max(1, min(5, floor(n)))
 if n == level then return end
+local dir = level and (n > level and 1 or -1) or 0
 level = n
+local old = Cur
 local p = P[n]
 Cur = p
 Perf.Level, Perf.RayStride = n, p.ray
@@ -843,11 +1020,12 @@ elseif Util and Util.UIPlus and Util.UIPlus.Apply then
 pcall(Util.UIPlus.Apply)
 end
 if FX.Store then FX.Store.AutoLow = false end
-applyGlobals(p)
-retarget()
-avg, badT, goodT, capAt = nil, 0, 0, -1e9
-lastChange = clock()
-settleUntil = lastChange + 2.5
+applyGlobals(p, dir)
+retarget(old)
+resetGov()
+local now = clock()
+S.lastChange, S.lastDir = now, dir
+S.settleUntil = now + 2.5
 emit()
 end
 FX.OnLowEnd(function(on)
@@ -856,14 +1034,26 @@ userLow = on
 if FX.Store then FX.Store.AutoLow = false end
 end
 end)
-function Perf.Seed(tier, mobile)
+function Perf.Seed(tier, mobile, score, conf)
 tier = max(1, min(4, floor(tonumber(tier) or 3)))
 local c, s
-if tier == 1 then c, s = 4, 5
-elseif tier == 2 then if mobile then c, s = 3, 4 else c, s = 2, 2 end
-elseif tier == 3 then c = mobile and 2 or 1 s = c
-else c, s = 1, 1 end
+if tier == 1 then
+c, s = 4, 5
+elseif tier == 2 then
+if mobile then c, s = 3, 4 else c, s = 2, 2 end
+elseif tier == 3 then
+c = mobile and 2 or 1
+s = c
+else
+c, s = 1, 1
+end
+score = tonumber(score)
+if score and conf ~= "none" and conf ~= "low" then
+if score >= 75 and s > c then s = s - 1
+elseif score < 28 and s < 5 and tier <= 3 then s = s + 1 end
+end
 seeded, ceiling = true, c
+S.seedAt, S.bonus = clock(), 0
 startLv = level and max(startLv, s) or s
 local store = FX.Store
 if not level then userLow = RawCfg.LowEnd == true and not (store and store.AutoLow == true) end
@@ -889,12 +1079,14 @@ v = floor(tonumber(v) or 1)
 if v >= 2 and v <= 6 then
 if mode == "manual" and level == v - 1 then return end
 mode = "manual"
+S.stress, Perf.RayStride = 0, Cur.ray
 if level == v - 1 then emit() else setLevel(v - 1) end
 else
 if mode == "auto" then return end
 mode = "auto"
-avg, badT, goodT, holdLevel = nil, 0, 0, nil
-settleUntil = clock() + 3
+resetGov()
+S.holdLevel, S.flaps, S.bonus = nil, 0, 0
+S.settleUntil = clock() + 3
 if seeded then
 if level then setLevel(max(level, startLv)) end
 elseif level then
@@ -905,74 +1097,191 @@ end
 end
 function Perf.Manual() return mode == "manual" end
 function Perf.OnChange(fn) listeners[#listeners + 1] = fn end
+function Perf.SetProbe(fn) S.probe, S.probeT = fn, 12 end
 function Perf.Status()
-return {Level = level, Name = level and NAMES[level] or nil, Mode = mode, FPS = avg and 1 / avg or nil, Ceiling = ceiling, Seeded = seeded}
+return {Level = level, Name = level and NAMES[level] or nil, Mode = mode, FPS = S.fps or (S.avg and 1 / S.avg) or nil, Ceiling = ceiling, Seeded = seeded, Target = S.T, Stability = S.stab, Pressure = S.memP, Stress = S.stress}
 end
-local simT = 0
 function Perf.SimDue()
 local iv = Cur.sim
+if S.stress >= 2 then iv = max(iv * 1.5, 0.15) end
 if iv <= 0 then return true end
 local t = clock()
-if t - simT >= iv then simT = t return true end
+if t - S.simT >= iv then S.simT = t return true end
 return false
 end
 FX.SimDue = Perf.SimDue
--- ---------- single Heartbeat: job pump + lightweight FPS governor ----------
+-- ---------- FPS governor: 0.5s windows -> median-of-windows, frame-time consistency, weighted leaky badness, gated recovery ----------
+local function medianLast(k)
+local n = S.rn
+if n > k then n = k end
+local ring, tmp, ri = S.ring, S.tmp, S.ri
+for j = 1, n do
+local v = ring[(ri - j) % 6 + 1]
+local m = j - 1
+while m >= 1 and tmp[m] > v do
+tmp[m + 1] = tmp[m]
+m = m - 1
+end
+tmp[m + 1] = v
+end
+if n % 2 == 1 then return tmp[(n + 1) / 2] end
+return (tmp[n / 2] + tmp[n / 2 + 1]) * 0.5
+end
+local function evaluate(s)
+local n, q, m = wN, wQ, wM
+wN, wS, wQ, wM = 0, 0, 0, 0
+local mean = s / n
+local fps = 1 / mean
+local avg = S.avg
+S.avg = avg and (avg + (mean - avg) * 0.4) or mean
+local now = clock()
+if now < S.settleUntil then return end
+local var = q / n - mean * mean
+local cv = var > 0 and sqrt(var) / mean or 0
+S.cv = S.cv + (cv - S.cv) * 0.3
+if m > 0.15 then S.spikeAt = now end
+local ri = S.ri % 6 + 1
+S.ri = ri
+S.ring[ri] = fps
+if S.rn < 6 then S.rn = S.rn + 1 end
+if S.rn < 3 then return end
+-- target FPS: real cap (executor cap, our own applied cap, or a steady undeclared lock), never assume more than 60
+local cap = S.cap
+if now - S.capAt > 10 then
+S.capAt = now
+cap = 0
+if type(getfpscap) == "function" then
+local ok, v = pcall(getfpscap)
+if ok then cap = tonumber(v) or 0 end
+end
+S.cap = cap
+end
+local T = (cap > 0 and cap < 90) and cap or 60
+local ac = GA.cap
+if ac and ac < T then T = ac end
+if cap <= 0 and not ac then
+if cv < 0.06 and fps > 22 and fps < 47 then
+local c = fps < 27 and 24 or (fps < 35 and 30 or (fps < 42.5 and 40 or 45))
+local d = fps - c
+if d < 0 then d = -d end
+if d <= c * 0.045 then
+if S.lockC == c then S.lockN = S.lockN + 1 else S.lockC, S.lockN = c, 1 end
+if S.lockN >= 10 then S.lockV = c end
+else
+S.lockN = max(0, S.lockN - 1)
+end
+else
+S.lockN = max(0, S.lockN - 1)
+if S.lockV and fps > S.lockV * 1.2 then S.lockV = nil end
+end
+if S.lockV and S.lockV < T then T = S.lockV end
+else
+S.lockV, S.lockN = nil, 0
+end
+S.T = T
+local m6, m3 = medianLast(6), medianLast(3)
+S.fps = m6
+local r6, r3 = m6 / T, m3 / T
+local cvA = S.cv
+S.stab = 1 - min(1, cvA * 2)
+local bad = r6 < 0.78
+-- adaptive workload budgets: spend more on applying reductions when struggling, pause background discovery
+if r3 < 0.45 then S.bAp, S.bDi = 0.0025, 0.0004
+elseif bad then S.bAp, S.bDi = 0.0018, 0.0007
+elseif r6 < 0.93 then S.bAp, S.bDi = 0.0012, 0.0012
+else S.bAp, S.bDi = 0.0010, 0.0022 end
+local st = (r6 < 0.6 and 2) or (bad and 1) or 0
+if st ~= S.stress then
+S.stress = st
+Perf.RayStride = min(4, Cur.ray + (st >= 2 and 1 or 0))
+end
+local w = 0
+if r3 < 0.45 then w = 4
+elseif r6 < 0.62 then w = 2.5
+elseif bad then w = 1
+elseif cvA > 0.38 and r6 < 0.92 then w = 0.6 end
+if w > 0 then
+S.badS = min(S.badS + w * s, 8)
+S.goodS = max(0, S.goodS - s)
+S.headS = 0
+if S.badS >= 4 and level < 5 then
+local prev = level
+setLevel(level + ((r3 < 0.35) and 2 or 1))
+if now - S.lastUp < 60 and level ~= prev then
+S.holdLevel, S.holdUntil = level, now + S.holdDur
+S.holdDur = min(S.holdDur * 2, 1800)
+S.flaps = min(S.flaps + 1, 4)
+S.bonus = 0
+end
+end
+return
+end
+S.badS = max(0, S.badS - s * 1.5)
+if not (r6 >= 0.93 and cvA < 0.28 and now - S.spikeAt > 6) then
+S.goodS = max(0, S.goodS - s)
+S.headS = 0
+return
+end
+S.goodS = S.goodS + s
+if S.memP > 0 then return end
+local warm = now - S.seedAt < 60
+local need = (r6 >= 1.25 and 6 or 10) * (1 + 0.5 * S.flaps)
+if warm then need = need * 0.6 end
+local cool = warm and 8 or (S.lastDir > 0 and 25 or 15)
+local pf = min(ceiling, max(2, ceiling - 1))
+local lim = max(ceiling - S.bonus, pf)
+local held = S.holdLevel and now < S.holdUntil
+if held then lim = max(lim, S.holdLevel) end
+if level > lim then
+if S.goodS >= need and now - S.lastChange >= cool then
+S.lastUp = now
+setLevel(level - 1)
+end
+elseif S.bonus == 0 and pf < ceiling and level <= ceiling and not held then
+-- sustained steady performance at the hardware-prior best level earns one probe level beyond it (failed probes are remembered)
+S.headS = S.headS + s
+if S.headS >= 75 and now - S.lastChange >= 30 then S.headS, S.bonus = 0, 1 end
+end
+end
 local function step(dt)
-if modI or scanList or qh <= qt or Perf._rescan then work() end
-if active then
-pruneT = pruneT + dt
-if pruneT > 20 then
-pruneT = 0
-if not modI then modI, modPrune = 1, true end
+if S.sweepOn or S.scOn or S.qh <= S.qt or S.dqN > 0 or S.rescan then work() end
+if S.gP then
+S.gT = S.gT - dt
+if S.gT <= 0 then gStep() end
+end
+if S.probe then
+S.probeT = S.probeT - dt
+if S.probeT <= 0 then
+S.probeT = 15
+local ok, pr = pcall(S.probe)
+pr = ok and tonumber(pr) or 0
+S.memP = pr
+if pr >= 2 and mode == "auto" and seeded and level and level < 3 then setLevel(3) end
+end
+end
+if S.active then
+S.pruneT = S.pruneT + dt
+if S.pruneT > 90 then
+S.pruneT = 0
+if not S.sweepOn then
+for b = 1, NB do dirty[b] = true end
+S.sweepOn, S.prune, S.swB, S.swI = true, true, 1, 1
+end
 end
 end
 if mode ~= "auto" or not seeded or not level then return end
 if dt > 1 then
-avg, badT, goodT = nil, 0, 0
-settleUntil = clock() + 2
+wN, wS, wQ, wM = 0, 0, 0, 0
+S.rn, S.badS, S.goodS = 0, 0, 0
+S.settleUntil = clock() + 2
 return
 end
 if dt > 0.25 then dt = 0.25 end
-avg = avg and (avg + (dt - avg) * 0.05) or dt
-evalT = evalT + dt
-if evalT < 0.5 then return end
-local el = evalT
-evalT = 0
-local now = clock()
-if now < settleUntil then return end
-if now - capAt > 10 then
-capAt, cap = now, 0
-pcall(function() if type(getfpscap) == "function" then cap = tonumber(getfpscap()) or 0 end end)
-end
-local T = (cap > 0 and cap < 90) and cap or 60
-local fps = 1 / avg
-if fps < T * 0.72 then
-badT, goodT = badT + el, 0
-if badT >= (fps < T * 0.5 and 2.5 or 4) and level < 5 then
-local drop = fps < T * 0.35 and 2 or 1
-badT, goodT = 0, 0
-local prev = level
-setLevel(level + drop)
-if now - lastUp < 60 and level ~= prev then
-holdLevel, holdUntil = level, now + holdDur
-holdDur = min(holdDur * 2, 1800)
-end
-end
-elseif fps > T * 0.92 then
-goodT, badT = goodT + el, 0
-if goodT >= 8 and now - lastChange >= 15 then
-local lim = ceiling
-if holdLevel and now < holdUntil then lim = max(lim, holdLevel) end
-goodT = 0
-if level > lim then
-lastUp = now
-setLevel(level - 1)
-end
-end
-else
-badT, goodT = max(0, badT - el), max(0, goodT - el)
-end
+wN = wN + 1
+wS = wS + dt
+wQ = wQ + dt * dt
+if dt > wM then wM = dt end
+if wS >= 0.5 then evaluate(wS) end
 end
 function Perf.Start()
 if not conn then conn = RunService.Heartbeat:Connect(step) end
@@ -980,12 +1289,15 @@ end
 function Perf.Stop()
 if conn then conn:Disconnect() conn = nil end
 stopAdded()
-active, scanList, modI, Q, qh, qt, Perf._rescan = false, nil, nil, {}, 1, 0, nil
-for i = 1, #Mod do pcall(applyOne, Mod[i], P[1]) end
-Mod = {}
-Rec = setmetatable({}, {__mode = "k"})
-restoring = false
-applyGlobals(P[1])
+for b = 1, NB do
+local l = L[b]
+for i = 1, LN[b] do pcall(applyOne, l[i], P[1]) end
+end
+resetTracking()
+S.active, S.sweepOn, S.prune, S.scOn, S.scD, S.restoring, S.PA, S.rescan, S.dqN = false, false, false, false, 0, false, P[1], false, 0
+S.clearQ()
+table.clear(S.dq)
+applyAllNow(P[1])
 Gov.Stride, Gov.Level, Cur, Perf.RayStride = 1, 1, P[1], 1
 FX.SetProfile(nil, nil)
 if level and P[level].low and not userLow and (RawCfg.LowEnd == true) then
@@ -24249,98 +24561,248 @@ mobile = false
 else
 mobile = try(function() return UIS.TouchEnabled and not (UIS.KeyboardEnabled or UIS.MouseEnabled) end) == true
 end
-local function toGB(v)
+local function unitOf(ks)
+if ks:find("byte", 1, true) then return "b" end
+if ks:find("kb$") or ks:find("[^a-z]kb") or ks:find("kib", 1, true) then return "kb" end
+if ks:find("mb$") or ks:find("[^a-z]mb") or ks:find("mib", 1, true) then return "mb" end
+if ks:find("gb$") or ks:find("[^a-z]gb") or ks:find("gib", 1, true) then return "gb" end
+end
+-- RAM value -> GB. Honors explicit unit hints (key names / "8 GB" strings), otherwise infers GB / MB / KB / bytes from magnitude
+local function toGB(v, hint)
+if type(v) == "string" then
+local low = v:lower()
+local num = tonumber(low:match("%d+%.?%d*"))
+if not num then return nil end
+hint = (low:find("tb", 1, true) and "tb") or (low:find("gb", 1, true) and "gb") or (low:find("mb", 1, true) and "mb") or (low:find("kb", 1, true) and "kb") or (low:find("byte", 1, true) and "b") or hint
+v = num
+end
 v = tonumber(v)
 if not v or v ~= v or v <= 0 then return nil end
 local g
-if v < 256 then g = v
+if hint == "tb" then g = v * 1024
+elseif hint == "gb" then g = v
+elseif hint == "mb" then g = v / 1024
+elseif hint == "kb" then g = v / 1048576
+elseif hint == "b" then g = v / 2 ^ 30
+elseif v < 256 then g = v
 elseif v < 131072 then g = v / 1024
 elseif v < 2e8 then g = v / 1048576
 else g = v / 2 ^ 30 end
 if g < 0.5 or g > 256 then return nil end
 return g
 end
-local BAD = {"avail", "free", "used", "usage", "limit", "process", "heap", "swap", "virtual", "cache"}
+local BAD = {"avail", "free", "used", "usage", "limit", "process", "heap", "swap", "virtual", "cache", "vram", "video", "gpu", "graphic", "texture", "dedicated"}
 local function badKey(k)
 for _, w in ipairs(BAD) do if k:find(w, 1, true) then return true end end
 return false
 end
-local function fromTable(t, depth)
-if type(t) ~= "table" or depth > 2 then return nil, 0 end
-local best, bestRank = nil, 0
+local GPU_SOFT = {"llvmpipe", "swiftshader", "softpipe", "basic render", "software"}
+local GPU_STRONG = {"rtx", "gtx 16", "gtx 10[6-9]", "rx [5-9]%d%d%d", "arc a", "apple m%d", "apple a1%d", "apple a2%d", "adreno%D*[78]%d%d", "adreno%D*6[4-9]%d", "mali%-g7", "mali%-g9", "immortalis", "xclipse", "radeon pro", "vega 1"}
+local GPU_WEAK = {"intel%(r%) hd", "intel hd", "uhd graphics", "gma", "radeon hd", "radeon%(tm%) r[2-5]", "adreno%D*[2345]%d%d", "mali%-4", "mali%-t", "mali%-g3", "mali%-g5[12]", "powervr", "vivante", "geforce [89]", "gt 7", "gt 6"}
+local function gpuClass(name)
+if type(name) ~= "string" then return nil end
+local n = name:lower()
+for _, p in ipairs(GPU_SOFT) do if n:find(p, 1, true) then return "soft" end end
+for _, p in ipairs(GPU_STRONG) do if n:find(p) then return "strong" end end
+for _, p in ipairs(GPU_WEAK) do if n:find(p) then return "weak" end end
+return "mid"
+end
+-- walks an executor info table (depth <= 2) collecting total RAM (ranked), cores/threads and GPU/CPU names
+local function scan(t, depth, o)
+if type(t) ~= "table" or depth > 2 then return end
 for k, v in pairs(t) do
 local ks = type(k) == "string" and k:lower() or ""
-local g, rank = nil, 0
-if type(v) == "table" then
-g, rank = fromTable(v, depth + 1)
-elseif ks ~= "" and not badKey(ks) then
+local tv = type(v)
+if tv == "table" then
+scan(v, depth + 1, o)
+elseif ks ~= "" and (tv == "number" or tv == "string") then
+if not badKey(ks) then
 local mem = ks:find("memory", 1, true) or ks:find("^ram") or ks:find("[^a-z]ram") or ks:find("ram$")
+local rank = 0
 if mem and (ks:find("total", 1, true) or ks:find("physical", 1, true) or ks:find("install", 1, true)) then
 rank = 2
 elseif ks == "ram" or ks == "memory" or ks == "ramgb" or ks == "ram_gb" or ks == "memorygb" then
 rank = 1
 end
-if rank > 0 then g = toGB(v) end
+if rank > (o.rr or 0) then
+local g = toGB(v, unitOf(ks))
+if g then o.ram, o.rr = g, rank end
 end
-if g and rank > bestRank then best, bestRank = g, rank end
 end
-return best, bestRank
+if tv == "number" then
+if v >= 1 and v <= 256 and v % 1 == 0 and not (ks:find("clock", 1, true) or ks:find("speed", 1, true) or ks:find("freq", 1, true) or ks:find("temp", 1, true) or ks:find("mhz", 1, true) or ks:find("ghz", 1, true)) then
+if ks:find("thread", 1, true) or ks:find("logical", 1, true) or ks:find("processorcount", 1, true) or ks:find("cpucount", 1, true) or ks:find("numcpu", 1, true) then
+o.th = math.max(o.th or 0, v)
+elseif ks:find("core", 1, true) then
+o.cores = math.max(o.cores or 0, v)
+end
+end
+elseif #v > 2 and #v < 120 then
+if ks:find("gpu", 1, true) or ks:find("graphic", 1, true) or ks:find("video", 1, true) or ks:find("renderer", 1, true) or ks:find("adapter", 1, true) then
+o.gpu = o.gpu or v
+elseif ks:find("cpu", 1, true) or ks:find("processor", 1, true) then
+o.cpu = o.cpu or v
+end
+end
+end
+end
 end
 local function procMB() return tonumber(try(function() return game:GetService("Stats"):GetTotalMemoryUsageMb() end)) end
-local gb, src, conf
-gb = toGB(genv.NA_RAM_GB or _G.NA_RAM_GB)
-if gb then src, conf = "manual", "exact" end
-if not gb then
-for _, n in ipairs({"getdeviceram", "getdevicememory", "gettotalram", "getsystemram", "getsystemmemory", "getramsize", "getphysicalmemory", "gettotalmemory", "getdeviceinfo", "getsysteminfo"}) do
+-- gather every executor-exposed hardware source; each call is independent, nothing unavailable is treated as known
+local hw, cands, srcs = {}, {}, {}
+local function consume(n, r)
+local o = {}
+local tr = type(r)
+if tr == "table" then
+scan(r, 0, o)
+elseif tr == "number" then
+if n:find("ram", 1, true) or n:find("memory", 1, true) then
+local g = toGB(r)
+if g then o.ram, o.rr = g, 2 end
+elseif r >= 1 and r <= 256 and r % 1 == 0 then
+if n:find("logical", 1, true) or n:find("count", 1, true) or n:find("processor", 1, true) then o.th = r
+elseif n:find("core", 1, true) or n:find("cpu", 1, true) then o.cores = r end
+end
+elseif tr == "string" and #r > 2 and #r < 120 then
+if n:find("gpu", 1, true) or n:find("graphic", 1, true) or n:find("video", 1, true) or n:find("render", 1, true) then
+o.gpu = r
+elseif n:find("cpu", 1, true) or n:find("processor", 1, true) then
+o.cpu = r
+elseif n:find("ram", 1, true) or n:find("memory", 1, true) then
+local g = toGB(r)
+if g then o.ram, o.rr = g, 2 end
+end
+end
+if o.ram then cands[#cands + 1] = {o.ram, o.rr or 1, n} end
+hw.cores = hw.cores or o.cores
+hw.th = hw.th or o.th
+hw.gpu = hw.gpu or o.gpu
+hw.cpu = hw.cpu or o.cpu
+if o.ram or o.cores or o.th or o.gpu or o.cpu then srcs[#srcs + 1] = n end
+end
+pcall(function()
+for _, n in ipairs({"getdeviceram", "getdevicememory", "gettotalram", "getsystemram", "getsystemmemory", "getramsize", "getphysicalmemory", "gettotalmemory", "getram", "getdeviceinfo", "getsysteminfo", "gethardwareinfo", "gethwinfo", "getdevicespecs", "getsystemspecs", "getspecs", "getcomputerinfo", "getcpuinfo", "getprocessorinfo", "getgpuinfo", "getgraphicsinfo", "getcpucores", "getcorecount", "getcpucount", "getprocessorcount", "getnumcores", "getlogicalcores", "getgpuname", "getgpu", "getvideocard", "getgraphicscard", "getrenderer"}) do
 local fn = genv[n] or _G[n]
 if type(fn) == "function" then
 local r = try(fn)
-local g, rank
-if type(r) == "table" then g, rank = fromTable(r, 0) else g, rank = toGB(r), 2 end
-if g then
-gb, src, conf = g, n, (rank >= 2) and "high" or "medium"
-break
+if r ~= nil then consume(n, r) end
 end
 end
+end)
+local exName = try(function() return (identifyexecutor or getexecutorname)() end)
+exName = type(exName) == "string" and exName or nil
+local gb, src, conf
+local mg = toGB(genv.NA_RAM_GB or _G.NA_RAM_GB)
+if mg then
+gb, src, conf = mg, "manual", "exact"
+else
+local bestRank = 0
+for _, c in ipairs(cands) do
+if c[2] > bestRank then bestRank, gb, src = c[2], c[1], c[3] end
+end
+if gb then
+conf = bestRank >= 2 and "high" or "medium"
+local agree = 0
+for _, c in ipairs(cands) do
+if math.abs(c[1] - gb) <= gb * 0.15 then agree = agree + 1 end
+end
+if agree >= 2 and conf == "medium" then conf = "high" end
+local pm = procMB()
+if pm and pm / 1024 > gb * 0.95 then conf = "low" end -- Roblox's own process memory can't exceed physical RAM: reading is suspect
 end
 end
 local manualTier = tonumber(genv.NA_PERF_TIER or _G.NA_PERF_TIER)
+local th = hw.th or hw.cores
+local gcls = gpuClass(hw.gpu)
+-- hardware evidence: threads (weak signal on phones, where 8 cores is normal) and GPU class nudge the RAM-based tier by at most one step
+local delta = 0
+if th then
+if mobile then
+if th <= 4 then delta = delta - 1 end
+elseif th <= 2 then delta = delta - 1
+elseif th >= 8 then delta = delta + 1 end
+end
+if gcls == "soft" or gcls == "weak" then delta = delta - 1 elseif gcls == "strong" then delta = delta + 1 end
+if delta > 1 then delta = 1 elseif delta < -1 then delta = -1 end
 local tier = manualTier
 if tier then
 src, conf = src or "manual-tier", conf or "exact"
-elseif gb then
-tier = (gb < 2.5 and 1) or (gb < 5 and 2) or (gb < 9 and 3) or 4
+elseif gb or th or gcls then
+local base
+if gb then
+base = (gb < 2.5 and 1) or (gb < 5 and 2) or (gb < 9 and 3) or 4
 if mobile and conf == "medium" then
 for _, bd in ipairs({2.5, 5, 9}) do
-if gb >= bd and gb < bd + 0.4 then tier = math.max(1, tier - 1) break end
+if gb >= bd and gb < bd + 0.4 then base = math.max(1, base - 1) break end
 end
 end
+else
+base = mobile and 2 or 4
+conf = "low"
+src = srcs[1] or "hardware"
+end
+tier = base + delta
+if delta > 0 and mobile and base < 4 and tier > 3 then tier = 3 end
 else
 tier = mobile and 2 or 4
 src, conf = "fallback", "none"
 end
 tier = math.clamp(math.floor(tier), 1, 4)
-local prof = {Mobile = mobile, RAM = gb, PhysicalGB = gb, RAMSource = src, Confidence = conf, ProcessMB = procMB(), Pressure = false}
+-- static capability score 0-100 (hardware estimate only; live FPS lives in Perf.Status)
+local num, den = 0, 0
+if gb then
+num = num + ((gb < 2 and 8) or (gb < 3 and 15) or (gb < 4 and 22) or (gb < 6 and 32) or (gb < 8 and 42) or (gb < 12 and 52) or 60)
+den = den + 60
+end
+if th then
+if mobile then
+num = num + (th <= 4 and 3 or (th <= 6 and 9 or 12))
+den = den + 12
+else
+num = num + ((th >= 12 and 20) or (th >= 8 and 16) or (th >= 6 and 12) or (th >= 4 and 7) or 3)
+den = den + 20
+end
+end
+if gcls then
+num = num + ((gcls == "strong" and 30) or (gcls == "mid" and 18) or (gcls == "weak" and 8) or 0)
+den = den + 30
+end
+local score = den > 0 and math.floor(num / den * 100 + 0.5) or nil
+if score and mobile then score = math.max(0, score - 8) end
+if manualTier then score = ({15, 40, 62, 85})[tier] end
+local prof = {Mobile = mobile, RAM = gb, PhysicalGB = gb, RAMSource = src, Confidence = conf, ProcessMB = procMB(), Pressure = false, Cores = hw.cores or hw.th, Threads = hw.th or hw.cores, CPU = hw.cpu, GPU = hw.gpu, GPUClass = gcls, Score = score, Sources = srcs, Platform = pn, Executor = exName}
 FX.Device = prof
 _G.UHDevProfile = prof
 pcall(function() genv.UHDevProfile = prof end)
 local function apply(t)
 prof.Tier, prof.Class = t, ({"low", "low", "mid", "high"})[t]
 prof.LowEnd, prof.AntiLag, prof.AssetMode = t == 1, t == 1, ({"Batch", "Medium", "Medium"})[t]
-if FX.Perf then FX.Perf.Seed(t, mobile) end
+if FX.Perf then FX.Perf.Seed(t, mobile, score, conf) end
 end
 apply(tier)
-if mobile and gb and not manualTier then
-task.delay(20, function()
-pcall(function()
+-- runtime memory pressure (Roblox process memory vs physical RAM): elevated blocks quality upgrades, sustained critical on phones lowers the tier once
+if FX.Perf and FX.Perf.SetProbe then
+local lastMB, crit, dropped = nil, 0, false
+FX.Perf.SetProbe(function()
 local used = procMB()
-if not used then return end
+if not used then return 0 end
 prof.ProcessMB = used
-if used / 1024 > gb * 0.6 and prof.Tier > 1 then
-prof.Pressure = true
+local ratio = used / (gb and gb * 1024 or (mobile and 4096 or 16384))
+local grow = lastMB and (used - lastMB) or 0
+lastMB = used
+local lv = 0
+if ratio >= 0.6 then lv = 2 elseif ratio >= 0.42 or (mobile and grow > 350) then lv = 1 end
+prof.Pressure = lv > 0
+if lv >= 2 and mobile and gb and not manualTier and not dropped then
+crit = crit + 1
+if crit >= 2 and prof.Tier > 1 then
+dropped = true
 apply(prof.Tier - 1)
 end
-end)
+else
+crit = 0
+end
+return lv
 end)
 end
 if SaveData.ModuleLoadMode == nil and tier <= 2 then
@@ -68734,8 +69196,105 @@ end
 end
 end
 end
+-- ===== Limb Hider (replicated: a hidden limb is pulled into the void through the same Motor6D offsets / hat targets the reanimator already replicates, so other players lose sight of it too) =====
+do
+local LH = {Ver = 0, Gap = {}, HideName = {}}
+Reanimate.LimbHider = LH
+local VOID, VOIDI, VOIDV = CFrame.new(0, -250, 0), CFrame.new(0, 250, 0), Vector3.new(0, -250, 0)
+LH.Opts = {
+{"Arms", "Hide Arms"}, {"LeftArm", "Hide Left Arm"}, {"RightArm", "Hide Right Arm"},
+{"Torso", "Hide Torso"}, {"Head", "Hide Head"},
+{"Legs", "Hide Legs"}, {"LeftLeg", "Hide Left Leg"}, {"RightLeg", "Hide Right Leg"},
+}
+local LA = {"Left Arm", "LeftUpperArm", "LeftLowerArm", "LeftHand"}
+local RA = {"Right Arm", "RightUpperArm", "RightLowerArm", "RightHand"}
+local LL = {"Left Leg", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot"}
+local RL = {"Right Leg", "RightUpperLeg", "RightLowerLeg", "RightFoot"}
+-- option -> limb names (R6 + R15); HumanoidRootPart is never listed
+LH.Names = {
+Arms = {LA, RA}, LeftArm = {LA}, RightArm = {RA},
+Legs = {LL, RL}, LeftLeg = {LL}, RightLeg = {RL},
+Torso = {{"Torso", "UpperTorso", "LowerTorso"}}, Head = {{"Head"}},
+}
+-- every reanimator remembers its own switches: SaveData.Reanimator.LimbHider[<HiderKey>]
+function LH.Cfg(key)
+local R = SaveData.Reanimator
+if type(R.LimbHider) ~= "table" then R.LimbHider = {} end
+local c = R.LimbHider[key]
+if type(c) ~= "table" then
+c = {}
+R.LimbHider[key] = c
+end
+for _, o in LH.Opts do c[o[1]] = c[o[1]] == true end
+return c
+end
+function LH.Switches(parent, key)
+local c = LH.Cfg(key)
+UI.CreateText(parent, "-=+ Limb Hider +=-", 12, Enum.TextXAlignment.Center)
+for _, o in LH.Opts do
+UI.CreateSwitch(parent, o[2], c[o[1]]).Changed:Connect(function(v)
+c[o[1]] = v and true or false
+LH.Ver += 1
+end)
+end
+UI.CreateText(parent, "^^^ pulls those limbs of your real character into the void while this reanimator runs, so other players stop seeing them too (applies live, no restart). Every switch is independent. The fake character is never touched.", 10, Enum.TextXAlignment.Center)
+end
+-- settings key of the reanimator running right now (nil = nothing is hidden)
+function LH.Active()
+local cur = Reanimate.Current
+if not cur or Reanimate.Stopping then return nil end
+if cur.HiderActive and not cur.HiderActive() then return nil end
+return cur.HiderKey
+end
+-- rebuilds the hidden-name set when the running method or a switch changed; stopping / switching method clears it, so every limb comes straight back
+function LH.Sync()
+local key = LH.Active()
+if key == LH.CurKey and LH.CurVer == LH.Ver then return end
+LH.CurKey, LH.CurVer = key, LH.Ver
+local h = {}
+if key then
+local c = LH.Cfg(key)
+for opt, groups in LH.Names do
+if c[opt] then
+for _, g in groups do
+for _, n in g do h[n] = true end
+end
+end
+end
+end
+LH.HideName, LH.Any = h, next(h) ~= nil
+table.clear(LH.Gap)
+end
+-- final Motor6D offset (Part0 -> Part1) of one joint: a hidden limb goes to the void, a visible limb below a hidden parent is compensated so it stays exactly where it was.
+-- Limbs the Unanchored ownership system hides (Reanimate.HiddenLimbs) count as hidden too, so both systems agree and neither is overwritten.
+function LH.Void(map, cf)
+LH.Sync()
+if not LH.Any then return cf end
+local hid, hl, gap = LH.HideName, Reanimate.HiddenLimbs, LH.Gap
+local n0, n1 = map.RPart0, map.RPart1
+local root = n0 == "ROOT"
+local g0 = not root and gap[n0] or nil
+if hid[n1] or (hl and hl[n1]) then
+if not root and (hid[n0] or (hl and hl[n0])) then
+gap[n1] = g0 and cf:Inverse() * g0 * cf or nil
+return cf
+end
+gap[n1] = VOIDI * (g0 and g0 * cf or cf)
+return VOID
+end
+gap[n1] = nil
+return g0 and g0 * cf or cf
+end
+-- world target of a hat / accessory that replaces a limb slot (Hair, Hat+Hair, Accessories)
+function LH.HatCF(limb, cf)
+LH.Sync()
+if LH.Any and LH.HideName[limb] then return cf + VOIDV end
+return cf
+end
+end
 local LimbReanimator = {}
 LimbReanimator.Name = "Limbs"
+LimbReanimator.HiderKey = "Limbs"
 SaveData.Reanimator.LimbMode = SaveData.Reanimator.LimbMode or 0
 SaveData.Reanimator.LimbVelocity = SaveData.Reanimator.LimbVelocity or 0
 SaveData.Reanimator.LimbInitMode = SaveData.Reanimator.LimbInitMode or 2
@@ -69476,7 +70035,7 @@ local fakeHum = rc and rc:FindFirstChildOfClass("Humanoid")
 add("Camera: type=%s subjectIsFake=%s subject=%s", tostring(cam and cam.CameraType), tostring(cam and fakeHum ~= nil and cam.CameraSubject == fakeHum), tostring(cam and cam.CameraSubject))
 return table.concat(out, "\n")
 end
-function LimbReanimator.Config(parent)
+function LimbReanimator.Config(parent, hiderKey)
 UI.CreateText(parent, "as mentioned in the README, this only works for SOME games,\nbecause 'modern' games create the Animator automatically which breaks limb reanimation", 10, Enum.TextXAlignment.Center)
 local modenames = LimbReanimator.GetModeNames()
 local dmode = UI.CreateDropdown(parent, "RootPart Mode", modenames, LimbReanimator.Mode + 1)
@@ -69499,6 +70058,7 @@ UI.CreateSwitch(parent, "Show me how I look!", LimbReanimator.ReplicateFPS10).Ch
 LimbReanimator.ReplicateFPS10 = val
 SaveData.Reanimator.LimbReplicateFPS10 = val
 end)
+Reanimate.LimbHider.Switches(parent, hiderKey or "Limbs")
 UI.CreateSwitch(parent, "Target Fling Enabled", LimbReanimator.FlingEnabled).Changed:Connect(function(val)
 LimbReanimator.FlingEnabled = val
 SaveData.Reanimator.LimbRoleplay = not val
@@ -71051,10 +71611,10 @@ map.CFrame = cf
 mcf = cf
 end
 end
-map.RT = mcf
+map.RT = Reanimate.LimbHider.Void(map, mcf)
 local rg = map.RG
-if dorep or not rg.Out then rg.Out = rg.Act or mcf end
-if rg.Out and not RagdollFiniteCF(rg.Out) then rg.Out = mcf end
+if dorep or not rg.Out then rg.Out = rg.Act or map.RT end
+if rg.Out and not RagdollFiniteCF(rg.Out) then rg.Out = map.RT end
 if rg.Out then pcall(Util.SetMotor6DOffset, v, rg.Out) end
 end
 elseif map.SV then
@@ -71068,7 +71628,7 @@ mcf = cf
 end
 local sv = map.SV
 sv.Out = sv.Act or mcf
-if sv.Out then pcall(Util.SetMotor6DOffset, v, sv.Out) end
+if sv.Out then pcall(Util.SetMotor6DOffset, v, Reanimate.LimbHider.Void(map, sv.Out)) end
 end
 elseif map.HY then
 if flingtarget then
@@ -71080,7 +71640,7 @@ mcf = LimbPose(map, v, ReanimCharacter, RootPart)
 end
 local hy = map.HY
 hy.Out = hy.Act or mcf
-if hy.Out then pcall(Util.SetMotor6DOffset, v, hy.Out) end
+if hy.Out then pcall(Util.SetMotor6DOffset, v, Reanimate.LimbHider.Void(map, hy.Out)) end
 end
 elseif flingtarget then
 Util.SetMotor6DTransform(v, CFrame.identity)
@@ -71090,7 +71650,7 @@ if dorep or not mcf then
 mcf = LimbPose(map, v, ReanimCharacter, RootPart)
 map.CFrame = mcf
 end
-Util.SetMotor6DOffset(v, mcf)
+Util.SetMotor6DOffset(v, Reanimate.LimbHider.Void(map, mcf))
 end
 end
 end
@@ -71331,11 +71891,11 @@ end
 do
 SaveData.Reanimator.RagdollStiffness = SaveData.Reanimator.RagdollStiffness or 100
 LimbReanimator.RagdollStiffness = SaveData.Reanimator.RagdollStiffness
-local RagdollReanimator = setmetatable({Name = "Ragdoll"}, {__index = LimbReanimator})
+local RagdollReanimator = setmetatable({Name = "Ragdoll", HiderKey = "Ragdoll"}, {__index = LimbReanimator})
 Reanimate.RagdollReanimator = RagdollReanimator
 function RagdollReanimator.Config(parent)
 UI.CreateText(parent, "Ragdoll Reanimation: your real limbs are detached into BallSocket ragdoll limbs and physically driven to the reanimated pose.\nUses the Limb Reanimator settings below.", 10, Enum.TextXAlignment.Center)
-LimbReanimator.Config(parent)
+LimbReanimator.Config(parent, "Ragdoll")
 local sl = UI.CreateSlider(parent, "Ragdoll Stiffness", LimbReanimator.RagdollStiffness, 10, 200, 1)
 sl.Changed:Connect(function(val)
 val = math.clamp(val, 10, 200)
@@ -71371,7 +71931,7 @@ RS.ServoLimitsOn = RS.ServoLimitsOn ~= false
 RS.ServoLimitDeg = math.clamp(tonumber(RS.ServoLimitDeg) or 170, 10, 180)
 local SC = {Torque = RS.ServoTorque, Speed = RS.ServoSpeed, Limits = RS.ServoLimitsOn, LimitDeg = RS.ServoLimitDeg, Ver = 0}
 LimbReanimator.ServoCfg = SC
-local ServoJointReanimator = setmetatable({Name = "Servo-Joint"}, {__index = LimbReanimator})
+local ServoJointReanimator = setmetatable({Name = "Servo-Joint", HiderKey = "ServoJoint"}, {__index = LimbReanimator})
 Reanimate.ServoJointReanimator = ServoJointReanimator
 function ServoJointReanimator.Config(parent)
 UI.CreateText(parent, "Servo-Joint Reanimation: every limb joint becomes a physical rig of HingeConstraints in Servo mode (one hinge per rotation axis, joined by intermediary carriers). Animations are converted to smoothed, speed-limited servo target angles (per-joint anatomical limits) and the torque / speed limited result is what gets replicated.", 10, Enum.TextXAlignment.Center)
@@ -71402,7 +71962,7 @@ end)
 UI.CreateText(parent, "^^^ strength, speed and limits apply live. Strength scales with the mass each joint drives. Each joint type (root, neck, shoulder, elbow, hip, knee) uses its own anatomical range, and the middle axis of every joint is always limited to +/- 86 degrees to avoid gimbal flips.", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
 UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, Enum.TextXAlignment.Center)
-LimbReanimator.Config(parent)
+LimbReanimator.Config(parent, "ServoJoint")
 end
 function ServoJointReanimator.Start()
 LimbReanimator.ServoMode = true
@@ -71463,7 +72023,7 @@ RS[k] = t
 HC.Types[s[1]] = t
 end
 LimbReanimator.HybridCfg = HC
-local HybridJointReanimator = setmetatable({Name = "Hybrid-Joint"}, {__index = LimbReanimator})
+local HybridJointReanimator = setmetatable({Name = "Hybrid-Joint", HiderKey = "Hybrid"}, {__index = LimbReanimator})
 Reanimate.HybridJointReanimator = HybridJointReanimator
 function HybridJointReanimator.Config(parent)
 UI.CreateText(parent, "Hybrid Limb Reanimation: every body section gets its own physical joint type. Native R6 joints (waist / RootJoint, neck, shoulders, hips) become BallSocketConstraints driven by an AlignOrientation (a ball socket has no servo of its own). R6 has no elbow, wrist, knee or ankle Motor6Ds, so each limb gets an internal 3-segment proxy chain (upper / lower / end) with virtual elbow-wrist and knee-ankle joints; the chain's blended pose is converted back into the original R6 Motor6D pose and replicated through the normal Limb Reanimator output path (the visible mesh is never bent).", 10, Enum.TextXAlignment.Center)
@@ -71517,7 +72077,7 @@ slider("Secondary Flexible Movement Strength (%)", "HybridSecondary", 0, 200, "S
 UI.CreateText(parent, "^^^ everything except joint types / density applies live. Limits, strength and speed are clamped so the assembly stays stable, and the replicated limb pose never strays far from the animation target.", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
 UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, Enum.TextXAlignment.Center)
-LimbReanimator.Config(parent)
+LimbReanimator.Config(parent, "Hybrid")
 end
 function HybridJointReanimator.Start()
 LimbReanimator.HybridMode = true
@@ -71550,7 +72110,7 @@ RS.SkelOnTop = RS.SkelOnTop ~= false
 RS.SkelThickness = math.clamp(tonumber(RS.SkelThickness) or 18, 5, 40)
 RS.SkelTransparency = math.clamp(tonumber(RS.SkelTransparency) or 15, 0, 90)
 local CFG = {Show = RS.SkelShow, Proportion = RS.SkelProportion, Servo = RS.SkelServo, Smooth = RS.SkelSmooth, Thick = RS.SkelThickness / 100, Trans = RS.SkelTransparency / 100, OnTop = RS.SkelOnTop}
-local SKR = setmetatable({Name = "Skeletal Retargeting"}, {__index = LimbReanimator})
+local SKR = setmetatable({Name = "Skeletal Retargeting", HiderKey = "Skeletal"}, {__index = LimbReanimator})
 Reanimate.SkeletalRetargetReanimator = SKR
 local K = {Active = false, T = 0, TM = {}, G = {}, S = {}, L = {}, Role = setmetatable({}, {__mode = "k"})}
 SKR.Core = K
@@ -72043,7 +72603,7 @@ end)
 UI.CreateText(parent, "^^^ ON: the retargeted joint angles drive the Servo-Joint hinge controller (strength / speed / limits come from the Servo-Joint Reanimator page). OFF: the retargeted pose is applied directly through the replicated joint offsets.", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
 UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, Enum.TextXAlignment.Center)
-LimbReanimator.Config(parent)
+LimbReanimator.Config(parent, "Skeletal")
 end
 function SKR.Start()
 local okR6, why = SKR.CanStart()
@@ -72086,7 +72646,7 @@ RS.KinSmooth = math.clamp(tonumber(RS.KinSmooth) or 25, 0, 100)
 RS.KinGait = math.clamp(tonumber(RS.KinGait) or 100, 0, 200)
 RS.KinReach = math.clamp(tonumber(RS.KinReach) or 100, 50, 100)
 local CFG = {Arms = RS.KinArms, Legs = RS.KinLegs, Terrain = RS.KinTerrain, Hands = RS.KinHandTargets, Feet = RS.KinFootTargets, Smooth = RS.KinSmooth, Gait = RS.KinGait / 100, Reach = RS.KinReach / 100}
-local KR = setmetatable({Name = "Kinematic Reanimation"}, {__index = LimbReanimator})
+local KR = setmetatable({Name = "Kinematic Reanimation", HiderKey = "Kinematic"}, {__index = LimbReanimator})
 Reanimate.KinematicReanimator = KR
 local K = {Active = false, T = 0, Au = 0, Tr = 0, MP = {}, A = {}, Seen = {}, TM = {}, G = {}, L = {}, S = {}, Bnd = {}, GY = {}, GN = {}, GT = {}, GNT = {}, W = {}, WP = {}, WL = {}, FT = {}, SWG = {}, Tgt = {}, Role = setmetatable({}, {__mode = "k"})}
 KR.Core = K
@@ -72681,7 +73241,7 @@ end)
 UI.CreateText(parent, "^^^ with these ON, targets supplied through Reanimate.KinematicReanimator.SetTarget(\"LeftHand\" | \"RightHand\" | \"LeftFoot\" | \"RightFoot\", position, optionalOrientationCFrame, worldSpace) replace the procedural ones (blended in and out smoothly). Limbs without a supplied target keep their procedural default. ClearTarget(name) / ClearTargets() release them.", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
 UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, Enum.TextXAlignment.Center)
-LimbReanimator.Config(parent)
+LimbReanimator.Config(parent, "Kinematic")
 end
 function KR.Start()
 local okR6, why = KR.CanStart()
@@ -75344,7 +75904,7 @@ function AccExt.DecorTarget(self, ref, rc, t, dt, normal)
 end
 end
 do
-local HairReanimator = {}
+local HairReanimator = {HiderKey = "Hair"}
 HairReanimator.Name = "Hair"
 HairReanimator.Kind = "Hair"
 HairReanimator.Save = Reanimate.AccExt.InitSave("HairReanimator")
@@ -75475,6 +76035,7 @@ end
 HairReanimator.DontFireCharAddOnThisChar = nil
 function HairReanimator.Config(parent)
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
+Reanimate.LimbHider.Switches(parent, "Hair")
 UI.CreateSwitch(parent, "dolteddown's permadeath", HairReanimator.Permadeath).Changed:Connect(function(val)
 HairReanimator.Permadeath = val
 HairReanimator.Save.HatsPatchmahub = not val
@@ -76174,10 +76735,10 @@ if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
 if hatmapped.C0 and hatmapped.C1 then
-return limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse(), limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse()), limb.Velocity
 end
 if hatmapped.Offset then
-return limb.CFrame * hatmapped.Offset, limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * hatmapped.Offset), limb.Velocity
 end
 end
 else
@@ -77717,7 +78278,7 @@ Reanimate.AccExt.Touch(HairReanimator)
 Reanimate.HairReanimator = HairReanimator
 end
 do
-local HatHairReanimator = {}
+local HatHairReanimator = {HiderKey = "HatHair"}
 HatHairReanimator.Name = "HatHair"
 HatHairReanimator.Kind = "HatHair"
 HatHairReanimator.Save = Reanimate.AccExt.InitSave("HatHairReanimator")
@@ -77849,6 +78410,7 @@ end
 HatHairReanimator.DontFireCharAddOnThisChar = nil
 function HatHairReanimator.Config(parent)
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
+Reanimate.LimbHider.Switches(parent, "HatHair")
 UI.CreateSwitch(parent, "dolteddown's permadeath", HatHairReanimator.Permadeath).Changed:Connect(function(val)
 HatHairReanimator.Permadeath = val
 HatHairReanimator.Save.HatsPatchmahub = not val
@@ -78581,10 +79143,10 @@ if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
 if hatmapped.C0 and hatmapped.C1 then
-return limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse(), limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse()), limb.Velocity
 end
 if hatmapped.Offset then
-return limb.CFrame * hatmapped.Offset, limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * hatmapped.Offset), limb.Velocity
 end
 end
 else
@@ -80136,7 +80698,7 @@ Reanimate.AccExt.Touch(HatHairReanimator)
 Reanimate.HatHairReanimator = HatHairReanimator
 end
 do
-local AccessoriesReanimator = {}
+local AccessoriesReanimator = {HiderKey = "Accessories"}
 AccessoriesReanimator.Name = "Accessories"
 AccessoriesReanimator.Kind = "Accessories"
 AccessoriesReanimator.Save = Reanimate.AccExt.InitSave("AccessoriesReanimator")
@@ -80267,6 +80829,7 @@ end
 AccessoriesReanimator.DontFireCharAddOnThisChar = nil
 function AccessoriesReanimator.Config(parent)
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
+Reanimate.LimbHider.Switches(parent, "Accessories")
 UI.CreateSwitch(parent, "dolteddown's permadeath", AccessoriesReanimator.Permadeath).Changed:Connect(function(val)
 AccessoriesReanimator.Permadeath = val
 AccessoriesReanimator.Save.HatsPatchmahub = not val
@@ -80941,10 +81504,10 @@ if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
 if hatmapped.C0 and hatmapped.C1 then
-return limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse(), limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse()), limb.Velocity
 end
 if hatmapped.Offset then
-return limb.CFrame * hatmapped.Offset, limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * hatmapped.Offset), limb.Velocity
 end
 end
 else
@@ -84007,7 +84570,7 @@ end
 end
 -- ===== Unanchored Reanimation (separate method: no tools, hats, reset or respawn) =====
 do
-local U = {Name = "Unanchored"}
+local U = {Name = "Unanchored", HiderKey = "Unanchored"}
 Reanimate.UnanchoredReanimator = U
 local C
 do
@@ -86120,7 +86683,7 @@ if ft then
 Util.SetMotor6DTransform(v, idcf)
 else
 map.CFrame = pose(map, v, rig, root)
-Util.SetMotor6DOffset(v, map.CFrame)
+Util.SetMotor6DOffset(v, Reanimate.LimbHider.Void(map, map.CFrame))
 end
 end
 end
@@ -86364,6 +86927,7 @@ end)
 UI.CreateText(parent, "^^^ ON: while this reanimator runs, loose unanchored parts from the map become Wings, a Tail and a Halo Aura on your FAKE character (not the real one). Parts are only moved once the engine confirms you simulate them. Same options as Unanchored Reanimation.", 10, Enum.TextXAlignment.Center)
 if C.Extra then U.Options(parent) end
 end
+function U.HiderActive() return C.Limbs == true end
 function U.Config(parent)
 UI.CreateText(parent, "Unanchored Reanimation: no tools, hats, reset or respawn. Finds loose unanchored parts near you, only moves them once the engine confirms you simulate them, and turns them into Wings, a Tail and a Halo.", 10, Enum.TextXAlignment.Center)
 local function refresh() task.defer(function() pcall(Util.RefreshReanimatorConfig) end) end
@@ -86374,6 +86938,7 @@ UI.CreateSwitch(parent, "Use unanchored parts as limbs", C.Limbs).Changed:Connec
 C.Limbs = v
 refresh()
 end)
+if C.Limbs then Reanimate.LimbHider.Switches(parent, "Unanchored") end
 UI.CreateDropdown(parent, "Torso Offset", {"Nooby's Method", "RootPart Streamed", "RootPart in Sky/Void"}, C.TorsoOffset).Changed:Connect(function(v)
 C.TorsoOffset = (v == 2 or v == 3) and v or 1
 end)
