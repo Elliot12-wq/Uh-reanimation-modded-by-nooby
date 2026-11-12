@@ -73173,7 +73173,7 @@ end
 end
 end
 -- ===== Velocity-Interpolated Reanimation =====
--- Every mapped limb owns a continuous movement state (position, rotation, linear and angular velocity). The ORIGINAL animation target (map.CFrame, Motor6D transform space, never modified) is the only authoritative destination. The limb follows it with a critically damped SECOND-ORDER tracker integrated in closed form from real elapsed time (frame-rate independent): position AND velocity stay continuous, speed and acceleration are bounded as vectors (so direction changes are limited too, not only speed changes), the target is never overshot (closing speed is bounded by what a critically damped step and the braking limit can still stop) and the limb settles without vibrating. Linear and angular motion are independent. Target velocity is only MEASURED (successive original targets, same local space) to adapt responsiveness, relax the limits and extrapolate the goal between samples; it is never a velocity the limb must follow. Responsiveness follows the measured speed (slow motion smoothed harder, fast motion followed tighter), rises fast and falls slowly so it never softens mid-motion, and a sudden reversal adds temporary damping and a lower acceleration limit while the limb's own velocity decelerates and re-accelerates continuously. Between samples (ReplicateFPS10) the goal is extrapolated along the measured motion for at most one sample interval, so sparse samples still give continuous movement; stale samples are never treated as fresh. One shared, adaptively capped frame step drives every limb: irregular frame times are integrated exactly, a dropped frame never causes a burst or a snap, and only teleports and real stalls restart the state. Pose jumps and animation switches only clear the measured target motion, the limb eases from where it is with its own velocity intact. Prediction (small default lead, 0 = off) is confidence weighted, faded out on reversals and deceleration, scaled per joint and tightly bounded. Each joint type (root, torso, head, arm, leg, hand / foot) has its own responsiveness and angular limits. map.CFrame keeps the raw target; the interpolated pose only replaces it at the final (pre-LimbHider) Motor6D write.
+-- Every mapped limb owns a continuous movement state (position, rotation, linear and angular velocity AND acceleration). The ORIGINAL animation target (map.CFrame, Motor6D transform space, never modified) is the only authoritative destination. The limb follows it with a critically damped THIRD-order tracker integrated in closed form from real elapsed time (frame-rate independent): position, velocity and acceleration all stay continuous (no acceleration steps when the goal changes, S-shaped catch-up, no overshoot for a consistent state, a lower peak acceleration for the same lag). Speed and acceleration are bounded as vectors (direction changes are limited too); a braking guard works on the ACCELERATION wherever the limb can still stop in time (a velocity is only cut when it can no longer be stopped inside the remaining distance), the limb never crosses its goal and settles without vibrating. Linear and angular motion are independent channels whose responsiveness is kept in step (a joint that mostly rotates also tightens its translation) and tightened a little while the whole body is active, so every joint lags the animation by a consistent time. Target velocity is only MEASURED (successive original targets, same local space) to adapt responsiveness, relax the limits and extrapolate the goal between samples; it is never a velocity the limb must follow. Responsiveness follows the measured speed (slow motion smoothed harder, fast motion followed tighter), rises fast and falls slowly so it never softens mid-motion; a sudden reversal adds temporary damping and a lower acceleration limit, and while the target motion is not consistent (reversal, stop, pose jump) the velocity that is sideways to the goal or leads away from it is damped extra, while the momentum of consistent motion is kept. Because every new sample is held over the whole step, the goal is shifted back by half a step of measured motion, so the lag is the same at 30, 60, 120 and higher frame rates. Between samples (ReplicateFPS10) the goal is extrapolated along the measured motion for at most one sample interval; stale samples are never treated as fresh. One shared, adaptively capped frame step drives every limb: irregular frame times are integrated exactly, a dropped frame never causes a burst or a snap, and only teleports and real stalls restart the state. Pose jumps and animation switches only clear the measured target motion, the limb eases from where it is with its own velocity and acceleration intact. Prediction (small default lead, 0 = off) is confidence weighted, faded out on reversals and deceleration, scaled per joint and tightly bounded. Rotation errors keep one representation across the half turn, so the limb never flips direction at the far side. Each joint type (root, torso, head, arm, leg, hand / foot) has its own responsiveness, limits and damping. map.CFrame keeps the raw target; the interpolated pose only replaces it at the final (pre-LimbHider) Motor6D write; should the controller ever raise an error the limb falls back to the raw pose.
 do
 local RS = SaveData.Reanimator
 local function num(k, d, lo, hi)
@@ -73197,11 +73197,11 @@ MaxAngAcc = num("VelInterpMaxAngAcc", 220, 10, 800),
 LimbReanimator.VelInterpCfg = VC
 local exp, sqrt, abs, PI = math.exp, math.sqrt, math.abs, math.pi
 local ZERO, IDCF = Vector3.zero, CFrame.identity
--- HITCH: frame time above which the state restarts on the current target (a real stall, not a frame drop); MAX_DT / MIN_CAP / CAP_K / DT_T: adaptive step cap shared by all limbs (cap = CAP_K x the running average frame time, between MIN_CAP and MAX_DT, averaged over DT_T seconds) so one long frame never produces a burst of movement; MIN_SAMPLE: shortest interval used for a target speed measurement; GAP: longest interval a measurement is trusted over; STALE / STALE10: time without a fresh sample after which the measured target motion fades out (normal / ReplicateFPS10) at rate DECAY; BRAKE: share of the acceleration limit the limb may rely on to stop inside the remaining distance; GAIN / X0 / W0: how far (x GAIN) and how quickly (half-speed X0 studs/s, W0 rad/s) responsiveness rises with the measured target speed; OM_MAX: responsiveness ceiling; OM10: responsiveness floor while the animation is only sampled 10 times per second; SPR_K: spring stiffness per unit of responsiveness (lag on steady motion equals the old first-order lag, the start and stop are smooth); OM_UP / OM_DOWN: time constants with which responsiveness rises (fast, no trailing) / falls (slow, no sudden softening); JUMP_LIN / TELEPORT: linear speed / distance of a target step that is a pose jump, not motion; LEAD_CAP / ANG_LEAD_CAP / LEAD_STEP: prediction limits (studs, rad, share of the last real target step); EXT_STEP: share of the last real target step the goal may be extrapolated by between samples; EPS_POS / EPS_ANG / EPS_VL / EPS_VA: settle distance / angle / speed / angular speed; HYST / HYST_V: near-half-turn error angle and counter-rotation speed above which the current rotation direction is kept
+-- HITCH: frame time above which the state restarts on the current target (a real stall, not a frame drop); MAX_DT / MIN_CAP / CAP_K / DT_T: adaptive step cap shared by all limbs (cap = CAP_K x the running average frame time, between MIN_CAP and MAX_DT, averaged over DT_T seconds) so one long frame never produces a burst of movement; MIN_SAMPLE: shortest interval used for a target speed measurement; GAP: longest interval a measurement is trusted over; STALE / STALE10: time without a fresh sample after which the measured target motion fades out (normal / ReplicateFPS10) at rate DECAY; BRAKE: share of the acceleration limit the limb may rely on to stop inside the remaining distance; GAIN / X0 / W0: how far (x GAIN) and how quickly (half-speed X0 studs/s, W0 rad/s) responsiveness rises with the measured target speed; OM_MAX: responsiveness ceiling; OM10: responsiveness floor while the animation is only sampled 10 times per second; SPR_K: tracker rate per unit of responsiveness (a critically damped third-order tracker of rate SPR_K x responsiveness lags steady motion by 3 / rate of real time, at every frame rate); OM_UP / OM_DOWN: time constants with which responsiveness rises (fast, no trailing) / falls (slow, no sudden softening); JUMP_LIN / TELEPORT: linear speed / distance of a target step that is a pose jump, not motion; LEAD_CAP / ANG_LEAD_CAP / LEAD_STEP: prediction limits (studs, rad, share of the last real target step); EXT_STEP: share of the last real target step the goal may be extrapolated by between samples; EPS_POS / EPS_ANG / EPS_VL / EPS_VA: settle distance / angle / speed / angular speed; HYST / HYST_V: near-half-turn error angle and counter-rotation speed above which the current rotation direction is kept
 local HITCH, MIN_SAMPLE, GAP, STALE, STALE10, DECAY = 1, 0.006, 0.2, 0.05, 0.14, 20
 local MAX_DT, MIN_CAP, CAP_K, DT_T = 0.1, 1 / 30, 2.5, 0.25
 local BRAKE, GAIN, X0, W0, OM_MAX, OM10 = 0.8, 1.6, 3, 3, 90, 28
-local SPR_K, OM_UP, OM_DOWN = 2.2, 0.02, 0.08
+local SPR_K, OM_UP, OM_DOWN = 4.2, 0.02, 0.08
 local JUMP_LIN, TELEPORT = 45, 12
 local LEAD_CAP, ANG_LEAD_CAP, LEAD_STEP, EXT_STEP = 0.03, 0.03, 0.5, 1
 local EPS_POS, EPS_ANG, EPS_VL, EPS_VA = 5e-4, 2.5e-4, 0.05, 0.05
@@ -73210,14 +73210,14 @@ local HYST, HYST_V = 2.8, 0.5
 local FILT_SLOW, FILT_FAST, CONF_RISE, SLOW_OM, SLOW_X, SLOW_WX = 0.08, 0.025, 0.06, 0.65, 1.5, 0.8
 -- sudden direction change: REV_L / REV_A = minimum linear / angular speed on both sides of a reversal, TURN_TIME = duration of the extra damping, TURN_OM / TURN_ACC = responsiveness / acceleration reduction at its start
 local REV_L, REV_A, TURN_TIME, TURN_OM, TURN_ACC = 2, 1.5, 0.15, 0.35, 0.25
--- per joint type: rm / am / sm scale the linear responsiveness / acceleration / speed settings, wr / wa scale the angular responsiveness / acceleration settings, wmax = angular speed limit for catching up (rad/s), jw = angular speed (rad/s) above which a target step is a pose jump
+-- per joint type: rm / am / sm scale the linear responsiveness / acceleration / speed settings, wr / wa scale the angular responsiveness / acceleration settings, wmax = angular speed limit for catching up (rad/s), jw = angular speed (rad/s) above which a target step is a pose jump, pm = prediction scale, sc = how strongly the body-wide activity tightens the joint, sd = scale of the extra damping of unwanted (sideways / opposing) velocity
 local PROFILE = {
-Root = {rm = 0.85, am = 0.8, sm = 0.9, wr = 0.85, wa = 0.8, wmax = 9, jw = 30, pm = 0.5},
-Torso = {rm = 0.9, am = 0.9, sm = 0.95, wr = 0.9, wa = 0.85, wmax = 10, jw = 32, pm = 0.7},
-Head = {rm = 1, am = 0.9, sm = 1, wr = 1, wa = 0.9, wmax = 12, jw = 38, pm = 0.8},
-Arm = {rm = 1, am = 1, sm = 1.15, wr = 1.1, wa = 1, wmax = 16, jw = 45, pm = 1},
-Leg = {rm = 1, am = 1.05, sm = 1.1, wr = 1.05, wa = 1, wmax = 15, jw = 42, pm = 1},
-Distal = {rm = 1.15, am = 1.1, sm = 1.3, wr = 1.2, wa = 1.2, wmax = 20, jw = 55, pm = 1.25},
+Root = {rm = 0.85, am = 0.8, sm = 0.9, wr = 0.85, wa = 0.8, wmax = 9, jw = 30, pm = 0.5, sc = 1, sd = 1},
+Torso = {rm = 0.9, am = 0.9, sm = 0.95, wr = 0.9, wa = 0.85, wmax = 10, jw = 32, pm = 0.7, sc = 1, sd = 1},
+Head = {rm = 1, am = 0.9, sm = 1, wr = 1, wa = 0.9, wmax = 12, jw = 38, pm = 0.8, sc = 0.6, sd = 1.1},
+Arm = {rm = 1, am = 1, sm = 1.15, wr = 1.1, wa = 1, wmax = 16, jw = 45, pm = 1, sc = 1, sd = 0.9},
+Leg = {rm = 1, am = 1.05, sm = 1.1, wr = 1.05, wa = 1, wmax = 15, jw = 42, pm = 1, sc = 1, sd = 0.9},
+Distal = {rm = 1.15, am = 1.1, sm = 1.3, wr = 1.2, wa = 1.2, wmax = 20, jw = 55, pm = 1.25, sc = 1.2, sd = 0.7},
 }
 local function classify(map)
 if map.RPart0 == "ROOT" or map.Part0 == "HumanoidRootPart" then return PROFILE.Root end
@@ -73251,28 +73251,61 @@ local a = w.Magnitude
 if a < 1e-9 then return IDCF end
 return CFrame.fromAxisAngle(w / a, a)
 end
--- one critically damped second-order step in closed form (frame-rate independent). e = limb - goal (remaining distance / angle as a vector), v = limb velocity, w = spring rate. Before the step the closing speed (toward the goal) is limited to w * |e| (the exact bound above which a critically damped step would cross the goal) and to the speed from which the limited acceleration can still stop inside |e|; only the closing part of the velocity is touched, sideways velocity stays continuous. After the step the speed is limited to smax and the velocity CHANGE (a vector, so direction changes too) to amax * dt; when a limit acts the step is integrated with the limited velocity and never crosses the goal. Returns the new error and velocity.
-local function spring(e, v, w, amax, smax, dt)
+-- Core.K: HALF = share of a step the sampled goal is shifted back along the measured motion (a new sample is held over the whole step, which would make the limb lead by about half a step at low frame rates; the shift keeps the lag the same at every frame rate); SIDE / OPP = extra damping rate (x the tracker rate) of the velocity that is sideways to the goal / leads away from it, faded out by the motion confidence; SYNC_G / SYNC_T / SYNC_X = how much (share), how slowly (s) and from which activity the body-wide animation activity tightens every joint; LINK = share of one channel's measured activity that also tightens the other channel of the same joint. Core.G: body-wide activity (A = smoothed mean activity, S / N = sum / count collected during the current frame, F = number of reported errors)
+local Core = {
+	K = {HALF = 0.6, SIDE = 0.45, OPP = 0.6, SYNC_G = 0.3, SYNC_T = 0.08, SYNC_X = 1, LINK = 0.5},
+	G = {A = 0, S = 0, N = 0, F = 0},
+}
+LimbReanimator.VelInterpCore = Core
+-- one critically damped THIRD-order step in closed form (frame-rate independent). State per channel: e = limb - goal (remaining distance / angle as a vector), v = limb velocity, a = limb acceleration, w = tracker rate. The response is (c0 + c1 t + c2 t^2) e^(-w t) (a triple pole at -w): position, velocity AND acceleration stay continuous (no acceleration step when the goal moves, S shaped catch-up, no overshoot for a consistent state), and for the same lag it needs a rate only 1.5x higher than a second-order tracker with a lower peak acceleration. conf (0..1) = confidence that the target keeps moving consistently, gv = measured goal velocity (confidence weighted). While the target motion is not consistent, the velocity (relative to the goal motion) that is sideways to the goal or leads away from it is damped extra (straight, unhurried approach; momentum of consistent motion is kept). Before the step a braking guard works on the ACCELERATION: if the response would cross the goal (c2 < 0, or the quadratic c0 + c1 t + c2 t^2 reaches zero) the braking acceleration along the goal direction is raised to the smallest value that avoids it (limited by BRAKE x amax), so the velocity stays continuous; only a closing speed from which the limited braking can no longer stop inside the distance is cut. After the step the speed is limited to smax and the velocity CHANGE (a vector, so direction changes too) to amax * dt, the acceleration to amax; when a limit acts the step is integrated with the limited velocity. The limb never crosses its goal. Returns the new error, velocity and acceleration.
+local function spring3(e, v, a, w, amax, smax, dt, conf, gv, sd)
 	local d = e.Magnitude
 	local u = ZERO
 	if d > 1e-9 then
 		u = e / d
+		local k = 1 - conf
+		if k > 0.02 then
+			local kc = Core.K
+			local vr = v - gv
+			local al = vr:Dot(u)
+			v -= (vr - u * al) * (1 - exp(-kc.SIDE * sd * k * w * dt))
+			if al > 0 then v -= u * (al * (1 - exp(-kc.OPP * k * w * dt))) end
+		end
 		local c = -v:Dot(u)
 		if c > 0 then
-			local cm = w * d
-			local ab = sqrt(2 * BRAKE * amax * d)
-			if ab < cm then cm = ab end
-			if c > cm then v += u * (c - cm) end
+			local br = BRAKE * amax
+			local cb = sqrt(2 * br * d)
+			if c > cb then
+				v += u * (c - cb)
+				c = cb
+			end
+			local wd = w * d
+			local need = 2 * w * c - wd * w
+			if c > wd then
+				local q = wd - c
+				need += q * q / (2 * d)
+			end
+			local au = a:Dot(u)
+			if au < need then
+				if need > br then need = br end
+				if au < need then a += u * (need - au) end
+			end
 		end
 	end
 	local ex = exp(-w * dt)
-	local j = v + e * w
-	local vn = (v - j * (w * dt)) * ex
-	local en = (e + j * dt) * ex
+	local c1 = v + e * w
+	local c2 = (a + v * (2 * w) + e * (w * w)) * 0.5
+	local p0 = e + (c1 + c2 * dt) * dt
+	local p1 = c1 + c2 * (2 * dt)
+	local en = p0 * ex
+	local vn = (p1 - p0 * w) * ex
+	local an = (c2 * 2 - p1 * (2 * w) + p0 * (w * w)) * ex
 	local exact = true
 	local sp = vn.Magnitude
 	if sp > smax then
 		vn *= smax / sp
+		local ad = an:Dot(vn)
+		if ad > 0 then an -= vn * (ad / (smax * smax)) end
 		exact = false
 	end
 	local dv = vn - v
@@ -73281,19 +73314,21 @@ local function spring(e, v, w, amax, smax, dt)
 		vn = v + dv * (lim / m)
 		exact = false
 	end
-	if not exact then
-		en = e + (v + vn) * (0.5 * dt)
-		local k = en:Dot(u)
-		if k < 0 then
-			en -= u * k
+	local am = an.Magnitude
+	if am > amax then an *= amax / am end
+	if not exact then en = e + (v + vn) * (0.5 * dt) end
+	if d > 1e-9 then
+		local kk = en:Dot(u)
+		if kk < 0 then
+			en -= u * kk
 			local cv = vn:Dot(u)
 			if cv < 0 then vn -= u * cv end
+			local ca = an:Dot(u)
+			if ca < 0 then an -= u * ca end
 		end
 	end
-	return en, vn
+	return en, vn, an
 end
-local Core = {}
-LimbReanimator.VelInterpCore = Core
 -- shared frame clock: one adaptively capped time step for every limb
 local GN, GDA, GCAP = 0, 1 / 60, 0.05
 function Core.Reset(map)
@@ -73304,10 +73339,11 @@ function Core.Clear(map)
 	map.VI = nil
 end
 -- tgt = original animation target (never modified), fresh = tgt was just sampled this call (a cached target is never a new sample), now = os.clock(); returns the interpolated pose
-function Core.Step(map, tgt, fresh, now)
+function Core.Impl(map, tgt, fresh, now)
+	local K, G = Core.K, Core.G
 	local st = map.VI
 	if not st then
-		st = {Ready = false, P = classify(map), Cur = tgt, Tgt = tgt, PrevT = tgt, LV = ZERO, AV = ZERO, TV = ZERO, TA = ZERO, SS = 0, SW = 0, SL = 0, SA = 0, CL = 0, CA = 0, TN = 0, TT = now, IT = now, ST = now, SI = 0, OM = 0, OMR = 0}
+		st = {Ready = false, P = classify(map), Cur = tgt, Tgt = tgt, PrevT = tgt, LV = ZERO, AV = ZERO, LA = ZERO, AA = ZERO, ER = ZERO, TV = ZERO, TA = ZERO, SS = 0, SW = 0, SL = 0, SA = 0, CL = 0, CA = 0, TN = 0, TT = now, IT = now, ST = now, SI = 0, OM = 0, OMR = 0}
 		map.VI = st
 	end
 	if now ~= GN then
@@ -73318,7 +73354,12 @@ function Core.Step(map, tgt, fresh, now)
 			GDA += (s - GDA) * (1 - exp(-s / DT_T))
 			local c = CAP_K * GDA
 			GCAP = c < MIN_CAP and MIN_CAP or (c > MAX_DT and MAX_DT or c)
+			-- body-wide activity: the mean normalized target speed of every joint stepped during the previous frame, smoothed over time (all joints of a frame see the same value)
+			if G.N > 0 then G.A += (G.S / G.N - G.A) * (1 - exp(-s / K.SYNC_T)) end
+		else
+			G.A = 0
 		end
+		G.S, G.N = 0, 0
 	end
 	local hl = Reanimate.HiddenLimbs
 	if hl and hl[map.RPart1] and (map.RPart0 == "ROOT" or not hl[map.RPart0]) then
@@ -73332,7 +73373,7 @@ function Core.Step(map, tgt, fresh, now)
 	if not st.Ready then
 		st.Ready = true
 		st.Cur, st.Tgt, st.PrevT = tgt, tgt, tgt
-		st.LV, st.AV, st.TV, st.TA = ZERO, ZERO, ZERO, ZERO
+		st.LV, st.AV, st.LA, st.AA, st.ER, st.TV, st.TA = ZERO, ZERO, ZERO, ZERO, ZERO, ZERO, ZERO
 		st.SS, st.SW, st.SL, st.SA = 0, 0, 0, 0
 		st.CL, st.CA, st.TN = 0, 0, 0
 		st.TT, st.IT, st.ST, st.SI, st.OM, st.OMR = now, now, now, 0, 0, 0
@@ -73349,11 +73390,11 @@ function Core.Step(map, tgt, fresh, now)
 			if finite(dp) and finite(dr) then
 				local ml, ma = dp.Magnitude, dr.Magnitude
 				if ds > GAP or ml > TELEPORT or ml > JUMP_LIN * ds or ma > P.jw * ds then
-					-- discontinuity (animation switch, pose jump, teleport, sampling gap): no speed is measured from it and the measured target motion is cleared, but the limb keeps its own velocity and eases from where it is; only a teleport lands directly on the target
+					-- discontinuity (animation switch, pose jump, teleport, sampling gap): no speed is measured from it and the measured target motion is cleared, but the limb keeps its own velocity and acceleration and eases from where it is; only a teleport lands directly on the target
 					if ml > TELEPORT then
-						st.Cur, st.LV, st.AV, st.SS, st.SW = tgt, ZERO, ZERO, 0, 0
+						st.Cur, st.LV, st.AV, st.LA, st.AA, st.SS, st.SW = tgt, ZERO, ZERO, ZERO, ZERO, 0, 0
 					end
-					st.TV, st.TA, st.CL, st.CA, st.TN = ZERO, ZERO, 0, 0, 0
+					st.TV, st.TA, st.CL, st.CA, st.TN, st.ER = ZERO, ZERO, 0, 0, 0, ZERO
 				else
 					local rl, ra = dp / ds, dr / ds
 					local il, ia = ml / ds, ma / ds
@@ -73420,11 +73461,20 @@ function Core.Step(map, tgt, fresh, now)
 		if tn < 0 then tn = 0 end
 		st.TN = tn
 	end
+	-- synchronisation: this joint's normalized target speed feeds the body-wide activity (capped, so one very fast limb cannot dominate the mean); a channel that is (almost) still is tightened by a share of the other channel's activity, so position and rotation of a joint lag the animation by the same time
+	local nl, na = ss / X0, sw / W0
+	local act = nl > na and nl or na
+	G.S += act < 4 and act or 4
+	G.N += 1
+	local sync = 1 + K.SYNC_G * P.sc * (G.A / (G.A + K.SYNC_X))
+	local ssn, swn = ss, sw
+	if na * K.LINK > nl then ssn = na * K.LINK * X0 end
+	if nl * K.LINK > na then swn = nl * K.LINK * W0 end
 	local cfg = VC
 	-- responsiveness rises with the measured target speed (slow motion: softer, rising to the full base value and beyond as the measured speed grows); a recent reversal adds temporary damping
 	local dmp = 1 - TURN_OM * tn
-	local om = cfg.Resp * P.rm * dmp * (SLOW_OM + (1 - SLOW_OM) * ss / (ss + SLOW_X)) * (1 + GAIN * ss / (ss + X0))
-	local omr = cfg.AngResp * P.wr * dmp * (SLOW_OM + (1 - SLOW_OM) * sw / (sw + SLOW_WX)) * (1 + GAIN * sw / (sw + W0))
+	local om = cfg.Resp * P.rm * dmp * sync * (SLOW_OM + (1 - SLOW_OM) * ssn / (ssn + SLOW_X)) * (1 + GAIN * ssn / (ssn + X0))
+	local omr = cfg.AngResp * P.wr * dmp * sync * (SLOW_OM + (1 - SLOW_OM) * swn / (swn + SLOW_WX)) * (1 + GAIN * swn / (swn + W0))
 	if ten then
 		if om < OM10 then om = OM10 end
 		if omr < OM10 then omr = OM10 end
@@ -73447,27 +73497,42 @@ function Core.Step(map, tgt, fresh, now)
 	local base = st.Tgt
 	local gp, gr = base.Position, base.Rotation
 	local cl, ca = st.CL * (1 - tn), st.CA * (1 - tn)
+	local tv, ta = st.TV, st.TA
 	local ext = now - st.ST
 	if ext > 0 then
 		-- no fresh sample this call (sparse sampling): the goal keeps moving along the measured motion for at most one expected sample interval and never by more than the last real target step, so the limb moves continuously instead of in separate bursts
 		local cap = st.SI * 1.25
 		if ext > cap then ext = cap end
-		if ext > 0 then
-			if cl > 0 then gp += clampMag(st.TV * (ext * cl), st.SL * EXT_STEP) end
-			if ca > 0 then gr = rotFromVec(clampMag(st.TA * (ext * ca), st.SA * EXT_STEP)) * gr end
-		end
+	else
+		ext = 0
 	end
 	local pr = cfg.Predict
-	if pr > 0 then
+	-- the sample is held over the whole step: the goal is shifted back along the measured motion by HALF of the step (confidence weighted, never more than 3/4 of the last real target step) so the lag does not depend on the frame rate; the optional prediction and the between-sample extrapolation are added on top, each bounded
+	local hs = K.HALF * dt
+	if cl > 0 then
+		local sl = st.SL
+		local off = ext > 0 and clampMag(tv * (ext * cl), sl * EXT_STEP) or ZERO
 		-- optional prediction: only along a consistent, steady (not decelerating) measured direction, weighted by its confidence, faded out after a reversal, scaled per joint and never more than a share of the last real target step (the absolute cap grows a little with the measured speed)
-		if cl > 0 then gp += clampMag(st.TV * (pr * P.pm * cl), math.min(st.SL * LEAD_STEP, LEAD_CAP * (1 + ss / (ss + X0)))) end
-		if ca > 0 then gr = rotFromVec(clampMag(st.TA * (pr * P.pm * ca), math.min(st.SA * LEAD_STEP, ANG_LEAD_CAP * (1 + sw / (sw + W0))))) * gr end
+		if pr > 0 then
+			off += clampMag(tv * (pr * P.pm * cl), math.min(sl * LEAD_STEP, LEAD_CAP * (1 + ss / (ss + X0))))
+		end
+		gp += off - clampMag(tv * (hs * cl), sl * 0.75)
+	end
+	if ca > 0 then
+		local sa = st.SA
+		local off = ext > 0 and clampMag(ta * (ext * ca), sa * EXT_STEP) or ZERO
+		if pr > 0 then
+			off += clampMag(ta * (pr * P.pm * ca), math.min(sa * LEAD_STEP, ANG_LEAD_CAP * (1 + sw / (sw + W0))))
+		end
+		off -= clampMag(ta * (hs * ca), sa * 0.75)
+		local m = off.Magnitude
+		if m > 1e-9 then gr = CFrame.fromAxisAngle(off / m, m) * gr end
 	end
 	local cur = st.Cur
-	local en, nv = spring(cur.Position - gp, st.LV, o0 * SPR_K, amax, smax, dt)
+	local en, nv, nac = spring3(cur.Position - gp, st.LV, st.LA, o0 * SPR_K, amax, smax, dt, cl, cl > 0 and tv * cl or ZERO, P.sd)
 	local np
 	if en.Magnitude < EPS_POS and nv.Magnitude < EPS_VL then
-		np, nv = gp, ZERO
+		np, nv, nac = gp, ZERO, ZERO
 	else
 		np = gp + en
 	end
@@ -73476,28 +73541,43 @@ function Core.Step(map, tgt, fresh, now)
 	local th = er.Magnitude
 	if th > HYST then
 		local ax = er / th
-		-- almost a half turn away and already rotating the other way round: keep that direction instead of reversing it
-		if av:Dot(ax) > HYST_V then er = -ax * (2 * PI - th) end
+		local alt = -ax * (2 * PI - th)
+		-- almost a half turn away: keep rotating the way the limb already turns, or (when it is nearly still) keep the error representation of the previous frame, so the error never flips to the other side of the half turn
+		if av:Dot(ax) > HYST_V or (av.Magnitude < HYST_V and st.ER:Dot(alt) > st.ER:Dot(er)) then er = alt end
 	end
-	local ev, nav = spring(er, av, r0 * SPR_K, wamax, wmax, dt)
+	st.ER = er
+	local ev, nav, naa = spring3(er, av, st.AA, r0 * SPR_K, wamax, wmax, dt, ca, ca > 0 and ta * ca or ZERO, P.sd)
 	local nr
 	if ev.Magnitude < EPS_ANG and nav.Magnitude < EPS_VA then
-		nr, nav = gr, ZERO
+		nr, nav, naa = gr, ZERO, ZERO
 	else
 		nr = rotFromVec(ev) * gr
 	end
-	if not (finite(np) and finite(nv) and finite(nav) and finite(nr.XVector) and finite(nr.YVector)) then
+	if not (finite(np) and finite(nv) and finite(nac) and finite(nav) and finite(naa) and finite(nr.XVector) and finite(nr.YVector)) then
 		st.Ready = false
 		return st.Tgt
 	end
-	local out = CFrame.new(np) * nr
-	st.Cur, st.LV, st.AV = out, nv, nav
+	local out = nr + np
+	st.Cur, st.LV, st.AV, st.LA, st.AA = out, nv, nav, nac, naa
 	return out
+end
+-- safety net: should the controller ever raise an error the limb falls back to the raw animation pose (state restarts on the next call) instead of breaking the reanimation loop
+function Core.Step(map, tgt, fresh, now)
+	local ok, out = pcall(Core.Impl, map, tgt, fresh, now)
+	if ok and out then return out end
+	local st = map.VI
+	if st then st.Ready = false end
+	local G = Core.G
+	if not ok and G.F < 3 then
+		G.F += 1
+		warn("[Velocity-Interpolated Reanimator] step error, the limb uses the raw animation pose: " .. tostring(out))
+	end
+	return tgt
 end
 local VelInterpReanimator = setmetatable({Name = "Velocity-Interpolated", HiderKey = "VelInterp"}, {__index = LimbReanimator})
 Reanimate.VelocityInterpolatedReanimator = VelInterpReanimator
 function VelInterpReanimator.Config(parent)
-UI.CreateText(parent, "Velocity-Interpolated Reanimation: every limb keeps its own continuous movement state (position, rotation and velocity) and is moved toward the animation's current pose by a bounded, critically damped second-order tracker integrated from real frame time, so motion stays continuous across frame drops, frame rates and consecutive animation samples, without overshoot or vibration. Responsiveness follows how fast the animation really moves and differs per joint (root, torso, head, arms, legs, hands / feet); pose jumps and animation switches only clear the measured animation motion while the limb's own velocity carries on smoothly. The animation's own pose is never overwritten, and it works with the Limb Reanimator's RootPart, init, fling and limb hider options.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "Velocity-Interpolated Reanimation: every limb keeps its own continuous movement state (position, rotation, velocity and acceleration) and is moved toward the animation's current pose by a bounded, critically damped third-order (jerk-continuous) tracker integrated from real frame time, so motion stays continuous across frame drops, frame rates and consecutive animation samples, without overshoot or vibration. Responsiveness follows how fast the animation really moves, is kept consistent between the joints and differs per joint (root, torso, head, arms, legs, hands / feet); pose jumps and animation switches only clear the measured animation motion while the limb's own velocity and acceleration carry on smoothly. The animation's own pose is never overwritten, and it works with the Limb Reanimator's RootPart, init, fling and limb hider options.", 10, Enum.TextXAlignment.Center)
 UI.CreateText(parent, "-=+ Velocity-Interpolated Settings +=-", 12, Enum.TextXAlignment.Center)
 local function slider(label, key, lo, hi, field, scale)
 UI.CreateSlider(parent, label, RS[key], lo, hi, 1).Changed:Connect(function(val)
