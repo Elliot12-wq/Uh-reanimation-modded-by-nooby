@@ -2126,6 +2126,24 @@ dot = {n = 32, fn = function(x, y)
 local u, v = (x + 0.5) / 16 - 1, (y + 0.5) / 16 - 1
 return math.clamp((1 - math.sqrt(u * u + v * v)) * 6, 0, 1)
 end},
+halo = {n = 64, fn = function(x, y)
+local u, v = (x + 0.5) / 32 - 1, (y + 0.5) / 32 - 1
+local r = math.sqrt(u * u + v * v)
+if r >= 1 then return 0 end
+local k = 1 - r
+return k * k * (0.35 + 0.65 * k)
+end},
+beam = {n = 64, fn = function(x, y)
+local u, v = (x + 0.5) / 32 - 1, (y + 0.5) / 64
+local a = 1 - math.abs(u)
+return math.clamp(a * a * (1 - v) ^ 0.8, 0, 1)
+end},
+streak = {n = 64, fn = function(x, y)
+local u, v = (x + 0.5) / 32 - 1, (y + 0.5) / 32 - 1
+local a = 1 - math.abs(u)
+local b = math.clamp(1 - math.abs(v) * 5.5, 0, 1)
+return math.clamp(a * a * a * b * b, 0, 1)
+end},
 }
 function Cache.VFX(name)
 local d = VFX[name]
@@ -3822,7 +3840,7 @@ end
 gv.Changed:Connect(lens)
 glassHosts[knob] = lens
 lens()
-local hov, dn = false, false
+local hov, dn, over = false, false, 0
 local function grow(style, time)
 local k, z = liquidParams(style)
 FX.NoMB = true
@@ -3835,21 +3853,28 @@ FX.SpringTo(hsc, "Scale", dn and 1 or (hov and 0.72 or 0.4), 240, 0.7)
 tween(halo, 0.25, Quint, EOut, {BackgroundTransparency = dn and 0.78 or (hov and 0.88 or 1)})
 end
 end
-track.MouseEnter:Connect(function()
-if not FX.Settings.Transitions then return end
+local function enter()
+over += 1
+if hov or not FX.Settings.Transitions then return end
 hov = true
 grow(Back, 0.2)
-end)
-track.MouseLeave:Connect(function()
-if not hov then return end
+end
+local function leave()
+over = math.max(over - 1, 0)
+if over > 0 or not hov then return end
 hov = false
 if not dn then grow(Back, 0.25) end
-end)
-track.InputBegan:Connect(function(input)
+end
+local function press(input)
 if not isPress(input) or not FX.Settings.Transitions then return end
 dn = true
 grow(Back, 0.15)
-end)
+end
+for _, s in ipairs({track, knob}) do
+s.MouseEnter:Connect(enter)
+s.MouseLeave:Connect(leave)
+s.InputBegan:Connect(press)
+end
 local conn = UserInputService.InputEnded:Connect(function(input)
 if not dn or not isPress(input) then return end
 dn = false
@@ -5564,6 +5589,11 @@ local okT, th = pcall(opts.Theme)
 if okT and type(th) == "table" and th.Period and th.Offset then grid = th end
 end
 end
+local MS = nil
+do
+local okM, mf = pcall(FX.AttachMaster, stage, {world = world, zoom = worldZoom}, 1, nil, {OFF = 0.18, BEAT = BAR / 4, BAR = BAR, INT = INTENSITY, DUR = DUR}, 0)
+if okM and type(mf) == "function" then MS = {f = mf, tEnd = tEnd, pulse = 0, lv = 0} end
+end
 while true do
 local dt = RunService.Heartbeat:Wait()
 local t = songClock()
@@ -5586,7 +5616,7 @@ impact(k, col)
 flashK = math.max(flashK, 0.2 + 0.12 * k)
 shake = math.max(shake, 10 + 8 * k)
 FX.Ring(world, WHITE, 520 + 120 * k, 0.8, 3 + k)
-pcall(FX.BlurPulse, 6 + 3 * k, 0.05, 0.45)
+pcall(FX.BlurPulse, 6 + 3 * k, 0.18, 0.61)
 itick(1.25, 0.7)
 end
 end
@@ -5621,7 +5651,7 @@ shake = math.max(shake, 14)
 glitch = 1
 flashK = math.max(flashK, 0.22)
 FX.Ring(world, col, 620, 0.8, 4)
-pcall(FX.BlurPulse, 8, 0.06, 0.5)
+pcall(FX.BlurPulse, 8, 0.21, 0.68)
 end
 if scene ~= 3 then hideCardStuff() end
 if scene ~= 4 then hideRows() end
@@ -5764,7 +5794,7 @@ slammed = true
 FX.Ring(world, WHITE, 760, 0.8, 5)
 FX.Ring(world, col, 520, 0.9, 4)
 FX.Sparks(world, col, 16, 260, 0.8)
-pcall(FX.BlurPulse, 12, 0.07, 0.7)
+pcall(FX.BlurPulse, 12, 0.22, 0.94)
 shake = 24
 glitch = 1
 flashK = 0.55
@@ -5892,7 +5922,7 @@ flashK = 0.7
 punch = 0.2
 shake = math.max(shake, 26)
 FX.Ring(world, WHITE, 900, 0.9, 5)
-pcall(FX.BlurPulse, 14, 0.06, 0.8)
+pcall(FX.BlurPulse, 14, 0.21, 1.08)
 pcall(function() tri:Bloom() end)
 tri.pulse = 1
 end
@@ -6195,6 +6225,7 @@ else
 flash.BackgroundColor3 = WHITE:Lerp(col, 0.35 * (1 - fa))
 flash.BackgroundTransparency = 1 - flashA
 end
+if MS then MS.tEnd, MS.pulse = tEnd, pulse; MS.f(t, dt, MS) end
 end
 end
 local ok, err = pcall(run)
@@ -6220,7 +6251,7 @@ tween(fl, 1, Quad, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(fl, 1.1)
 FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 FX.Ring(MainFrame, WHITE, 700, 0.7, 3)
-FX.BlurPulse(16, 0.04, 1.0)
+FX.IntroBlurOut(16)
 end)
 end
 FX.IUProfiles = (function()
@@ -6534,6 +6565,8 @@ local dz = (P.punch * pe + 0.011 * pulse + 0.035 * tens) * INT1 * life
 local dr = (P.dutch * pe * sgn + math.sin(t * 0.37) * 0.32 * P.sway) * INT1 * life
 local dx = (math.sin(t * 0.53) * 5 * P.drift + ((P.bm == "glitch") and (math.random() - 0.5) * 14 * ge or 0)) * INT1 * life
 local dy = (math.cos(t * 0.41) * 4 * P.drift + 12 * pe) * INT1 * life
+local mcm = FX.MasterCam
+if mcm and mcm.owner == stage then dz, dr, dx, dy = dz + mcm.z, dr + mcm.r, dx + mcm.x, dy + mcm.y end
 local bz = camBase("z", zo.Scale, 1e-4)
 local nz = bz * (1 + dz)
 zo.Scale = nz cam.z = zo.Scale
@@ -7473,14 +7506,1133 @@ if ok and type(up) == "function" then return up end
 return nil
 end
 FX.IUBase = FX.IntroUpgrade
+FX.IntroMasterSrc = [==[
+local Util, FX = ...
+local V2, U2 = Vector2.new, UDim2
+local WHITE, BLACK = Color3.new(1, 1, 1), Color3.new(0, 0, 0)
+local floor, sin, cos, sqrt, max, min, abs, exp, pi, random, ceil = math.floor, math.sin, math.cos, math.sqrt, math.max, math.min, math.abs, math.exp, math.pi, math.random, math.ceil
+local DEG, TAU = 180 / pi, pi * 2
+local function C(r, g, b) return Color3.fromRGB(r, g, b) end
+local function cl(x, a, b) return x < a and a or (x > b and b or x) end
+local function c01(x) return x < 0 and 0 or (x > 1 and 1 or x) end
+local function lerp(a, b, k) return a + (b - a) * k end
+local function eo3(x) x = c01(x) return 1 - (1 - x) ^ 3 end
+local function eo5(x) x = c01(x) return 1 - (1 - x) ^ 5 end
+local function eio(x) x = c01(x) return x < 0.5 and 4 * x * x * x or 1 - (-2 * x + 2) ^ 3 / 2 end
+local function ss(a, b, x)
+	if b <= a then return x >= b and 1 or 0 end
+	local k = c01((x - a) / (b - a))
+	return k * k * (3 - 2 * k)
+end
+local function env(a, atk, rel)
+	if a < 0 then return 0 end
+	if a < atk then return a / atk end
+	return exp(-(a - atk) / rel)
+end
+local function mix(a, b, k) return a:Lerp(b, c01(k)) end
+local function mk(cls, parent, props)
+	local o = Util.Instance(cls, parent)
+	for k, v in pairs(props) do o[k] = v end
+	return o
+end
+local function F(parent, z, ap, pos, size, col, tr)
+	return mk("Frame", parent, {AnchorPoint = ap, Position = pos, Size = size, BackgroundColor3 = col, BackgroundTransparency = tr, BorderSizePixel = 0, ZIndex = z, Interactable = false})
+end
+local function grad(f, rot, pts)
+	local g = Util.Instance("UIGradient", f)
+	g.Rotation = rot
+	local ks = {}
+	for i, p in ipairs(pts) do ks[i] = NumberSequenceKeypoint.new(p[1], p[2]) end
+	g.Transparency = NumberSequence.new(ks)
+	return g
+end
+local function round(f)
+	Util.Instance("UICorner", f).CornerRadius = UDim.new(1, 0)
+	return f
+end
+-- a pooled graphic with a cached transparency: unchanged values never touch the engine
+local function SL(o, im) return {o = o, im = im and true or false, tr = 1} end
+local function setTr(s, tr)
+	if tr > 1 then tr = 1 elseif tr < 0 then tr = 0 end
+	if abs(s.tr - tr) > 0.003 or (tr >= 1 and s.tr < 1) then
+		s.tr = tr
+		if s.im then s.o.ImageTransparency = tr else s.o.BackgroundTransparency = tr end
+	end
+end
+local function setCol(s, c)
+	if s.col ~= c then
+		s.col = c
+		if s.im then s.o.ImageColor3 = c else s.o.BackgroundColor3 = c end
+	end
+end
+
+-- ═══ per-intro looks: palette per shot, shot cuts + transition style, key-light rigs, depth motif, camera feel, blur peaks ═══
+local PROF = {}
+local function PL(sh, hi, a, b) return {sh = sh, hi = hi, a = a, b = b or hi} end
+local function RG(ox, oy, a0, sp) return {ox = ox, oy = oy, a0 = a0, sp = sp} end
+local function CUT(list, t, kind, str)
+	if type(t) == "number" then list[#list + 1] = {t, kind, str or 1} end
+end
+
+PROF[1] = function(K, d)
+	local B, o = K.BAR or 1.9044, K.OFF or 0.18
+	local function bt(k) return o + B * k end
+	local cuts = {}
+	CUT(cuts, bt(2), "flash", 0.8) CUT(cuts, bt(8), "burst", 1) CUT(cuts, bt(15), "tear", 1) CUT(cuts, bt(21), "slam", 1) CUT(cuts, bt(28), "burst", 1.25)
+	return {
+		name = "ORIGINAL", dyn = true, cam = 0.6, push = 0.022, bp = 0.004, roll = 0.8, vig = 0.55, gh = 3, op = 10, bl = 8, cb = 10,
+		pal = {{sk = 0.14, hk = 0.3}, {sk = 0.2, hk = 0.38}, {sk = 0.12, hk = 0.26}, {sk = 0.22, hk = 0.34}, {sk = 0.3, hk = 0.5}, {sk = 0.2, hk = 0.4}},
+		cuts = cuts, tt = bt(30), ty = 0.5,
+		rig = {n = 7, al = 0.2, key = "hi", sway = 4, rigs = {RG(0.5, -0.16, 0, 56), RG(0.14, -0.12, 18, 40), RG(0.86, -0.12, -18, 40)}},
+		mot = {kind = "halo", n = 9, s1 = 24, s2 = 110, vx = 0.006, vy = -0.012, sw = 0.01, tw = 0.25, al = 0.3, col = "a"},
+	}
+end
+PROF[2] = function(K, d)
+	local B, cuts = K.BAR or 2, {}
+	CUT(cuts, d[1], "bloom", 1) CUT(cuts, d[1] and d[1] + B, "bloom", 0.8) CUT(cuts, d[2], "flash", 1) CUT(cuts, d[3], "burst", 1.2)
+	return {
+		name = "MOONLIGHT", base = true, cam = 0.7, push = 0.02, bp = 0.003, roll = 1, vig = 0, gh = 3, op = 11, bl = 9, cb = 10,
+		pal = {PL(C(6, 12, 40), C(176, 200, 255), C(176, 200, 255), C(196, 164, 255)), PL(C(10, 18, 56), C(214, 228, 255), C(214, 228, 255), C(255, 255, 255)),
+			PL(C(16, 6, 36), C(150, 120, 230), C(196, 164, 255), C(120, 140, 255)), PL(C(6, 20, 50), C(160, 220, 255), C(150, 210, 255), C(196, 164, 255)),
+			PL(C(20, 16, 50), C(255, 244, 220), C(255, 236, 200), C(176, 200, 255))},
+		cuts = cuts, tt = d[3], ty = 0.5,
+		rig = {n = 5, al = 0.2, key = "hi", sway = 3, rigs = {RG(0.82, -0.16, -16, 34), RG(0.2, -0.14, 14, 30), RG(0.5, -0.2, 0, 26)}},
+		fog = 2,
+		mot = {kind = "ring", n = 8, s1 = 40, s2 = 150, vx = 0.003, vy = -0.008, sw = 0.006, tw = 0.3, al = 0.22, col = "hi"},
+	}
+end
+PROF[3] = function(K, d)
+	local cuts = {}
+	CUT(cuts, d[1], "tear", 1) CUT(cuts, d[2], "glitch", 1) CUT(cuts, d[3], "flash", 1.1)
+	return {
+		name = "JEALOUSY", base = true, cam = 0.7, push = 0.018, bp = 0.003, roll = 1.2, vig = 0, gh = 2, op = 11, bl = 9, cb = 10,
+		pal = {PL(C(2, 22, 14), C(110, 255, 180), C(70, 255, 150), C(255, 54, 96)), PL(C(34, 4, 12), C(255, 120, 150), C(255, 54, 96), C(70, 255, 150)),
+			PL(C(2, 26, 16), C(150, 255, 200), C(70, 255, 150), C(255, 120, 150)), PL(C(40, 2, 12), C(255, 90, 120), C(255, 54, 96), C(255, 200, 210))},
+		cuts = cuts, tt = d[4], ty = 0.5,
+		rig = {n = 4, al = 0.22, key = "a", sway = 8, rigs = {RG(0.5, -0.2, 0, 14), RG(0.15, -0.1, 24, 18), RG(0.85, -0.1, -24, 18), RG(0.5, 1.2, 180, 20)}},
+		mot = {kind = "dot", n = 8, s1 = 10, s2 = 34, vx = -0.004, vy = 0.01, sw = 0.004, tw = 0.5, al = 0.5, col = "a"},
+	}
+end
+PROF[4] = function(K, d)
+	local cuts = {}
+	CUT(cuts, d[1], "glitch", 1.1) CUT(cuts, d[2], "bloom", 0.9) CUT(cuts, d[4], "glitch", 1.3) CUT(cuts, d[5], "flash", 1.2)
+	return {
+		name = "LIL PEEP", base = true, cam = 0.7, push = 0.018, bp = 0.004, roll = 1.5, vig = 0, gh = 2, op = 10, bl = 9, cb = 10,
+		pal = {PL(C(24, 4, 34), C(255, 100, 200), C(255, 46, 150), C(70, 226, 255)), PL(C(8, 18, 40), C(110, 230, 255), C(70, 226, 255), C(255, 46, 150)),
+			PL(C(22, 8, 44), C(190, 140, 255), C(130, 70, 255), C(255, 46, 150)), PL(C(34, 4, 28), C(255, 70, 170), C(255, 46, 150), C(70, 226, 255)),
+			PL(C(6, 6, 20), C(255, 255, 255), C(255, 255, 255), C(255, 46, 150))},
+		cuts = cuts, tt = d[5], ty = 0.5,
+		rig = {n = 5, al = 0.24, key = "b", sway = 4, rigs = {RG(-0.08, 0.2, 58, 30), RG(1.08, 0.2, -58, 30), RG(0.5, -0.15, 0, 40)}},
+		mot = {kind = "rain", n = 18, s1 = 24, s2 = 70, vx = -0.07, vy = 0.62, sw = 0, tw = 0, al = 0.45, col = "b"},
+	}
+end
+PROF[5] = function(K, d)
+	local cuts = {}
+	CUT(cuts, d[1], "flash", 1) CUT(cuts, d[2], "bloom", 0.8) CUT(cuts, d[3], "bloom", 0.7) CUT(cuts, d[4], "tear", 0.9)
+	CUT(cuts, d[5], "tear", 0.8) CUT(cuts, d[6], "bloom", 1) CUT(cuts, d[7], "burst", 1.2)
+	return {
+		name = "LIQUID SMOOTH", base = true, cam = 0.7, push = 0.022, bp = 0.003, roll = 0.9, vig = 0, gh = 3, op = 12, bl = 10, cb = 11,
+		pal = {PL(C(2, 22, 44), C(150, 245, 255), C(90, 226, 240), C(96, 150, 255)), PL(C(2, 16, 40), C(110, 220, 255), C(70, 200, 255), C(96, 150, 255)),
+			PL(C(2, 10, 30), C(90, 180, 230), C(80, 190, 240), C(70, 230, 200)), PL(C(4, 28, 40), C(150, 255, 235), C(70, 230, 200), C(90, 226, 240)),
+			PL(C(6, 30, 52), C(170, 245, 255), C(90, 226, 240), C(150, 200, 255)), PL(C(8, 26, 44), C(190, 250, 255), C(120, 230, 255), C(96, 150, 255)),
+			PL(C(20, 28, 40), C(255, 226, 150), C(255, 214, 130), C(90, 226, 240)), PL(C(6, 30, 56), C(210, 250, 255), C(90, 226, 240), C(255, 226, 150))},
+		cuts = cuts, tt = d[7], ty = 0.5,
+		rig = {n = 7, al = 0.2, key = "hi", sway = 6, rigs = {RG(0.55, -0.2, -8, 50), RG(0.3, -0.2, 8, 50)}},
+		mot = {kind = "ring", n = 12, s1 = 16, s2 = 84, vx = 0, vy = -0.05, sw = 0.02, tw = 0.2, al = 0.35, col = "hi"},
+	}
+end
+PROF[6] = function(K, d)
+	local cuts = {}
+	CUT(cuts, d[1], "slam", 0.8) CUT(cuts, d[2], "slam", 0.7) CUT(cuts, d[3], "bloom", 0.8) CUT(cuts, d[4], "flash", 1.3)
+	CUT(cuts, d[5], "burst", 1) CUT(cuts, d[6], "bloom", 1) CUT(cuts, d[7], "flash", 1)
+	return {
+		name = "THRILLER", base = true, cam = 0.7, push = 0.02, bp = 0.004, roll = 1.2, vig = 0, gh = 2, op = 10, bl = 9, cb = 10,
+		pal = {PL(C(8, 0, 4), C(176, 196, 255), C(230, 34, 44), C(255, 150, 40)), PL(C(6, 6, 14), C(176, 196, 255), C(230, 34, 44), C(176, 196, 255)),
+			PL(C(24, 0, 6), C(230, 60, 60), C(230, 34, 44), C(255, 150, 40)), PL(C(4, 10, 6), C(120, 230, 110), C(80, 200, 70), C(230, 34, 44)),
+			PL(C(30, 2, 6), C(255, 170, 60), C(255, 150, 40), C(230, 34, 44))},
+		cuts = cuts, tt = d[4], ty = 0.5,
+		rig = {n = 4, al = 0.18, key = "hi", sway = 3, rigs = {RG(0.78, -0.18, -14, 26), RG(0.25, -0.15, 12, 22)}},
+		fog = 2,
+		mot = {kind = "spark", n = 10, s1 = 8, s2 = 26, vx = 0.01, vy = -0.035, sw = 0.01, tw = 0.6, al = 0.55, col = "b"},
+	}
+end
+PROF[7] = function(K, d)
+	local cuts = {}
+	CUT(cuts, d[1], "tear", 0.9) CUT(cuts, d[2], "bloom", 0.8) CUT(cuts, d[3], "burst", 1.3) CUT(cuts, d[4], "flash", 1)
+	CUT(cuts, d[5], "bloom", 0.8) CUT(cuts, d[6], "burst", 1.2)
+	return {
+		name = "PERFECT FACE", base = true, cam = 0.7, push = 0.02, bp = 0.004, roll = 1, vig = 0, gh = 3, op = 10, bl = 9, cb = 10,
+		pal = {PL(C(40, 14, 30), C(255, 226, 160), C(255, 214, 120), C(255, 140, 200)), PL(C(60, 20, 44), C(255, 200, 220), C(255, 140, 200), C(255, 214, 120)),
+			PL(C(30, 10, 36), C(255, 236, 180), C(255, 214, 120), C(255, 255, 255)), PL(C(70, 26, 40), C(255, 230, 170), C(255, 214, 120), C(255, 140, 200))},
+		cuts = cuts, tt = d[3], ty = 0.5,
+		rig = {n = 7, al = 0.22, key = "hi", sway = 3, rigs = {RG(0.5, 1.2, 180, 80), RG(0.5, -0.15, 0, 60)}},
+		mot = {kind = "spark", n = 14, s1 = 12, s2 = 44, vx = 0.01, vy = -0.02, sw = 0.012, tw = 0.8, al = 0.6, col = "a"},
+	}
+end
+PROF[8] = function(K, d)
+	local cuts, kinds = {}, {"tear", "flash", "bloom", "tear", "flash", "bloom", "burst"}
+	if type(K.CUTS) == "table" then
+		for i, t in ipairs(K.CUTS) do CUT(cuts, t, kinds[(i - 1) % #kinds + 1], 1) end
+	end
+	return {
+		name = "THE AURA FARMER", cam = 0.8, push = 0.02, bp = 0.005, roll = 1.2, vig = 0, gh = 3, op = 10, bl = 9, cb = 10,
+		pal = {PL(C(40, 16, 6), C(255, 214, 140), C(255, 200, 90), C(255, 120, 70)), PL(C(10, 6, 30), C(120, 220, 255), C(80, 220, 255), C(255, 60, 160)),
+			PL(C(30, 10, 40), C(255, 190, 120), C(255, 200, 90), C(255, 60, 160)), PL(C(50, 14, 6), C(255, 170, 80), C(255, 120, 70), C(255, 200, 90)),
+			PL(C(26, 12, 34), C(255, 150, 110), C(255, 150, 90), C(160, 120, 255)), PL(C(30, 20, 4), C(255, 226, 150), C(255, 214, 100), C(255, 255, 255)),
+			PL(C(8, 6, 10), C(255, 255, 255), C(255, 214, 100), C(255, 255, 255))},
+		cuts = cuts, tt = d[4], ty = 0.5,
+		rig = {n = 6, al = 0.2, key = "hi", sway = 3, rigs = {RG(1.1, 0.25, -70, 34), RG(0.9, -0.15, -25, 30), RG(0.5, -0.15, 0, 40)}},
+		mot = {kind = "halo", n = 12, s1 = 18, s2 = 90, vx = 0.004, vy = -0.012, sw = 0.008, tw = 0.3, al = 0.28, col = "hi"},
+	}
+end
+PROF[9] = function(K, d)
+	local o, B, cuts = K.OFF or 0.13, K.BAR or 2.28, {}
+	local function bb(n) return o + n * B end
+	CUT(cuts, bb(4), "bloom", 0.9) CUT(cuts, bb(8), "tear", 0.9) CUT(cuts, bb(16), "bloom", 1) CUT(cuts, bb(24), "burst", 1.5)
+	return {
+		name = "IN THE END", cam = 0.9, push = 0.024, bp = 0.004, roll = 1, vig = 0.5, gh = 3, op = 11, bl = 9, cb = 11,
+		pal = {PL(C(24, 14, 8), C(238, 214, 170), C(222, 196, 150), C(255, 84, 46)), PL(C(30, 16, 8), C(255, 200, 130), C(222, 196, 150), C(255, 84, 46)),
+			PL(C(34, 14, 8), C(255, 170, 100), C(255, 120, 60), C(238, 230, 214)), PL(C(40, 10, 6), C(255, 140, 80), C(255, 84, 46), C(238, 230, 214)),
+			PL(C(12, 6, 4), C(255, 240, 220), C(255, 200, 130), C(255, 84, 46))},
+		cuts = cuts, tt = bb(24), ty = 0.42,
+		rig = {n = 6, al = 0.2, key = "hi", sway = 4, rigs = {RG(0.5, -0.2, 0, 38), RG(0.8, -0.1, -15, 30), RG(0.2, -0.1, 15, 30)}},
+		fog = 2,
+		mot = {kind = "dot", n = 16, s1 = 5, s2 = 15, vx = 0.004, vy = 0.06, sw = 0.006, tw = 0.2, al = 0.55, col = "hi"},
+	}
+end
+PROF[10] = function(K, d)
+	local o, B, cuts = K.OFF or 0.16, K.BAR or 2.09, {}
+	local function bb(n) return o + n * B end
+	CUT(cuts, bb(4), "glitch", 1) CUT(cuts, bb(10), "slam", 1) CUT(cuts, bb(18), "glitch", 1) CUT(cuts, bb(22), "slam", 1)
+	CUT(cuts, bb(26), "flash", 1.1) CUT(cuts, bb(28.2), "burst", 1.2)
+	return {
+		name = "IMPOSTOR SYNDROME", cam = 0.9, push = 0.02, bp = 0.005, roll = 1.4, vig = 0.5, gh = 2, op = 10, bl = 9, cb = 10,
+		pal = {PL(C(6, 8, 30), C(120, 170, 255), C(88, 150, 255), C(255, 178, 70)), PL(C(18, 10, 26), C(255, 200, 120), C(255, 178, 70), C(255, 130, 184)),
+			PL(C(6, 10, 34), C(140, 190, 255), C(88, 150, 255), C(255, 72, 84)), PL(C(30, 8, 18), C(255, 150, 170), C(255, 130, 184), C(88, 150, 255)),
+			PL(C(10, 10, 34), C(255, 210, 140), C(255, 178, 70), C(140, 240, 200)), PL(C(28, 6, 14), C(255, 100, 110), C(255, 72, 84), C(255, 178, 70)),
+			PL(C(6, 6, 22), C(255, 236, 200), C(255, 178, 70), C(255, 255, 255))},
+		cuts = cuts, tt = bb(28.2), ty = 0.45,
+		rig = {n = 4, al = 0.18, key = "a", sway = 5, rigs = {RG(0.15, -0.1, 20, 26), RG(0.85, -0.1, -20, 26)}},
+		mot = {kind = "rect", n = 10, s1 = 8, s2 = 22, vx = 0.008, vy = 0.03, sw = 0.01, tw = 0.3, al = 0.4, col = "a"},
+	}
+end
+PROF[11] = function(K, d)
+	local cuts = {}
+	CUT(cuts, 10.12, "flash", 1) CUT(cuts, 22.12, "flash", 1) CUT(cuts, 35.17, "flash", 1.1) CUT(cuts, 41.95, "burst", 1.3)
+	CUT(cuts, 48, "flash", 1.3) CUT(cuts, 57, "bloom", 1)
+	return {
+		name = "PAPARAZZI", cam = 0.9, push = 0.02, bp = 0.005, roll = 1, vig = 0.5, gh = 4, op = 10, bl = 8, cb = 9,
+		pal = {PL(C(6, 6, 10), C(255, 255, 255), C(255, 255, 255), C(255, 214, 140)), PL(C(24, 8, 14), C(255, 226, 200), C(255, 214, 140), C(230, 40, 70)),
+			PL(C(30, 4, 10), C(255, 90, 100), C(230, 40, 70), C(255, 214, 140)), PL(C(8, 6, 14), C(255, 255, 255), C(255, 255, 255), C(230, 40, 70)),
+			PL(C(30, 24, 8), C(255, 236, 180), C(255, 214, 120), C(255, 255, 255)), PL(C(6, 6, 8), C(255, 255, 255), C(255, 214, 120), C(230, 40, 70))},
+		cuts = cuts, tt = 48.21, ty = 0.5,
+		rig = {n = 6, al = 0.2, key = "hi", sway = 10, rigs = {RG(0.2, -0.2, 10, 20), RG(0.8, -0.2, -10, 20), RG(0.5, -0.2, 0, 50)}},
+		mot = {kind = "halo", n = 7, s1 = 30, s2 = 120, vx = 0.004, vy = -0.01, sw = 0.01, tw = 0.7, al = 0.22, col = "hi"},
+	}
+end
+PROF[12] = function(K, d)
+	local o, B, cuts = K.OFF or 0.055, K.BAR or 2.58, {}
+	local function bs(n) return o + (n - 1) * B end
+	CUT(cuts, bs(5), "bloom", 0.9) CUT(cuts, bs(9), "tear", 0.8) CUT(cuts, bs(13), "bloom", 0.8) CUT(cuts, bs(17), "burst", 1)
+	CUT(cuts, bs(19), "flash", 1) CUT(cuts, bs(21), "burst", 1.2) CUT(cuts, bs(25), "bloom", 1.2)
+	return {
+		name = "BABY ONE MORE TIME", cam = 0.9, push = 0.02, bp = 0.004, roll = 1, vig = 0.45, gh = 3, op = 11, bl = 9, cb = 10,
+		pal = {PL(C(24, 10, 34), C(255, 180, 220), C(255, 110, 190), C(120, 200, 255)), PL(C(34, 8, 40), C(255, 150, 210), C(255, 110, 190), C(255, 226, 120)),
+			PL(C(16, 10, 40), C(200, 170, 255), C(180, 140, 255), C(255, 110, 190)), PL(C(40, 14, 30), C(255, 200, 170), C(255, 170, 120), C(255, 110, 190)),
+			PL(C(40, 6, 44), C(255, 120, 220), C(255, 70, 190), C(120, 230, 255)), PL(C(40, 20, 40), C(255, 230, 240), C(255, 200, 230), C(255, 226, 120)),
+			PL(C(30, 24, 40), C(255, 255, 255), C(255, 255, 255), C(255, 200, 230))},
+		cuts = cuts, tt = bs(21), ty = 0.5,
+		rig = {n = 6, al = 0.2, key = "a", sway = 4, rigs = {RG(0.5, -0.15, 0, 70), RG(0.1, -0.1, 25, 30), RG(0.9, -0.1, -25, 30)}},
+		fog = 2,
+		mot = {kind = "spark", n = 16, s1 = 10, s2 = 40, vx = 0.006, vy = -0.02, sw = 0.015, tw = 0.9, al = 0.55, col = "b"},
+	}
+end
+PROF[13] = function(K, d)
+	local o, B, cuts = K.OFF or 0.088, K.BAR or 1.875, {}
+	local function bs(n) return o + (n - 1) * B end
+	CUT(cuts, 10, "flash", 1) CUT(cuts, bs(12), "bloom", 0.8) CUT(cuts, bs(14), "burst", 1) CUT(cuts, bs(20), "burst", 1.3)
+	CUT(cuts, bs(24), "tear", 0.9) CUT(cuts, bs(28), "bloom", 1) CUT(cuts, bs(31), "flash", 1.4)
+	return {
+		name = "SURVIVOR", cam = 0.9, push = 0.022, bp = 0.005, roll = 1.1, vig = 0.45, gh = 3, op = 10, bl = 9, cb = 10,
+		pal = {PL(C(6, 4, 10), C(255, 240, 200), C(255, 204, 98), C(140, 54, 230)), PL(C(30, 10, 56), C(255, 204, 98), C(255, 204, 98), C(140, 54, 230)),
+			PL(C(40, 8, 30), C(255, 240, 200), C(255, 204, 98), C(214, 22, 52)), PL(C(60, 6, 26), C(255, 150, 120), C(214, 22, 52), C(255, 204, 98)),
+			PL(C(30, 10, 56), C(220, 170, 255), C(140, 54, 230), C(255, 204, 98)), PL(C(40, 30, 20), C(255, 240, 200), C(255, 204, 98), C(208, 216, 232)),
+			PL(C(6, 4, 10), C(255, 255, 255), C(255, 204, 98), C(255, 255, 255))},
+		cuts = cuts, tt = bs(31), ty = 0.5,
+		rig = {n = 7, al = 0.22, key = "hi", sway = 6, rigs = {RG(0.5, -0.15, 0, 90), RG(0.2, -0.1, 20, 60), RG(0.8, -0.1, -20, 60)}},
+		mot = {kind = "spark", n = 20, s1 = 8, s2 = 34, vx = 0, vy = 0.008, sw = 0.02, tw = 1, al = 0.7, col = "hi"},
+	}
+end
+PROF[14] = function(K, d)
+	local cuts = {}
+	CUT(cuts, 12, "tear", 0.8) CUT(cuts, 27, "bloom", 0.8) CUT(cuts, 45, "tear", 1) CUT(cuts, 65, "glitch", 1) CUT(cuts, 85, "burst", 1) CUT(cuts, 105, "flash", 1.2)
+	return {
+		name = "SWARM REBUILD", cam = 0.9, push = 0.02, bp = 0.004, roll = 0.9, vig = 0.4, gh = 3, op = 10, bl = 8, cb = 11, cbAt = 2.6, cbIn = 1.6, cbOut = 2, noGlow = true,
+		pal = {PL(C(2, 10, 22), C(120, 220, 255), C(80, 220, 255), C(180, 235, 255)), PL(C(2, 12, 28), C(100, 210, 255), C(70, 200, 255), C(150, 225, 255)),
+			PL(C(4, 14, 34), C(110, 200, 255), C(90, 190, 255), C(200, 240, 255)), PL(C(4, 18, 40), C(130, 230, 255), C(80, 230, 255), C(255, 255, 255)),
+			PL(C(6, 20, 44), C(160, 240, 255), C(120, 235, 255), C(255, 255, 255)), PL(C(8, 24, 50), C(200, 250, 255), C(160, 245, 255), C(255, 255, 255)),
+			PL(C(10, 28, 56), C(255, 255, 255), C(200, 250, 255), C(255, 255, 255))},
+		cuts = cuts, tt = 105, ty = 0.5,
+		rig = {n = 4, al = 0.18, key = "hi", sway = 3, rigs = {RG(0.5, -0.2, 0, 30), RG(0.5, 1.2, 180, 30)}},
+		mot = {kind = "dot", n = 16, s1 = 5, s2 = 16, vx = 0.012, vy = -0.01, sw = 0.02, tw = 0.5, al = 0.6, col = "a"},
+	}
+end
+-- ═══ transition styles: dur = how long the cut plays, bl = blur-peak scale, out = blur release, lead = how early the blur starts to build ═══
+local KD = {
+	flash = {dur = 0.9, bl = 1.0, out = 0.75, lead = 0.2},
+	bloom = {dur = 1.5, bl = 1.25, out = 1.15, lead = 0.35},
+	slam = {dur = 0.8, bl = 0.8, out = 0.6, lead = 0.2},
+	tear = {dur = 1.1, bl = 0.9, out = 0.85, lead = 0.25},
+	glitch = {dur = 0.7, bl = 0.7, out = 0.5, lead = 0.15},
+	burst = {dur = 1.1, bl = 1.1, out = 0.95, lead = 0.2},
+}
+local PKS = {1, 0.9, 0.66, 0.42, 0.24}
+local QS, QM, QG, QF = {7, 6, 4, 2, 0}, {14, 11, 7, 3, 0}, {4, 3, 2, 1, 0}, {3, 3, 2, 1, 0}
+local DI = {0, 0, 0.033, 0.042, 0.05}
+local KGH, GAH = {0.55, 1.0, 1.45, 1.9}, {0.34, 0.2, 0.3, 0.18}
+
+return function(stage, E, id, d, K, zb)
+	K = K or {}
+	local mkP = PROF[id]
+	local INT = cl(tonumber(K.INT) or 1, 0, 1.5)
+	if not mkP or INT <= 0.01 or not stage then return nil end
+	local okP, P = pcall(mkP, K, type(d) == "table" and d or {})
+	if not okP or type(P) ~= "table" or type(P.pal) ~= "table" or type(P.cuts) ~= "table" or #P.pal == 0 then return nil end
+	local INT1 = min(INT, 1)
+	local CFG = FX.Cfg or {}
+	local dyn = P.dyn and true or false
+	local rig, mc = P.rig, P.mot
+	local rigs = (rig and rig.rigs) or {}
+	if #rigs == 0 then rig = nil end
+
+	-- ── cached glow textures (the UI cache builds them once); every glow degrades gracefully when the cache is off ──
+	local TEX = {}
+	local function tex(name)
+		local v = TEX[name]
+		if v == nil then
+			v = false
+			local Cc = FX.Cache
+			if Cc and Cc.Enabled and Cc.VFX then
+				local okE, en = pcall(Cc.Enabled)
+				if okE and en then
+					local okV, tid = pcall(Cc.VFX, name)
+					if okV and tid then v = tid end
+				end
+			end
+			TEX[name] = v
+		end
+		return v or nil
+	end
+	-- fb: "hband" = soft-edged band, "disc" = flat disc, "none" = skipped entirely (null object, costs nothing)
+	local function LIGHT(parent, z, name, col, fb)
+		local tid = tex(name)
+		local o, im
+		if tid then
+			o = mk("ImageLabel", parent, {AnchorPoint = V2(0.5, 0.5), Position = U2.fromScale(0.5, 0.5), Size = U2.fromOffset(10, 10), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = z, Interactable = false, Image = tid, ImageColor3 = col, ImageTransparency = 1})
+			im = true
+		elseif fb == "hband" then
+			o = F(parent, z, V2(0.5, 0.5), U2.fromScale(0.5, 0.5), U2.fromOffset(10, 10), col, 1)
+			grad(o, 0, {{0, 1}, {0.5, 0}, {1, 1}})
+			im = false
+		elseif fb == "disc" then
+			o = round(F(parent, z, V2(0.5, 0.5), U2.fromScale(0.5, 0.5), U2.fromOffset(10, 10), col, 1))
+			im = false
+		else
+			return {ok = false, tr = 1, im = false, o = {}, col = col}
+		end
+		local s = SL(o, im)
+		s.col, s.ok = col, true
+		return s
+	end
+
+	-- ── roots: grade + light sit under the HUD, transitions + flare over everything ──
+	local W, H = 1280, 720
+	do
+		local sz = stage.AbsoluteSize
+		if sz.X > 10 and sz.Y > 10 then W, H = sz.X, sz.Y end
+	end
+	local U = min(W, H)
+	local lo = F(stage, 6, V2(0, 0), U2.new(), U2.fromScale(1, 1), BLACK, 1)
+	local hi = F(stage, 3000, V2(0, 0), U2.new(), U2.fromScale(1, 1), BLACK, 1)
+	lo.ClipsDescendants, hi.ClipsDescendants = true, true
+	lo.Visible, hi.Visible = false, false
+
+	-- ── performance profile ──
+	local function qlevel()
+		local lv = 1
+		if FX.VQ then
+			local ok, v = pcall(FX.VQ)
+			if ok and type(v) == "number" then lv = v end
+		end
+		local G = FX.Gov
+		if type(G) == "table" and type(G.Stride) == "number" and G.Stride > 1 then lv = max(lv, 4) end
+		return cl(floor(lv + 0.5), 1, 5)
+	end
+	local Q = qlevel()
+
+	-- ── shots: cuts + palette per shot ──
+	local CUTS = {}
+	do
+		local src = P.cuts
+		table.sort(src, function(a, b) return a[1] < b[1] end)
+		local last = -99
+		for _, c in ipairs(src) do
+			if KD[c[2]] and c[1] - last >= 0.9 and c[1] > 1.2 then
+				CUTS[#CUTS + 1] = {t = c[1], kind = c[2], str = c[3] or 1}
+				last = c[1]
+			end
+		end
+	end
+	local need = {}
+	for _, c in ipairs(CUTS) do need[c.kind] = true end
+	local pal, palN = P.pal, #P.pal
+	local cur = {sh = BLACK, hi = WHITE, a = WHITE, b = WHITE}
+	local PF, PT, palT0 = nil, nil, -9
+	if not dyn then
+		local p = pal[1]
+		cur.sh, cur.hi, cur.a, cur.b = p.sh, p.hi, p.a, p.b
+		PF, PT = p, p
+	end
+	local skC, hkC = 0.14, 0.3
+	local accC, accT, userC, userT = WHITE, -9, nil, -9
+	local acA, acB = WHITE, WHITE
+	local function userAcc()
+		local m = CFG.IntroColorMode
+		if m == 2 then
+			local okH, c = pcall(Util.ParseHex, CFG.IntroColor)
+			if okH and typeof(c) == "Color3" then return c end
+		elseif m == 3 then
+			return WHITE
+		elseif m == 4 and Util.Color and typeof(Util.Color.Cur) == "Color3" then
+			return Util.Color.Cur
+		end
+		return nil
+	end
+
+	-- ── pooled objects (built once, only ever re-used) ──
+	local sSh = SL(F(lo, 1, V2(0, 1), U2.fromScale(0, 1), U2.fromScale(1, 0.7), BLACK, 1))
+	grad(sSh.o, 90, {{0, 1}, {1, 0}})
+	local sHi = SL(F(lo, 1, V2(0, 0), U2.new(), U2.fromScale(1, 1), WHITE, 1))
+	grad(sHi.o, 45, {{0, 0}, {0.55, 0.78}, {1, 1}})
+	local gGlow = LIGHT(lo, 1, "halo", WHITE, "none")
+
+	local VG = {}
+	if (P.vig or 0) > 0 then
+		local function vgf(ap, pos, size, rot)
+			local f = F(lo, 3, ap, pos, size, BLACK, 1)
+			grad(f, rot, {{0, 0}, {1, 1}})
+			return SL(f)
+		end
+		VG[1] = vgf(V2(0, 0), U2.new(), U2.fromScale(1, 0.34), 90)
+		VG[2] = vgf(V2(0, 1), U2.fromScale(0, 1), U2.fromScale(1, 0.34), 270)
+		VG[3] = vgf(V2(0, 0), U2.new(), U2.fromScale(0.26, 1), 0)
+		VG[4] = vgf(V2(1, 0), U2.fromScale(1, 0), U2.fromScale(0.26, 1), 180)
+	end
+
+	local SHF = {}
+	if rig then
+		for i = 1, min(rig.n or 4, 7) do
+			local s = LIGHT(lo, 2, "beam", WHITE, "hband")
+			s.ph, s.w, s.a = random() * TAU, 0.35 + random() * 0.65, 0.55 + random() * 0.45
+			SHF[i] = s
+		end
+	end
+
+	local MO = {}
+	if mc then
+		for i = 1, min(mc.n or 8, 20) do
+			local z = 0.35 + random() * 0.65
+			local px = lerp(mc.s1, mc.s2, random() ^ 1.6) * (0.55 + 0.6 * z)
+			local s
+			if mc.kind == "rain" then
+				local f = F(lo, 4, V2(0.5, 0.5), U2.new(), U2.fromOffset(2, px), WHITE, 1)
+				f.Rotation = 12
+				s = SL(f)
+			elseif mc.kind == "rect" then
+				s = SL(F(lo, 4, V2(0.5, 0.5), U2.new(), U2.fromOffset(px * 0.7, px), WHITE, 1))
+			else
+				s = LIGHT(lo, 4, mc.kind, WHITE, "disc")
+				s.o.Size = U2.fromOffset(px, px)
+			end
+			s.x, s.y, s.z, s.ph, s.w = random(), random(), z, random() * TAU, 0.6 + random() * 1.6
+			MO[i] = s
+		end
+	end
+
+	local FG = {}
+	for i = 1, min(P.fog or 0, 3) do
+		local s = SL(F(lo, 2, V2(0.5, 0.5), U2.fromScale(0.5, 0.6 + 0.16 * (i - 1)), U2.fromScale(1.5, 0.26), WHITE, 1))
+		grad(s.o, 90, {{0, 1}, {0.5, 0.25}, {1, 1}})
+		s.ph, s.y0 = random() * TAU, 0.6 + 0.16 * (i - 1)
+		FG[i] = s
+	end
+
+	local vW = SL(F(hi, 1, V2(0, 0), U2.new(), U2.fromScale(1, 1), WHITE, 1))
+	local vG = LIGHT(hi, 1, "halo", WHITE, "none")
+	local fS = LIGHT(hi, 5, "streak", WHITE, "hband")
+	local fC = LIGHT(hi, 6, "halo", WHITE, "none")
+	local fGh = {}
+	for i = 1, min(P.gh or 0, 4) do fGh[i] = LIGHT(hi, 5, (i % 2 == 1) and "ring" or "halo", WHITE, "none") end
+
+	local tF = SL(F(hi, 10, V2(0, 0), U2.new(), U2.fromScale(1, 1), WHITE, 1))
+	local swB = SL(F(hi, 8, V2(0.5, 0.5), U2.new(), U2.fromOffset(10, 10), WHITE, 1))
+	grad(swB.o, 0, {{0, 1}, {0.5, 0}, {1, 1}})
+	local swC = SL(F(hi, 9, V2(0.5, 0.5), U2.new(), U2.fromOffset(10, 10), WHITE, 1))
+	grad(swC.o, 0, {{0, 1}, {0.5, 0}, {1, 1}})
+	local frL = SL(F(hi, 7, V2(0, 0), U2.new(), U2.fromScale(0.07, 1), WHITE, 1))
+	grad(frL.o, 0, {{0, 0}, {1, 1}})
+	local frR = SL(F(hi, 7, V2(1, 0), U2.fromScale(1, 0), U2.fromScale(0.07, 1), WHITE, 1))
+	grad(frR.o, 180, {{0, 0}, {1, 1}})
+
+	local bT, bB
+	if need.slam then
+		bT = F(hi, 9, V2(0, 0), U2.new(), U2.fromScale(1, 0), BLACK, 0.04)
+		bB = F(hi, 9, V2(0, 1), U2.fromScale(0, 1), U2.fromScale(1, 0), BLACK, 0.04)
+		bT.Visible, bB.Visible = false, false
+	end
+	local SLC = {}
+	if need.glitch then
+		for i = 1, 6 do
+			local s = SL(F(hi, 9, V2(0, 0.5), U2.new(), U2.fromOffset(10, 10), WHITE, 1))
+			SLC[i] = s
+		end
+	end
+	local RY, RN = {}, {}
+	if need.burst then
+		for i = 1, 8 do
+			local s = SL(F(hi, 8, V2(0.5, 0.5), U2.fromScale(0.5, 0.5), U2.fromOffset(4, 10), WHITE, 1))
+			grad(s.o, 90, {{0, 1}, {0.5, 0}, {1, 1}})
+			RY[i] = s
+		end
+	end
+	if need.burst or need.flash then
+		for i = 1, 2 do RN[i] = LIGHT(hi, 7, "ring", WHITE, "none") end
+	end
+
+	local tS, tBand, tCore
+	if type(P.tt) == "number" then
+		tS = F(hi, 6, V2(0.5, 0.5), U2.fromScale(0.5, P.ty or 0.5), U2.fromScale(1, 0.34), BLACK, 1)
+		tS.ClipsDescendants = true
+		tS.Visible = false
+		tBand = SL(F(tS, 1, V2(0.5, 0.5), U2.fromScale(0, 0.5), U2.fromOffset(10, 10), WHITE, 1))
+		grad(tBand.o, 0, {{0, 1}, {0.5, 0}, {1, 1}})
+		tBand.o.Rotation = 14
+		tCore = SL(F(tS, 2, V2(0.5, 0.5), U2.fromScale(0, 0.5), U2.fromOffset(10, 10), WHITE, 1))
+		grad(tCore.o, 0, {{0, 1}, {0.5, 0}, {1, 1}})
+		tCore.o.Rotation = 14
+	end
+
+	local function layout()
+		local big = max(W, H)
+		gGlow.o.Size = U2.fromOffset(U * 1.9, U * 1.9)
+		vG.o.Size = U2.fromOffset(big * 1.9, big * 1.9)
+		fS.o.Size = U2.fromOffset(W * 1.25, max(14, U * 0.05))
+		fC.o.Size = U2.fromOffset(U * 0.24, U * 0.24)
+		local gs = {0.15, 0.3, 0.1, 0.22}
+		for i, g in ipairs(fGh) do g.o.Size = U2.fromOffset(U * gs[i], U * gs[i]) end
+		swB.o.Size = U2.fromOffset(W * 0.34, H * 2.6)
+		swC.o.Size = U2.fromOffset(max(3, W * 0.035), H * 2.6)
+		for _, r in ipairs(RY) do r.o.Size = U2.fromOffset(max(3, U * 0.006), U * 1.9) end
+		if tBand then
+			tBand.o.Size = U2.fromOffset(W * 0.16, H * 1.2)
+			tCore.o.Size = U2.fromOffset(max(3, W * 0.012), H * 1.2)
+		end
+		for _, s in ipairs(SHF) do
+			s.L = max(W, H) * 1.8
+			s.o.Size = U2.fromOffset(U * (0.05 + 0.1 * s.w), s.L)
+		end
+	end
+	layout()
+
+	-- ── camera: the master only adds a delta on top of the intro's own camera (never replaces it) ──
+	local MC = {z = 0, r = 0, x = 0, y = 0, owner = stage}
+	if P.base then FX.MasterCam = MC end
+	local wd = E and E.world
+	local zo = E and (E.zoom or E.zs or E.ws)
+	local cam = {}
+	local function camBase(key, curv, tol)
+		if cam[key] == nil or abs(curv - cam[key]) > tol then cam[key .. "b"] = curv end
+		return cam[key .. "b"]
+	end
+	local function applyCam(dz, dr, dx, dy)
+		if not wd or not wd.Parent then return end
+		if zo then
+			local bz = camBase("z", zo.Scale, 1e-4)
+			zo.Scale = bz * (1 + dz)
+			cam.z = zo.Scale
+		end
+		local br = camBase("r", wd.Rotation, 0.01)
+		wd.Rotation = br + dr
+		cam.r = wd.Rotation
+		local pos = wd.Position
+		local bx, by = camBase("x", pos.X.Offset, 0.6), camBase("y", pos.Y.Offset, 0.6)
+		local ox, oy = floor(bx + dx + 0.5), floor(by + dy + 0.5)
+		wd.Position = U2.new(pos.X.Scale, ox, pos.Y.Scale, oy)
+		cam.x, cam.y = ox, oy
+	end
+	local function spr(s, target, w, z, dt)
+		local n = max(1, ceil(dt * 90))
+		local h = dt / n
+		for _ = 1, n do
+			s[2] = s[2] + (w * w * (target - s[1]) - 2 * z * w * s[2]) * h
+			s[1] = s[1] + s[2] * h
+		end
+		return s[1]
+	end
+	local zS, rS, xS, yS = {0, 0}, {0, 0}, {0, 0}, {0, 0}
+
+	-- ── blur: everything goes through the shared controller; the UI veil mirrors it (and a local mirror when blur is off) ──
+	local O = {v0 = 0, pk = 0, t0 = -99, i = 0.1, o = 0.5, h = 0}
+	local function ownVal(now)
+		local a = now - O.t0
+		if a < 0 then return O.v0 end
+		if a < O.i then return lerp(O.v0, O.pk, c01(a / O.i) ^ 0.6) end
+		a = a - O.i
+		if a < O.h then return O.pk end
+		return O.pk * exp(-(a - O.h) / (O.o * 0.38))
+	end
+	local function reqBlur(peak, inT, outT, hold, now)
+		O.v0 = ownVal(now)
+		O.pk = cl(peak * (PKS[Q] or 1), 1.4, 20)
+		O.t0, O.i, O.o, O.h = now, max(inT, 0.01), outT, hold or 0
+		pcall(FX.BlurPulse, peak, inT, outT, true, hold or 0)
+	end
+
+	-- ── choreography state ──
+	local ACT, EV = {}, {}
+	local ci, ei, sgn = 0, 1, 1
+	local beatE, prevPu, lastBeat, puS, lvS = 0, 0, -9, 0, 0
+	local titleT, slT, accD, qT = nil, -9, 0, 0
+	local firstStep, dead, hid = true, false, false
+	local RGc = rig and {ox = rigs[1].ox, oy = rigs[1].oy, a0 = rigs[1].a0, sp = rigs[1].sp} or nil
+	local te0 = K.DUR or 60
+
+	local function onCut(now, e)
+		local c = e.a
+		ACT[#ACT + 1] = {t0 = now, kind = c.kind, str = c.str, sg = sgn}
+		sgn = -sgn
+	end
+	local function onPre(now, e)
+		local c = e.a
+		local kd = KD[c.kind]
+		local bl = (P.bl or 9) * c.str * kd.bl
+		if e.st == 1 then reqBlur(bl * 0.38, 0.5, kd.out, 0.6, now) else reqBlur(bl, kd.lead, kd.out, 0.1, now) end
+	end
+	for _, c in ipairs(CUTS) do
+		local kd = KD[c.kind]
+		EV[#EV + 1] = {t = c.t - kd.lead - 0.4, f = onPre, a = c, st = 1}
+		EV[#EV + 1] = {t = c.t - kd.lead, f = onPre, a = c, st = 2}
+		EV[#EV + 1] = {t = c.t, f = onCut, a = c}
+	end
+	EV[#EV + 1] = {t = 0.4, f = function(now) ACT[#ACT + 1] = {t0 = now, kind = "tear", str = 0.55, sg = 1} end}
+	EV[#EV + 1] = {t = te0 - (P.cbAt or 0.85), f = function(now) reqBlur(P.cb or 11, P.cbIn or 0.55, P.cbOut or 1.7, 0.25, now) end}
+	if type(P.tt) == "number" then EV[#EV + 1] = {t = P.tt, f = function(now) titleT = now end} end
+	table.sort(EV, function(a, b) return a.t < b.t end)
+
+	local function hideAll()
+		setTr(sSh, 1) setTr(sHi, 1) setTr(gGlow, 1) setTr(vW, 1) setTr(vG, 1) setTr(fS, 1) setTr(fC, 1) setTr(tF, 1)
+		setTr(swB, 1) setTr(swC, 1) setTr(frL, 1) setTr(frR, 1)
+		for _, s in ipairs(VG) do setTr(s, 1) end
+		for _, s in ipairs(SHF) do setTr(s, 1) end
+		for _, s in ipairs(MO) do setTr(s, 1) end
+		for _, s in ipairs(FG) do setTr(s, 1) end
+		for _, s in ipairs(fGh) do setTr(s, 1) end
+		for _, s in ipairs(SLC) do setTr(s, 1) end
+		for _, s in ipairs(RY) do setTr(s, 1) end
+		for _, s in ipairs(RN) do setTr(s, 1) end
+		if bT then bT.Visible, bB.Visible = false, false end
+		if tS then tS.Visible = false end
+		MC.z, MC.r, MC.x, MC.y = 0, 0, 0, 0
+	end
+
+	local function step(t, dt, S)
+		if dead then return end
+		if not stage.Parent then
+			dead = true
+			if FX.MasterCam == MC then FX.MasterCam = nil end
+			return
+		end
+		dt = dt or 0.016
+		if dt > 0.1 then dt = 0.1 elseif dt < 0.0005 then dt = 0.0167 end
+		local te = (S and S.tEnd) or te0
+		local life = 1 - c01((t - (te - 0.9)) / 0.7)
+		if life <= 0.002 then
+			if not hid then hid = true hideAll() end
+			return
+		end
+		hid = false
+		-- viewport
+		local sz = stage.AbsoluteSize
+		if sz.X > 10 and sz.Y > 10 and (firstStep or abs(sz.X - W) > 1.5 or abs(sz.Y - H) > 1.5) then
+			W, H = sz.X, sz.Y
+			U = min(W, H)
+			layout()
+		end
+		if firstStep then
+			firstStep = false
+			lo.Visible, hi.Visible = true, true
+			reqBlur(P.op or 11, 0.12, 2.1, 0.3, t)
+		end
+		qT = qT + dt
+		if qT >= 1 then
+			qT = 0
+			local nq = qlevel()
+			if nq ~= Q then Q = nq end
+		end
+		accD = accD + dt
+		local doDecor = accD >= DI[Q]
+		local dd = accD
+		if doDecor then accD = 0 end
+
+		-- events + shots
+		while EV[ei] and t >= EV[ei].t do
+			local e = EV[ei]
+			ei = ei + 1
+			if t - e.t < 0.35 then e.f(e.t, e) end
+		end
+		while CUTS[ci + 1] and t >= CUTS[ci + 1].t do
+			ci = ci + 1
+			if not dyn then
+				PF = {sh = cur.sh, hi = cur.hi, a = cur.a, b = cur.b}
+				PT = pal[cl(ci + 1, 1, palN)]
+				palT0 = t
+			end
+		end
+
+		-- audio-reactive envelopes (the intro's own beat state; the choreography never depends on them)
+		local pu = (S and (S.pulse or S.kick)) or 0
+		if pu > 1.2 then pu = 1.2 end
+		local lv = (S and S.lv) or 0
+		puS = lerp(puS, pu, 1 - exp(-16 * dt))
+		lvS = lerp(lvS, max(lv, puS * 0.6), 1 - exp(-6 * dt))
+		if pu > 0.55 and prevPu <= 0.55 and t - lastBeat > 0.2 then
+			lastBeat = t
+			beatE = max(beatE, c01(pu))
+		end
+		prevPu = pu
+		beatE = beatE * exp(-9 * dt)
+
+		-- palette
+		if t - userT > 1 then userT, userC = t, userAcc() end
+		if dyn then
+			if t - accT > 0.08 then
+				accT = t
+				accC = userC or Util.DiscoColor(os.clock() * 0.48)
+			end
+			local p = pal[cl(ci + 1, 1, palN)]
+			local k = 1 - exp(-3 * dt)
+			skC, hkC = lerp(skC, p.sk, k), lerp(hkC, p.hk, k)
+			cur.a, cur.b = accC, mix(accC, WHITE, 0.55)
+			cur.hi, cur.sh = mix(accC, WHITE, hkC), mix(BLACK, accC, skC)
+			acA, acB = cur.a, cur.b
+		else
+			local k = ss(palT0, palT0 + 0.9, t)
+			if k < 1 then
+				cur.sh, cur.hi, cur.a, cur.b = mix(PF.sh, PT.sh, k), mix(PF.hi, PT.hi, k), mix(PF.a, PT.a, k), mix(PF.b, PT.b, k)
+			else
+				cur.sh, cur.hi, cur.a, cur.b = PT.sh, PT.hi, PT.a, PT.b
+			end
+			acA = userC and mix(cur.a, userC, 0.5) or cur.a
+			acB = userC and mix(cur.b, userC, 0.3) or cur.b
+		end
+		local sh, hiC = cur.sh, cur.hi
+
+		-- cut envelopes
+		local imp, flA, barH, frA = 0, 0, 0, 0
+		local swRec, slRec, ryRec, rnRec, rollK = nil, nil, nil, nil, 0
+		local ai = 1
+		while ai <= #ACT do
+			local r = ACT[ai]
+			local kd = KD[r.kind]
+			local a = t - r.t0
+			if a > kd.dur then
+				table.remove(ACT, ai)
+			else
+				ai = ai + 1
+				local s = r.str * INT1
+				local ke = env(a, 0.05, 0.32) * r.str
+				imp = max(imp, ke)
+				rollK = rollK + r.sg * ke
+				frA = max(frA, env(a, 0.03, 0.22) * s)
+				if r.kind == "flash" then
+					local f
+					if a < 0.045 then f = 0.95 elseif a < 0.085 then f = 0.12 elseif a < 0.16 then f = 0.72 else f = 0.72 * exp(-(a - 0.16) / 0.17) end
+					flA = max(flA, f * 0.9 * s)
+					swRec, rnRec = r, r
+				elseif r.kind == "bloom" then
+					flA = max(flA, 0.5 * s * env(a, 0.08, 0.55))
+					swRec = r
+				elseif r.kind == "slam" then
+					flA = max(flA, 0.38 * s * env(a, 0.02, 0.15))
+					barH = max(barH, 0.17 * s * env(a, 0.06, 0.25))
+				elseif r.kind == "tear" then
+					flA = max(flA, 0.3 * s * env(a, 0.03, 0.2))
+					swRec = r
+				elseif r.kind == "glitch" then
+					flA = max(flA, 0.22 * s * env(a, 0.02, 0.1))
+					slRec = r
+				elseif r.kind == "burst" then
+					flA = max(flA, 0.7 * s * env(a, 0.03, 0.2))
+					ryRec, rnRec, swRec = r, r, r
+				end
+			end
+		end
+		-- anticipation: the frame tightens and warms before the next cut
+		local nxt = CUTS[ci + 1]
+		local tn = 0
+		if nxt then
+			local ant = nxt.t - t
+			local win = (nxt.kind == "bloom") and 0.9 or 0.55
+			if ant > 0 and ant < win then
+				tn = (1 - ant / win) ^ 2
+				if nxt.kind == "bloom" then flA = max(flA, 0.2 * tn * INT1) end
+			end
+		end
+		local openK = 1 - ss(0, 2.4, t)
+		local closeK = ss(te0 - 1.5, te0 - 0.25, t)
+		local ttE, ttA = 0, -9
+		if titleT then
+			ttA = t - titleT
+			ttE = env(ttA, 0.12, 1.1)
+		end
+
+		-- shared-blur-driven defocus veil
+		local vv
+		local S_ = FX.Settings
+		if S_ and S_.Blur then
+			local bf, bs = FX.BlurFx, FX.BlurState
+			local extra = 0
+			if bf then extra = max(0, (bf.Size or 0) - ((bs and bs.base) or 0)) end
+			vv = c01(extra / 15)
+		else
+			vv = c01(ownVal(t) / 15) * 0.6
+		end
+		local gate = INT1 * life
+
+		-- grade + light
+		setCol(sSh, sh)
+		setTr(sSh, 1 - (0.14 + 0.07 * tn + 0.08 * lvS) * gate)
+		setCol(sHi, hiC)
+		setTr(sHi, 1 - (0.07 + 0.1 * puS + 0.16 * imp) * gate)
+		if gGlow.ok then
+			setCol(gGlow, hiC)
+			setTr(gGlow, 1 - ((0.06 + 0.16 * lvS + 0.3 * imp + 0.28 * ttE + 0.14 * openK) * gate + ((P.noGlow and 0 or 0.26) * closeK) * INT1))
+		end
+		if VG[1] then
+			local vc = mix(sh, BLACK, 0.6)
+			local va = (P.vig or 0) * (0.55 + 0.3 * tn + 0.25 * openK - 0.15 * imp) * gate
+			for i = 1, 4 do
+				setCol(VG[i], vc)
+				setTr(VG[i], 1 - va)
+			end
+		end
+		if rig then
+			local tg = rigs[(ci % #rigs) + 1]
+			local k = 1 - exp(-2.2 * dt)
+			RGc.ox, RGc.oy, RGc.a0, RGc.sp = lerp(RGc.ox, tg.ox, k), lerp(RGc.oy, tg.oy, k), lerp(RGc.a0, tg.a0, k), lerp(RGc.sp, tg.sp, k)
+		end
+		if doDecor then
+			-- volumetric shafts
+			if rig then
+				local n = min(#SHF, QS[Q])
+				local kc = (rig.key == "hi" and hiC) or (rig.key == "a" and acA) or acB
+				local ox, oy = RGc.ox * W, RGc.oy * H
+				local sa = gate * (1 + 1.4 * imp + 0.5 * ttE)
+				for i = 1, #SHF do
+					local s = SHF[i]
+					if i <= n then
+						local u = (n > 1) and ((i - 1) / (n - 1) - 0.5) or 0
+						local a = (RGc.a0 + u * RGc.sp + rig.sway * sin(t * 0.44 * s.w + s.ph)) / DEG
+						local L = s.L
+						s.o.Position = U2.fromOffset(ox + sin(a) * L * 0.5, oy + cos(a) * L * 0.5)
+						s.o.Rotation = -a * DEG
+						local br = (0.5 + 0.5 * sin(t * (0.5 + s.w) + s.ph)) * (0.55 + 0.45 * s.a)
+						setTr(s, 1 - rig.al * sa * br * (0.55 + 0.9 * lvS + 0.8 * puS))
+						setCol(s, kc)
+					else
+						setTr(s, 1)
+					end
+				end
+			end
+			-- depth motif / bokeh
+			if mc then
+				local n = min(#MO, QM[Q])
+				local mcol = (mc.col == "hi" and hiC) or (mc.col == "a" and acA) or acB
+				local ma = gate * (0.7 + 0.5 * lvS + 0.6 * vv)
+				for i = 1, #MO do
+					local p = MO[i]
+					if i <= n then
+						local z = p.z
+						p.x = p.x + (mc.vx + sin(t * 0.4 + p.ph) * mc.sw) * z * dd
+						p.y = p.y + mc.vy * z * dd
+						if p.x > 1.08 then p.x = -0.08 elseif p.x < -0.08 then p.x = 1.08 end
+						if p.y > 1.1 then p.y = -0.1 elseif p.y < -0.1 then p.y = 1.1 end
+						p.o.Position = U2.fromScale(p.x, p.y)
+						local tw = 1 - mc.tw + mc.tw * (0.5 + 0.5 * sin(t * p.w * 2 + p.ph))
+						setTr(p, 1 - mc.al * z * tw * ma)
+						setCol(p, mcol)
+					else
+						setTr(p, 1)
+					end
+				end
+			end
+			-- atmosphere bands
+			if #FG > 0 then
+				local fc = mix(hiC, sh, 0.55)
+				for i = 1, #FG do
+					local f = FG[i]
+					if i <= QF[Q] then
+						f.o.Position = U2.fromScale(0.5 + sin(t * 0.06 + f.ph) * 0.07, f.y0 + sin(t * 0.11 + f.ph) * 0.012)
+						setTr(f, 1 - (0.1 + 0.05 * lvS) * gate * (0.8 + 0.4 * vv))
+						setCol(f, fc)
+					else
+						setTr(f, 1)
+					end
+				end
+			end
+		end
+
+		-- defocus veil: haze + bloom, both locked to the shared blur controller
+		setCol(vW, mix(hiC, WHITE, 0.6))
+		setTr(vW, 1 - 0.34 * vv * gate)
+		if vG.ok then
+			vG.o.Position = U2.fromScale(0.5, 0.5)
+			setCol(vG, hiC)
+			setTr(vG, 1 - 0.7 * vv * gate)
+		end
+
+		-- impact flash (a closing glow creeps in under the intro's own hand-off flash)
+		local closeF = (P.noGlow and 0 or 0.2) * closeK * INT1 * (1 - ss(te0 - 0.25, te0, t))
+		setCol(tF, mix(WHITE, hiC, 0.22))
+		setTr(tF, 1 - max(flA * life, closeF))
+
+		-- light sweep
+		if swRec then
+			local a = t - swRec.t0
+			local dur = (swRec.kind == "bloom") and 1.3 or 0.7
+			local k = c01(a / dur)
+			local x = lerp(-0.3, 1.3, eo5(k)) * W
+			if swRec.sg < 0 then x = W - x end
+			local pw = sin(pi * k) ^ 1.2 * swRec.str * gate * ((swRec.kind == "bloom") and 0.5 or 1)
+			swB.o.Position, swC.o.Position = U2.fromOffset(x, H * 0.5), U2.fromOffset(x + W * 0.02 * swRec.sg, H * 0.5)
+			swB.o.Rotation, swC.o.Rotation = 18 * swRec.sg, 18 * swRec.sg
+			setCol(swB, mix(WHITE, acA, 0.35))
+			setCol(swC, WHITE)
+			setTr(swB, 1 - 0.55 * pw)
+			setTr(swC, 1 - 0.9 * pw)
+		else
+			setTr(swB, 1)
+			setTr(swC, 1)
+		end
+
+		-- chromatic edge fringe
+		setCol(frL, acB)
+		setCol(frR, acA)
+		setTr(frL, 1 - 0.6 * frA * life)
+		setTr(frR, 1 - 0.6 * frA * life)
+
+		-- shutter slam
+		if bT then
+			if barH > 0.002 then
+				bT.Visible, bB.Visible = true, true
+				bT.Size, bB.Size = U2.fromScale(1, barH), U2.fromScale(1, barH)
+			else
+				bT.Visible, bB.Visible = false, false
+			end
+		end
+		-- glitch slices
+		if #SLC > 0 then
+			if slRec then
+				local a = t - slRec.t0
+				local fall = 1 - c01(a / 0.5)
+				local re = t - slT > 0.05
+				if re then slT = t end
+				for i = 1, #SLC do
+					local s = SLC[i]
+					if re then
+						s.o.Size = U2.fromOffset(W * (0.3 + random() * 0.7), (0.008 + random() * 0.05) * H)
+						s.o.Position = U2.fromOffset(random() * W * 0.4, random() * H)
+						s.rc = (i % 3 == 0) and WHITE or ((i % 3 == 1) and acA or acB)
+						s.ra = 0.3 + random() * 0.35
+					end
+					if s.rc then setCol(s, s.rc) end
+					setTr(s, 1 - (s.ra or 0.4) * fall * slRec.str * gate)
+				end
+			else
+				for i = 1, #SLC do setTr(SLC[i], 1) end
+			end
+		end
+		-- burst rays + shock rings
+		if #RY > 0 then
+			if ryRec then
+				local a = t - ryRec.t0
+				local k = c01(a / 0.9)
+				local len = U * (0.3 + 1.6 * eo5(k))
+				local ra = (1 - k) ^ 1.5 * ryRec.str * gate
+				local rc = mix(WHITE, acA, 0.4)
+				for i = 1, #RY do
+					local r = RY[i]
+					r.o.Size = U2.fromOffset(max(3, U * 0.006), len)
+					r.o.Rotation = (i - 1) * (180 / #RY) + a * 30 * ryRec.sg
+					setCol(r, rc)
+					setTr(r, 1 - 0.8 * ra)
+				end
+			else
+				for i = 1, #RY do setTr(RY[i], 1) end
+			end
+		end
+		if #RN > 0 then
+			if rnRec and RN[1].ok then
+				local a = t - rnRec.t0
+				for i = 1, #RN do
+					local k = c01((a - 0.12 * (i - 1)) / (0.9 + 0.1 * (i - 1)))
+					local r = RN[i]
+					local sz2 = U * (0.12 + (1.5 + 0.4 * (i - 1)) * eo5(k))
+					r.o.Size = U2.fromOffset(sz2, sz2)
+					setCol(r, (i == 1) and acA or hiC)
+					setTr(r, (k > 0 and k < 1) and (1 - 0.75 * (1 - k) ^ 1.3 * rnRec.str * gate) or 1)
+				end
+			else
+				for i = 1, #RN do setTr(RN[i], 1) end
+			end
+		end
+
+		-- lens flare from the key light (cuts, title, closing and the beat feed it)
+		local fi = c01(max(imp * 0.9, ttE * 0.8, closeK * 0.5 * (P.noGlow and 0 or 1), 0.22 * puS)) * gate
+		if fi > 0.02 and rig then
+			local lx, ly = cl(RGc.ox, 0.06, 0.94) * W, cl(RGc.oy, 0.06, 0.94) * H
+			local fc = mix(hiC, WHITE, 0.4)
+			fS.o.Position = U2.fromOffset(lx, ly)
+			setCol(fS, fc)
+			setTr(fS, 1 - 0.75 * fi)
+			if fC.ok then
+				fC.o.Position = U2.fromOffset(lx, ly)
+				setCol(fC, mix(WHITE, hiC, 0.25))
+				setTr(fC, 1 - 0.9 * fi)
+			end
+			local cx, cy = W * 0.5, H * 0.5
+			for i = 1, #fGh do
+				local g = fGh[i]
+				if i <= QG[Q] and g.ok then
+					g.o.Position = U2.fromOffset(lx + (cx - lx) * KGH[i], ly + (cy - ly) * KGH[i])
+					setCol(g, (i % 2 == 1) and acA or acB)
+					setTr(g, 1 - GAH[i] * fi)
+				else
+					setTr(g, 1)
+				end
+			end
+		else
+			setTr(fS, 1)
+			setTr(fC, 1)
+			for i = 1, #fGh do setTr(fGh[i], 1) end
+		end
+
+		-- title glint: a specular sweep crosses the title band, the frame blooms and the camera pushes in
+		if tS then
+			if ttA > -0.05 and ttA < 2 then
+				tS.Visible = true
+				local k = c01(ttA / 1.25)
+				local x = lerp(-0.2, 1.2, eo3(k))
+				local pw = sin(pi * k) ^ 1.2 * gate
+				tBand.o.Position, tCore.o.Position = U2.new(x, 0, 0.5, 0), U2.new(x + 0.012, 0, 0.5, 0)
+				setCol(tBand, mix(WHITE, hiC, 0.3))
+				setCol(tCore, WHITE)
+				setTr(tBand, 1 - 0.5 * pw)
+				setTr(tCore, 1 - 0.85 * pw)
+			elseif tS.Visible then
+				tS.Visible = false
+				setTr(tBand, 1)
+				setTr(tCore, 1)
+			end
+		end
+
+		-- camera: dolly inside the shot, anticipation creep, impact punch with natural overshoot, opening settle, closing push
+		local seg0 = (ci > 0) and CUTS[ci].t or 0
+		local seg1 = nxt and nxt.t or te0
+		local zt = (P.push or 0.02) * ss(seg0, seg1, t)
+		zt = zt + 0.04 * openK + (P.bp or 0.004) * beatE + 0.02 * tn + 0.05 * imp
+		if titleT then zt = zt + 0.028 * ss(titleT, titleT + 2.6, t) end
+		zt = zt + 0.03 * closeK
+		local rt = (P.roll or 1) * rollK + 0.25 * sin(t * 0.41) + 0.9 * openK
+		local xt = sin(t * 0.33) * W * 0.0025
+		local yt = cos(t * 0.27) * H * 0.002
+		local cf = (P.cam or 1) * gate
+		local dz = spr(zS, zt, 13, 0.7, dt) * cf
+		local dr = spr(rS, rt, 9, 0.55, dt) * cf
+		local dx = spr(xS, xt, 7, 0.8, dt) * cf
+		local dy = spr(yS, yt, 7, 0.8, dt) * cf
+		if P.base then
+			MC.z, MC.r, MC.x, MC.y = dz, dr, dx, dy
+		else
+			applyCam(dz, dr, dx, dy)
+		end
+	end
+	local function kill()
+		dead = true
+		MC.z, MC.r, MC.x, MC.y = 0, 0, 0, 0
+		if FX.MasterCam == MC then FX.MasterCam = nil end
+		pcall(function() lo:Destroy() end)
+		pcall(function() hi:Destroy() end)
+	end
+	return step, kill
+end
+]==]
+function FX.MountMaster(stage, E, id, d, K, zb)
+if FX.MasterFn == nil then
+FX.MasterFn = false
+local ls = loadstring or load
+if ls then
+local okC, fn, cerr = pcall(ls, FX.IntroMasterSrc, "=IntroMaster")
+if okC and type(fn) == "function" then
+local okR, mod = pcall(fn, Util, FX)
+if okR and type(mod) == "function" then
+FX.MasterFn = mod
+else
+warn("[UhhhhhhFX] intro master layer unavailable: " .. tostring(mod))
+end
+else
+warn("[UhhhhhhFX] intro master layer unavailable: " .. tostring(cerr or fn))
+end
+end
+end
+if not FX.MasterFn then return nil end
+local ok, up, kill = pcall(FX.MasterFn, stage, E, id, d, K, zb)
+if ok and type(up) == "function" then return up, kill end
+if not ok then warn("[UhhhhhhFX] intro master layer mount failed: " .. tostring(up)) end
+return nil
+end
+function FX.AttachMaster(stage, E, id, d, K, zb)
+local step, kill = FX.MountMaster(stage, E, id, d, K, zb)
+if type(step) ~= "function" then return nil end
+local alive, last = true, os.clock()
+return function(t, dt, S)
+if not alive or type(t) ~= "number" then return end
+local now = os.clock()
+if type(dt) ~= "number" or dt <= 0 then dt = now - last end
+last = now
+local ok, err = pcall(step, t, dt, S)
+if not ok then
+alive = false
+warn("[UhhhhhhFX] intro master layer error (continuing): " .. tostring(err))
+if type(kill) == "function" then pcall(kill) end
+end
+end
+end
+function FX.IntroBlurOut(peak)
+pcall(FX.BlurPulse, peak or 12, 0.2, 1.7, true, 0.12)
+end
 function FX.IntroUpgrade(stage, E, id, d, K, zb)
+local ms = FX.AttachMaster(stage, E, id, d, K, zb)
 local base = FX.IUBase(stage, E, id, d, K, zb)
 local rm = FX.MountRemaster(stage, E, id, d, K, zb)
-if type(base) ~= "function" then return rm end
-if type(rm) ~= "function" then return base end
+if type(ms) ~= "function" then ms = nil end
+if type(base) ~= "function" then base = nil end
+if type(rm) ~= "function" then rm = nil end
+if not ms and not base and not rm then return nil end
 return function(t, dt, S)
-base(t, dt, S)
-rm(t, dt, S)
+if ms then ms(t, dt, S) end
+if base then base(t, dt, S) end
+if rm then rm(t, dt, S) end
 end
 end
 FX.Intro2Data = {
@@ -7832,7 +8984,7 @@ S.flashK, S.zk, S.chroma, S.shake = math.max(S.flashK, 0.8 * I), S.zk - 0.2 * I,
 FX.Sparks(E.world, col, 24, 320, 0.9)
 FX.Ring(E.world, WHITE, 900, 0.9, 6, mp)
 FX.Ring(E.world, col, 600, 0.7, 4, mp)
-pcall(FX.BlurPulse, 14, 0.04, 0.6)
+pcall(FX.BlurPulse, 14, 0.16, 0.81)
 shoot(3)
 itick(0.5, 1)
 elseif m == 3 then
@@ -7840,7 +8992,7 @@ S.mk = S.mk + 0.22
 S.flashK, S.zk, S.chroma, S.shake = math.max(S.flashK, 0.7 * I), S.zk - 0.14 * I, 30, 10 * I
 FX.Sparks(E.world, col, 16, 260, 0.8)
 FX.Ring(E.world, WHITE, 800, 0.8, 5, mp)
-pcall(FX.BlurPulse, 10, 0.04, 0.5)
+pcall(FX.BlurPulse, 10, 0.16, 0.68)
 shoot(2)
 itick(0.55, 1)
 elseif m == 4 then
@@ -7850,7 +9002,7 @@ S.flashK, S.chroma, S.zk, S.shake = math.max(S.flashK, 0.9 * I), 44, S.zk - 0.2 
 FX.Sparks(E.world, col, 22, 300, 0.9)
 FX.Ring(E.world, WHITE, 950, 0.9, 6, mp)
 FX.Ring(E.world, col, 650, 0.7, 4, mp)
-pcall(FX.BlurPulse, 14, 0.04, 0.6)
+pcall(FX.BlurPulse, 14, 0.16, 0.81)
 shoot(3)
 itick(0.5, 1)
 end
@@ -7868,7 +9020,7 @@ S.chroma = S.chroma + 10 * k
 if m == 3 then S.stormK = 1 end
 itick(0.55, 0.8)
 if spend(1) then FX.Ring(E.world, col, 460 + 140 * k, 0.75, 2 + k, UDim2.new(0.5, 0, 0.5, S.moonY)) end
-if spend(1) then pcall(FX.BlurPulse, 3 + 3 * k, 0.04, 0.35) end
+if spend(1) then pcall(FX.BlurPulse, 3 + 3 * k, 0.16, 0.47) end
 if m == 2 and t - S.modeAt > 0.15 then
 for _, b in ipairs(E.orbs) do
 b.vy = -h * (0.4 + 0.22 * k) * (0.8 + math.random() * 0.4)
@@ -7959,7 +9111,7 @@ end
 if inCut and not S.inCut then
 S.chroma = S.chroma + 18
 S.zk = S.zk + 0.05 * K.INT
-pcall(FX.BlurPulse, 6, 0.12, 0.6)
+pcall(FX.BlurPulse, 6, 0.22, 0.81)
 end
 S.inCut = inCut
 S.ecl = lerp(S.ecl, inCut and 1 or 0, 1 - math.exp(-(inCut and 9 or 40) * dt))
@@ -8280,7 +9432,7 @@ tween(fl, 1, Quad, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(fl, 1.1)
 FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 FX.Ring(MainFrame, WHITE, 700, 0.7, 3)
-FX.BlurPulse(16, 0.04, 1.0)
+FX.IntroBlurOut(16)
 end)
 return true
 end
@@ -8709,7 +9861,7 @@ S.flashK, S.zk, S.chroma, S.shake = math.max(S.flashK, 0.85 * I), S.zk - 0.2 * I
 FX.Sparks(E.world, col, 24, 320, 0.9)
 FX.Ring(E.world, WHITE, 900, 0.9, 6, mp)
 FX.Ring(E.world, col, 600, 0.7, 4, mp)
-pcall(FX.BlurPulse, 14, 0.04, 0.6)
+pcall(FX.BlurPulse, 14, 0.16, 0.81)
 for _, c in ipairs(E.cracks) do c.tgt = w * 0.09 end
 itick(0.5, 1)
 elseif m == 3 then
@@ -8719,12 +9871,12 @@ S.flashK, S.zk, S.chroma, S.shake = math.max(S.flashK, 0.8 * I), S.zk - 0.16 * I
 FX.Sparks(E.world, col, 22, 300, 0.9)
 FX.Ring(E.world, WHITE, 950, 0.9, 6, mp)
 FX.Ring(E.world, col, 650, 0.7, 4, mp)
-pcall(FX.BlurPulse, 14, 0.04, 0.6)
+pcall(FX.BlurPulse, 14, 0.16, 0.81)
 itick(0.5, 1)
 elseif m == 4 then
 S.flashK, S.zk, S.chroma, S.shake = math.max(S.flashK, 0.35 * I), S.zk + 0.04 * I, 20, 5 * I
 FX.Ring(E.world, col, 800, 1.1, 4, mp)
-pcall(FX.BlurPulse, 8, 0.05, 0.8)
+pcall(FX.BlurPulse, 8, 0.18, 1.08)
 for _, c in ipairs(E.cracks) do c.tgt = 0 end
 itick(0.7, 0.9)
 end
@@ -8743,7 +9895,7 @@ S.chroma = S.chroma + 10 * k
 if m == 3 then S.stormK = 1 end
 itick(0.55, 0.8)
 if spend(1) then FX.Ring(E.world, col, 460 + 140 * k, 0.75, 2 + k, UDim2.new(0.5, 0, 0.5, S.eyeY)) end
-if spend(1) then pcall(FX.BlurPulse, 3 + 3 * k, 0.04, 0.35) end
+if spend(1) then pcall(FX.BlurPulse, 3 + 3 * k, 0.16, 0.47) end
 if k > 1 and (m == 2 or m == 3) then crack(1, 0.07) end
 end
 local function hatHit(m)
@@ -8825,7 +9977,7 @@ end
 if inCut and not S.inCut then
 S.chroma = S.chroma + (bigCut and 24 or 10)
 S.zk = S.zk + (bigCut and 0.06 or 0.02) * K.INT
-if bigCut then pcall(FX.BlurPulse, 7, 0.1, 0.7) end
+if bigCut then pcall(FX.BlurPulse, 7, 0.22, 0.94) end
 end
 S.inCut, S.bigCut = inCut, bigCut
 S.ecl = lerp(S.ecl, inCut and 1 or 0, 1 - math.exp(-(inCut and 26 or 12) * dt))
@@ -9182,7 +10334,7 @@ tween(fl, 1, Quad, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(fl, 1.1)
 FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 FX.Ring(MainFrame, WHITE, 700, 0.7, 3)
-FX.BlurPulse(16, 0.04, 1.0)
+FX.IntroBlurOut(16)
 end)
 return true
 end
@@ -9562,14 +10714,14 @@ S.flashK, S.zk, S.chroma, S.shake = math.max(S.flashK, 0.9 * I), S.zk + 0.45 * I
 FX.Sparks(E.world, col, 24, 320, 0.9)
 FX.Ring(E.world, WHITE, 900, 0.9, 6, mp)
 FX.Ring(E.world, col, 600, 0.7, 4, mp)
-pcall(FX.BlurPulse, 14, 0.04, 0.6)
+pcall(FX.BlurPulse, 14, 0.16, 0.81)
 itick(0.5, 1)
 elseif m == 3 then
 S.winOn = false
 S.blk, S.chroma, S.shake, S.zk = 1, 22, 7 * I, S.zk - 0.06 * I
 for _, c in ipairs(E.cracks) do c.tgt = 0 end
 FX.Ring(E.world, col, 700, 1.2, 3, mp)
-pcall(FX.BlurPulse, 10, 0.05, 0.9)
+pcall(FX.BlurPulse, 10, 0.18, 1.22)
 itick(0.4, 0.9)
 elseif m == 4 then
 S.winOn, S.winT = true, t
@@ -9582,7 +10734,7 @@ S.flashK, S.zk, S.chroma, S.shake = math.max(S.flashK, 1.0 * I), S.zk + 0.55 * I
 FX.Sparks(E.world, col, 30, 340, 1)
 FX.Ring(E.world, WHITE, 1000, 0.9, 7, mp)
 FX.Ring(E.world, col, 700, 0.75, 4, mp)
-pcall(FX.BlurPulse, 16, 0.04, 0.7)
+pcall(FX.BlurPulse, 16, 0.16, 0.94)
 itick(0.5, 1)
 end
 end
@@ -9597,7 +10749,7 @@ itick(0.7, 1)
 elseif i == 2 then
 S.zk, S.chroma, S.starK = S.zk - 0.1 * I, 20, 1
 FX.Ring(E.world, col, 900, 1.2, 4, mp)
-pcall(FX.BlurPulse, 8, 0.05, 0.8)
+pcall(FX.BlurPulse, 8, 0.18, 1.08)
 itick(0.8, 0.9)
 elseif i == 3 then
 S.flashK, S.xk, S.zk, S.chroma = math.max(S.flashK, 0.5 * I), S.xk - w * 0.09 * I, S.zk + 0.3 * I, 30
@@ -9608,7 +10760,7 @@ else
 S.flashK, S.zk, S.chroma, S.shake = math.max(S.flashK, 0.55 * I), S.zk - 0.15 * I, 40, 10 * I
 FX.Sparks(E.world, col, 22, 300, 0.9)
 FX.Ring(E.world, WHITE, 1000, 1, 6, mp)
-pcall(FX.BlurPulse, 12, 0.05, 0.8)
+pcall(FX.BlurPulse, 12, 0.18, 1.08)
 itick(0.6, 1)
 end
 end
@@ -9626,7 +10778,7 @@ S.shake = math.max(S.shake, (3 + 4 * k) * I * dmp)
 S.chroma = S.chroma + 9 * k * dmp
 itick(0.55, 0.8 * dmp)
 if spend(1) then FX.Ring(E.world, col, 420 + 140 * k, 0.75, 2 + k, UDim2.new(0.5, 0, 0.5, S.eyeY)) end
-if spend(1) then pcall(FX.BlurPulse, 3 + 3 * k, 0.04, 0.35) end
+if spend(1) then pcall(FX.BlurPulse, 3 + 3 * k, 0.16, 0.47) end
 if k > 1 and m ~= 3 then crack(1, 0.07) end
 end
 local function snareHit(k, m, col)
@@ -9705,7 +10857,7 @@ end
 if inCut and not S.inCut then
 S.chroma = S.chroma + 14
 S.zk = S.zk + 0.03 * K.INT
-if spend(1) then pcall(FX.BlurPulse, 6, 0.06, 0.4) end
+if spend(1) then pcall(FX.BlurPulse, 6, 0.21, 0.54) end
 end
 S.inCut = inCut
 S.cutK = lerp(S.cutK, inCut and 1 or 0, 1 - math.exp(-(inCut and 26 or 12) * dt))
@@ -10099,7 +11251,7 @@ tween(fl, 1, Quad, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(fl, 1.1)
 FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 FX.Ring(MainFrame, WHITE, 700, 0.7, 3)
-FX.BlurPulse(16, 0.04, 1.0)
+FX.IntroBlurOut(16)
 end)
 return true
 end
@@ -10642,7 +11794,7 @@ end
 E.term.Text = ""
 itick(0.5, 1.2)
 itick(1.6, 0.8)
-if spend(2) then pcall(FX.BlurPulse, 16, 0.04, 0.9) end
+if spend(2) then pcall(FX.BlurPulse, 16, 0.16, 1.22) end
 elseif m == 3 then
 S.flashK = math.max(S.flashK, 0.12 * I)
 orbit(S.R * 0.8, S.R * 4.5, 1.6, col, false, -10, 20)
@@ -10669,7 +11821,7 @@ S.sp.tide = {1.25, 0}
 S.sp.rail = {0.2, 0}
 itick(0.55, 1.2)
 itick(1.2, 0.9)
-if spend(2) then pcall(FX.BlurPulse, 14, 0.04, 0.8) end
+if spend(2) then pcall(FX.BlurPulse, 14, 0.16, 1.08) end
 if spend(1) then FX.Sparks(E.world, col, 14, 380, 0.9) end
 elseif m == 6 or m == 7 then
 S.flashK = math.max(S.flashK, 0.4 * I)
@@ -10680,7 +11832,7 @@ S.zk = S.zk + 0.12 * I
 S.shake = S.shake + 8 * I
 S.lastRing = -10
 orbit(S.R * 1, S.R * 6, 1.4, col, false, 0, -35)
-if spend(1) then pcall(FX.BlurPulse, 10, 0.05, 0.7) end
+if spend(1) then pcall(FX.BlurPulse, 10, 0.18, 0.94) end
 if spend(1) then FX.Sparks(E.world, col, 10, 320, 0.8) end
 itick(0.7, 1)
 elseif m == 8 then
@@ -11325,7 +12477,7 @@ tween(fl, 1, Quad, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(fl, 1.1)
 FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 FX.Ring(MainFrame, WHITE, 700, 0.7, 3)
-FX.BlurPulse(16, 0.04, 1.0)
+FX.IntroBlurOut(16)
 end)
 return true
 end
@@ -11823,7 +12975,7 @@ S.boltK = 1
 S.flashK = math.max(S.flashK, 0.5 * I)
 S.shake = S.shake + 8 * I
 itick(0.35, 1.2)
-if spend(1) then pcall(FX.BlurPulse, 10, 0.03, 0.5) end
+if spend(1) then pcall(FX.BlurPulse, 10, 0.16, 0.68) end
 end
 local HB0, HBP = 17.64, K.BEAT * 2
 local function slam(i, col)
@@ -11835,7 +12987,7 @@ S.flashK = math.max(S.flashK, 0.16 * K.INT)
 S.pulse = 1
 ringC(sx * 0.5, sy * 0.48, math.min(sx, sy) * 0.05, math.min(sx, sy) * 0.55, 0.6, col:Lerp(WHITE, 0.2))
 itick(0.6 + 0.07 * i, 1)
-if spend(1) then pcall(FX.BlurPulse, 8, 0.03, 0.4) end
+if spend(1) then pcall(FX.BlurPulse, 8, 0.16, 0.54) end
 if i == 4 or i == 8 then
 if spend(1) then FX.Sparks(E.world, BLOOD:Lerp(WHITE, 0.3), 12, 340, 0.8) end
 end
@@ -11908,7 +13060,7 @@ S.rk = S.rk + 3 * I
 ringC(sx * 0.5, sy * 0.5, U * 0.1, U * 1.3, 0.9, BONE)
 bat(1)
 itick(0.45, 1.2)
-if spend(2) then pcall(FX.BlurPulse, 14, 0.04, 0.9) end
+if spend(2) then pcall(FX.BlurPulse, 14, 0.16, 1.22) end
 elseif m == 3 then
 S.flashK = math.max(S.flashK, 0.15 * I)
 S.zk = S.zk + 0.05 * I
@@ -11927,7 +13079,7 @@ ringC(sx * 0.5, sy * 0.3, U * 0.2, U * 1.6, 1.2, BLOOD)
 ringE(sx * 0.5, sy * 0.88, U * 0.1, U * 1.6, 1.2, BLOOD)
 itick(0.5, 1.2)
 itick(1.2, 0.9)
-if spend(2) then pcall(FX.BlurPulse, 16, 0.04, 0.9) end
+if spend(2) then pcall(FX.BlurPulse, 16, 0.16, 1.22) end
 if spend(1) then FX.Sparks(E.world, BLOOD:Lerp(WHITE, 0.4), 16, 420, 1.0) end
 elseif m == 6 then
 S.flashK = math.max(S.flashK, 0.5 * I)
@@ -11939,14 +13091,14 @@ S.shake = S.shake + 9 * I
 ringC(sx * 0.5, sy * 0.3, U * 0.2, U * 1.4, 1.0, col)
 bat(1)
 bat(-1)
-if spend(1) then pcall(FX.BlurPulse, 10, 0.05, 0.7) end
+if spend(1) then pcall(FX.BlurPulse, 10, 0.18, 0.94) end
 elseif m == 7 then
 S.flashK = math.max(S.flashK, 0.6 * I)
 S.shake = S.shake + 14 * I
 S.zk = S.zk - 0.1 * I
 S.rk = S.rk + 5 * I
 itick(0.4, 1.2)
-if spend(1) then pcall(FX.BlurPulse, 12, 0.05, 0.9) end
+if spend(1) then pcall(FX.BlurPulse, 12, 0.18, 1.22) end
 elseif m == 8 then
 S.flashK = math.max(S.flashK, 0.3 * I)
 ringC(sx * 0.5, sy * 0.32, U * 0.2, U * 1.0, 1.4, PA[8])
@@ -12430,7 +13582,7 @@ tween(fl, 1, Quad, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(fl, 1.1)
 FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 FX.Ring(MainFrame, BLOOD, 700, 0.7, 3)
-FX.BlurPulse(16, 0.04, 1.0)
+FX.IntroBlurOut(16)
 end)
 return true
 end
@@ -12732,7 +13884,7 @@ ringW(U * 0.1, U * 1.1, 0.7, S.ac2)
 itick(0.4, 1.4)
 if S.tokens >= 1 then
 S.tokens = S.tokens - 1
-pcall(FX.BlurPulse, 14, 0.04, 0.9)
+pcall(FX.BlurPulse, 14, 0.16, 1.22)
 end
 elseif m == 5 then
 S.flashK = math.max(S.flashK, 0.5 * I)
@@ -13068,7 +14220,7 @@ tween(fl, 1, Quad, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(fl, 1.1)
 FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 FX.Ring(MainFrame, PB[7], 700, 0.7, 3)
-FX.BlurPulse(16, 0.04, 1.0)
+FX.IntroBlurOut(16)
 end)
 return true
 end
@@ -13413,7 +14565,7 @@ end
 spawnFlare(S.sx * 0.5, S.sy * 0.45, WHITE, U * 0.9)
 if S.tokens >= 1 then
 S.tokens = S.tokens - 1
-pcall(FX.BlurPulse, 14, 0.04, 0.9)
+pcall(FX.BlurPulse, 14, 0.16, 1.22)
 end
 end
 local function onScene(id, t)
@@ -13430,7 +14582,7 @@ S.dir = -S.dir
 spawnRing(U * 0.2, U * 1.2, 0.7, id % 2 == 0 and PINK or CYAN)
 if S.tokens >= 1 then
 S.tokens = S.tokens - 1
-pcall(FX.BlurPulse, 12, 0.04, 0.8)
+pcall(FX.BlurPulse, 12, 0.16, 1.08)
 end
 end
 end
@@ -14066,6 +15218,7 @@ end
 E.term.Text = ""
 E.world.Visible = true
 E.rm = FX.MountRemaster and FX.MountRemaster(stage, E, 8, DROPS, K, 13) or nil
+E.mst = FX.AttachMaster(stage, E, 8, DROPS, K, 13)
 S.began = os.clock()
 S.wall0 = S.began
 end
@@ -14131,6 +15284,7 @@ ptUpdate(t, dt, I)
 E.zs.Scale = S.z + S.kick * 0.03 * I + S.zk + S.lyZ * I
 E.world.Rotation = S.r + S.rk + math.sin(t * 0.9) * 0.4 * I
 E.world.Position = UDim2.new(0.5, S.px * U + (math.random() - 0.5) * S.shake + math.sin(t * 1.7) * 0.004 * U * I, 0.5, S.py * U + (math.random() - 0.5) * S.shake)
+if E.mst then E.mst(t, dt, S) end
 if E.rm then E.rm(t, dt, S) end
 local ten = 0
 for _, d in ipairs(DROPS) do
@@ -14282,7 +15436,7 @@ tween(fl, 1, Quad, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(fl, 1.1)
 FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 FX.Ring(MainFrame, GOLD, 700, 0.7, 3)
-FX.BlurPulse(16, 0.04, 1.0)
+FX.IntroBlurOut(16)
 end)
 return true
 end
@@ -14940,6 +16094,7 @@ function FX.Intro9(MainFrame, Music, _, opts)
 			E.term.Text = ""
 			E.world.Visible = true
 			for i = 1, NM do E.mt[i].f.Visible = true end
+			E.mst = FX.AttachMaster(stage, E, 9, nil, K, 0)
 			S.began = os.clock()
 			S.wall0 = S.began
 		end
@@ -15035,6 +16190,7 @@ function FX.Intro9(MainFrame, Music, _, opts)
 			guard("ring", updRing, t)
 			guard("strips", updStrips, t)
 			guard("chaos", updChaos, t)
+			if E.mst then E.mst(t, dt, S) end
 			if age24 >= 0 then
 				guard("title", updTitle, t)
 			end
@@ -15065,7 +16221,7 @@ function FX.Intro9(MainFrame, Music, _, opts)
 		game:GetService("Debris"):AddItem(fl, 1.1)
 		FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 		FX.Ring(MainFrame, SAND, 700, 0.7, 3)
-		FX.BlurPulse(16, 0.04, 1.0)
+		FX.IntroBlurOut(16)
 	end)
 	return true
 end
@@ -16049,6 +17205,7 @@ function FX.Intro10(MainFrame, Music, _, opts)
 			end
 			E.term.Text = ""
 			E.world.Visible = true
+			E.mst = FX.AttachMaster(stage, E, 10, nil, K, 0)
 			S.began = os.clock()
 			S.wall0 = S.began
 		end
@@ -16150,6 +17307,7 @@ function FX.Intro10(MainFrame, Music, _, opts)
 				local sh = S.shake * S.U * 0.012
 				E.world.Position = UDim2.new(0.5, ox + (math.random() - 0.5) * 2 * sh, 0.5, oy + (math.random() - 0.5) * 2 * sh)
 			end
+			if E.mst then E.mst(t, dt, S) end
 			local fk = max(S.flashK, S.tflash, (t > B(31)) and clamp01((t - B(31)) / K.BAR) ^ 3 * 0.95 * K.INT or 0)
 			S.flashK = S.flashK * exp(-9 * dt)
 			E.flash.BackgroundTransparency = 1 - clamp01(fk)
@@ -16171,7 +17329,7 @@ function FX.Intro10(MainFrame, Music, _, opts)
 		game:GetService("Debris"):AddItem(fl, 1.1)
 		FX.Ring(MainFrame, accent(), 1000, 0.9, 6)
 		FX.Ring(MainFrame, PINK, 700, 0.7, 3)
-		FX.BlurPulse(16, 0.04, 1.0)
+		FX.IntroBlurOut(16)
 	end)
 	return true
 end
@@ -17030,6 +18188,7 @@ function FX.Intro11(MainFrame, Music, _, opts)
 			end
 			E.term.Text = ""
 			E.world.Visible = true
+			E.mst = FX.AttachMaster(stage, E, 11, nil, K, 0)
 			S.began = os.clock()
 			S.wall0 = S.began
 		end
@@ -17144,6 +18303,7 @@ function FX.Intro11(MainFrame, Music, _, opts)
 				-- camera click at the closing shutter
 				if t >= 58.7 and t < 58.9 then S.flashK = max(S.flashK, 0.9 * K.INT * (1 - (t - 58.7) / 0.2)) end
 			end
+			if E.mst then E.mst(t, dt, S) end
 		end
 	end
 	local ok, err = pcall(function()
@@ -17158,7 +18318,7 @@ function FX.Intro11(MainFrame, Music, _, opts)
 	FX.IntroActive = false
 	pcall(function()
 		FX.Ring(MainFrame, accent(), 900, 0.8, 4)
-		FX.BlurPulse(10, 0.04, 0.8)
+		FX.IntroBlurOut(10)
 	end)
 	return true
 end
@@ -17490,7 +18650,7 @@ function FX.Intro12(MainFrame, Music, _, opts)
 			for k2 = 1, NPA do E.pp[k2].BackgroundColor3 = k2 % 4 == 0 and CHR or PAL[k2 % 3 + 1] end
 			if recent then
 				S.flashK, S.shake = 1, 1
-				pcall(FX.BlurPulse, 14, 0.04, 0.9)
+				pcall(FX.BlurPulse, 14, 0.16, 1.22)
 			end
 		elseif i == 5 then
 			if recent then S.flashK = max(S.flashK, 0.9) S.shake = max(S.shake, 0.7) end
@@ -17499,7 +18659,7 @@ function FX.Intro12(MainFrame, Music, _, opts)
 		elseif i == 7 then
 			S.flashK, S.shake = 1, 1
 			for r = 1, 6 do E.G.rs[r] = S.t + (r - 1) * 0.07 end
-			pcall(FX.BlurPulse, 18, 0.04, 1.1)
+			pcall(FX.BlurPulse, 18, 0.16, 1.49)
 		end
 	end
 	local CUES = {T.T1, T.T9, T.T2, T.T3, T.TSUN, T.TT, T.TF}
@@ -17812,6 +18972,7 @@ function FX.Intro12(MainFrame, Music, _, opts)
 			end
 			E.term.Text = ""
 			E.world.Visible = true
+			E.mst = FX.AttachMaster(stage, E, 12, nil, K, 0)
 			S.began = os.clock()
 			S.wall0 = S.began
 		end
@@ -17922,6 +19083,7 @@ function FX.Intro12(MainFrame, Music, _, opts)
 			else
 				guard("hud", updHud, t, dt)
 			end
+			if E.mst then E.mst(t, dt, S) end
 		end
 	end
 
@@ -17938,7 +19100,7 @@ function FX.Intro12(MainFrame, Music, _, opts)
 	pcall(function()
 		FX.Ring(MainFrame, PINK, 1000, 0.9, 5)
 		FX.Ring(MainFrame, VIO, 700, 0.7, 3)
-		FX.BlurPulse(10, 0.04, 0.8)
+		FX.IntroBlurOut(10)
 	end)
 	return true
 end
@@ -18654,6 +19816,7 @@ return function(MainFrame, Music, _, opts)
 			end
 			E.term.Text = ""
 			E.world.Visible = true
+			E.mst = FX.AttachMaster(stage, E, 13, nil, K, 0)
 			S.began = os.clock()
 			S.wall0 = S.began
 		end
@@ -18782,6 +19945,7 @@ return function(MainFrame, Music, _, opts)
 				E.world.Position = UDim2.new(0.5, ox + (math.random() - 0.5) * 2 * sh, 0.5, oy + (math.random() - 0.5) * 2 * sh)
 				guard("hud", updHud, t, dt)
 			end
+			if E.mst then E.mst(t, dt, S) end
 		end
 	end
 
@@ -18798,7 +19962,7 @@ return function(MainFrame, Music, _, opts)
 	pcall(function()
 		FX.Ring(MainFrame, GOLD, 1000, 0.9, 5)
 		FX.Ring(MainFrame, RED, 700, 0.7, 3)
-		FX.BlurPulse(10, 0.04, 0.8)
+		FX.IntroBlurOut(10)
 	end)
 	return true
 end
@@ -20400,6 +21564,7 @@ return function(MainFrame, Music, _, opts)
 			end
 			E.term.Text = ""
 			E.world.Visible = true
+			E.mst = FX.AttachMaster(stage, E, 14, nil, {OFF = 0, BEAT = 0.5, BAR = 2, INT = math.clamp(tonumber(CFG.IntroIntensity) or 1, 0, 1.5), DUR = DUR}, 0)
 			S.began = os.clock()
 			S.wall0 = S.began
 		end
@@ -20511,6 +21676,7 @@ return function(MainFrame, Music, _, opts)
 				local shk = S.shake * S.U * 0.012
 				E.world.Position = UDim2.new(0.5, S.px + (math.random() - 0.5) * 2 * shk, 0.5, S.py + (math.random() - 0.5) * 2 * shk)
 			end
+			if E.mst then E.mst(t, dt, S) end
 			-- overlays
 			local ho = ss(117.6, 120, t)
 			local gf = 1 - ho
@@ -39071,11 +40237,24 @@ NA.Embed = { Parts = {}, Modules = {} }
 NA.Unpack = function(s)
 	local band, bor, lshift, rshift = bit32.band, bit32.bor, bit32.lshift, bit32.rshift
 	local byte, char = string.byte, string.char
+	-- [v443 startup-freeze fix] inflating the ~6 MB embedded Nameless Admin runtime used to run as ONE unbroken burst (no yield), which froze weak
+	-- phones/PCs the moment NA started loading. Work is now cut into frame-friendly slices whose size adapts to the measured frame time.
+	local clock, canYield = os.clock, coroutine.isyieldable
+	local budget, sliceAt = 0.008, clock()
+	local function slice()
+		if clock() - sliceAt < budget then return end
+		if canYield() and type(task) == "table" and type(task.wait) == "function" then
+			local dt = task.wait()
+			if type(dt) == "number" and dt > 0 then budget = math.min(0.012, math.max(0.004, dt * 0.5)) end
+		end
+		sliceAt = clock()
+	end
 	local A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	local T = {}
 	for i = 1, 64 do T[byte(A, i)] = i - 1 end
 	s = s:gsub("%s+", "")
 	local inp, k = {}, 0
+	local nq = 0
 	for i = 1, #s - 3, 4 do
 		local a, b, c, d = byte(s, i, i + 3)
 		local v = T[a] * 262144 + T[b] * 4096 + T[c] * 64 + T[d]
@@ -39083,6 +40262,8 @@ NA.Unpack = function(s)
 		inp[k + 2] = band(rshift(v, 8), 255)
 		inp[k + 3] = band(v, 255)
 		k = k + 3
+		nq = nq + 1
+		if nq >= 4096 then nq = 0 slice() end
 	end
 	local pos, bb, bn = 1, 0, 0
 	local out, on = {}, 0
@@ -39208,8 +40389,19 @@ NA.Unpack = function(s)
 				lt, lm = build(l1, hl)
 				dt, dm = build(l2, hd)
 			end
+			local lmask = lshift(1, lm) - 1
+			local nsym = 0
 			while true do
-				local sym = dec(lt, lm)
+				while bn < lm do
+					bb = bor(bb, lshift(inp[pos] or 0, bn))
+					pos = pos + 1
+					bn = bn + 8
+				end
+				local e = lt[band(bb, lmask)]
+				local el = band(e, 15)
+				bb = rshift(bb, el)
+				bn = bn - el
+				local sym = rshift(e, 4)
 				if sym < 256 then
 					on = on + 1
 					out[on] = sym
@@ -39224,12 +40416,15 @@ NA.Unpack = function(s)
 					for j = 1, len do out[on + j] = out[from + j] end
 					on = on + len
 				end
+				nsym = nsym + 1
+				if nsym >= 4096 then nsym = 0 slice() end
 			end
 		end
 	until final == 1
 	local ch, un = {}, table.unpack or unpack
 	for i = 1, on, 4000 do
 		ch[#ch + 1] = char(un(out, i, math.min(i + 3999, on)))
+		if #ch % 16 == 0 then slice() end
 	end
 	return table.concat(ch)
 end
@@ -60492,16 +61687,16 @@ Depthed = true,
 })
 pcall(Util.FX.EnhanceField, Box, BoxText)
 local SliderC = Util.Instance("TextButton", Container)
-SliderC.AnchorPoint = Vector2.new(0, 0)
-SliderC.Position = UDim2.new(0, 0, 0, 40)
-SliderC.Size = UDim2.new(1, 0, 0, 20)
+SliderC.AnchorPoint = Vector2.new(0.5, 0.5)
+SliderC.Position = UDim2.new(0.5, 0, 0, 50)
+SliderC.Size = UDim2.new(1, margin * -2 - 18, 0, 5)
 SliderC.BackgroundTransparency = 1
 SliderC.Text = ""
 SliderC.AutoButtonColor = true
 local SliderR = Util.Instance("Frame", SliderC)
-SliderR.AnchorPoint = Vector2.new(0.5, 0.5)
-SliderR.Position = UDim2.new(0.5, 0, 0.5, 0)
-SliderR.Size = UDim2.new(1, margin * -2 - 18, 0, 5)
+SliderR.AnchorPoint = Vector2.new(0, 0)
+SliderR.Position = UDim2.new(0, 0, 0, 0)
+SliderR.Size = UDim2.new(1, 0, 1, 0)
 SliderR.BackgroundTransparency = 0
 SliderR.BackgroundColor3 = Color3.new(1, 1, 1)
 SliderR.BorderSizePixel = 0
@@ -60513,6 +61708,7 @@ SliderB.BackgroundTransparency = 0
 SliderB.BackgroundColor3 = Color3.new(1, 1, 1)
 SliderB.BorderSizePixel = 0
 SliderB.ZIndex = 2
+SliderB.Active = true
 Stylize(SliderR, {
 Depthed = true,
 })
@@ -60530,6 +61726,7 @@ snaps.Size = UDim2.new(0, 1, 0, 3)
 snaps.BackgroundTransparency = 0.5
 snaps.BackgroundColor3 = Color3.new(1, 1, 1)
 snaps.BorderSizePixel = 0
+snaps.Interactable = false
 i += step
 end
 end
@@ -60571,37 +61768,49 @@ Select.Value = val
 end
 local dragref = nil
 local start = nil
-SliderC.InputBegan:Connect(function(input)
+local function begin(input)
 if input.UserInputState ~= Enum.UserInputState.Begin then return end
-if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-dragref = input
-start = input.Position
+local ty = input.UserInputType
+if ty == Enum.UserInputType.MouseButton1 then
+dragref, start = input, nil
+ondrag(input.Position.X)
+elseif ty == Enum.UserInputType.Touch then
+dragref, start = input, input.Position
 end
-end)
-UserInputService.InputChanged:Connect(function(input)
-if dragref then
-if input.UserInputType == Enum.UserInputType.MouseMovement or (input.UserInputType == Enum.UserInputType.Touch and dragref == input) then
+end
+SliderC.InputBegan:Connect(begin)
+SliderB.InputBegan:Connect(begin)
+local cChanged = UserInputService.InputChanged:Connect(function(input)
+if not dragref then return end
+local ty = input.UserInputType
+if ty == Enum.UserInputType.MouseMovement then
+if dragref.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+if dragref.UserInputState == Enum.UserInputState.End or not UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+dragref, start = nil, nil
+return
+end
+ondrag(input.Position.X)
+elseif ty == Enum.UserInputType.Touch and input == dragref then
 if start then
 local delta = input.Position - start
-if delta.Magnitude > 10 then
+if delta.Magnitude <= 10 then return end
 start = nil
 if math.abs(delta.X) < math.abs(delta.Y) then
 dragref = nil
+return
 end
 end
-else
 ondrag(input.Position.X)
-end
-end
 end
 end)
-UserInputService.InputEnded:Connect(function(input)
-if dragref and dragref == input then
-if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+local cEnded = UserInputService.InputEnded:Connect(function(input)
+if dragref ~= input then return end
 ondrag(input.Position.X)
-dragref = nil
-end
-end
+dragref, start = nil, nil
+end)
+Container.Destroying:Once(function()
+cChanged:Disconnect()
+cEnded:Disconnect()
 end)
 return Select
 end
@@ -71815,7 +73024,9 @@ if LimbReanimator.Mode == 3 then
 rootcf = RCRootPart.CFrame
 end
 if LimbReanimator.Mode == 4 then
-rootcf = Reanimate.StableTorsoCFrame(RCRootPart, RCTorso)
+local trel = Reanimate.StableTorsoRel(RCRootPart, RCTorso)
+LOPT.torsoRel = trel
+rootcf = Reanimate.StableTorsoCFrame(RCRootPart, RCTorso, trel)
 end
 if LimbReanimator.Velocity == 1 then
 rootvel = Reanimate.ClampRootVelocity(RCRootPart.Velocity)
@@ -71896,7 +73107,7 @@ end
 if Character and Humanoid and RootPart then
 if LimbReanimator.Mode == 4 and RCRootPart and RCTorso and not LimbReanimator.RootOverride then
 -- the camera lock above re-yawed the fake character after rootcf was taken at Heartbeat: re-derive the torso target from the fake RootJoint so the real RootPart and the RootJoint pose are never split across two different torso states. The limb / neck joint poses are not sampled again (held): they stay the Heartbeat sample of the same simulation frame, only the root -> torso relation follows the new yaw
-local ncf = Reanimate.StableTorsoCFrame(RCRootPart, RCTorso)
+local ncf = Reanimate.StableTorsoCFrame(RCRootPart, RCTorso, LOPT.torsoRel)
 if Reanimate.FiniteCF(ncf) then
 rootcf = ncf
 tcf = ncf
@@ -72559,7 +73770,7 @@ K.VizOff()
 end
 end
 -- drop-in replacement for Reanimate.LimbPoseCFrame while the method runs (same signature / meaning: the Motor6D offset Part0 -> Part1 for the real joint)
-function K.Pose(map, v, RC, RootPart)
+function K.Pose(map, v, RC, RootPart, tcf)
 local orig = K.Orig
 local hl = Reanimate.HiddenLimbs
 if hl and hl[map.RPart1] and (map.RPart0 == "ROOT" or not hl[map.RPart0]) then return CFnew(0, -250, 0) end
@@ -72595,7 +73806,8 @@ if tw and RootPart then return RootPart.CFrame:ToObjectSpace(tw) end
 end
 end
 end
-return orig and orig(map, v, RC, RootPart) or IDCF
+if orig then return orig(map, v, RC, RootPart, tcf) end
+return IDCF
 end
 function K.End()
 K.Active = false
@@ -73186,7 +74398,7 @@ L.LS, L.RS, K.S.LS, K.S.RS = nil, nil, nil, nil
 end
 end
 -- drop-in replacement for Reanimate.LimbPoseCFrame while the method runs (same signature / meaning: the Motor6D offset Part0 -> Part1 for the real joint)
-function K.Pose(map, v, RC, RootPart)
+function K.Pose(map, v, RC, RootPart, tcf)
 local orig = K.Orig
 local hl = Reanimate.HiddenLimbs
 if hl and hl[map.RPart1] and (map.RPart0 == "ROOT" or not hl[map.RPart0]) then return CFnew(0, -250, 0) end
@@ -73229,7 +74441,8 @@ if tw and RootPart then return RootPart.CFrame:ToObjectSpace(tw) end
 end
 end
 end
-return orig and orig(map, v, RC, RootPart) or IDCF
+if orig then return orig(map, v, RC, RootPart, tcf) end
+return IDCF
 end
 -- restores the previous pose callback and drops every cached reference / temporary state
 function K.Reset()
@@ -85051,7 +86264,7 @@ return vel
 end
 -- world pose of the fake Torso rebuilt from the fake HumanoidRootPart and its own RootJoint (HumanoidRootPart * C0 * Transform * C1^-1), never read back from the Torso part: nothing that displaces the Torso (limb joints, welds, physics) can feed into a root target derived from it
 Reanimate._RootJointCache = setmetatable({}, {__mode = "k"})
-function Reanimate.StableTorsoCFrame(rcRoot, rcTorso)
+function Reanimate.StableTorsoRel(rcRoot, rcTorso)
 local j = Reanimate._RootJointCache[rcRoot]
 if not (j and j.Parent and j.Part0 == rcRoot and j.Part1 == rcTorso) then
 j = nil
@@ -85067,9 +86280,15 @@ end
 Reanimate._RootJointCache[rcRoot] = j
 end
 if j and j.Enabled then
-local cf = rcRoot.CFrame * j.C0 * j.Transform * j.C1:Inverse()
-if Reanimate.FiniteCF(cf) then return cf end
+local rel = j.C0 * j.Transform * j.C1:Inverse()
+if Reanimate.FiniteCF(rel) then return rel end
 end
+return rcRoot.CFrame:ToObjectSpace(rcTorso.CFrame)
+end
+-- rel = the root -> torso relation of the SAME simulation frame as the limb / neck joint samples (StableTorsoRel at Heartbeat). Passing it keeps the torso on that frame's RootJoint pose when only the fake root yaw changed afterwards (camera lock), instead of re-reading a RootJoint that may already belong to a newer animation frame than the held limb poses
+function Reanimate.StableTorsoCFrame(rcRoot, rcTorso, rel)
+local cf = rcRoot.CFrame * (rel or Reanimate.StableTorsoRel(rcRoot, rcTorso))
+if Reanimate.FiniteCF(cf) then return cf end
 return rcTorso.CFrame
 end
 -- limb pose guard: a non-finite pose never reaches a Motor6D (the last valid one is held), and a limb joint (neck / shoulder / hip) stays anchored to its parent, so a glitched pose can no longer throw a limb away from its pivot. Stateless (no extra smoothing), so it never fights an interpolating method. The root joint (HumanoidRootPart -> Torso) and hidden limbs are never modified here.
