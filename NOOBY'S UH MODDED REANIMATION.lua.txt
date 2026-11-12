@@ -137,6 +137,11 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 longer be stacked twice, window polish loops disconnect themselves when the window is destroyed, notification width clamps to the
                 screen on phones, UI ANIMATION CACHE is versioned (generated files rebuilt when outdated, UI/customization.json never touched),
                 folder checks run once per session and identical customization snapshots are not rewritten)
+       Custom mod (v437: UI MOTION + BLUR REMASTER - ONE blur controller for every transition / glass backdrop / motion blur (strongest pulse wins, base level for the
+                glass backdrop, strength follows the performance profile, effect disabled while idle and rebuilt if removed), refined easing + profile-scaled animation
+                length in the shared tween, spring settle after page transitions, spring-open dropdowns, window focus ring, border light sweep on Ultra / High)
+       Custom mod (v438: SIMPLE UI REMASTER - calmer defaults for new installs (rounder 8, clearer window background, ambient particles / cursor trail off),
+                flatter button bevel (motion, blur, springs and intros untouched), clean section headers, plain-language labels, Feature Center reordered with short descriptions)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -1339,12 +1344,12 @@ IntroTitle = "STEVETHEREALONE", IntroSub = "", IntroMarquee = "", IntroColorMode
 IntroStars = true, IntroRays = true, IntroScan = true, IntroHud = true, IntroIntensity = 1,
 NotifMode = 1, NotifDuration = 4, NotifTitle = "Nooby's uh modded reanimation v1.1.1", NotifPos = 1, NotifWidth = 300,
 NotifSize = 18, NotifProgress = true, NotifColor = "", NotifSound = false, NotifSpeed = 1,
-UIBgTr = 0.28, UIBorder = 1, UIRound = 16, UIGlow = false, UIAccent = "", GlassBlur = true,
+UIBgTr = 0.16, UIBorder = 1, UIRound = 8, UIGlow = false, UIAccent = "", GlassBlur = true,
 AdminTriHidden = false,
 AdminTriTab = true,
 AdminTriPos = "",
 AccentMode = 1, HarmonyMode = 1, ColorSpeed = 1, ColorSat = 1, ColorBright = 1,
-UIScale = 1, UIFont = 2, UIAnimSpeed = 1, UIParticles = true, UIGradient = true, UITrail = true,
+UIScale = 1, UIFont = 2, UIAnimSpeed = 1, UIParticles = false, UIGradient = true, UITrail = false,
 LiquidGlass = true, GlassClarity = 0.4, Haptics = true,
 PageTrans = 1, BtnAnim = 1,
 RbxIconTheme = true, RbxBarTheme = true, ChatStyle = true, ChatTextSize = 14, ChatBgTr = 0.3, ChatWinW = 1, ChatWinH = 1, BubbleDur = 15, BubbleDist = 100, BubbleTail = true,
@@ -1386,7 +1391,7 @@ FX.Cfg[k] = v
 end
 if not SaveData.GlassSkin1 then
 SaveData.GlassSkin1 = true
-for k, v in pairs({UIBgTr = 0.28, UIRound = 16, UIGlow = false, UIFont = 2}) do
+for k, v in pairs({UIBgTr = 0.16, UIRound = 8, UIGlow = false, UIFont = 2}) do
 FX.Cfg[k] = v
 FX.Store[k] = v
 end
@@ -1513,21 +1518,28 @@ if style == Back then return 300, 0.68 end
 return 250, 0.55
 end
 local tween = (function()
-local cache, speed = {}, nil
+local cache, speed, plv = {}, nil, nil
+local okC, Cubic = pcall(function() return Enum.EasingStyle.Cubic end)
+if not okC or Cubic == nil then Cubic = Enum.EasingStyle.Quart end
+-- animation length per performance profile (Ultra / High / Balanced / Low / Potato): weaker profiles finish sooner = fewer interpolated frames
+local TIMEK = {1, 1, 0.92, 0.8, 0.68}
 return function(obj, time, style, dir, props)
 local sp = FX.Cfg.UIAnimSpeed or 1
-if sp ~= speed then cache, speed = {}, sp end
+local lv = FX.Perf and FX.Perf.Level or 1
+if sp ~= speed or lv ~= plv then cache, speed, plv = {}, sp, lv end
 style, dir = style or Quint, dir or EOut
 local sprg = Springs[obj]
 if sprg then for pk in pairs(props) do sprg[pk] = nil end end
-if style == Enum.EasingStyle.Elastic or style == Bounce then style = Back end
+if style == Enum.EasingStyle.Elastic or style == Bounce then style = Back
+elseif style == Quad then style = Cubic end
 local byStyle = cache[style]
 if not byStyle then byStyle = {} cache[style] = byStyle end
 local byDir = byStyle[dir]
 if not byDir then byDir = {} byStyle[dir] = byDir end
 local info = byDir[time]
 if not info then
-info = TweenInfo.new(time / math.max(0.2, sp), style, dir)
+local tm = time > 0.2 and time * (TIMEK[lv] or 1) or time
+info = TweenInfo.new(tm / math.max(0.2, sp), style, dir)
 byDir[time] = info
 end
 local t = RealTweenService:Create(obj, info, props)
@@ -1552,44 +1564,156 @@ end
 local function isPress(input)
 return input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
 end
+-- ===== BLUR CONTROLLER (v437) =====
+-- ONE BlurEffect for every transition, the glass backdrop and motion blur. Pulses never stack: the strongest live request wins and
+-- later equal / weaker ones only extend it (no restarts, no extra tweens). FX.BlurBase carries the glass backdrop on the same effect;
+-- base + pulse combine like stacked gaussian blurs (quadrature). Strength follows the active performance profile, Low End UI Mode keeps
+-- blur off, the effect is disabled while nothing is blurred, rebuilt if the game removes it, and always settles back onto its base.
+do
 local Blur = Instance.new("BlurEffect")
 Blur.Name = Util.RandomString(16)
 Blur.Size = 0
-do
-local ok = pcall(function()
-Blur.Parent = Lighting
-end)
-if not ok then
-pcall(function()
-Blur.Parent = workspace.CurrentCamera
-end)
+Blur.Enabled = false
+local B = {live = false, peak = 0, releaseAt = 0, outT = 0.45, soft = true, token = 0, base = 0, en = false, mbLast = 0, deadAt = nil}
+FX.BlurFx, FX.BlurState = Blur, B
+local Sine, Quart = Enum.EasingStyle.Sine, Enum.EasingStyle.Quart
+local PK = {1, 0.9, 0.66, 0.42, 0.24}
+local BK = {1, 0.92, 0.72, 0.5, 0.32}
+local MBGAP = {0.06, 0.08, 0.11, 0.16, 0.26}
+local function lvl()
+if FX.IsLowEnd() then return 5 end
+local l = FX.Perf and FX.Perf.Level or 1
+if l < 3 and FX.Lite() then l = 3 end
+return l
+end
+function FX.VQ() return lvl() end
+local function attach()
+if Blur.Parent then return true end
+if B.deadAt and os.clock() - B.deadAt < 10 then return false end
+pcall(function() Blur.Parent = Lighting end)
+if not Blur.Parent then pcall(function() Blur.Parent = workspace.CurrentCamera end) end
+if Blur.Parent then B.deadAt = nil return true end
+local nb = Instance.new("BlurEffect")
+nb.Name = Util.RandomString(16)
+nb.Size, nb.Enabled = Blur.Size, Blur.Enabled
+pcall(function() nb.Parent = Lighting end)
+if not nb.Parent then pcall(function() nb.Parent = workspace.CurrentCamera end) end
+if nb.Parent then
+Blur = nb
+FX.BlurFx = nb
+B.deadAt = nil
+return true
+end
+nb:Destroy()
+B.deadAt = os.clock()
+return false
+end
+attach()
+local function go(size, time, style, dir)
+if not attach() then return end
+if size > 0.01 and not Blur.Enabled then
+if B.en then return end
+B.en = true
+Blur.Enabled = true
+end
+tween(Blur, time, style, dir, {Size = size})
+end
+local function idle(my)
+if my ~= B.token or B.live then return end
+if math.abs(Blur.Size - B.base) > 0.02 then Blur.Size = B.base end
+if B.base <= 0.02 and Blur.Enabled then
+Blur.Size, Blur.Enabled, B.en = 0, false, false
 end
 end
-local blurToken = 0
-function FX.BlurPulse(peak, inTime, outTime, soft)
-if not FX.Settings.Blur then return end
-blurToken = blurToken + 1
-local my = blurToken
-inTime = inTime or 0.15
-tween(Blur, inTime, Quad, EOut, {Size = peak})
-task.delay(inTime, function()
-if my ~= blurToken then return end
-tween(Blur, outTime or 0.45, Quad, soft and EOut or EIn, {Size = 0})
-end)
-task.delay((inTime + (outTime or 0.45)) / math.max(0.2, FX.Cfg.UIAnimSpeed or 1) + 0.25, function()
-if my == blurToken and Blur.Size > 0 then Blur.Size = 0 end
-end)
+local function finish(my)
+if my ~= B.token or not B.live then return end
+local left = B.releaseAt - os.clock()
+if left > 0.02 then task.delay(left, finish, my) return end
+B.live, B.peak = false, 0
+go(B.base, B.outT, Sine, B.soft and EOut or EInOut)
+task.delay(B.outT / math.max(0.2, FX.Cfg.UIAnimSpeed or 1) + 0.35, idle, my)
 end
-local mbLast = 0
+local function comb(a, b) return math.sqrt(a * a + b * b) end
+function FX.BlurPulse(peak, inTime, outTime, soft, hold)
+if not FX.Settings.Blur or type(peak) ~= "number" or peak <= 0 then return end
+local k = PK[lvl()] or 1
+peak = math.max(1.4, math.min(peak * k, 20))
+inTime, outTime = inTime or 0.15, outTime or 0.45
+local releaseAt = os.clock() + (inTime + (hold or 0)) / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
+if B.live and peak <= B.peak + 0.05 then
+if releaseAt > B.releaseAt then B.releaseAt = releaseAt end
+if outTime > B.outT then B.outT = outTime end
+if not soft then B.soft = false end
+return
+end
+B.token = B.token + 1
+local my = B.token
+B.live, B.peak, B.releaseAt, B.outT, B.soft = true, peak, releaseAt, outTime, soft and true or false
+go(comb(B.base, peak), inTime, Quart, EOut)
+task.delay(math.max(0.01, releaseAt - os.clock()), finish, my)
+end
 function FX.MotionBlur(peak, settle)
 if not FX.Settings.Blur or FX.IsLowEnd() or (FX.Gov and FX.Gov.Stride > 1) then return end
-local lite = FX.Lite()
+local l = lvl()
 local now = os.clock()
-if now - mbLast < (lite and 0.16 or 0.08) then return end
-peak = math.min(peak or 2, 6) * (lite and 0.5 or 1)
-if Blur.Size >= peak then return end
-mbLast = now
+if now - B.mbLast < (MBGAP[l] or 0.08) then return end
+peak = math.min(peak or 2, 6)
+if B.live and B.peak >= peak * (PK[l] or 1) then return end
+B.mbLast = now
 FX.BlurPulse(peak, 0.09, math.clamp(settle or 0.4, 0.25, 1), true)
+end
+function FX.BlurBase(size)
+size = math.clamp(tonumber(size) or 0, 0, 24)
+if size > 0 then size = math.max(1.5, size * (BK[lvl()] or 1)) end
+if math.abs(size - B.base) < 0.05 then return end
+B.base = size
+if B.live then return end
+B.token = B.token + 1
+local my = B.token
+go(size, 0.5, Sine, EInOut)
+task.delay(0.5 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1) + 0.35, idle, my)
+end
+-- window focus ring: the frame outline flares up when the window opens and settles back to its own transparency
+local ringBase = setmetatable({}, {__mode = "k"})
+function FX.FocusRing(win)
+if not win or not FX.Settings.Transitions or lvl() > 3 then return end
+local st = win:FindFirstChildOfClass("UIStroke")
+if not st then return end
+local base = ringBase[st]
+if base == nil then base = st.Transparency ringBase[st] = base end
+st.Transparency = math.max(0, base - 0.5)
+tween(st, 1.1, Quint, EOut, {Transparency = base})
+end
+-- border light sweep: an engine-side repeating tween (no Lua per frame) on Ultra / High only, cancelled automatically on weaker profiles / Low End UI Mode
+local sweeps = setmetatable({}, {__mode = "k"})
+local function sweepStep()
+local want0 = FX.Settings.Transitions and FX.Cfg.UIGradient ~= false and lvl() <= 2
+for g, rec in pairs(sweeps) do
+local want = want0 and g.Parent ~= nil
+if want and not rec.tw then
+local r0 = g.Rotation % 360
+g.Rotation = r0
+rec.tw = RealTweenService:Create(g, TweenInfo.new(rec.period, Linear, EIn, -1), {Rotation = r0 + 360})
+rec.tw:Play()
+elseif not want and rec.tw then
+rec.tw:Cancel()
+rec.tw = nil
+end
+end
+end
+local function sweepRefresh() pcall(sweepStep) end
+FX.SweepRefresh = sweepRefresh
+local sweepHooked = false
+function FX.BorderSweep(g, period)
+if not g or sweeps[g] then return end
+sweeps[g] = {period = period or 18}
+if not sweepHooked then
+sweepHooked = true
+pcall(FX.Perf.OnChange, sweepRefresh)
+pcall(FX.OnLowEnd, sweepRefresh)
+end
+sweepRefresh()
+end
 end
 function FX.mtween(obj, time, style, dir, props)
 if props and time >= 0.12 then
@@ -3052,7 +3176,7 @@ FX.RoundCorner(host)
 local gloss = Util.Instance("Frame", host)
 gloss.Size = UDim2.fromScale(1, 0.52)
 gloss.BackgroundColor3 = WHITE
-gloss.BackgroundTransparency = 0.84
+gloss.BackgroundTransparency = 0.93
 gloss.BorderSizePixel = 0
 gloss.Interactable = false
 local gg = Util.Instance("UIGradient", gloss)
@@ -3063,14 +3187,14 @@ rimS.Color, rimS.Thickness, rimS.Transparency = WHITE, 1, 0
 rimS.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 local rimG = Util.Instance("UIGradient", rimS)
 rimG.Rotation = 38
-rimG.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.38), NumberSequenceKeypoint.new(0.3, 0.9), NumberSequenceKeypoint.new(0.7, 0.9), NumberSequenceKeypoint.new(1, 0.5)})
+rimG.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.62), NumberSequenceKeypoint.new(0.3, 0.93), NumberSequenceKeypoint.new(0.7, 0.93), NumberSequenceKeypoint.new(1, 0.72)})
 if FX.Lite() then return gloss, nil end
 local rim = Util.Instance("Frame", host)
 rim.AnchorPoint = Vector2.new(0.5, 0)
 rim.Position = UDim2.new(0.5, 0, 0, 1)
 rim.Size = UDim2.new(1, -14, 0, 1)
 rim.BackgroundColor3 = WHITE
-rim.BackgroundTransparency = 0.7
+rim.BackgroundTransparency = 0.88
 rim.BorderSizePixel = 0
 rim.Interactable = false
 local shade = Util.Instance("Frame", host)
@@ -3078,7 +3202,7 @@ shade.AnchorPoint = Vector2.new(0, 1)
 shade.Position = UDim2.fromScale(0, 1)
 shade.Size = UDim2.fromScale(1, 0.42)
 shade.BackgroundColor3 = Color3.new(0, 0, 0)
-shade.BackgroundTransparency = 0.78
+shade.BackgroundTransparency = 0.9
 shade.BorderSizePixel = 0
 shade.Interactable = false
 local sg = Util.Instance("UIGradient", shade)
@@ -3117,7 +3241,7 @@ glassHosts[host] = function(on, k)
 local c = on and (1 - 0.55 * k) or 0
 tint.BackgroundTransparency = on and (1 - 0.55 * k) or 1
 es.Transparency = 1 - 0.85 * c
-lip.BackgroundTransparency = 1 - c
+lip.BackgroundTransparency = 1
 rimS.Transparency = on and 0.15 * k or 0
 end
 glassHosts[host](FX.GlassOn(), FX.GlassK())
@@ -3272,7 +3396,7 @@ end
 local basePos = b.Position
 local depth = Util.Instance("UIGradient", b)
 depth.Rotation = 90
-depth.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 205, 205))
+depth.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(228, 228, 228))
 local lip, lipSc, lipK = nil, nil, 0.6
 if container and container:IsA("GuiObject") then
 lip = Util.Instance("Frame", container)
@@ -3822,7 +3946,7 @@ if b:GetAttribute("FXL") then return end
 b:SetAttribute("FXL", true)
 local depth = Util.Instance("UIGradient", b)
 depth.Rotation = 90
-depth.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(205, 205, 205))
+depth.Color = ColorSequence.new(Color3.fromRGB(255, 255, 255), Color3.fromRGB(228, 228, 228))
 local gloss, shade = FX.Bevel(b)
 local basePos = b.Position
 local hover, down = false, false
@@ -4538,7 +4662,7 @@ veilToken = veilToken + 1
 local myVeil = veilToken
 resetVeilGeometry()
 R.veil.BackgroundTransparency = 1
-FX.BlurPulse((entering and 5 or 4) * (FX.Lite() and 0.5 or 1), 0.18, 0.82, true)
+FX.BlurPulse(entering and 6.5 or 5, 0.16, 0.8, true, 0.1)
 FX.Play(entering and "open" or "back")
 if entering then pcall(FX.Cascade, page) end
 local ok, err = pcall(Styles[styleId] or Styles[1], page, entering, goal, R)
@@ -4546,7 +4670,12 @@ if not ok then warn("[UhhhhhhFX] transition error: " .. tostring(err)) end
 if not R.alive() then return false end
 page.Position = goal
 page.Rotation = 0
+if entering and FX.VQ() <= 3 and FX.Settings.Transitions then
+R.scale.Scale = 1.012
+FX.SpringTo(R.scale, "Scale", 1, 300, 0.62)
+else
 R.scale.Scale = 1
+end
 task.delay(0.3, function()
 if veilToken == myVeil then
 resetVeilGeometry()
@@ -4594,9 +4723,11 @@ and obj.Parent == FX.Content and obj ~= FX.VeilInstance then
 return pageTween(obj, props)
 end
 if obj == FX.Window then
-FX.BlurPulse(5, 0.15, 0.85, true)
 local small = props.Size and props.Size.X.Offset < 200
+FX.BlurPulse(small and 5 or 6.5, 0.14, small and 0.7 or 0.95, true, small and 0 or 0.08)
 FX.Play(small and "close" or "open")
+pcall(FX.SweepRefresh)
+if not small and not FX.IntroActive then pcall(FX.FocusRing, obj) end
 elseif FX.Window and typeof(info) == "TweenInfo" and info.RepeatCount == 0 and info.Time >= 0.15 and not FX.IntroActive
 and obj:IsDescendantOf(FX.Window) then
 if props.Position or props.Size or props.Rotation or props.Scale or props.CanvasPosition then
@@ -21350,6 +21481,7 @@ FX.Settings.Transitions = SaveData.FXTransitions ~= false
 FX.Settings.ExtraSounds = SaveData.FXSounds ~= false
 FX.Settings.Ambient = SaveData.FXAmbient ~= false
 end
+pcall(FX.SweepRefresh)
 if env.CracktroFrame then
 assignStyle(env.CracktroFrame, 2)
 end
@@ -58560,6 +58692,7 @@ if not (Util.FX.IsLowEnd and Util.FX.IsLowEnd()) then
 local rg = Util.Instance("UIGradient", Out)
 rg.Rotation = 38
 rg.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(0.32, 0.7), NumberSequenceKeypoint.new(0.68, 0.7), NumberSequenceKeypoint.new(1, 0.1)})
+if options.Sweep then pcall(Util.FX.BorderSweep, rg, 18) end
 end
 Out.Enabled = true
 obj.BackgroundColor3 = Color3.new(0, 0, 0)
@@ -58836,6 +58969,7 @@ UIMainWindow.BorderSizePixel = 0
 Stylize(UIMainWindow, {
 Glow = true,
 BgTr = true,
+Sweep = true,
 })
 pcall(Util.FX.PreBoot, UIMainWindow)
 local _clicksndclicked = false
@@ -60071,6 +60205,10 @@ return Frame
 end
 function UI.CreateText(parent, text, size, alignment)
 local margin = 5
+if type(text) == "string" then
+local hd = text:match("^%s*%-=%+%s*(.-)%s*%+=%-%s*$")
+if hd and hd ~= "" then text = "<b>" .. hd .. "</b>" end
+end
 local Container = Util.Instance("Frame", parent)
 Container.AnchorPoint = Vector2.new(0.5, 0)
 Container.Size = UDim2.new(1, 0, 0, 65536)
@@ -60615,7 +60753,7 @@ local conn = scrollframe:GetPropertyChangedSignal("CanvasPosition"):Connect(func
 opened = false
 end)
 end
-local opentween, lastOpen = 0, false
+local opentween, lastOpen, dropVel = 0, false, 0
 AddToRenderStep(function(t, dt)
 if opened ~= lastOpen then lastOpen = opened pcall(Util.FX.MotionBlur, 1.5, 0.5) end
 if not opened and opentween < 0.002 then
@@ -60628,10 +60766,17 @@ end
 return
 end
 if opened then
+if Util.FX.Settings.Transitions and not Util.FX.Lite() then
+local sdt = math.min(dt, 1 / 30)
+dropVel = dropVel + (210 * (1 - opentween) - 19.1 * dropVel) * sdt
+opentween = opentween + dropVel * sdt
+else
 opentween = 1 + (opentween - 1) * math.exp(-11 * dt)
+end
 Droplist.ZIndex = 4
 Droplist.Interactable = true
 else
+dropVel = 0
 opentween *= math.exp(-14 * dt)
 Droplist.ZIndex = 3
 Droplist.Interactable = false
@@ -62332,7 +62477,8 @@ wrap("CreateSlider", "slider")
 wrap("CreateDropdown", "dropdown")
 wrap("CreateButton", "button")
 end
-UI.CreateText(MainPage, `Nooby's uh modded reanimation v1.1.1 | Original by STEVETHEREALONE | Modded by Nooby`, 15, Enum.TextXAlignment.Right)
+UI.CreateText(MainPage, "<b>Nooby's UH Reanimation</b>", 15, Enum.TextXAlignment.Center)
+UI.CreateText(MainPage, "<font color=\"#AAAAAA\">v1.1.1  -  Original by STEVETHEREALONE  -  Modded by Nooby</font>", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(MainPage)
 UI.CreateButton(MainPage, " &lt; Back to cool scene", 20).Activated:Connect(function()
 CracktroFrame.Interactable = false
@@ -62627,15 +62773,15 @@ UI.CreateSwitch(MainPage, "Transition Blur", SaveData.FXBlur ~= false).Changed:C
 SaveData.FXBlur = value
 Util.FX.Settings.Blur = value
 end)
-UI.CreateSwitch(MainPage, "Fancy Transitions", SaveData.FXTransitions ~= false).Changed:Connect(function(value)
+UI.CreateSwitch(MainPage, "Page Transitions", SaveData.FXTransitions ~= false).Changed:Connect(function(value)
 SaveData.FXTransitions = value
 Util.FX.Settings.Transitions = value
 end)
-UI.CreateSwitch(MainPage, "Extra UI Sounds", SaveData.FXSounds ~= false).Changed:Connect(function(value)
+UI.CreateSwitch(MainPage, "Interface Sounds", SaveData.FXSounds ~= false).Changed:Connect(function(value)
 SaveData.FXSounds = value
 Util.FX.Settings.ExtraSounds = value
 end)
-UI.CreateSwitch(MainPage, "Ambient FX", SaveData.FXAmbient ~= false).Changed:Connect(function(value)
+UI.CreateSwitch(MainPage, "Ambient Effects", SaveData.FXAmbient ~= false).Changed:Connect(function(value)
 SaveData.FXAmbient = value
 Util.FX.Settings.Ambient = value
 end)
@@ -70596,7 +70742,7 @@ return p0 ~= nil and RC:FindFirstChild(map.RPart1) ~= nil
 end
 function SJ.Pose(RC, RootPart)
 if not (RC and RC.Parent and RootPart and RootPart.Parent) then return false end
-local pose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
+local pose, idcf = Reanimate.SafeLimbPose, CFrame.identity
 -- heading (yaw) of the animated character relative to the real RootPart: the root joint carries it kinematically so a turning character never runs the root hinges through gimbal / +-180 wrap
 local H, Fr
 local hrp = RC:FindFirstChild("HumanoidRootPart")
@@ -71101,7 +71247,7 @@ local p0 = map.RPart0 == "ROOT" and RootPart or RC:FindFirstChild(map.RPart0)
 return p0 ~= nil and RC:FindFirstChild(map.RPart1) ~= nil
 end
 function HJ.Pose(RC, RootPart)
-local pose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
+local pose, idcf = Reanimate.SafeLimbPose, CFrame.identity
 -- heading (yaw) of the animated character relative to the real RootPart: the waist carries it kinematically so a turning character never pushes the ball socket through its limits
 local H, Fr
 if RC and RootPart and RootPart.Parent then
@@ -71454,7 +71600,7 @@ c[key] = o
 end
 return o
 end
-local function UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf)
+local function UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf, tcf, held)
 if not RootPart:IsGrounded() then
 if flingtarget then
 Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
@@ -71493,7 +71639,7 @@ if Hybrid then
 HJ.Root = RootPart
 HJ.Sample()
 end
-local LimbPose, idcf = Reanimate.LimbPoseCFrame, CFrame.identity
+local LimbPose, idcf = Reanimate.SafeLimbPose, CFrame.identity
 local vnow = VelInterp and os.clock() or 0
 for _,map in LimbMapping do
 local v = map.Reference
@@ -71504,8 +71650,8 @@ map.RT = v.C0 * v.C1:Inverse()
 pcall(Util.SetMotor6DTransform, v, CFrame.identity)
 else
 local mcf = map.CFrame
-if dorep or not mcf then
-local cf = LimbPose(map, v, ReanimCharacter, RootPart)
+if not mcf or (dorep and not (held and map.RPart0 ~= "ROOT")) then
+local cf = LimbPose(map, v, ReanimCharacter, RootPart, tcf)
 if cf ~= idcf then
 map.CFrame = cf
 mcf = cf
@@ -71548,12 +71694,12 @@ Util.SetMotor6DTransform(v, CFrame.identity)
 else
 local mcf = map.CFrame
 local fresh = false
-if dorep or not mcf then
-mcf = LimbPose(map, v, ReanimCharacter, RootPart)
+if not mcf or (dorep and not (held and map.RPart0 ~= "ROOT")) then
+mcf = LimbPose(map, v, ReanimCharacter, RootPart, tcf)
 map.CFrame = mcf
 fresh = true
 end
-if VelInterp then mcf = VelInterp.Step(map, mcf, fresh, vnow) end
+if VelInterp then mcf = Reanimate.SanitizeLimbPose(map, v, VelInterp.Step(map, mcf, fresh, vnow)) end
 Util.SetMotor6DOffset(v, Reanimate.LimbHider.Void(map, mcf))
 end
 end
@@ -71599,7 +71745,7 @@ end
 if Humanoid.JumpPower < 1 then
 Humanoid.JumpPower = 50
 end
-RootPart = Humanoid.RootPart
+RootPart = Reanimate.ResolveRealRoot(Character, Humanoid)
 if RootPart and Humanoid:GetState() ~= Enum.HumanoidStateType.Dead then
 Humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 ReanimOkay = LimbReanimator.FlingTargets[1] == nil
@@ -71608,6 +71754,7 @@ end
 end
 local rootcf = CFrame.new(LimbReanimator.Mode == 5 and skyposition or LimbReanimator.Mode == 6 and veryskyposition or rootposition)
 local rootvel = Vector3.zero
+local tcf, held = nil, false
 local ltm = Reanimate.LocalTransparencyModifier
 local ReanimCharacter = Reanimate.Character
 if ReanimCharacter then
@@ -71668,10 +71815,10 @@ if LimbReanimator.Mode == 3 then
 rootcf = RCRootPart.CFrame
 end
 if LimbReanimator.Mode == 4 then
-rootcf = RCTorso.CFrame
+rootcf = Reanimate.StableTorsoCFrame(RCRootPart, RCTorso)
 end
 if LimbReanimator.Velocity == 1 then
-rootvel = RCRootPart.Velocity
+rootvel = Reanimate.ClampRootVelocity(RCRootPart.Velocity)
 elseif LimbReanimator.Velocity == 2 then
 rootvel = Vector3.new(0, 16384, 0)
 end
@@ -71705,6 +71852,8 @@ if ovr then
 local okO, ocf = pcall(ovr, RCRootPart, RCTorso)
 if okO and typeof(ocf) == "CFrame" then rootcf = ocf end
 end
+if Reanimate.FiniteCF(rootcf) then LOPT.lastRoot = rootcf elseif LOPT.lastRoot then rootcf = LOPT.lastRoot end
+if LimbReanimator.Mode == 4 and not ovr then tcf = rootcf end
 end
 do
 local q = LimbReanimator.FlingTargets
@@ -71729,7 +71878,8 @@ table.remove(LimbReanimator.FlingTargets, 1)
 flingtarget, flingcf = nil, CFrame.identity
 end
 end
-UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf)
+UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf, tcf)
+held = tcf ~= nil and flingtarget == nil and not VelInterp
 if flingtarget then
 Util.Fling.ApplyHumanoid(Humanoid, flingtarget, lastspawn)
 else
@@ -71744,7 +71894,16 @@ if Reanimate:ShouldRotationType() then
 Reanimate:CameraLockCharacter()
 end
 if Character and Humanoid and RootPart then
-UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, nil, CFrame.identity)
+if LimbReanimator.Mode == 4 and RCRootPart and RCTorso and not LimbReanimator.RootOverride then
+-- the camera lock above re-yawed the fake character after rootcf was taken at Heartbeat: re-derive the torso target from the fake RootJoint so the real RootPart and the RootJoint pose are never split across two different torso states. The limb / neck joint poses are not sampled again (held): they stay the Heartbeat sample of the same simulation frame, only the root -> torso relation follows the new yaw
+local ncf = Reanimate.StableTorsoCFrame(RCRootPart, RCTorso)
+if Reanimate.FiniteCF(ncf) then
+rootcf = ncf
+tcf = ncf
+LOPT.lastRoot = ncf
+end
+end
+UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, nil, CFrame.identity, tcf, held)
 end
 end
 end
@@ -73043,7 +73202,7 @@ K.TM[role], K.G[role], K.S[role], K.L[role] = v, nil, nil, nil
 K.T = 0
 end
 K.MP[role] = map
-if RootPart then K.Root = RootPart end
+if RootPart and Reanimate.IsRealRoot(RootPart, RC) then K.Root = RootPart end
 local now = os.clock()
 local since = now - K.T
 -- a new update stage starts when a joint is requested a second time (or after a stall): the whole stage then shares one pose sample / IK pass
@@ -73212,8 +73371,9 @@ local FILT_SLOW, FILT_FAST, CONF_RISE, SLOW_OM, SLOW_X, SLOW_WX = 0.08, 0.025, 0
 local REV_L, REV_A, TURN_TIME, TURN_OM, TURN_ACC = 2, 1.5, 0.15, 0.35, 0.25
 -- per joint type: rm / am / sm scale the linear responsiveness / acceleration / speed settings, wr / wa scale the angular responsiveness / acceleration settings, wmax = angular speed limit for catching up (rad/s), jw = angular speed (rad/s) above which a target step is a pose jump, pm = prediction scale, sc = how strongly the body-wide activity tightens the joint, sd = scale of the extra damping of unwanted (sideways / opposing) velocity
 local PROFILE = {
-Root = {rm = 0.85, am = 0.8, sm = 0.9, wr = 0.85, wa = 0.8, wmax = 9, jw = 30, pm = 0.5, sc = 1, sd = 1},
-Torso = {rm = 0.9, am = 0.9, sm = 0.95, wr = 0.9, wa = 0.85, wmax = 10, jw = 32, pm = 0.7, sc = 1, sd = 1},
+-- Root / Torso trackers use sc = 0: the activity of the limbs never tightens them, so the torso follows the body / root animation and not the limb motion
+Root = {rm = 0.85, am = 0.8, sm = 0.9, wr = 0.85, wa = 0.8, wmax = 9, jw = 30, pm = 0.5, sc = 0, sd = 1},
+Torso = {rm = 0.9, am = 0.9, sm = 0.95, wr = 0.9, wa = 0.85, wmax = 10, jw = 32, pm = 0.7, sc = 0, sd = 1},
 Head = {rm = 1, am = 0.9, sm = 1, wr = 1, wa = 0.9, wmax = 12, jw = 38, pm = 0.8, sc = 0.6, sd = 1.1},
 Arm = {rm = 1, am = 1, sm = 1.15, wr = 1.1, wa = 1, wmax = 16, jw = 45, pm = 1, sc = 1, sd = 0.9},
 Leg = {rm = 1, am = 1.05, sm = 1.1, wr = 1.05, wa = 1, wmax = 15, jw = 42, pm = 1, sc = 1, sd = 0.9},
@@ -84860,7 +85020,86 @@ do
 local RS = SaveData.Reanimator
 do
 local poseCache = setmetatable({}, {__mode = "k"})
-function Reanimate.LimbPoseCFrame(map, v, RC, RootPart)
+-- ===== shared root identity / limb pose guard (every limb reanimation method goes through it) =====
+-- The REAL character's root is its HumanoidRootPart: never a Torso / UpperTorso / LowerTorso and never a part of the fake (reanimator) character.
+function Reanimate.IsRealRoot(p, fake)
+if typeof(p) ~= "Instance" or not p:IsA("BasePart") then return false end
+local n = p.Name
+if n == "Torso" or n == "UpperTorso" or n == "LowerTorso" then return false end
+if fake and p:IsDescendantOf(fake) then return false end
+return true
+end
+function Reanimate.ResolveRealRoot(character, humanoid, fake)
+fake = fake or Reanimate.Character
+local hrp = character and character:FindFirstChild("HumanoidRootPart")
+if hrp and Reanimate.IsRealRoot(hrp, fake) then return hrp end
+local rp = humanoid and humanoid.RootPart
+if rp and Reanimate.IsRealRoot(rp, fake) then return rp end
+return nil
+end
+function Reanimate.FiniteCF(cf)
+if typeof(cf) ~= "CFrame" then return false end
+local x, y, z, a, b, c, d, e, f, g, h, i = cf:GetComponents()
+return math.abs(x) < 1e9 and math.abs(y) < 1e9 and math.abs(z) < 1e9 and math.abs(a) <= 1.01 and math.abs(b) <= 1.01 and math.abs(c) <= 1.01 and math.abs(d) <= 1.01 and math.abs(e) <= 1.01 and math.abs(f) <= 1.01 and math.abs(g) <= 1.01 and math.abs(h) <= 1.01 and math.abs(i) <= 1.01
+end
+-- RootPart Velocity "Follow Character": a collision / teleport spike of the fake character's root must never be replicated as an extreme velocity (remote clients would extrapolate the whole body with it)
+function Reanimate.ClampRootVelocity(vel)
+local m = vel.Magnitude
+if m ~= m then return Vector3.zero end
+if m > 1500 then return vel * (1500 / m) end
+return vel
+end
+-- world pose of the fake Torso rebuilt from the fake HumanoidRootPart and its own RootJoint (HumanoidRootPart * C0 * Transform * C1^-1), never read back from the Torso part: nothing that displaces the Torso (limb joints, welds, physics) can feed into a root target derived from it
+Reanimate._RootJointCache = setmetatable({}, {__mode = "k"})
+function Reanimate.StableTorsoCFrame(rcRoot, rcTorso)
+local j = Reanimate._RootJointCache[rcRoot]
+if not (j and j.Parent and j.Part0 == rcRoot and j.Part1 == rcTorso) then
+j = nil
+for _, holder in {rcRoot, rcTorso} do
+for _, c in holder:GetChildren() do
+if c:IsA("Motor6D") and c.Part0 == rcRoot and c.Part1 == rcTorso then
+j = c
+break
+end
+end
+if j then break end
+end
+Reanimate._RootJointCache[rcRoot] = j
+end
+if j and j.Enabled then
+local cf = rcRoot.CFrame * j.C0 * j.Transform * j.C1:Inverse()
+if Reanimate.FiniteCF(cf) then return cf end
+end
+return rcTorso.CFrame
+end
+-- limb pose guard: a non-finite pose never reaches a Motor6D (the last valid one is held), and a limb joint (neck / shoulder / hip) stays anchored to its parent, so a glitched pose can no longer throw a limb away from its pivot. Stateless (no extra smoothing), so it never fights an interpolating method. The root joint (HumanoidRootPart -> Torso) and hidden limbs are never modified here.
+function Reanimate.SanitizeLimbPose(map, v, cf, exact)
+if cf == CFrame.identity then return cf end
+local hl = Reanimate.HiddenLimbs
+if hl and hl[map.RPart1] and (map.RPart0 == "ROOT" or not hl[map.RPart0]) then return cf end
+if not Reanimate.FiniteCF(cf) then
+return map.SaneCF or (v and v.C0 * v.C1:Inverse()) or CFrame.identity
+end
+-- exact: the pose was sampled straight from the animated joint (RootPart is Torso), it is the animation's own transform and is not corrected
+if not exact and map.RPart0 ~= "ROOT" and v then
+local c0, c1 = v.C0, v.C1
+local tr = c0:Inverse() * cf * c1
+local p = tr.Position
+local m = p.Magnitude
+local lim = (c0.Position.Magnitude + c1.Position.Magnitude) * 1.25 + 0.5
+if m > lim then
+cf = c0 * (CFrame.new(p * (lim / m)) * tr.Rotation) * c1:Inverse()
+end
+end
+map.SaneCF = cf
+return cf
+end
+function Reanimate.SafeLimbPose(map, v, RC, RootPart, tcf)
+local cf, exact = Reanimate.LimbPoseCFrame(map, v, RC, RootPart, tcf)
+return Reanimate.SanitizeLimbPose(map, v, cf, exact)
+end
+-- tcf (RootPart is Torso only) = the fake torso world CFrame rebuilt from the fake HumanoidRootPart * RootJoint. With it the pose is read from the animated joints: the torso joint is the real root -> tcf relation and every limb / neck joint is its own Motor6D (C0 * Transform * C1^-1) relative to its anatomical parent, so no torso, root or limb movement is inherited twice and no physics-displaced part CFrame feeds back. Returns (pose, true) when sampled this way
+function Reanimate.LimbPoseCFrame(map, v, RC, RootPart, tcf)
 local hl = Reanimate.HiddenLimbs
 if hl and hl[map.RPart1] and (map.RPart0 == "ROOT" or not hl[map.RPart0]) then return CFrame.new(0, -250, 0) end
 local e = poseCache[map]
@@ -84872,6 +85111,7 @@ local n0, n1 = map.RPart0, map.RPart1
 local p0
 if n0 == "ROOT" then
 p0 = RootPart
+if not Reanimate.IsRealRoot(p0, RC) then p0 = Reanimate.ResolveRealRoot(Player.Character, nil, RC) end
 else
 p0 = e.p0
 if not p0 or p0.Parent ~= RC or p0.Name ~= n0 then
@@ -84885,18 +85125,44 @@ p1 = RC:FindFirstChild(n1)
 e.p1 = p1
 end
 if not (p0 and p1) then return CFrame.identity end
+local rel, auth
+if tcf then
+if n0 == "ROOT" then
+if n1 == "Torso" then rel, auth = p0.CFrame:ToObjectSpace(tcf), true end
+else
+local j = e.j
+if not (j and j.Parent and j.Part0 == p0 and j.Part1 == p1) and (j or e.jp0 ~= p0 or e.jp1 ~= p1) then
+e.jp0, e.jp1, j = p0, p1, nil
+for _, c in p0:GetChildren() do
+if c:IsA("Motor6D") and c.Part0 == p0 and c.Part1 == p1 then
+j = c
+break
+end
+end
+e.j = j
+end
+if j and j.Enabled then rel, auth = j.C0 * j.Transform * j.C1:Inverse(), true end
+end
+end
 local t = map.Type
 if t == 1 then
+if rel then return rel, auth end
 return p0.CFrame:ToObjectSpace(p1.CFrame)
 elseif t == 2 then
 local mc0, mc1 = map.C0, map.C1
 if e.c0Src ~= mc0 then
 e.c0Src, e.c0 = mc0, CFrame.new(mc0)
+e.c0i = e.c0:Inverse()
 end
 if e.c1Src ~= mc1 then
 e.c1Src, e.c1 = mc1, CFrame.new(mc1)
 end
-local transform = (p0.CFrame * e.c0):ToObjectSpace(p1.CFrame * e.c1)
+local transform
+if rel then
+transform = e.c0i * rel * e.c1
+else
+transform = (p0.CFrame * e.c0):ToObjectSpace(p1.CFrame * e.c1)
+end
 local offset = map.Offset
 if offset then
 if e.offSrc ~= offset then
@@ -84908,7 +85174,7 @@ local vc1 = v.C1
 if e.vc1Src ~= vc1 then
 e.vc1Src, e.vc1Inv = vc1, vc1:Inverse()
 end
-return v.C0 * transform * e.vc1Inv
+return v.C0 * transform * e.vc1Inv, auth
 end
 return CFrame.identity
 end
@@ -87021,7 +87287,7 @@ end
 end
 end
 for _, v in unknown do Util.SetMotor6DTransform(v, idcf) end
-local pose = Reanimate.LimbPoseCFrame
+local pose = Reanimate.SafeLimbPose
 for _, map in LimbMapping do
 local v = map.Reference
 if v then
@@ -87062,7 +87328,7 @@ if hum then
 if hum.AutoRotate then hum.AutoRotate = false end
 if hum.WalkSpeed < 1 then hum.WalkSpeed = 16 end
 if hum.JumpPower < 1 then hum.JumpPower = 50 end
-root = hum.RootPart
+root = Reanimate.ResolveRealRoot(character, hum)
 if root and hum:GetState() ~= Enum.HumanoidStateType.Dead then
 hum:ChangeState(Enum.HumanoidStateType.Physics)
 okay = LR.FlingTargets[1] == nil
@@ -87383,7 +87649,7 @@ end
 LastReanimSel = value
 SaveData.SelectedReanimator = value
 SelectedReanimator = picked
-ReanimatorConfigTitle.Text = "-=+ " .. ReanimMethodNames[value] .. " Config +=-"
+ReanimatorConfigTitle.Text = "<b>" .. ReanimMethodNames[value] .. " Config</b>"
 Util.ClearAllChildrenGui(ReanimatorConfigCanvas)
 SelectedReanimator.Config(ReanimatorConfigCanvas)
 end)
@@ -87394,7 +87660,7 @@ SelectedReanimator.Config(ReanimatorConfigCanvas)
 end
 UI.CreateText(MainPage, " ", 5, Enum.TextXAlignment.Center)
 local ReanimateText = UI.CreateText(MainPage, "Running: NONE", 15, Enum.TextXAlignment.Center)
-local ReanimateStartButton, ReanimateStartButtonText = UI.CreateButton(MainPage, "* Reanimate *", 20)
+local ReanimateStartButton, ReanimateStartButtonText = UI.CreateButton(MainPage, "Reanimate", 20)
 ReanimateStartButton.Activated:Connect(function()
 ReanimateStartButton.Interactable = false
 if Reanimate.Current then
@@ -87406,7 +87672,7 @@ Reanimate.Current = nil
 HumanoidLASetHookState(false)
 ReanimateText.Text = "Running: NONE"
 task.wait(1)
-ReanimateStartButtonText.Text = "* Reanimate *"
+ReanimateStartButtonText.Text = "Reanimate"
 else
 if SelectedReanimator.CanStart then
 local okStart, msgStart = SelectedReanimator.CanStart()
@@ -87426,7 +87692,7 @@ task.wait(0.25)
 waitedMaps = waitedMaps + 0.25
 end
 if not Util.MapsPresent() then
-ReanimateStartButtonText.Text = "* Reanimate *"
+ReanimateStartButtonText.Text = "Reanimate"
 pcall(Util.UINotify, "Maps failed to download. Check your connection / the Init Logs.")
 ReanimateStartButton.Interactable = true
 return
@@ -87456,7 +87722,7 @@ Reanimate.Current = nil
 HumanoidLASetHookState(false)
 ReanimateText.Text = "Running: NONE"
 task.wait(1)
-ReanimateStartButtonText.Text = "* Reanimate *"
+ReanimateStartButtonText.Text = "Reanimate"
 ReanimateStartButton.Interactable = true
 end
 UI.CreateButton(MainPage, "Show Reanimate Hitboxes", 15).Activated:Connect(function()
@@ -99409,18 +99675,18 @@ end)
 do
 local built, buildErr = pcall(function()
 local CATS = {
-{"perf", "Performance / Graphics", "Anti Lag, Hide All Players, Auto Report, Low End UI Mode, UI Cache, blur, transitions, UI sounds, ambient FX"},
-{"reanim", "Reanimation / Character", "Reanimator, hitboxes, character options, Fly, WalkSpeed, scale, internals"},
-{"moves", "Movesets / Dances", "Movesets, Dances, Dance Keybinds"},
-{"fling", "Fling / Interaction", "Fling Method, Click Fling, Toggle Kill, Ya kids tool kill option, Key+Click Teleport"},
-{"tp", "Teleport / Servers", "Teleports, LastSafe, Server Hop, Rejoin, Auto Execute"},
-{"custom", "Customization / Settings", "UI theme, Roblox engine settings, particles, asset loading"},
-{"visual", "Customization", "Roblox icon, chat, colours, triangle, intro, notifications, UI visuals"},
-{"music", "Music / Sound", "UI Music, mute options, Skip Intro"},
-{"hub", "Script Hub / Modules", "Script Hub, module loading mode, reload modules"},
-{"market", "Marketplace", "Store / Marketplace and downloaded content"},
-{"sec", "Security / Danger Zone", "Malware scan, Scan Now, clear downloaded content"},
-{"info", "Info / Logs", "Credits, Changelogs, Init Logs"},
+{"reanim", "Reanimation & Character", "Start reanimation, hitboxes, fly, walk speed, character options"},
+{"moves", "Movesets & Dances", "Pick moves and dances, set keybinds"},
+{"visual", "Appearance & Intro", "Intro, colors, triangle, notifications, chat and Roblox icon"},
+{"custom", "Interface Settings", "UI theme, engine settings, particles, asset loading"},
+{"music", "Music & Sound", "UI music, mute options, skip intro"},
+{"perf", "Performance", "Anti lag, low end mode, cache, blur and transitions"},
+{"fling", "Fling & Interaction", "Fling method, click fling, kill and teleport tools"},
+{"tp", "Teleport & Servers", "Teleports, server hop, rejoin, auto execute"},
+{"hub", "Script Hub", "Extra scripts and module loading"},
+{"market", "Marketplace", "Browse and manage downloaded content"},
+{"sec", "Security & Cleanup", "Malware scan and clearing downloaded content"},
+{"info", "Help & Logs", "Credits, changelogs, init logs"},
 }
 local marks = Util.FCMarks or {}
 local function catOf(order)
@@ -99505,7 +99771,7 @@ end
 local Hub = newPage()
 UI.CreateButton(Hub, "&lt; Back", 20).Activated:Connect(closePage)
 UI.CreateText(Hub, "<b>FEATURE CENTER</b>", 15, Enum.TextXAlignment.Center)
-UI.CreateText(Hub, "<font color=\"#AAAAAA\">Every option of the main page, sorted into categories.</font>", 10, Enum.TextXAlignment.Center)
+UI.CreateText(Hub, "<font color=\"#AAAAAA\">Every setting, grouped by what it does.</font>", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(Hub)
 UI.CreateButton(Hub, "JARVIS &gt;", 20).Activated:Connect(function()
 if Util.OpenJarvis then Util.OpenJarvis() end
@@ -100471,20 +100737,16 @@ pcall(function()
 for _, o in ipairs(Lighting:GetChildren()) do
 if o.Name == "UhGlassBlur" then o:Destroy() end
 end
-blur = Instance.new("BlurEffect")
-blur.Name = "UhGlassBlur"
-blur.Size = 0
-blur.Parent = Lighting
 end)
 task.spawn(function()
 while UIMainWindow.Parent do
 pcall(function()
 local on = FX.Cfg.GlassBlur ~= false and not (FX.IsLowEnd and FX.IsLowEnd()) and Util.IsGuiVisible(UIMainWindow) and WindowContent.Visible and not CracktroFrame.Visible
-if blur then tw(blur, 0.5, {Size = on and 9 or 0}) end
+FX.BlurBase(on and 9 or 0)
 end)
 task.wait(0.5)
 end
-if blur then blur:Destroy() end
+pcall(FX.BlurBase, 0)
 end)
 Util.GlassFit = function()
 local cam = workspace.CurrentCamera
