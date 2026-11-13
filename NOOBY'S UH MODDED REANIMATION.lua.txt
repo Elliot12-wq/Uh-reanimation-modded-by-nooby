@@ -96809,12 +96809,12 @@ local cfg = {
 FileDelay = 0.6,
 ListDelay = 0.25,
 PassDelay = 300,
-ChunkSize = 65536,
+ChunkSize = 16384,
 ChunkOverlap = 4096,
 LineWindow = 3000,
 LoaderWindow = 400,
 BlobMin = 300,
-MaxLoaderChecks = 3000,
+MaxLoaderChecks = 1000,
 MaxFileBytes = 6 * 1024 * 1024,
 GateMaxBytes = 16 * 1024 * 1024,
 MaxFrameTime = 1 / 24,
@@ -96851,8 +96851,27 @@ SyncMax = 32768,
 BannerZone = 16384,
 LargeView = 262144,
 ObfNear = 131072,
+CredNear = 65536,
+BgMin = 131072,
+BgMinNoHash = 524288,
+StartDelay = 12,
+MemoMax = 48,
 }
 Security.Config = cfg
+do
+local okM, weak = pcall(function()
+local U = game:GetService("UserInputService")
+return U.TouchEnabled and not U.KeyboardEnabled
+end)
+if okM and weak then
+cfg.Mobile = true
+cfg.SliceBudget = 0.003
+cfg.ChunkSize = 12288
+cfg.BgMin = 65536
+cfg.BgMinNoHash = 262144
+cfg.StartDelay = 25
+end
+end
 local function K(s) return (s:gsub("|", ""):lower()) end
 local function KL(t)
 local o = {}
@@ -96868,7 +96887,7 @@ local OBF = {obfuscator = 2, esc_dense = 2, obf_ident = 2, concat_build = 2, env
 local AX, WF, AF, LF, DF, DD, B64A = K("auto|exec"), K("write|file"), K("append|file"), K("list|files"), K("del|file%s*%("), K("del|folder%s*%("), K("01234|56789+/")
 local RULES = {
 {id = "cookie_header", cat = "cred", w = 100, crit = true, grp = "cookie", f = K("_|warning:-do-not-|share-this"), desc = "contains a Roblox login-cookie value"},
-{id = "cookie_ref", cat = "cred", w = 70, grp = "cookie", f = K("roblo|security"), desc = "reads or references the account login cookie"},
+{id = "cookie_ref", cat = "cred", w = 70, grp = "cookie", f = K("roblo|security"), ctx = true, desc = "reads or uses the account login cookie in code or in a value that is read or sent"},
 {id = "cookie_hdr", cat = "cred", w = 45, p = "headers%s*=%s*{[^}]-cookie[\"']?%s*[=:]", desc = "attaches a Cookie header to a request"},
 {id = "webhook", cat = "exfil", w = 60, grp = "webhook", any = KL{"/api/web|hooks/", "webhook.|lewisakura", "hooks.|hyra.io"}, desc = "sends data to a Discord webhook"},
 {id = "ip_logger", cat = "exfil", w = 60, any = KL{"grabi|fy.link", "iplog|ger.org", "iplog|ger.com", "2n|o.co", "yi|p.su", "blas|ze.tk", "leancod|ing.co", "stop|ify.co"}, desc = "points at an IP-logger link"},
@@ -96922,16 +96941,45 @@ out[i] = r.desc .. (r.line and (" (line " .. r.line .. ")") or "")
 end
 return table.concat(out, "; ")
 end
+Security._act = setmetatable({}, {__mode = "k"})
+local function ensureClock()
+if Security._conn then return end
+local okC, c = pcall(function()
+return RunService.Heartbeat:Connect(function(dt)
+Security._frame = Security._frame * 0.9 + dt * 0.1
+end)
+end)
+if okC then Security._conn = c end
+end
+-- every scan that yields registers itself in Security._act; the per-frame budget is shared by all scans active at the same moment, so overlapping scans can never add up to a frame-long stall
 local function slice(state, gen)
 if not gen then return true end
-local budget = cfg.SliceBudget
+local act, now, n = Security._act, os.clock(), 0
+act[state] = now
+for s, t in pairs(act) do
+if now - t > 1 then act[s] = nil else n += 1 end
+end
+local budget = cfg.SliceBudget / (n > 0 and n or 1)
 if Security._frame > cfg.MaxFrameTime then budget = budget * 0.5 end
-if os.clock() - state.t0 >= budget then
+if budget < 0.0008 then budget = 0.0008 end
+if now - state.t0 >= budget then
 task.wait()
-if gen ~= true and Security._gen ~= gen then return false end
+if gen ~= true and Security._gen ~= gen then
+act[state] = nil
+return false
+end
 state.t0 = os.clock()
 end
 return true
+end
+Security.Slice = slice
+function Security.Done(state) Security._act[state] = nil end
+function Security._fgActive()
+local now = os.clock()
+for s, t in pairs(Security._act) do
+if now - t <= 0.5 and not s.bg then return true end
+end
+return false
 end
 local function count(s, p)
 local _, n = s:gsub(p, "")
@@ -97090,6 +97138,66 @@ if host == t or host:sub(-#t - 1) == "." .. t then return true end
 end
 return false
 end
+local CKN = K("roblo|security")
+local CKRISK = KL{"httpget", "httppost", "postasync", "getasync", "headers", "webhook", "getcookie", "get_cookie", ".cookies", "readfile", "setclipboard", "toclipboard", "authenticationticket", "rbx-authentication-ticket"}
+local function anyIn(s, list)
+for i = 1, #list do
+if s:find(list[i], 1, true) then return true end
+end
+return false
+end
+-- true when the login-cookie name is used like data: in code, as a cookie pair (name=value), as a table key, or in a string that sits next to a network / cookie API.
+-- false when it is only text: a sentence, message or description, or a bare keyword in a list / comparison with no read or send call around it.
+local function cookieUse(seg, s, e)
+local a = s > 400 and s - 400 or 1
+local pre = seg:sub(a, s - 1)
+local nlp = pre:find("\n[^\n]*$")
+if not nlp and a > 1 then return true end
+local line = nlp and pre:sub(nlp + 1) or pre
+local qc, qpos, i, n = nil, 0, 1, #line
+while i <= n do
+local b = line:byte(i)
+if qc then
+if b == 92 then i += 1 elseif b == qc then qc = nil end
+elseif b == 34 or b == 39 or b == 96 then
+qc, qpos = b, i
+end
+i += 1
+end
+local lb = line:find("%[=*%[")
+local inLong = lb ~= nil and not line:find("%]=*%]", lb + 2)
+if not qc and not inLong then return true end
+local post = seg:sub(e + 1, e + 400)
+local close
+if qc then close = post:find(string.char(qc), 1, true) else close = post:find("%]=*%]") end
+local tail = close and post:sub(1, close - 1) or post
+if tail:find("^%s*=") then return true end
+if close and post:sub(close + 1, close + 16):find("^[%]%s]*[=:]") then return true end
+local before = qc and line:sub(qpos + 1) or line:sub(lb or 1)
+local mention = false
+if qc and close == 1 and (before == "" or before == ".") then
+local lead = line:sub(1, qpos - 1)
+if lead:find("[=~]=%s*$") or (lead:find("[{,]%s*$") and post:sub(close + 1, close + 10):find("^%s*[,}]")) then mention = true end
+end
+if not mention and count(before .. tail, "%s+") < 3 then return true end
+local win = seg:sub(s > 300 and s - 300 or 1, e + 300)
+if win:find(REQ) or anyIn(win, CKRISK) then return true end
+return false
+end
+-- returns the position of the first real use of the cookie name inside the zone; text-only mentions are recorded as a weak, harmless note instead
+local function cookieAt(state, seg, zone, base)
+local init = 1
+while true do
+local s, e = seg:find(CKN, init, true)
+if not s or s > zone then return nil end
+init = e + 1
+state.ckn = (state.ckn or 0) + 1
+if state.ckn > 200 or cookieUse(seg, s, e) then return s end
+if not state.ev.cookie_text then
+add(state, "cookie_text", "cred", 10, "mentions the login cookie name as text only (it is not read or sent)", base + s - 1, {grp = "cookie"})
+end
+end
+end
 local B64P = string.rep("[%w%+/]", 160)
 local NUMLIST = string.rep("%d+%s*,%s*", 20)
 local function scanChunk(state, seg, base, zone)
@@ -97098,7 +97206,9 @@ for i = 1, #RULES do
 local r = RULES[i]
 if not ev[r.id] then
 local at
-if r.any then
+if r.ctx then
+at = cookieAt(state, seg, zone, base)
+elseif r.any then
 for j = 1, #r.any do
 local a = seg:find(r.any[j], 1, true)
 if a and (not at or a < at) then at = a end
@@ -97112,7 +97222,8 @@ if at and at <= zone then add(state, r.id, r.cat, r.w, r.desc, base + at - 1, r)
 end
 end
 local init, cnt = 1, 0
-while cnt < cfg.MaxLoaderChecks do
+local sat = ev.decode_exec and ev.embedded_exec and ev.remote_exec and ev.remote_exec.weight >= 28 and fl.ls
+while not sat and cnt < cfg.MaxLoaderChecks do
 local s, e = seg:find(LS, init, true)
 if not s or s > zone then break end
 cnt += 1
@@ -97156,9 +97267,10 @@ local s, e = seg:find(needle, ini, true)
 if not s or s > zone then break end
 c += 1
 ini = e + 1
-local win = seg:sub(e + 1, e + cfg.LineWindow)
-local nl = win:find("\n", 1, true)
-if nl then win = win:sub(1, nl - 1) end
+local lim = e + cfg.LineWindow
+local nlp = seg:find("\n", e + 1, true)
+if nlp and nlp <= lim then lim = nlp - 1 end
+local win = seg:sub(e + 1, lim)
 local bs, be, eq = win:find("%[(=*)%[")
 if bs then
 local ce = seg:find("]" .. eq .. "]", e + be + 1, true)
@@ -97276,6 +97388,7 @@ if not s then break end
 k += 1
 nl[k] = s
 p = s + 1
+if k % 2048 == 0 and state.gen then slice(state, state.gen) end
 end
 state.nl = nl
 end
@@ -97337,8 +97450,23 @@ local combos = {}
 local function combo(id, w, desc, abs, crit)
 combos[#combos + 1] = {id = "combo:" .. id, cat = "combo", weight = w, desc = desc, abs = abs, crit = crit, count = 1}
 end
-if ev.cookie_ref and net then
-combo("cred_exfil", 50, "reads the login cookie and has a way to send it out", A("cookie_ref"), true)
+local function within(a, b)
+return type(a) == "number" and type(b) == "number" and math.abs(a - b) <= cfg.CredNear
+end
+-- the cookie only counts when it is really used (cookieUse); a webhook / IP logger anywhere is a definite way out, a generic send call must sit near it in a large file
+local ck = ev.cookie_ref
+if ck then
+if ev.webhook or ev.ip_logger then
+combo("cred_exfil", 50, "reads the login cookie and has a way to send it out", ck.abs, true)
+elseif fl.send or fl.remote then
+if not big or within(ck.abs, fl.send) or within(ck.abs, fl.remote) then
+combo("cred_exfil", 50, "reads the login cookie and has a way to send it out", ck.abs, true)
+else
+combo("cred_far", 20, "uses the login cookie, and a send call exists far away in the same large file", ck.abs)
+end
+end
+elseif ev.cookie_text and (ev.webhook or ev.ip_logger) then
+combo("cookie_text_exfil", 25, "mentions the login cookie and sends data to a webhook / IP logger", ev.cookie_text.abs)
 end
 if ev.webhook and (ev.ip_lookup or ev.hwid) then
 combo("webhook_ident", 45, "posts IP / hardware identifiers to a webhook", A("webhook"))
@@ -97422,16 +97550,38 @@ severity = "low"
 end
 return {verdict = verdict, score = math.floor(total + 0.5), confidence = conf, severity = severity, reasons = reasons}
 end
+local memo, memoOrder = {}, {}
+-- identical sources (verified SHA-256) are analysed once; the report is a pure function of the text
+local function memoKey(content)
+if #content <= cfg.SyncMax then return nil end
+local x = Util.ExtGuard
+if not (x and x.CanHash and x.SecHash and x.CanHash()) then return nil end
+return x.SecHash(content)
+end
 function Security.Analyze(content, gen)
 if type(content) ~= "string" then error("Security.Analyze expects a string") end
 -- anything bigger than a few KB is analysed in bounded slices whenever the caller can yield, so a large source can never monopolise the frame
 if gen == nil and #content > cfg.SyncMax and coroutine.isyieldable() then gen = true end
-local state = {ev = {}, flags = {}, esc = 0, escRuns = 0, hexid = 0, tiny = 0, t0 = os.clock()}
+local key = memoKey(content)
+local hit = key and memo[key]
+if hit then return hit end
+ensureClock()
+local state = {ev = {}, flags = {}, esc = 0, escRuns = 0, hexid = 0, tiny = 0, t0 = os.clock(), gen = gen, bg = type(gen) == "number"}
 local view = prepare(content, state, gen)
-if not view then return nil end
+local report
+if view then
 state.view = view
-if not scanView(view, state, gen) then return nil end
-return evaluate(state)
+if scanView(view, state, gen) then report = evaluate(state) end
+end
+Security._act[state] = nil
+if report and key then
+if not memo[key] then
+memoOrder[#memoOrder + 1] = key
+if #memoOrder > cfg.MemoMax then memo[table.remove(memoOrder, 1)] = nil end
+end
+memo[key] = report
+end
+return report
 end
 Security._emb, Security._embLen = {}, {}
 -- internal only: the embedded Nameless Admin runner registers its own embedded sources (verified SHA-256 identity, so a modified or external copy never matches); the optional name is the verified chunk identity of that source
@@ -97602,7 +97752,7 @@ return nil
 end
 local function waitFrameHealthy(gen)
 local waited = 0
-while Security._frame > cfg.MaxFrameTime and waited < 5 and Security._gen == gen do
+while (Security._frame > cfg.MaxFrameTime or Security._fgActive()) and waited < 5 and Security._gen == gen do
 task.wait(0.25)
 waited += 0.25
 end
@@ -97618,6 +97768,11 @@ end
 local t = content:sub(-16)
 for i = 1, #t do h = (h * 31 + t:byte(i)) % 2147483647 end
 return n .. ":" .. h
+end
+local function spread(key)
+local h = #key
+for i = 1, math.min(#key, 24) do h = (h * 31 + key:byte(-i)) % 9973 end
+return h % cfg.CacheFullRescanEvery
 end
 local function scanFile(path, gen)
 local ok, content = pcall(readfile, path)
@@ -97652,7 +97807,7 @@ return
 end
 if not res then return end
 report = res
-Security._cache[key] = {fp = fp, report = report, pass = Stats.Passes}
+Security._cache[key] = {fp = fp, report = report, pass = Stats.Passes + spread(key)}
 end
 Stats.Scanned += 1
 Stats.PassScanned += 1
@@ -97723,6 +97878,11 @@ end
 return true
 end
 local function loop(gen)
+if not Security._booted then
+Security._booted = true
+local t0 = os.clock()
+while Security._gen == gen and os.clock() - t0 < cfg.StartDelay do task.wait(1) end
+end
 while Security._gen == gen do
 Stats.PassScanned = 0
 if not runPass(gen) then return end
@@ -97747,9 +97907,7 @@ if not Security.Enabled() or Security._running then return end
 Security._running = true
 Security._gen += 1
 local gen = Security._gen
-Security._conn = RunService.Heartbeat:Connect(function(dt)
-Security._frame = Security._frame * 0.9 + dt * 0.1
-end)
+ensureClock()
 status("Security: starting")
 task.spawn(function()
 local ok, err = pcall(loop, gen)
@@ -98326,6 +98484,7 @@ local URLPAT = "[Hh][Tt][Tt][Pp][Ss]?://[%w%-%._~:/%?#@!%$&%*%+,;=%%%[%]]+"
 -- Returns {url, line} entries found in plain text, \x / \ddd escapes, "a".."b" joins and base64 strings.
 function X.ExtractURLs(src)
 	local out, seen, n, nb = {}, {}, 0, 0
+	local S, sl = Util.Security, {t0 = os.clock()}
 	local function add(u, ln)
 		u = u:gsub("[%.,;:%)%]}\"']+$", "")
 		if #u > 10 and not seen[u] and n < 60 then
@@ -98337,7 +98496,9 @@ function X.ExtractURLs(src)
 	local ln = 0
 	for l in src:gmatch("([^\n]*)\n?") do
 		ln += 1
-		if ln % 1500 == 0 and coroutine.isyieldable() then task.wait() end
+		if ln % 128 == 0 and coroutine.isyieldable() then
+			if S and S.Slice then S.Slice(sl, true) elseif ln % 1500 == 0 then task.wait() end
+		end
 		if #l > 9 and n < 60 then
 			local d = l
 			if d:find("\\", 1, true) then
@@ -98370,6 +98531,7 @@ function X.ExtractURLs(src)
 			end
 		end
 	end
+	if S and S.Done then S.Done(sl) end
 	return out
 end
 end)
@@ -98413,6 +98575,17 @@ for _, r in ipairs(EXTRA) do
 		for _, list in ipairs({r.A, r.B}) do
 			for _, t in ipairs(list) do
 				if t:find("^[%a_][%w_]*$") then ATOK[t] = true end
+			end
+		end
+	end
+end
+local ALLTOK, seenTok = {}, {}
+for _, r in ipairs(EXTRA) do
+	for _, list in ipairs({r.A or {}, r.B}) do
+		for _, t in ipairs(list) do
+			if not seenTok[t] then
+				seenTok[t] = true
+				ALLTOK[#ALLTOK + 1] = t
 			end
 		end
 	end
@@ -98508,13 +98681,32 @@ end
 local checkRaw
 -- identical sources are analysed once (verified SHA-256 identity); a large source on a thread that cannot yield is analysed in the background instead of freezing the game
 X.CheckCache, X.CheckOrder = {}, {}
+-- large sources that cannot be scanned on the calling thread are queued and scanned one at a time in the background (identical sources are never queued twice)
+X.BgQueue, X.BgKeys, X.BgBusy = {}, {}, false
+function X.BgPump()
+	if X.BgBusy then return end
+	X.BgBusy = true
+	task.spawn(function()
+		while true do
+			local job = table.remove(X.BgQueue, 1)
+			if not job then break end
+			local ok, r = pcall(checkRaw, job.src, job.meta)
+			X.BgKeys[job.key] = nil
+			if ok then job.put(r) end
+			task.wait(0.25)
+		end
+		X.BgBusy = false
+	end)
+end
 function X.Check(src, meta)
 	if type(src) == "string" and Util.Security and Util.Security.IsEmbedded and Util.Security.IsEmbedded(src) then
 		local m = type(meta) == "table" and meta or {}
 		return {verdict = "CLEAN", severity = "none", score = 0, reasons = {}, urls = {}, critical = false, name = m.name, origin = m.origin, note = "Verified embedded Nameless Admin source (byte-identical SHA-256 match): trusted, not inspected."}
 	end
-	if type(src) == "string" and #src > 4096 and #src <= X.MaxSource and X.CanHash() then
-		local key = X.SecHash(src)
+	if type(src) ~= "string" then return checkRaw(src, meta) end
+	local n = #src
+	if n > 4096 and n <= X.MaxSource then
+		local key = X.CanHash() and X.SecHash(src) or nil
 		local function put(r)
 			if key and type(r) == "table" and r.verdict ~= "UNVERIFIED" then
 				if not X.CheckCache[key] then
@@ -98526,12 +98718,16 @@ function X.Check(src, meta)
 		end
 		local hit = key and X.CheckCache[key]
 		if hit then return hit end
-		if not coroutine.isyieldable() and #src > 262144 then
-			task.spawn(function()
-				local ok, r = pcall(checkRaw, src, meta)
-				if ok then put(r) end
-			end)
-			return X.Unverified("script is larger than 256 KB and cannot be inspected without yielding: it is being scanned in the background and was not inspected yet")
+		local sc = Util.Security and Util.Security.Config
+		local bgMin = (key and sc and sc.BgMin) or (sc and sc.BgMinNoHash) or 131072
+		if n > bgMin and not coroutine.isyieldable() then
+			local jk = key or X.FP(src)
+			if X.BgKeys[jk] then return X.Unverified("this script is already being scanned in the background and was not inspected yet") end
+			if #X.BgQueue >= 6 then return X.Unverified("too many large scripts are waiting for a background scan: this one was not inspected") end
+			X.BgKeys[jk] = true
+			X.BgQueue[#X.BgQueue + 1] = {src = src, meta = meta, key = jk, put = put}
+			X.BgPump()
+			return X.Unverified("script is larger than " .. math.floor(bgMin / 1024) .. " KB and cannot be inspected without yielding: it is being scanned in the background and was not inspected yet")
 		end
 		local r = checkRaw(src, meta)
 		put(r)
@@ -98584,6 +98780,21 @@ function checkRaw(src, meta)
 	local function scan(ln, l)
 		local c = cstrip(l, cst)
 		if not c:find("%S") then return end
+		-- cheap pre-filter: a plain line (no escapes, no string joins) holding none of the rule tokens and no known alias cannot match any rule, so it skips the expensive code-view work
+		if not c:find("\\", 1, true) and not c:find("[\"']%s*%.%.%s*[\"']") then
+			local rv = (c:lower():gsub("%s+", ""))
+			if not has(rv, ALLTOK) then
+				if nAlias == 0 then return end
+				local used = false
+				for name in pairs(aliasOf) do
+					if rv:find(name, 1, true) then
+						used = true
+						break
+					end
+				end
+				if not used then return end
+			end
+		end
 		local base = prep(c)
 		local rawv = (base:lower():gsub("%s+", ""))
 		local codev = codeOf(base)
@@ -98637,6 +98848,7 @@ function checkRaw(src, meta)
 			end
 		end
 	end
+	local sl = {t0 = os.clock()}
 	local ln = 0
 	for l in src:gmatch("([^\n]*)\n?") do
 		ln += 1
@@ -98646,8 +98858,11 @@ function checkRaw(src, meta)
 		else
 			for i = 1, #l, MAXLINE do scan(ln, l:sub(i, i + MAXLINE - 1)) end
 		end
-		if canYield and ln % 3000 == 0 then task.wait() end
+		if canYield and ln % 128 == 0 then
+			if sec.Slice then sec.Slice(sl, true) elseif ln % 3000 == 0 then task.wait() end
+		end
 	end
+	if sec.Done then sec.Done(sl) end
 	local mine = 0
 	for i, r in ipairs(EXTRA) do
 		local s = st[i]
@@ -98887,10 +99102,17 @@ local function credHit(v, depth)
 		return false
 	end
 	if type(v) ~= "string" then return false end
-	if #v > 1048576 then v = v:sub(1, 1048576) end
-	local l = v:lower()
-	for i = 1, #CRED do
-		if l:find(CRED[i], 1, true) then return true end
+	local n = #v
+	if n < 13 then return false end
+	if n > 1048576 then n = 1048576 end
+	-- bounded pieces (with an overlap longer than any marker): the whole value is never lowercased in one copy
+	local pos = 1
+	while pos <= n do
+		local piece = v:sub(pos, math.min(n, pos + 65535 + 40)):lower()
+		for i = 1, #CRED do
+			if piece:find(CRED[i], 1, true) then return true end
+		end
+		pos = pos + 65536
 	end
 	return false
 end
