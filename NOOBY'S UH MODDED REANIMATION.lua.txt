@@ -2568,6 +2568,14 @@ end
 function FX.NewTriangle3D(parent, opts)
 opts = opts or {}
 local CFG = FX.Cfg
+local TRI_MATTE = {
+Face = Color3.fromRGB(8, 9, 11),
+FaceShade = Color3.fromRGB(14, 16, 19),
+Edge = Color3.fromRGB(30, 33, 39),
+Node = Color3.fromRGB(17, 19, 23),
+Core = Color3.fromRGB(12, 14, 18),
+Glow = Color3.fromRGB(38, 41, 48),
+}
 local T = {
 scaleBase = 1, chargeVis = 0, baseSpin = 0.9,
 yaw = 0.6, pitch = 0.35, yawVel = 3,
@@ -2592,12 +2600,12 @@ layer.Active = false
 T.Layer = layer
 local halo = {}
 if opts.Halo ~= false then
-for i, hd in ipairs({{0.95, 0.955}, {0.68, 0.925}, {0.44, 0.88}}) do
+for i, hd in ipairs({{0.95, 0.93}, {0.68, 0.87}, {0.44, 0.80}}) do
 local fr = Util.Instance("Frame", layer)
 fr.AnchorPoint = Vector2.new(0.5, 0.5)
 fr.Position = UDim2.fromScale(0.5, 0.5)
 fr.Size = UDim2.fromScale(hd[1], hd[1])
-fr.BackgroundColor3 = WHITE
+fr.BackgroundColor3 = TRI_MATTE.Glow
 fr.BackgroundTransparency = hd[2]
 fr.BorderSizePixel = 0
 fr.ZIndex = 0
@@ -2613,8 +2621,8 @@ local vp = Util.Instance("ViewportFrame", layer)
 vp.Size = UDim2.fromScale(1, 1)
 vp.BackgroundTransparency = 1
 vp.BorderSizePixel = 0
-vp.Ambient = Color3.fromRGB(150, 150, 178)
-vp.LightColor = Color3.fromRGB(255, 246, 232)
+vp.Ambient = Color3.fromRGB(112, 115, 122)
+vp.LightColor = Color3.fromRGB(190, 194, 202)
 vp.LightDirection = Vector3.new(-0.45, -0.8, -0.55)
 local cam = Util.Instance("Camera", vp)
 cam.FieldOfView = 35
@@ -2630,11 +2638,19 @@ local okM, ids = pcall(C.TriFaces)
 if okM and type(ids) == "table" then meshIds = ids end
 end
 end
+local function matte(p, col)
+p.Material = Enum.Material.SmoothPlastic
+p.Reflectance = 0
+p.Transparency = 0
+p.Color = col
+end
 local function toWedges(f)
 if not f.mp then return end
 pcall(function() f.mp:Destroy() end)
 f.mp, f.sm = nil, nil
 f.w1, f.w2 = newPart("WedgePart", model), newPart("WedgePart", model)
+matte(f.w1, TRI_MATTE.Face)
+matte(f.w2, TRI_MATTE.Face)
 end
 for i, idx in ipairs(TET_FACES) do
 local a, b, c = TET[idx[1]], TET[idx[2]], TET[idx[3]]
@@ -2644,6 +2660,7 @@ local fc = {v = {a, b, c}, n = nrm, center = (a + b + c) / 3}
 faces[i] = fc
 if meshIds and meshIds[i] then
 local mp = newPart("Part", model)
+matte(mp, TRI_MATTE.Face)
 mp.Size = Vector3.new(0.05, 0.05, 0.05)
 local sm = Instance.new("SpecialMesh")
 sm.MeshType = Enum.MeshType.FileMesh
@@ -2654,24 +2671,26 @@ fc.mp, fc.sm = mp, sm
 FX.Cache.VerifyMesh(sm, meshIds[i])
 else
 fc.w1, fc.w2 = newPart("WedgePart", model), newPart("WedgePart", model)
+matte(fc.w1, TRI_MATTE.Face)
+matte(fc.w2, TRI_MATTE.Face)
 end
 end
 for i, pair in ipairs(TET_EDGES) do
 local a, b = TET[pair[1]], TET[pair[2]]
 local part = newPart("Part", model)
 part.Shape = Enum.PartType.Cylinder
-part.Material = Enum.Material.Neon
+matte(part, TRI_MATTE.Edge)
 edges[i] = {a = a, b = b, mid = (a + b) / 2, part = part}
 end
 for i = 1, 4 do
 local part = newPart("Part", model)
 part.Shape = Enum.PartType.Ball
-part.Material = Enum.Material.Neon
+matte(part, TRI_MATTE.Node)
 nodes[i] = {pos = TET[i], part = part}
 end
 local core = newPart("Part", model)
 core.Shape = Enum.PartType.Ball
-core.Material = Enum.Material.Neon
+matte(core, TRI_MATTE.Core)
 local function reseed()
 for _, f in ipairs(faces) do
 f.dir, f.axis, f.spin = rndOut(f.center), rndUnit(), (math.random() * 2 - 1) * 7
@@ -2747,17 +2766,15 @@ M = M + Vector3.new((math.random() - 0.5) * sh * 2, (math.random() - 0.5) * sh *
 end
 local spinMul = 1 + 0.5 * T.extra
 local th = (0.045 + T.hot * 0.05) * CFG.TriEdge
-local base = T.color
-local hue = (t * 0.8) % 1
-local fadeOut = e > 0 and math.min(1, e) * 0.12 or 0
+local prm = (not low and T.prism > 0) and T.prism or 0
 if not low and styleDue then
-local glow = base:Lerp(WHITE, 0.2)
+local glow = TRI_MATTE.Glow
 local hs = S * (1 + 0.22 * T.hot + 0.5 * math.max(0, math.min(1, e)))
 for _, h in ipairs(halo) do
 local sz = math.min(h.k * hs, 1.6)
 if h.lsz ~= sz then h.lsz = sz h.fr.Size = UDim2.fromScale(sz, sz) end
 if h.lgc ~= glow then h.lgc = glow h.fr.BackgroundColor3 = glow end
-local htr = math.clamp(h.tr - T.hot * 0.08 - T.hoverAmt * 0.02, 0, 1)
+local htr = math.clamp(h.tr - T.hot * 0.08 - T.hoverAmt * 0.02 - T.bloomEnv * 0.05 - prm * 0.03, 0, 1)
 if h.ltr ~= htr then h.ltr = htr h.fr.BackgroundTransparency = htr end
 end
 end
@@ -2780,13 +2797,10 @@ if styleDue then
 local nv = M:VectorToWorldSpace(rot:VectorToWorldSpace(f.n))
 local lam = math.max(0, nv:Dot(LIGHT))
 local rim = 1 - math.abs(nv.Z)
-local col = base
-if T.prism > 0 and not low then
-col = Color3.fromHSV((hue + i * 0.22) % 1, 0.75, 1):Lerp(base, 1 - T.prism)
-end
-local k = 0.6 + 0.4 * lam
-col = Color3.new(col.R * k, col.G * k, col.B * k):Lerp(WHITE, math.min(1, lam * lam * 0.4 + rim * 0.05 + T.hot * 0.5))
-local tr = CFG.TriFaces and math.clamp(CFG.TriFaceTr - T.hot * 0.22 + fadeOut - rim * 0.07, 0, 1) or 1
+local lift = rim * 0.16 + T.hot * 0.3 + (low and 0.35 or 0)
+if prm > 0 then lift = lift + prm * (0.35 + 0.35 * math.sin(t * 7 + i * 1.5708)) end
+local col = TRI_MATTE.Face:Lerp(TRI_MATTE.FaceShade, math.min(1, lam)):Lerp(TRI_MATTE.Edge, math.clamp(lift, 0, 1))
+local tr = CFG.TriFaces and 0 or 1
 if f.mp then
 f.mp.Color = col
 f.mp.Transparency = tr
@@ -2798,7 +2812,7 @@ end
 end
 if low then return end
 local zr = S * 2.4
-local edgeCol = WHITE:Lerp(base, 0.3 * (1 - T.hot))
+local edgeCol = TRI_MATTE.Edge:Lerp(TRI_MATTE.Glow, math.clamp(0.25 + T.hot * 0.75 + prm * 0.4, 0, 1))
 for _, ed in ipairs(edges) do
 local rot = CFrame.fromAxisAngle(ed.axis, ed.spin * e * spinMul)
 local off = ed.dir * (D * e * 1.15)
@@ -2814,8 +2828,7 @@ local w = th * (0.7 + 0.6 * front)
 setSz(part, Vector3.new(len, w, w))
 part.CFrame = CFrame.lookAt((a + b) / 2, b) * CFrame.Angles(0, math.pi / 2, 0)
 if styleDue then
-part.Color = edgeCol:Lerp(base, (1 - front) * 0.5)
-part.Transparency = (1 - front) * 0.3
+part.Color = TRI_MATTE.Node:Lerp(edgeCol, 0.4 + 0.6 * front)
 end
 end
 end
@@ -2827,7 +2840,7 @@ local front = math.clamp(p.Z / zr + 0.5, 0, 1)
 local ns = nodeSize * (0.8 + 0.4 * front)
 setSz(nd.part, Vector3.new(ns, ns, ns))
 nd.part.CFrame = CFrame.new(p)
-if styleDue then nd.part.Color = base:Lerp(WHITE, 0.45 + 0.4 * front) end
+if styleDue then nd.part.Color = TRI_MATTE.Node:Lerp(TRI_MATTE.Glow, math.clamp(0.3 + 0.35 * front + T.hot * 0.35 + prm * 0.2, 0, 1)) end
 else
 nd.part.CFrame = FAR
 end
@@ -2837,8 +2850,7 @@ local cs = math.clamp((0.3 + 0.1 * T.pulse + 0.18 * T.hot) * S * (1 - math.min(1
 setSz(core, Vector3.new(cs, cs, cs))
 core.CFrame = CFrame.new(M.Position)
 if styleDue then
-core.Color = base:Lerp(WHITE, math.min(1, 0.55 + 0.3 * T.hot))
-core.Transparency = math.clamp(0.3 - T.hot * 0.2, 0, 1)
+core.Color = TRI_MATTE.Core:Lerp(TRI_MATTE.Glow, math.clamp(0.3 + 0.6 * T.hot + prm * 0.2, 0, 1))
 end
 else
 core.CFrame = FAR
