@@ -94918,6 +94918,38 @@ function setLive(on)
 	refreshTransport()
 end
 
+-- ===== pose the rig shows at the moment the Studio takes it over (a vanilla moveset / dance may be driving it): editor-space values (parent-part space, studs / degrees) =====
+function U.snapshot(char)
+	local joints = {}
+	pcall(function()
+		for _, d in char:GetDescendants() do
+			if d:IsA("Motor6D") and d.Part1 and C0R[d.Part1.Name] and not joints[d.Part1.Name] then joints[d.Part1.Name] = d end
+		end
+	end)
+	local scale = 1
+	pcall(function() scale = char:GetScale() end)
+	if type(scale) ~= "number" or scale <= 0 then scale = 1 end
+	local snap, any = {}, false
+	for _, n in PARTS do
+		local j = joints[n]
+		if j then
+			local c = C0R[n]
+			local m = c * j.Transform * c:Inverse() -- inverse of poseCF
+			local p = m.Position / scale
+			local rx, ry, rz = m:ToEulerAnglesXYZ()
+			local v = {p.X, p.Y, p.Z, math.deg(rx), math.deg(ry), math.deg(rz)}
+			for i = 1, 6 do
+				local x = v[i]
+				if x ~= x then x = 0 end
+				v[i] = math.round(math.clamp(x, i <= 3 and -POSLIM or -180, i <= 3 and POSLIM or 180) * 1000) / 1000
+			end
+			snap[n] = v
+			any = true
+		end
+	end
+	return any and snap or nil
+end
+
 -- ===== the ONE playback / apply loop (Heartbeat, only while the page is open) =====
 local function step(dt)
 	local s = S
@@ -94930,6 +94962,7 @@ local function step(dt)
 	if char ~= s.char then -- reanimation started, stopped or the character was replaced
 		if s.live then pcall(s.live.Destroy, nil); s.live = nil end
 		s.playing, s.char = false, char
+		s.vanilla = char and U.snapshot(char) or nil -- the pose the rig showed before the Studio took it over
 		s.animator.rig = char
 		touch()
 		pcall(refreshStatus); pcall(refreshTransport)
@@ -94968,7 +95001,7 @@ local function step(dt)
 		if s.acc >= s.period then s.acc = 0; updateInfo() end
 	end
 	s.keep += dt
-	if s.keep > 0.25 then s.keep, s.dirty = 0, true end
+	if s.keep > s.guard then s.keep, s.dirty = 0, true end -- the Studio re-asserts its pose every frame (every 0.1 s on low-end): nothing left running from a moveset can hold a different pose
 	if s.dirty then
 		s.dirty = false
 		if s.stale or not s.track then
@@ -94982,9 +95015,287 @@ local function step(dt)
 		if not ok then warn("[AnimStudio] " .. tostring(err)) end
 	end
 end
+-- ===== Animation Studio Freecam + movement lock (camera only: the character is never anchored, moved or edited) =====
+local FC = {on = false, conns = {}, held = {}, speed = 24, presets = {6, 24, 64, 160}, vel = Vector3.zero, pos = Vector3.zero, joyVec = Vector2.zero, dead = 0, ml = {on = false},
+	sink = {Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D, Enum.KeyCode.Space},
+	arrows = {Enum.KeyCode.Up, Enum.KeyCode.Down, Enum.KeyCode.Left, Enum.KeyCode.Right}}
+FC.sinkFn = function() return Enum.ContextActionResult.Sink end
+
+-- ----- movement lock: PlayerModule controls Disable (PC keys + mobile thumbstick/jump) + scoped CAS sink; everything is saved and restored -----
+function FC.lock()
+	local m = FC.ml
+	if m.on then return end
+	m.on = true
+	local lp = Players.LocalPlayer
+	local ps = lp and lp:FindFirstChild("PlayerScripts")
+	local pm = ps and ps:FindFirstChild("PlayerModule")
+	local ok, ctl = pcall(function() return require(pm):GetControls() end)
+	if ok and type(ctl) == "table" then
+		m.ctl, m.was = ctl, ctl.controlsEnabled ~= false
+		pcall(ctl.Disable, ctl)
+	end
+	local pg = lp and lp:FindFirstChildOfClass("PlayerGui")
+	local tg = pg and pg:FindFirstChild("TouchGui")
+	local tf = tg and tg:FindFirstChild("TouchControlFrame")
+	if tf then -- default mobile joystick + jump button: hidden, never destroyed
+		m.tf, m.tfv = tf, tf.Visible
+		pcall(function() tf.Visible = false end)
+	end
+	local keys = table.clone(FC.sink)
+	if not m.ctl then table.move(FC.arrows, 1, #FC.arrows, #keys + 1, keys) end
+	pcall(function() ContextActionService:BindActionAtPriority("AnimStudioMoveLock", FC.sinkFn, false, 3000, table.unpack(keys)) end)
+end
+function FC.enforce(dt) -- keeps the lock in place for the whole session (something else re-enabling the controls is undone)
+	local m = FC.ml
+	if not m.on then return end
+	m.t = (m.t or 0) + dt
+	if m.t < 0.5 then return end
+	m.t = 0
+	if m.ctl and m.ctl.controlsEnabled == true then pcall(m.ctl.Disable, m.ctl) end
+	if m.tf and m.tf.Parent and m.tf.Visible then pcall(function() m.tf.Visible = false end) end
+end
+function FC.unlock()
+	local m = FC.ml
+	if not m.on then return end
+	m.on = false
+	pcall(function() ContextActionService:UnbindAction("AnimStudioMoveLock") end)
+	if m.tf and m.tf.Parent then pcall(function() m.tf.Visible = m.tfv end) end
+	if m.ctl and m.was then pcall(m.ctl.Enable, m.ctl) end
+	m.ctl, m.tf, m.t = nil, nil, nil
+end
+
+-- ----- freecam helpers -----
+function FC.key(c) return UserInputService:IsKeyDown(c) and 1 or 0 end
+function FC.paint() -- toolbar camera button: highlighted while Freecam is on
+	local b = U.camBtn
+	if not b then return end
+	b.BackgroundColor3 = ACC
+	b.BackgroundTransparency = FC.on and 0 or 1
+end
+function FC.refreshSpeed()
+	if FC.ui then FC.ui.spd.Text = tostring(math.floor(FC.speed + 0.5)) end
+end
+function FC.lockMouse()
+	if FC.mlock then return end
+	FC.mlock = UserInputService.MouseBehavior
+	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCurrentPosition
+end
+function FC.unlockMouse()
+	if not FC.mlock then return end
+	UserInputService.MouseBehavior = FC.mlock
+	FC.mlock = nil
+end
+function FC.look(dx, dy, sens)
+	if FC.dead > 0 then FC.dead -= math.abs(dx) + math.abs(dy) return end -- small movement = a tap (limb pick), not a rotation
+	FC.tyaw -= math.rad(dx * sens)
+	FC.tpitch = math.clamp(FC.tpitch - math.rad(dy * sens), -1.5, 1.5)
+end
+function FC.joyReset()
+	FC.joy, FC.joyO, FC.joyVec = nil, nil, Vector2.zero
+	if FC.ui then FC.ui.thumb.Position = UDim2.fromScale(0.5, 0.5) end
+end
+function FC.joyMove(p)
+	local u = FC.ui
+	if not (u and FC.joyO) then return end
+	local r = math.max(u.base.AbsoluteSize.X * 0.5, 1)
+	local d = Vector2.new(p.X, p.Y) - FC.joyO
+	if d.Magnitude > r then d = d.Unit * r end
+	u.thumb.Position = UDim2.new(0.5, d.X, 0.5, d.Y)
+	local m = d.Magnitude / r
+	FC.joyVec = m < 0.12 and Vector2.zero or (d / r).Unit * ((m - 0.12) / 0.88)
+end
+function FC.layout()
+	local u, root = FC.ui, U.root
+	if not (u and root) then return end
+	local W, H = root.AbsoluteSize.X, root.AbsoluteSize.Y
+	if W <= 0 or H <= 0 then return end
+	local B = math.clamp(math.floor(H * 0.094), 34, 66)
+	local gap = math.max(4, math.floor(B * 0.12))
+	local js = math.clamp(math.floor(H * 0.28), 84, 150)
+	local mx, my = math.floor(W * 0.04), math.floor(H * 0.04)
+	u.base.Size = UDim2.fromOffset(js, js)
+	u.base.Position = UDim2.new(0, mx, 1, -my) -- lower-left
+	u.thumb.Size = UDim2.fromOffset(math.floor(js * 0.42), math.floor(js * 0.42))
+	for n, k in {"up", "down", "spd"} do -- lower-right row, clear of the side tool columns and the centre transport
+		local b = u[k]
+		b.Size = UDim2.fromOffset(B, B)
+		b.TextSize = math.floor(B * 0.42)
+		b.Position = UDim2.new(1, -mx - (n - 1) * (B + gap), 1, -my)
+	end
+end
+function FC.buildUI() -- mobile controls: exist only while Freecam is on
+	local root = U.root
+	if not (root and UserInputService.TouchEnabled) then return end
+	local I = Util.Instance
+	local dark = Color3.fromRGB(22, 22, 24)
+	local f = I("Frame", root)
+	f.Name, f.BackgroundTransparency, f.BorderSizePixel, f.Size, f.ZIndex = "AnimStudioFreecamUI", 1, 0, UDim2.fromScale(1, 1), 6
+	local base = I("Frame", f)
+	base.AnchorPoint, base.BackgroundColor3, base.BackgroundTransparency, base.BorderSizePixel, base.Active, base.ZIndex = Vector2.new(0, 1), dark, 0.35, 0, true, 7
+	I("UICorner", base).CornerRadius = UDim.new(1, 0)
+	local st = I("UIStroke", base)
+	st.Color, st.Transparency, st.Thickness = Color3.new(1, 1, 1), 0.75, 2
+	local thumb = I("Frame", base)
+	thumb.AnchorPoint, thumb.Position, thumb.BackgroundColor3, thumb.BackgroundTransparency, thumb.BorderSizePixel, thumb.ZIndex = Vector2.new(0.5, 0.5), UDim2.fromScale(0.5, 0.5), ACC, 0.1, 0, 8
+	I("UICorner", thumb).CornerRadius = UDim.new(1, 0)
+	local u = {frame = f, base = base, thumb = thumb}
+	for key, txt in {up = utf8.char(0x25B2), down = utf8.char(0x25BC), spd = tostring(math.floor(FC.speed + 0.5))} do
+		local b = I("TextButton", f)
+		b.AnchorPoint, b.BackgroundColor3, b.BackgroundTransparency, b.BorderSizePixel, b.AutoButtonColor, b.ZIndex = Vector2.new(1, 1), dark, 0.25, 0, false, 7
+		b.Font, b.Text, b.TextColor3 = Enum.Font.GothamBold, txt, Color3.new(1, 1, 1)
+		I("UICorner", b).CornerRadius = UDim.new(1, 0)
+		u[key] = b
+		if key == "spd" then -- cycles the movement speed
+			b.Activated:Connect(function()
+				local nx = FC.presets[1]
+				for _, v in FC.presets do if v > FC.speed + 0.5 then nx = v break end end
+				FC.speed = nx
+				FC.refreshSpeed()
+			end)
+		else -- hold = move the camera up / down
+			b.InputBegan:Connect(function(i)
+				local ty = i.UserInputType
+				if ty == Enum.UserInputType.Touch or ty == Enum.UserInputType.MouseButton1 then FC.held[key] = i; b.BackgroundColor3 = ACC end
+			end)
+		end
+	end
+	base.InputBegan:Connect(function(i)
+		local ty = i.UserInputType
+		if FC.joy or not (ty == Enum.UserInputType.Touch or ty == Enum.UserInputType.MouseButton1) then return end
+		FC.joy, FC.joyO = i, Vector2.new(i.Position.X, i.Position.Y)
+	end)
+	FC.ui = u
+	table.insert(FC.conns, root:GetPropertyChangedSignal("AbsoluteSize"):Connect(FC.layout))
+	FC.layout()
+end
+
+-- ----- per-frame camera: exponential smoothing = frame-rate independent, no jumps, no shake -----
+function FC.step(dt)
+	local cam = workspace.CurrentCamera
+	if not (FC.on and cam) then return end
+	dt = math.min(dt, 0.1)
+	if cam.CameraType ~= Enum.CameraType.Scriptable then cam.CameraType = Enum.CameraType.Scriptable end
+	local k = 1 - math.exp(-dt * 28)
+	FC.yaw += (FC.tyaw - FC.yaw) * k
+	FC.pitch += (FC.tpitch - FC.pitch) * k
+	local rot = CFrame.fromOrientation(FC.pitch, FC.yaw, 0)
+	local x, y, z = FC.joyVec.X, 0, -FC.joyVec.Y
+	if not UserInputService:GetFocusedTextBox() then
+		x += FC.key(Enum.KeyCode.D) - FC.key(Enum.KeyCode.A)
+		z += FC.key(Enum.KeyCode.W) - FC.key(Enum.KeyCode.S)
+		y += FC.key(Enum.KeyCode.E) - FC.key(Enum.KeyCode.Q)
+	end
+	if FC.held.up then y += 1 end
+	if FC.held.down then y -= 1 end
+	local dir = rot.RightVector * x + Vector3.yAxis * y + rot.LookVector * z
+	local m = dir.Magnitude
+	if m > 1 then dir /= m end
+	local sp = FC.speed
+	if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.RightShift) then sp *= 3 end
+	FC.vel = FC.vel:Lerp(dir * sp, 1 - math.exp(-dt * 14))
+	if m == 0 and FC.vel.Magnitude < 0.01 then FC.vel = Vector3.zero end
+	FC.pos += FC.vel * dt
+	cam.CFrame = CFrame.new(FC.pos) * rot
+end
+
+function FC.enable()
+	if FC.on or not S then return end
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	FC.on = true
+	FC.saved = {cam = cam, type = cam.CameraType, subject = cam.CameraSubject, fov = cam.FieldOfView, cf = cam.CFrame}
+	local pitch, yaw = cam.CFrame:ToOrientation() -- start exactly where the camera is looking
+	pitch = math.clamp(pitch, -1.5, 1.5)
+	FC.pitch, FC.yaw, FC.tpitch, FC.tyaw = pitch, yaw, pitch, yaw
+	FC.pos, FC.vel, FC.joyVec, FC.rot, FC.joy, FC.held, FC.dead = cam.CFrame.Position, Vector3.zero, Vector2.zero, nil, nil, {}, 0
+	cam.CameraType = Enum.CameraType.Scriptable
+	local c = FC.conns
+	table.insert(c, UserInputService.InputBegan:Connect(function(i, gp)
+		local ty = i.UserInputType
+		if gp or FC.rot then return end
+		if ty == Enum.UserInputType.MouseButton2 then -- right-drag rotates immediately
+			FC.rot, FC.dead = i, 0
+			FC.lockMouse()
+		elseif ty == Enum.UserInputType.MouseButton1 or ty == Enum.UserInputType.Touch then -- drag on the 3D view (not on any editor GUI) rotates
+			FC.rot, FC.dead = i, 6
+			if ty == Enum.UserInputType.MouseButton1 then FC.lockMouse() end
+		end
+	end))
+	table.insert(c, UserInputService.InputChanged:Connect(function(i, gp)
+		local ty, r = i.UserInputType, FC.rot
+		if ty == Enum.UserInputType.MouseMovement then
+			if r and r.UserInputType ~= Enum.UserInputType.Touch then FC.look(i.Delta.X, i.Delta.Y, 0.16) end
+			if FC.joy and FC.joy.UserInputType == Enum.UserInputType.MouseButton1 then FC.joyMove(i.Position) end
+		elseif ty == Enum.UserInputType.Touch then
+			if r == i then FC.look(i.Delta.X, i.Delta.Y, 0.22) elseif FC.joy == i then FC.joyMove(i.Position) end
+		elseif ty == Enum.UserInputType.MouseWheel and not gp then -- wheel = speed
+			FC.speed = math.clamp(FC.speed * 1.15 ^ i.Position.Z, 2, 400)
+			FC.refreshSpeed()
+			if os.clock() - (FC.sayAt or 0) > 0.5 then FC.sayAt = os.clock(); say("Freecam speed: " .. math.floor(FC.speed + 0.5)) end
+		end
+	end))
+	table.insert(c, UserInputService.InputEnded:Connect(function(i)
+		local r = FC.rot
+		if r and (r == i or (i.UserInputType ~= Enum.UserInputType.Touch and r.UserInputType == i.UserInputType)) then
+			FC.rot = nil
+			FC.unlockMouse()
+		end
+		if FC.joy == i or (FC.joy and i.UserInputType == Enum.UserInputType.MouseButton1 and FC.joy.UserInputType == i.UserInputType) then FC.joyReset() end
+		for k, h in FC.held do
+			if h == i or (i.UserInputType == Enum.UserInputType.MouseButton1 and h.UserInputType == i.UserInputType) then
+				FC.held[k] = nil
+				local b = FC.ui and FC.ui[k]
+				if b then b.BackgroundColor3 = Color3.fromRGB(22, 22, 24) end
+			end
+		end
+	end))
+	pcall(function() ContextActionService:BindActionAtPriority("AnimStudioFreecamKeys", FC.sinkFn, false, 3000, Enum.KeyCode.LeftShift, Enum.KeyCode.RightShift) end) -- Shift = boost, not shift-lock
+	FC.buildUI()
+	pcall(function() RunService:UnbindFromRenderStep("AnimStudioFreecam") end)
+	RunService:BindToRenderStep("AnimStudioFreecam", Enum.RenderPriority.Camera.Value + 1, FC.step) -- the gizmo overlay runs at Last, after this
+	FC.paint()
+end
+function FC.disable()
+	if not FC.on then return end
+	FC.on = false
+	pcall(function() RunService:UnbindFromRenderStep("AnimStudioFreecam") end)
+	pcall(function() ContextActionService:UnbindAction("AnimStudioFreecamKeys") end)
+	for _, c in FC.conns do pcall(c.Disconnect, c) end
+	table.clear(FC.conns)
+	FC.unlockMouse()
+	FC.rot, FC.joy, FC.joyO, FC.joyVec, FC.held = nil, nil, nil, Vector2.zero, {}
+	if FC.ui then pcall(function() FC.ui.frame:Destroy() end) FC.ui = nil end
+	local sv = FC.saved
+	FC.saved = nil
+	if sv then
+		local cam = (sv.cam and sv.cam.Parent) and sv.cam or workspace.CurrentCamera
+		if cam then
+			pcall(function()
+				cam.CFrame = sv.cf
+				cam.FieldOfView = sv.fov
+				cam.CameraSubject = sv.subject
+				cam.CameraType = sv.type
+			end)
+		end
+	end
+	FC.paint()
+end
+function FC.toggle() -- toolbar camera button
+	if FC.on then
+		FC.disable()
+		say("Freecam off - normal camera restored.")
+	elseif S then
+		FC.enable()
+		if FC.on then say(UserInputService.TouchEnabled and "Freecam on: joystick moves, drag to look, arrow buttons go up/down, middle button = speed." or "Freecam on: WASD move, E/Q up/down, drag to look, Shift = fast, wheel = speed.") end
+	end
+end
+
 function startSession()
 	if S then return end
-	S = {page = U.page, conns = {}, animator = AnimLib.Animator.new(), playing = false, stale = true, dirty = true, t = 0, acc = 0, keep = 0, authAt = os.clock(), liveErr = 0, period = lowEnd() and 1 / 12 or 1 / 30}
+	S = {page = U.page, conns = {}, animator = AnimLib.Animator.new(), playing = false, stale = true, dirty = true, t = 0, acc = 0, keep = 0, authAt = os.clock(), liveErr = 0, period = lowEnd() and 1 / 12 or 1 / 30, guard = lowEnd() and 0.1 or 0}
+	FC.lock() -- Studio open = normal character movement disabled (PC + mobile) until stopSession; Freecam stays off until the camera button is pressed
+	table.insert(S.conns, RunService.Heartbeat:Connect(FC.enforce))
+	table.insert(S.conns, {Disconnect = function() FC.disable(); FC.unlock() end})
 	table.insert(S.conns, RunService.Heartbeat:Connect(step))
 	table.insert(S.conns, UserInputService.InputChanged:Connect(onChanged))
 	table.insert(S.conns, UserInputService.InputEnded:Connect(onEnded))
@@ -95001,6 +95312,7 @@ function stopSession(reason)
 	local s = S
 	if not s then return end
 	S, Drag, PD = nil, nil, nil -- first: the regular moveset / dance loop takes over again on the next frame
+	FC.disable(); FC.unlock() -- Freecam off + camera restored + character controls restored (Back / close / page hidden all land here)
 	for _, c in s.conns do pcall(c.Disconnect, c) end
 	table.clear(s.conns)
 	if s.live then pcall(s.live.Destroy, s.char); s.live = nil end
@@ -95475,6 +95787,37 @@ local function buildEditor()
 		afterEdit()
 		say("Pasted.")
 	end
+	function U.captureVanilla() -- starting pose: what the rig showed when the Studio took it over, written into the keyframe at the playhead (created when missing) as plain editor values; belongs to this project only
+		if not canEdit() then return end
+		local snap = S.vanilla
+		if not snap then say("No pose was captured - start reanimation, then reopen Animation Studio.") return end
+		local A = cur()
+		pushUndo()
+		local idx = 1
+		if not A.static then
+			idx = nil
+			for i, k in A.kfs do
+				if math.abs(k.t - S.t) < 0.02 then idx = i break end
+			end
+			if not idx then
+				local n0 = #A.kfs
+				addKf(true)
+				if #A.kfs == n0 then table.remove(Work.hist) return end
+				idx = Work.sel
+			end
+		end
+		local k = A.kfs[idx]
+		for _, n in PARTS do
+			local v = snap[n]
+			if v then
+				for i = 1, 6 do k.pose[n][i] = v[i] end
+			end
+		end
+		Work.sel = idx
+		S.t, S.playing = A.static and 0 or k.t, false
+		afterEdit()
+		say("Vanilla pose captured into this keyframe.")
+	end
 	local function mirrorFrame()
 		if not canEdit() then return end
 		pushUndo()
@@ -95587,19 +95930,7 @@ local function buildEditor()
 			say("Export failed: " .. tostring(err))
 		end
 	end
-	local function snapshot() -- camera button: hide the editor and capture the viewport
-		if U.shooting then return end
-		U.shooting = true
-		U.root.Visible = false
-		task.spawn(function()
-			task.wait(0.35)
-			local ok = pcall(function() game:GetService("CaptureService"):CaptureScreenshot(function() end) end)
-			task.wait(ok and 1.2 or 4)
-			U.shooting = false
-			if S and U.root then U.root.Visible = true end
-			if S then say(ok and "Screenshot captured." or "Screenshot API unavailable here - the editor was hidden for a moment so you could capture manually.") end
-		end)
-	end
+	-- (screenshot function removed: the toolbar camera button is now the Freecam toggle, see FC.toggle)
 
 	-- ----- 3D viewport helpers: limb picking + selection outline -----
 	U.updateSel = function()
@@ -96261,7 +96592,9 @@ local function buildEditor()
 	pb("Save Changes", onSave)
 	pb("Export", doExport)
 	pb(GL.gear, function() openPopup("settings") end, true)
-	pb(GL.cam, snapshot, true)
+	U.camBtn = pb(GL.cam, FC.toggle, true) -- camera button = Freecam toggle (was: screenshot)
+	Util.Instance("UICorner", U.camBtn).CornerRadius = UDim.new(1, 0)
+	FC.paint()
 	pb(GL.undo, undo, true)
 	pb(GL.redo, redo, true)
 
@@ -96487,6 +96820,7 @@ local function buildEditor()
 		fill(newLabel(rowFrame(lp, 18), "Clipboard", 13, TL, DIM))
 		btnRow(lp, {{"Copy keyframe", copyKf}, {"Paste keyframe", function() pasteKf("all") end}}, 28)
 		btnRow(lp, {{"Paste joint only", function() pasteKf("joint") end}, {"Paste mirrored", function() pasteKf("mirror") end}}, 28)
+		btnRow(lp, {{"Capture vanilla pose", U.captureVanilla}}, 28)
 		fill(newLabel(rowFrame(lp, 18), "Saved creations", 13, TL, DIM))
 		btnRow(lp, {{"Previous", function() cyclSaved(-1) end}, {"Next", function() cyclSaved(1) end}, {"Load into editor", function() loadSaved() end}}, 28)
 		U.asEmpty = fill(newLabel(rowFrame(lp, 20), "No saved creations yet. Use Save Changes first.", 13, TL, DIM))
@@ -96637,6 +96971,7 @@ function Studio.Enter()
 end
 function Studio.Leave() stopSession() end
 function Studio.Holding(char) local s = S return s ~= nil and char ~= nil and s.char == char end
+function Studio.Touch() touch() end
 function Studio.CanUse() return authorized(false) end
 function Studio.Attach(page, closeFn)
 	U.page, U.closeFn = page, closeFn
@@ -97149,11 +97484,39 @@ end
 end)
 task.spawn(function()
 local _oldcharacterreference = nil
+local _studioHeld = nil
 local errorsandwarnings = {}
 local currenterrorid = 1
 local function _animStep(dt)
 local ReanimCharacter = Reanimate.Character
-do local AS = Util.AnimStudio; if AS and AS.Holding(ReanimCharacter) then return end end -- Animation Studio is posing this rig: moveset / dance loops stay out
+do
+local AS = Util.AnimStudio
+if AS and AS.Holding(ReanimCharacter) then -- Animation Studio owns this rig: no moveset / dance code may write to it
+if _studioHeld ~= ReanimCharacter then
+_studioHeld = ReanimCharacter
+if _CurrentDance then pcall(_CurrentDance.Destroy, ReanimCharacter); _CurrentDance = nil end
+if CurrentMovementStyle and ReanimCharacter:GetAttribute("MovementInit") then
+pcall(CurrentMovementStyle.Destroy, ReanimCharacter) -- the moveset shuts down through its own Destroy (its connections / overrides stop); the selection itself stays untouched
+pcall(function() Reanimate.KinematicReanimator.ClearTargets() end)
+end
+pcall(SetOverrideMovesetMusic, nil)
+pcall(SetOverrideDanceMusic, nil)
+ReanimCharacter:SetAttribute("IsDancing", nil)
+ReanimCharacter:SetAttribute("DanceInternalName", nil)
+ReanimCharacter:SetAttribute("MovementInit", true) -- the limb core follows the rig's Motor6D poses while this is set, whichever moveset (or none) was selected
+ReanimCharacter:SetAttribute("MovesetInternalName", "AnimationStudio")
+pcall(AS.Touch)
+end
+return
+elseif _studioHeld then -- Studio closed or the rig was replaced: give the selected moveset / dance a clean start on this very frame
+local held = _studioHeld
+_studioHeld = nil
+if typeof(held) == "Instance" and held.Parent then
+held:SetAttribute("MovementInit", nil)
+held:SetAttribute("MovesetInternalName", nil)
+end
+end
+end
 SaveData.MovesetIndex = MovementStyleIndex
 do
 local curStyle = MovementStyles[MovementStyleIndex]
