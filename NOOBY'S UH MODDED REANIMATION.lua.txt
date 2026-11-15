@@ -76708,11 +76708,17 @@ local hatscale = hatmapped.Scale
 if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
+local lcf = limb.CFrame
+local LB = Util.LimbBlocks -- Building Limb Blocks: the limb frame a hat follows carries that limb's offset (Hats Reanimator only, only while Building Mode is on)
+if LB and LB.On then
+local okLB, ncf = pcall(LB.HatPose, ReanimCharacter, hatmapped.Limb, lcf)
+if okLB and typeof(ncf) == "CFrame" then lcf = ncf end
+end
 if hatmapped.C0 and hatmapped.C1 then
-return limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse(), limb.Velocity
+return lcf * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse(), limb.Velocity
 end
 if hatmapped.Offset then
-return limb.CFrame * hatmapped.Offset, limb.Velocity
+return lcf * hatmapped.Offset, limb.Velocity
 end
 end
 else
@@ -87218,7 +87224,13 @@ return cf
 end
 function Reanimate.SafeLimbPose(map, v, RC, RootPart, tcf)
 local cf, exact = Reanimate.LimbPoseCFrame(map, v, RC, RootPart, tcf)
-return Reanimate.SanitizeLimbPose(map, v, cf, exact)
+cf = Reanimate.SanitizeLimbPose(map, v, cf, exact)
+local LB = Util.LimbBlocks -- Building Limb Blocks: offsets are layered on the finished pose (Limb Reanimator only, only while Building Mode is on)
+if LB then
+local okLB, ncf = pcall(LB.LimbPose, map, v, RC, RootPart, tcf, cf)
+if okLB and typeof(ncf) == "CFrame" then return ncf end
+end
+return cf
 end
 -- tcf (RootPart is Torso only) = the fake torso world CFrame rebuilt from the fake HumanoidRootPart * RootJoint. With it the pose is read from the animated joints: the torso joint is the real root -> tcf relation and every limb / neck joint is its own Motor6D (C0 * Transform * C1^-1) relative to its anatomical parent, so no torso, root or limb movement is inherited twice and no physics-displaced part CFrame feeds back. Returns (pose, true) when sampled this way
 function Reanimate.LimbPoseCFrame(map, v, RC, RootPart, tcf)
@@ -89791,6 +89803,7 @@ Reanimate.Stopping = true
 repeat task.wait() until not Reanimate.Stopping
 Reanimate.Current.Running = nil
 Reanimate.Current = nil
+pcall(function() Util.LimbBlocks.Clear() end)
 HumanoidLASetHookState(false)
 ReanimateText.Text = "Running: NONE"
 task.wait(1)
@@ -89841,6 +89854,7 @@ Reanimate.Stopping = true
 repeat task.wait() until not Reanimate.Stopping
 Reanimate.Current.Running = nil
 Reanimate.Current = nil
+pcall(function() Util.LimbBlocks.Clear() end)
 HumanoidLASetHookState(false)
 ReanimateText.Text = "Running: NONE"
 task.wait(1)
@@ -104837,6 +104851,620 @@ clearcontenthashtext.Text = "CLEAR ALL DOWNLOADED CONTENT"
 end
 end
 end)
+-- ===== BUILDING LIMB BLOCKS: shared controller (Util.LimbBlocks) =====
+-- One controller for both reanimation methods. The adapters are two tiny hooks: Limb Reanimator -> Reanimate.SafeLimbPose (LB.LimbPose), Hat Reanimator -> GetHatMappedCFrame (LB.HatPose).
+-- Offsets are studs / degrees in the animated Torso's axes; rotation turns a limb around its own centre. No connection is owned except a 1 s status poll that only runs while the page is open.
+xpcall(function()
+local LB = {}
+Util.LimbBlocks = LB
+LB.Warning = "Creating inappropriate builds with your limbs is extremely prohibited, do not attempt to build inappropriate stuff or you can get blacklisted entirely from the script."
+LB.Limbs = {"Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg"}
+-- every limb reanimation variant: they all pose limbs through Reanimate.SafeLimbPose, so they share the Limb adapter (LB.LimbPose); Hat Reanimator keeps its own adapter (LB.HatPose)
+LB.LimbMethods = {Limbs = true, Ragdoll = true, Unanchored = true, ["Servo-Joint"] = true, ["Hybrid-Joint"] = true, ["Skeletal Retargeting"] = true, ["Kinematic Reanimation"] = true, ["Velocity-Interpolated"] = true}
+LB.On, LB.Ack, LB.Sel, LB.GzMode = false, false, 1, "move"
+LB.Off, LB.Live, LB.Seen = {}, {}, {}
+local IDX, CFnew, idcf = {}, CFrame.new, CFrame.identity
+for i, n in ipairs(LB.Limbs) do
+IDX[n] = i
+LB.Off[n] = {0, 0, 0, 0, 0, 0}
+end
+local function say(t) pcall(Util.UINotify or Util.Notify, t) end
+local function rebuild(name)
+local o = LB.Off[name]
+if o[1] == 0 and o[2] == 0 and o[3] == 0 and o[4] == 0 and o[5] == 0 and o[6] == 0 then
+LB.Live[name] = nil
+else
+LB.Live[name] = {P = Vector3.new(o[1], o[2], o[3]), R = CFrame.Angles(math.rad(o[4]), math.rad(o[5]), math.rad(o[6]))}
+end
+end
+function LB.Set(name, k, val)
+local o = LB.Off[name]
+if not o or not o[k] then return end
+val = tonumber(val) or 0
+if val ~= val then val = 0 end
+local lim = k <= 3 and 100 or 360
+o[k] = math.clamp(val, -lim, lim)
+rebuild(name)
+end
+function LB.Reset(name)
+for _, n in ipairs(LB.Limbs) do
+if not name or n == name then
+LB.Off[n] = {0, 0, 0, 0, 0, 0}
+LB.Live[n] = nil
+end
+end
+end
+-- fr = rotation-only frame (animated torso axes), live = {P = offset, R = rotation}: translate along fr, rotate around base's own position
+local function place(base, fr, live)
+return CFnew(base.Position + fr * live.P) * ((fr * live.R * fr:Inverse()) * base.Rotation)
+end
+-- drops every piece of feature state: Building Mode off, offsets reset, adapters forgotten (stop / character replaced / method changed)
+function LB.Clear()
+local was = LB.On
+LB.On = false
+if LB.GizmoSync then LB.GizmoSync() end
+LB.TM, LB.TV = nil, nil
+LB.Reset()
+table.clear(LB.Seen)
+if LB.OnClear then pcall(LB.OnClear, was) end
+end
+-- returns "Limbs" / "Hats" while one of the two supported methods runs; any change of method or fake character clears the feature state
+function LB.Gate()
+local cur = Reanimate.Current
+local n = cur and cur.Name
+if LB.LimbMethods[n] then n = "Limbs" elseif n ~= "Hats" then n = nil end
+local rc = n and Reanimate.Character or nil
+if cur ~= LB._cur or rc ~= LB._rc then
+LB._cur, LB._rc = cur, rc
+LB.Clear()
+end
+return n
+end
+-- Limb Reanimator adapter: cf = the finished (animated + sanitized) Motor6D pose Part0 -> Part1 of one real joint. Offsets are layered on top of it, never stored into the animation data
+function LB.LimbPose(map, v, RC, RootPart, tcf, cf)
+if LB.Gate() ~= "Limbs" then return cf end
+local n1 = map.RPart1
+if not IDX[n1] then return cf end
+LB.Seen[n1] = map
+if not LB.On or cf == idcf or not Reanimate.FiniteCF(cf) then return cf end
+local hl = Reanimate.HiddenLimbs
+if hl and (hl[n1] or hl.Torso) then return cf end
+local live = LB.Live[n1]
+if n1 == "Torso" then
+if map.RPart0 ~= "ROOT" then return cf end
+LB.TM, LB.TV = map, v
+if not live then return cf end
+return place(cf, cf.Rotation, live)
+end
+local tm, lt = LB.TM, LB.Live.Torso
+if map.RPart0 ~= "Torso" or not tm or not (live or lt) then return cf end
+-- every limb joint hangs on the torso joint: rebuild the limb in root space from the UNMOVED animated torso, then re-express it relative to the (possibly moved) torso so limbs stay independent
+local ct = Reanimate.LimbPoseCFrame(tm, LB.TV, RC, RootPart, tcf)
+if ct == idcf or not Reanimate.FiniteCF(ct) then return cf end
+local fr = ct.Rotation
+local lr = ct * cf
+if live then lr = place(lr, fr, live) end
+local nt = lt and place(ct, fr, lt) or ct
+return nt:Inverse() * lr
+end
+-- Hat Reanimator adapter: lcf = world CFrame of the animated fake limb that a mapped hat follows. Every hat keeps its own limb link, so each limb moves together with the hats mapped to it
+function LB.HatPose(RC, name, lcf)
+if LB.Gate() ~= "Hats" then return lcf end
+local live = LB.Live[name]
+if not live then return lcf end
+if name == "Torso" then return place(lcf, lcf.Rotation, live) end
+local torso = RC and RC:FindFirstChild("Torso")
+if not (torso and torso:IsA("BasePart")) then return lcf end
+return place(lcf, torso.CFrame.Rotation, live)
+end
+-- a limb is only controllable when the running method really has something mapped to it
+function LB.Available(name)
+local cur = Reanimate.Current
+local n = cur and cur.Name
+if LB.LimbMethods[n] then n = "Limbs" end
+if n == "Limbs" then
+local hl = Reanimate.HiddenLimbs
+return LB.Seen[name] ~= nil and not (hl and (hl[name] or hl.Torso))
+elseif n == "Hats" and cur.GetHatMap then
+local ok, hm = pcall(cur.GetHatMap)
+if ok and type(hm) == "table" then
+for _, e in ipairs(hm) do
+if e.Limb == name then return true end
+end
+end
+end
+return false
+end
+-- ===== 3D gizmo: the same screen-projected move arrows / rotation rings as Animation Studio (same colours, projection and drag maths), editing the selected limb's offsets =====
+local UIS, RS = game:GetService("UserInputService"), game:GetService("RunService")
+local AXC = {Color3.fromRGB(232, 64, 64), Color3.fromRGB(72, 218, 84), Color3.fromRGB(74, 104, 255)}
+local AXV = {Vector3.xAxis, Vector3.yAxis, Vector3.zAxis}
+local NSEG, POSLIM = 32, 30
+do
+local okL, low = pcall(function() return Util.FX.IsLowEnd() end)
+if okL and low == true then NSEG = 20 end
+end
+local MB1, TOUCH = Enum.UserInputType.MouseButton1, Enum.UserInputType.Touch
+local gz, PD = nil, nil
+local function mkHandle(layer, col, thick, head)
+local b = Util.Instance("TextButton", layer)
+b.AutoButtonColor = false
+b.Text = ""
+b.BackgroundTransparency = 1
+b.BorderSizePixel = 0
+b.AnchorPoint = Vector2.new(0.5, 0.5)
+b.Visible = false
+local v = Util.Instance("Frame", b)
+v.AnchorPoint = Vector2.new(0.5, 0.5)
+v.Position = UDim2.fromScale(0.5, 0.5)
+v.Size = UDim2.new(1, 0, 0, thick)
+v.BackgroundColor3 = col
+v.BorderSizePixel = 0
+if head then
+local h = Util.Instance("Frame", b)
+h.AnchorPoint = Vector2.new(0.5, 0.5)
+h.Position = UDim2.fromScale(1, 0.5)
+h.Size = UDim2.fromOffset(18, 18)
+h.Rotation = 45
+h.BackgroundColor3 = col
+h.BorderSizePixel = 0
+end
+return {btn = b, vis = v}
+end
+local function setSeg(h, ax, ay, bx, by, hit, extra)
+local dx, dy = bx - ax, by - ay
+h.btn.Position = UDim2.fromOffset((ax + bx) / 2, (ay + by) / 2)
+h.btn.Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy) + extra, hit)
+h.btn.Rotation = math.deg(math.atan2(dy, dx))
+end
+local function gzHide()
+local g = gz
+if not g or not g.shown then return end
+g.shown, g.sig = false, nil
+for _, a in g.arrows do
+a.pos.btn.Visible = false
+a.neg.btn.Visible = false
+end
+for _, r in g.rings do
+for _, h in r do h.btn.Visible = false end
+end
+end
+-- the selected limb of the fake (visible) character plus its torso, whose axes are the building frame
+local function gzTarget()
+local RC = Reanimate.Character
+local name = LB.Limbs[LB.Sel]
+local part = RC and RC:FindFirstChild(name)
+local torso = RC and RC:FindFirstChild("Torso")
+if part and torso and part:IsA("BasePart") and torso:IsA("BasePart") then return name, part, torso, RC end
+end
+-- where the engine puts a part THIS frame (parent chain through the Motor6D transforms) - same prediction as Animation Studio's predCF: the gizmo never lags behind a limb that was just posed
+local motorOf, motorRig = {}, nil
+local function predCF(rig, part, depth)
+if motorRig ~= rig then
+motorRig, motorOf = rig, {}
+for _, d in rig:GetDescendants() do
+if d:IsA("Motor6D") and d.Part1 then motorOf[d.Part1] = d end
+end
+end
+local m = motorOf[part]
+if not m or not m.Enabled or not m.Part0 or depth > 3 then return part.CFrame end
+return predCF(rig, m.Part0, depth + 1) * m.C0 * m.Transform * m.C1:Inverse()
+end
+local function gzUpdate()
+local g = gz
+if not g then return end
+local method = LB.Gate()
+if gz ~= g then return end
+local cam, page = workspace.CurrentCamera, LB.Page
+local name, part, torso, rig = gzTarget()
+if not (method and LB.On and LB.GzMode and cam and name and page and page.Visible) then gzHide() return end
+local now = os.clock()
+if g.avName ~= name or now - g.avAt > 0.5 then g.avName, g.avAt, g.av = name, now, LB.Available(name) end
+if not g.av then gzHide() return end
+local off, live = LB.Off[name], LB.Live[name]
+-- predicted (this frame's) torso frame and limb centre; fall back to the real part when the prediction is far off
+local pCF, lCF = predCF(rig, torso, 0), predCF(rig, part, 0)
+if (pCF.Position - torso.Position).Magnitude > 4 then pCF = torso.CFrame end
+if (lCF.Position - part.Position).Magnitude > 4 then lCF = part.CFrame end
+if g.hold and not PD then g.hold = nil end
+local fr = pCF.Rotation
+local C = g.hold or (lCF.Position + (live and fr * live.P or Vector3.zero))
+local camCF, vp = cam.CFrame, cam.ViewportSize
+-- GUI space vs viewport space: when the host GUI does not cover the whole viewport (inset), shift by the difference
+local ras = g.layer.AbsoluteSize
+local ox, oy = vp.X - ras.X, vp.Y - ras.Y
+ox = (ox > 0.5 and ox < 300) and ox / 2 or 0
+oy = (oy > 0.5 and oy < 120) and oy or 0
+local mode = LB.GzMode
+local sg = g.sig
+if g.shown and sg and sg.cam == camCF and sg.C == C and sg.fr == fr and sg.mode == mode and sg.vy == vp.Y and sg.rx == off[4] and sg.ry == off[5] and sg.fov == cam.FieldOfView and sg.part == name and sg.ox == ox and sg.oy == oy then return end
+g.sig = {cam = camCF, C = C, fr = fr, mode = mode, vy = vp.Y, rx = off[4], ry = off[5], fov = cam.FieldOfView, part = name, ox = ox, oy = oy}
+local depth = (C - camCF.Position):Dot(camCF.LookVector)
+if depth < 0.5 then gzHide() return end
+local pxPerStud = vp.Y / (2 * depth * math.tan(math.rad(cam.FieldOfView) / 2))
+local function P(w)
+local v = cam:WorldToViewportPoint(w)
+return v.X - ox, v.Y - oy, v.Z
+end
+g.C, g.shown = C, true
+if mode == "move" then
+for _, r in g.rings do
+for _, h in r do h.btn.Visible = false end
+end
+-- arms reach ~3.6 studs to either side of the limb centre, never smaller than ~80 px
+local armLen = math.min(math.max(3.6, 80 / pxPerStud), vp.Y * 0.42 / pxPerStud)
+g.armLen = armLen
+local ax, ay, az = P(C)
+for i = 1, 3 do
+local d = fr:VectorToWorldSpace(AXV[i])
+g.dir[i] = d
+for sgn = 1, 2 do
+local h = sgn == 1 and g.arrows[i].pos or g.arrows[i].neg
+local bx, by, bz = P(C + d * (sgn == 1 and armLen or -armLen))
+if az > 0 and bz > 0 and (bx - ax) ^ 2 + (by - ay) ^ 2 > 100 then
+setSeg(h, ax, ay, bx, by, 30, 0)
+h.btn.Visible = true
+else
+h.btn.Visible = false
+end
+end
+end
+else
+for _, a in g.arrows do
+a.pos.btn.Visible = false
+a.neg.btn.Visible = false
+end
+local R = math.min(math.max(2.6, 58 / pxPerStud), vp.Y * 0.32 / pxPerStud)
+local rx, ry = math.rad(off[4]), math.rad(off[5])
+-- rotation order is X, Y, Z (CFrame.Angles): the Y ring turns with X, the Z ring with X and Y
+local frames = {fr, fr * CFrame.Angles(rx, 0, 0), fr * CFrame.Angles(rx, ry, 0)}
+local cd = camCF.Position - C
+local stepA = 2 * math.pi / NSEG
+for i = 1, 3 do
+local n = frames[i]:VectorToWorldSpace(AXV[i])
+local u = n:Cross(math.abs(n.Y) < 0.9 and Vector3.yAxis or Vector3.xAxis).Unit
+local v = n:Cross(u)
+g.ring[i] = {C = C, n = n, u = u, v = v, R = R, px = R * pxPerStud}
+local pts = {}
+for k = 0, NSEG do
+local th = k * stepA
+pts[k] = Vector3.new(P(C + (u * math.cos(th) + v * math.sin(th)) * R))
+end
+local uc, vc = u:Dot(cd), v:Dot(cd)
+for k = 1, NSEG do
+local p, q, h = pts[k - 1], pts[k], g.rings[i][k]
+if p.Z > 0 and q.Z > 0 then
+setSeg(h, p.X, p.Y, q.X, q.Y, 26, 2)
+local thm = (k - 0.5) * stepA
+h.vis.BackgroundTransparency = (uc * math.cos(thm) + vc * math.sin(thm) < 0) and 0.6 or 0.04
+h.btn.Visible = true
+else
+h.btn.Visible = false
+end
+end
+end
+end
+end
+-- pointer drag for the handles: connections exist only while a handle is held. move(pos) gets the pointer position, done() runs on release
+local function beginPtr(input, move, done)
+local ty = input.UserInputType
+if PD or (ty ~= MB1 and ty ~= TOUCH) then return false end
+local conns = {}
+local function finish()
+if not PD then return end
+PD = nil
+for _, c in conns do c:Disconnect() end
+pcall(done)
+end
+conns[1] = UIS.InputChanged:Connect(function(i)
+local t = i.UserInputType
+if (t == Enum.UserInputType.MouseMovement and ty == MB1) or (t == TOUCH and i == input) then
+if t == Enum.UserInputType.MouseMovement and not UIS:IsMouseButtonPressed(MB1) then
+finish()
+return
+end
+local okM, err = pcall(move, Vector2.new(i.Position.X, i.Position.Y))
+if not okM then warn("[LimbBlocks] " .. tostring(err)) end
+end
+end)
+conns[2] = UIS.InputEnded:Connect(function(i)
+if i == input or (i.UserInputType == MB1 and ty == MB1) then finish() end
+end)
+PD = {finish = finish}
+return true
+end
+-- begins a handle drag: i = axis (1..3), seg = +1 / -1 arrow half, or the ring segment grabbed
+local function gzBegin(kind, i, seg, input)
+local ty = input.UserInputType
+if ty ~= MB1 and ty ~= TOUCH then return end
+local g = gz
+if PD or not LB.On or not g or not g.shown or not g.C then return end
+local cam = workspace.CurrentCamera
+if not cam then return end
+local name = LB.Limbs[LB.Sel]
+local idx = (kind == "move" and 0 or 3) + i
+local grabW, c0, ax, ring
+if kind == "move" then
+ax, c0 = g.dir[i], g.C
+if not ax then return end
+grabW = c0 + ax * (seg * g.armLen * 0.55)
+else
+ring = g.ring[i]
+if not ring then return end
+local th = (seg - 0.5) * 2 * math.pi / NSEG
+c0 = ring.C
+grabW = c0 + (ring.u * math.cos(th) + ring.v * math.sin(th)) * ring.R
+end
+local gv = cam:WorldToViewportPoint(grabW)
+if gv.Z <= 0 then return end
+local grab = Vector2.new(gv.X, gv.Y)
+local axisParam, planeAngle, s0, a0, tanS
+if kind == "move" then
+axisParam = function(pt) -- position along the axis line that is closest to the pointer ray
+local ray = cam:ViewportPointToRay(pt.X, pt.Y)
+local d = ray.Direction
+local w0 = c0 - ray.Origin
+local b = ax:Dot(d)
+local den = 1 - b * b
+if den < 1e-3 then return nil end
+return (b * d:Dot(w0) - ax:Dot(w0)) / den
+end
+s0 = axisParam(grab)
+if not s0 then return end
+else
+local rn, ru, rv = ring.n, ring.u, ring.v
+planeAngle = function(pt) -- angle of the pointer ray where it crosses the ring's plane
+local ray = cam:ViewportPointToRay(pt.X, pt.Y)
+local d = ray.Direction
+local den = d:Dot(rn)
+if math.abs(den) < 0.12 then return nil end
+local t = (c0 - ray.Origin):Dot(rn) / den
+if t < 0 then return nil end
+local r = ray.Origin + d * t - c0
+return math.atan2(r:Dot(rv), r:Dot(ru))
+end
+a0 = planeAngle(grab)
+if not a0 then -- ring seen edge-on: drag along the ring's screen tangent instead
+local tw = rn:Cross(grabW - c0).Unit
+local tv = cam:WorldToViewportPoint(grabW + tw * (ring.R * 0.1))
+local tdir = Vector2.new(tv.X, tv.Y) - grab
+if tdir.Magnitude < 0.5 then return end
+tanS = tdir.Unit
+end
+end
+local v0 = LB.Off[name][idx]
+local p0 = Vector2.new(input.Position.X, input.Position.Y)
+local acc, last = 0, a0
+local started = beginPtr(input, function(pos)
+if not gz or not LB.On then return end
+local tgt = grab + (pos - p0)
+local nv
+if kind == "move" then
+local s = axisParam(tgt)
+if not s then return end
+nv = math.clamp(v0 + (s - s0), -POSLIM, POSLIM)
+else
+if tanS then
+acc = (pos - p0):Dot(tanS) / ring.px
+else
+local a = planeAngle(tgt)
+if not a then return end
+acc += (a - last + math.pi) % (2 * math.pi) - math.pi
+last = a
+end
+nv = (v0 + math.deg(acc) + 180) % 360 - 180
+end
+nv = tonumber(string.format("%.3f", nv))
+if LB.Off[name][idx] == nv then return end
+LB.Set(name, idx, nv)
+if LB.OnEdit then pcall(LB.OnEdit, false) end
+end, function()
+if gz then gz.hold, gz.sig = nil, nil end
+if LB.OnEdit then pcall(LB.OnEdit, true) end
+end)
+if started and kind == "rot" and gz then gz.hold = c0 end -- keep the ring still under the pointer while the limb turns
+end
+local function gzBuild()
+local layer = Util.Instance("Frame", Util.TopGui)
+layer.Size = UDim2.fromScale(1, 1)
+layer.BackgroundTransparency = 1
+layer.BorderSizePixel = 0
+layer.ZIndex = 2147483646 -- just under the main UI (2147483647): handles never cover the script window
+local g = {layer = layer, arrows = {}, rings = {}, dir = {}, ring = {}, shown = false, avAt = 0}
+gz = g
+for i = 1, 3 do
+local hp, hn = mkHandle(layer, AXC[i], 5, true), mkHandle(layer, AXC[i], 5, true)
+g.arrows[i] = {pos = hp, neg = hn}
+hp.btn.InputBegan:Connect(function(input) gzBegin("move", i, 1, input) end)
+hn.btn.InputBegan:Connect(function(input) gzBegin("move", i, -1, input) end)
+g.rings[i] = {}
+for k = 1, NSEG do
+local r = mkHandle(layer, AXC[i], 4, false)
+g.rings[i][k] = r
+r.btn.InputBegan:Connect(function(input) gzBegin("rot", i, k, input) end)
+end
+end
+end
+-- the render-step binding exists only while a gizmo exists AND the Building Limb Blocks page is open: closing the page hides the gizmo, ends any drag and drops the binding (offsets stay untouched)
+local bound = false
+local function gzUnbind()
+bound = false
+pcall(function() RS:UnbindFromRenderStep("LimbBlocksGizmo") end)
+end
+local function gzPageSync()
+local page = LB.Page
+if gz and page and page.Visible then
+if not bound then
+bound = true
+pcall(function() RS:UnbindFromRenderStep("LimbBlocksGizmo") end)
+RS:BindToRenderStep("LimbBlocksGizmo", Enum.RenderPriority.Last.Value, function() pcall(gzUpdate) end) -- after the camera has moved this frame
+end
+else
+gzUnbind()
+if PD then PD.finish() end
+gzHide()
+end
+end
+local function gzStop()
+gzUnbind()
+if PD then PD.finish() end
+local g = gz
+gz = nil
+motorOf, motorRig = {}, nil
+if g then pcall(function() g.layer:Destroy() end) end
+end
+-- builds / removes the gizmo to match Building Mode + the Gizmo setting, then binds / unbinds it to match the page being open
+function LB.GizmoSync()
+local want = LB.On and LB.GzMode ~= nil
+if want and not gz then
+gzBuild()
+elseif not want and (gz or PD) then
+gzStop()
+end
+gzPageSync()
+end
+function LB.Attach(page, closeFn)
+LB.Page = page
+local C = Enum.TextXAlignment.Center
+UI.CreateButton(page, "&lt; Back", 20).Activated:Connect(closeFn)
+UI.CreateText(page, "<b>BUILDING LIMB BLOCKS</b>", 15, C)
+UI.CreateText(page, "<font color=\"#FF4B4B\"><b>[ WARNING ]</b></font>", 15, C)
+UI.CreateText(page, "<font color=\"#FF4B4B\"><b>" .. LB.Warning .. "</b></font>", 12, C)
+UI.CreateSeparator(page)
+UI.CreateText(page, "<font color=\"#AAAAAA\">Use your reanimated limbs as building blocks to create custom formations and constructions.\nWorks with Limb Reanimation and Hats Reanimation. Start one of them first.</font>", 10, C)
+local ack = UI.CreateSwitch(page, "I have read the warning above", LB.Ack)
+UI.CreateSeparator(page)
+local status = UI.CreateText(page, "...", 11, Enum.TextXAlignment.Left)
+local power = UI.CreateSwitch(page, "Building Mode", false)
+local sel = UI.CreateDropdown(page, "Selected Limb", LB.Limbs, 1)
+local gzSel = UI.CreateDropdown(page, "3D Gizmo", {"Move arrows", "Rotate rings", "Off"}, 1)
+local sl, loading, guard = {}, false, false
+local labels = {"Position X (studs)", "Position Y (studs)", "Position Z (studs)", "Rotation X (degrees)", "Rotation Y (degrees)", "Rotation Z (degrees)"}
+for k = 1, 6 do
+local pos = k <= 3
+sl[k] = UI.CreateSlider(page, labels[k], 0, pos and -30 or -180, pos and 30 or 180, pos and 0.1 or 1)
+end
+local function refresh()
+local cur = Reanimate.Current
+local n = cur and cur.Name
+local method = n == "Limbs" and "Limb Reanimation" or n == "Hats" and "Hats Reanimation" or (LB.LimbMethods[n] and (tostring(n) .. " (limb variant)") or (cur and (tostring(n) .. " (not supported here - use a limb variant or Hats Reanimator)") or "none (start a limb variant or Hats Reanimator)"))
+local lines = {"Reanimation: <b>" .. method .. "</b>", "Building Mode: <b>" .. (LB.On and "ON" or "OFF") .. "</b>"}
+for i, name in ipairs(LB.Limbs) do
+local t = name .. (LB.Live[name] and " (moved)" or "") .. (LB.Available(name) and "" or " - UNAVAILABLE (nothing mapped)")
+if i == sel.Value then
+t = "<b><font color=\"#FFE066\">&gt; " .. t .. "  [SELECTED]</font></b>"
+else
+t = "<font color=\"#AAAAAA\">   " .. t .. "</font>"
+end
+lines[#lines + 1] = t
+end
+status.Text = table.concat(lines, "\n")
+end
+local function syncSliders()
+local o = LB.Off[LB.Limbs[sel.Value]]
+loading = true
+for k = 1, 6 do sl[k].Value = o[k] end
+loading = false
+end
+for k = 1, 6 do
+sl[k].Changed:Connect(function(val)
+if loading then return end
+local name = LB.Limbs[sel.Value]
+LB.Set(name, k, val)
+local c = LB.Off[name][k]
+if c ~= val then
+loading = true
+sl[k].Value = c
+loading = false
+end
+refresh()
+end)
+end
+sel.Changed:Connect(function()
+LB.Sel = sel.Value
+syncSliders()
+refresh()
+end)
+gzSel.Changed:Connect(function()
+LB.GzMode = ({"move", "rot"})[gzSel.Value]
+LB.GizmoSync()
+end)
+local function setPower(v)
+guard = true
+power.Value = v
+guard = false
+end
+ack.Changed:Connect(function(val)
+LB.Ack = val
+if not val and LB.On then
+LB.On = false
+setPower(false)
+LB.GizmoSync()
+end
+refresh()
+end)
+power.Changed:Connect(function(val)
+if guard then return end
+if val then
+if not LB.Ack then
+say("Building Limb Blocks: accept the warning first.")
+setPower(false)
+return
+end
+if not LB.Gate() then
+local runCur = Reanimate.Current
+say(runCur and ("Building Limb Blocks: you are running " .. tostring(runCur.Name) .. ", which is not supported. Use Limb, Ragdoll, Unanchored, Servo-Joint, Hybrid, Skeletal Retargeting, Kinematic, Velocity-Interpolated or Hats Reanimation.") or "Building Limb Blocks: start a limb reanimation variant or Hats Reanimation first.")
+setPower(false)
+return
+end
+LB.On = true
+setPower(true)
+else
+LB.On = false
+end
+LB.GizmoSync()
+refresh()
+end)
+UI.CreateButton(page, "Reset Selected Limb", 18).Activated:Connect(function()
+LB.Reset(LB.Limbs[sel.Value])
+syncSliders()
+refresh()
+end)
+UI.CreateButton(page, "Reset All Limbs", 18).Activated:Connect(function()
+LB.Reset()
+syncSliders()
+refresh()
+end)
+UI.CreateText(page, "<font color=\"#AAAAAA\">Changes apply live. Drag the 3D gizmo arrows (move) or rings (rotate) on the selected limb, or use the sliders / type exact values. Position moves a limb along the torso's axes, rotation turns it around its own centre. Switching limbs keeps every other limb where you put it. Turning Building Mode off restores the normal pose; Reset clears the saved arrangement. Everything resets when reanimation stops or changes.</font>", 10, C)
+LB.OnEdit = function(final)
+syncSliders()
+if final then refresh() end
+end
+LB.OnClear = function()
+setPower(false)
+syncSliders()
+refresh()
+end
+local polling = false
+page:GetPropertyChangedSignal("Visible"):Connect(function() LB.GizmoSync() end) -- opening the page shows / binds the gizmo, closing it hides / unbinds it
+page:GetPropertyChangedSignal("Visible"):Connect(function()
+if not page.Visible then return end
+pcall(LB.Gate)
+refresh()
+if polling then return end
+polling = true
+task.spawn(function()
+while page.Visible do
+task.wait(1)
+pcall(LB.Gate)
+pcall(refresh)
+end
+polling = false
+end)
+end)
+refresh()
+end
+end, function(e) warn("[LimbBlocks] failed to initialise: " .. tostring(e)) end)
 do
 local built, buildErr = pcall(function()
 local CATS = {
@@ -104958,6 +105586,23 @@ if Stack[#Stack] == Hub then openPage(studioPage) end
 end)
 UI.CreateText(Hub, "<font color=\"#AAAAAA\">Create custom dances and movesets frame by frame using your reanimated character.</font>", 10, Enum.TextXAlignment.Center)
 Util.AnimStudio.Attach(studioPage, closePage)
+end)
+pcall(function()
+local blocksPage = newPage()
+pcall(function() Util.Search.Titles[blocksPage] = "Building Limb Blocks" end)
+UI.CreateButton(Hub, "BUILDING LIMB BLOCKS &gt;", 20).Activated:Connect(function()
+if busy then return end
+if #Stack == 0 then
+MainPage.Visible = false
+Hub.Position = UDim2.new(0.5, 0, 0.5, 0)
+Hub.Visible = true
+table.insert(Stack, Hub)
+MainPage.Interactable = true
+end
+if Stack[#Stack] == Hub then openPage(blocksPage) end
+end)
+UI.CreateText(Hub, "<font color=\"#AAAAAA\">Use your reanimated limbs as building blocks to create custom formations and constructions.</font>", 10, Enum.TextXAlignment.Center)
+Util.LimbBlocks.Attach(blocksPage, closePage)
 end)
 local pages = {}
 local moves = {}
