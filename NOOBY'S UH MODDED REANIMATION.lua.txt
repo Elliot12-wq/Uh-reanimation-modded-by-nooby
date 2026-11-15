@@ -95309,27 +95309,42 @@ function startSession()
 	refreshAll()
 end
 function stopSession(reason)
+	U.gen = (U.gen or 0) + 1 -- cancels any Studio.Enter() that is still opening
 	local s = S
-	if not s then return end
 	S, Drag, PD = nil, nil, nil -- first: the regular moveset / dance loop takes over again on the next frame
-	FC.disable(); FC.unlock() -- Freecam off + camera restored + character controls restored (Back / close / page hidden all land here)
-	for _, c in s.conns do pcall(c.Disconnect, c) end
-	table.clear(s.conns)
-	if s.live then pcall(s.live.Destroy, s.char); s.live = nil end
-	pcall(function() s.page.ScrollingEnabled = true end)
-	if typeof(s.char) == "Instance" and s.char.Parent then
-		pcall(function()
-			for _, d in s.char:GetDescendants() do
-				if d:IsA("Motor6D") then d.Transform = CFrame.identity end
-			end
-		end)
+	-- unconditional release: runs even with no session (already stopped, half-opened, or an earlier run died midway)
+	pcall(FC.disable)
+	pcall(FC.unlock)
+	pcall(function() RunService:UnbindFromRenderStep("AnimStudioFreecam") end)
+	pcall(function() RunService:UnbindFromRenderStep("AnimStudioGizmo") end)
+	pcall(function() ContextActionService:UnbindAction("AnimStudioFreecamKeys") end)
+	for _, c in FC.conns do pcall(c.Disconnect, c) end
+	table.clear(FC.conns)
+	pcall(FC.unlockMouse)
+	if FC.ui then pcall(function() FC.ui.frame:Destroy() end) FC.ui = nil end
+	pcall(lockScroll, false)
+	pcall(function() if U.page then U.page.ScrollingEnabled = true end end)
+	if s then -- session-owned resources
+		for _, c in s.conns do pcall(c.Disconnect, c) end
+		table.clear(s.conns)
+		if s.live then pcall(s.live.Destroy, s.char); s.live = nil end
+		if typeof(s.char) == "Instance" and s.char.Parent then
+			pcall(function()
+				for _, d in s.char:GetDescendants() do
+					if d:IsA("Motor6D") then d.Transform = CFrame.identity end
+				end
+			end)
+		end
+		s.track, s.animator, s.char = nil, nil, nil
+		pcall(function() if U.nameBox then Work.names[Work.mode] = U.nameBox.Text end end)
+		pcall(refreshStatus)
+		pcall(refreshTransport)
 	end
-	s.track, s.animator, s.char = nil, nil, nil
-	if U.nameBox then Work.names[Work.mode] = U.nameBox.Text end
-	pcall(refreshStatus)
-	pcall(refreshTransport)
+	-- the overlay is hidden no matter what: onClose does the full hide, the direct hides are the backstop
 	if U.onClose then pcall(U.onClose) end
-	if reason then say(reason) end
+	if U.root then pcall(function() U.root.Visible = false end) end
+	if U.hitCap then pcall(function() U.hitCap.Visible = false end) end
+	if reason then pcall(say, reason) end
 end
 
 -- ===== saving / loading =====
@@ -95887,8 +95902,7 @@ local function buildEditor()
 		if U.gzForce then U.gzForce() end
 	end
 	local function closeSlot()
-		Studio.Leave()
-		if U.closeFn then U.closeFn() end
+		Studio.Exit()
 	end
 	local function onSave()
 		if cleanName(U.nameBox.Text) == "" then
@@ -96927,11 +96941,12 @@ local function buildEditor()
 	root:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
 	U.trk:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() if U.built and not U.min then drawTimeline() end end)
 	U.onClose = function()
-		closePopups()
-		setPick(false)
-		root.Visible = false
+		pcall(function() root.Visible = false end) -- first, so the overlay goes away even if a later step errors
+		pcall(closePopups)
+		pcall(setPick, false)
+		pcall(function() hitCap.Visible = false end)
 		if U.selBox then pcall(function() U.selBox.Adornee = nil end) end
-		gzHide()
+		pcall(gzHide)
 	end
 	applyRows()
 	layout()
@@ -96941,43 +96956,66 @@ local entering = false
 function Studio.Enter()
 	if S or entering or not U.page then return end
 	entering = true
+	local gen = U.gen or 0 -- stopSession() bumps U.gen: an exit that lands while this open is in flight cancels it
 	task.spawn(function()
-		local ok = authorized(true)
-		entering = false
-		if not U.page.Visible or S then return end
-		if not ok then
-			U.gate.Text = "Animation Studio is unavailable: no valid player was found."
-			return
-		end
-		if not U.built then
-			local okB, err = pcall(buildEditor)
-			if not okB then
-				if U.root then pcall(function() U.root:Destroy() end) U.root = nil end
-				U.built = false
-				U.gate.Text = "Editor failed to build: " .. tostring(err)
-				warn("[AnimStudio] " .. tostring(err))
+		local okRun, errRun = pcall(function()
+			local function stale() return (U.gen or 0) ~= gen or S ~= nil or not U.page.Visible end
+			local ok = authorized(true)
+			if stale() then return end
+			if not ok then
+				U.gate.Text = "Animation Studio is unavailable: no valid player was found."
 				return
 			end
+			if not U.built then
+				local okB, err = pcall(buildEditor)
+				if not okB then
+					if U.root then pcall(function() U.root:Destroy() end) U.root = nil end
+					U.built = false
+					U.gate.Text = "Editor failed to build: " .. tostring(err)
+					warn("[AnimStudio] " .. tostring(err))
+					return
+				end
+				if U.root then U.root.Visible = false end -- the frame is created visible: keep it hidden until the open is confirmed still wanted
+				if stale() then return end -- an exit during the build wins
+			end
+			U.gate.Text = "Access: <b>open to everyone</b>\n<font color=\"#FFB84D\"><b>WARNING:</b> " .. U.warn .. "</font>"
+			U.root.Visible = true
+			if U.layout then U.layout() end
+			startSession()
+			say(U.warn)
+			local wid = U.msgId
+			U.msgUntil = os.clock() + 10
+			task.delay(10.1, function() if U.msgId == wid and S then refreshStatus() end end)
+		end)
+		entering = false
+		if not okRun then
+			warn("[AnimStudio] open failed: " .. tostring(errRun))
+			pcall(stopSession) -- a failed open never leaves the overlay up
 		end
-		U.gate.Text = "Access: <b>open to everyone</b>\n<font color=\"#FFB84D\"><b>WARNING:</b> " .. U.warn .. "</font>"
-		U.root.Visible = true
-		if U.layout then U.layout() end
-		startSession()
-		say(U.warn)
-		local wid = U.msgId
-		U.msgUntil = os.clock() + 10
-		task.delay(10.1, function() if U.msgId == wid and S then refreshStatus() end end)
 	end)
 end
 function Studio.Leave() stopSession() end
+function Studio.Exit() -- Close Slot + Back: full shutdown, then leave the page (retries while a page transition is running)
+	pcall(stopSession)
+	local page, closeFn = U.page, U.closeFn
+	if not page or not closeFn or not page.Visible or U.exiting then return end
+	U.exiting = true
+	task.spawn(function()
+		local t0 = os.clock()
+		while page.Visible and U.exiting and os.clock() - t0 < 5 do
+			pcall(closeFn) -- closePage() ignores calls while "busy": keep asking until it takes
+			task.wait(0.1)
+		end
+		U.exiting = false
+	end)
+end
 function Studio.Holding(char) local s = S return s ~= nil and char ~= nil and s.char == char end
 function Studio.Touch() touch() end
 function Studio.CanUse() return authorized(false) end
 function Studio.Attach(page, closeFn)
 	U.page, U.closeFn = page, closeFn
 	UI.CreateButton(page, "&lt; Back", 20).Activated:Connect(function()
-		Studio.Leave()
-		closeFn()
+		Studio.Exit()
 	end)
 	U.pageTitle = UI.CreateText(page, "<b>ANIMATION STUDIO</b>", 15, Enum.TextXAlignment.Center)
 	UI.CreateText(page, '<font color="#AAAAAA">Create custom dances and movesets frame by frame using your reanimated character.\nOpen to everyone. The Animation Editor opens full-screen.</font>', 10, Enum.TextXAlignment.Center)
@@ -96985,7 +97023,7 @@ function Studio.Attach(page, closeFn)
 	UI.CreateButton(page, "OPEN ANIMATION EDITOR", 18).Activated:Connect(function() Studio.Enter() end)
 	UI.CreateSeparator(page)
 	page:GetPropertyChangedSignal("Visible"):Connect(function()
-		if page.Visible then Studio.Enter() else stopSession() end
+		if page.Visible then U.exiting = false; Studio.Enter() else stopSession() end
 	end)
 end
 return Studio
