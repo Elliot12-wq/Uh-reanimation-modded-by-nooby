@@ -72414,6 +72414,7 @@ UI.CreateSwitch(parent, "Show me how I look!", LimbReanimator.ReplicateFPS10).Ch
 LimbReanimator.ReplicateFPS10 = val
 SaveData.Reanimator.LimbReplicateFPS10 = val
 end)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
 Reanimate.LimbHider.Switches(parent, hiderKey or "Limbs")
 UI.CreateSwitch(parent, "Target Fling Enabled", LimbReanimator.FlingEnabled).Changed:Connect(function(val)
 LimbReanimator.FlingEnabled = val
@@ -76217,6 +76218,7 @@ return true
 end
 HatReanimator.DontFireCharAddOnThisChar = nil
 function HatReanimator.Config(parent)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
 UI.CreateSwitch(parent, "dolteddown's permadeath", HatReanimator.Permadeath).Changed:Connect(function(val)
 HatReanimator.Permadeath = val
@@ -76911,6 +76913,11 @@ if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
 local lcf = limb.CFrame
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): whatever is mapped to the head follows the same neck rotation
+if HMo and HMo.On and hatmapped.Limb == "Head" then
+local okHM, hcf = pcall(HMo.HatFrame, ReanimCharacter, lcf)
+if okHM and typeof(hcf) == "CFrame" then lcf = hcf end
+end
 local LB = Util.LimbBlocks -- Building Limb Blocks: the limb frame a hat follows carries that limb's offset (Hats Reanimator only, only while Building Mode is on)
 if LB and LB.On then
 local okLB, ncf = pcall(LB.HatPose, ReanimCharacter, hatmapped.Limb, lcf)
@@ -78864,6 +78871,7 @@ return true
 end
 HairReanimator.DontFireCharAddOnThisChar = nil
 function HairReanimator.Config(parent)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
 Reanimate.LimbHider.Switches(parent, "Hair")
 UI.CreateSwitch(parent, "dolteddown's permadeath", HairReanimator.Permadeath).Changed:Connect(function(val)
@@ -79564,11 +79572,17 @@ local hatscale = hatmapped.Scale
 if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
+local lcf = limb.CFrame
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): whatever is mapped to the head follows the same neck rotation
+if HMo and HMo.On and hatmapped.Limb == "Head" then
+local okHM, hcf = pcall(HMo.HatFrame, ReanimCharacter, lcf)
+if okHM and typeof(hcf) == "CFrame" then lcf = hcf end
+end
 if hatmapped.C0 and hatmapped.C1 then
-return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse()), limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, lcf * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse()), limb.Velocity
 end
 if hatmapped.Offset then
-return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * hatmapped.Offset), limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, lcf * hatmapped.Offset), limb.Velocity
 end
 end
 else
@@ -81239,6 +81253,7 @@ return true
 end
 HatHairReanimator.DontFireCharAddOnThisChar = nil
 function HatHairReanimator.Config(parent)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
 Reanimate.LimbHider.Switches(parent, "HatHair")
 UI.CreateSwitch(parent, "dolteddown's permadeath", HatHairReanimator.Permadeath).Changed:Connect(function(val)
@@ -81972,11 +81987,17 @@ local hatscale = hatmapped.Scale
 if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
+local lcf = limb.CFrame
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): whatever is mapped to the head follows the same neck rotation
+if HMo and HMo.On and hatmapped.Limb == "Head" then
+local okHM, hcf = pcall(HMo.HatFrame, ReanimCharacter, lcf)
+if okHM and typeof(hcf) == "CFrame" then lcf = hcf end
+end
 if hatmapped.C0 and hatmapped.C1 then
-return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse()), limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, lcf * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse()), limb.Velocity
 end
 if hatmapped.Offset then
-return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * hatmapped.Offset), limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, lcf * hatmapped.Offset), limb.Velocity
 end
 end
 else
@@ -83658,6 +83679,7 @@ return true
 end
 AccessoriesReanimator.DontFireCharAddOnThisChar = nil
 function AccessoriesReanimator.Config(parent)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
 Reanimate.LimbHider.Switches(parent, "Accessories")
 UI.CreateSwitch(parent, "dolteddown's permadeath", AccessoriesReanimator.Permadeath).Changed:Connect(function(val)
@@ -84333,11 +84355,17 @@ local hatscale = hatmapped.Scale
 if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
+local lcf = limb.CFrame
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): whatever is mapped to the head follows the same neck rotation
+if HMo and HMo.On and hatmapped.Limb == "Head" then
+local okHM, hcf = pcall(HMo.HatFrame, ReanimCharacter, lcf)
+if okHM and typeof(hcf) == "CFrame" then lcf = hcf end
+end
 if hatmapped.C0 and hatmapped.C1 then
-return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse()), limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, lcf * Util.ApplyAxis(Util.ScaleCFrame(hatmapped.C0, scale)) * Util.ScaleCFrame(hatmapped.C1, hatscale):Inverse()), limb.Velocity
 end
 if hatmapped.Offset then
-return Reanimate.LimbHider.HatCF(hatmapped.Limb, limb.CFrame * hatmapped.Offset), limb.Velocity
+return Reanimate.LimbHider.HatCF(hatmapped.Limb, lcf * hatmapped.Offset), limb.Velocity
 end
 end
 else
@@ -87402,6 +87430,314 @@ local cf = rcRoot.CFrame * (rel or Reanimate.StableTorsoRel(rcRoot, rcTorso))
 if Reanimate.FiniteCF(cf) then return cf end
 return rcTorso.CFrame
 end
+-- ===== DYNAMIC HEAD MOVEMENT (PHONE ONLY): one shared motion-sensor controller (Reanimate.HeadMotion) =====
+-- Additive and pull-based: the existing head pose hooks ask it for a head rotation (Reanimate.SafeLimbPose = every limb variant, GetHatMappedCFrame = Hats / Hair / Hat X Hair / Accessories). It owns no RunService connection and no update loop.
+-- Sensor choice is automatic: gyroscope when UserInputService.GyroscopeEnabled, otherwise the accelerometer (gravity-derived pitch / roll only, yaw is not observable and is never faked). The event connection is made on the first request and drops itself once requests stop (deanimate / respawn / method switch), when the switch is turned off, or on Reset.
+-- Motion pipeline (raw sensor data is never applied to the head directly):
+--   1. sensor sample (stored with its arrival time)  2. angles relative to the calibrated neutral (yaw / roll unwrapped, so there is no +-180 flip)  3. soft dead zone + smooth (tanh) limits
+--   4. One Euro filter, run only on NEW samples with the real sensor dt: heavy smoothing while the phone is still, almost no lag while it moves
+--   5. critically damped spring (SmoothDamp), run every frame with the frame dt: keeps position AND velocity continuous, so it glides between sensor updates and never snaps, whatever the sensor / frame rate
+--   6. the smoothed rotation is applied as a head-local offset around the neck joint: FinalHead = AnimatedHead * Offset (the animation's own head movement stays underneath)
+pcall(function()
+local HM = {Wanted = false, On = false}
+Reanimate.HeadMotion = HM
+local ALLOW = {Limbs = true, Ragdoll = true, ["Servo-Joint"] = true, ["Hybrid-Joint"] = true, ["Skeletal Retargeting"] = true, ["Kinematic Reanimation"] = true, ["Velocity-Interpolated"] = true, Hats = true, Hair = true, HatHair = true, Accessories = true}
+local IDCF, PI = CFrame.identity, math.pi
+local TAU, RAD = PI * 2, PI / 180
+local LIM_P, LIM_Y, LIM_R = 40 * RAD, 70 * RAD, 30 * RAD -- pitch / yaw / roll limits (soft)
+local MAXSPD, RAMP = 7, 0.4 -- max head speed in rad/s, ease-in time when the feature starts
+local NECK_P = Vector3.new(0, -0.5, 0) -- neck joint in head space (R6 / R15 Neck.C1)
+local cGyro, cAcc, kind = nil, nil, nil
+local sCF, sV, sT, pT = nil, nil, 0, 0 -- latest sensor sample, its arrival time, arrival time of the last processed sample
+local refCF, refG, gravV, gravLen, badT = nil, nil, nil, nil, 0
+local uY, uR, pY, pR = 0, 0, 0, 0 -- unwrapped yaw / roll and their previous raw values
+local fP, fY, fR = {}, {}, {} -- One Euro filter states
+local tP, tY, tR = 0, 0, 0 -- filtered targets
+local pit, yaw, rol, vP, vY, vR, wt = 0, 0, 0, 0, 0, 0, 0 -- spring state (angles + velocities) and ease-in weight
+local lastT, useT, lastAng, scCF, outCF, pgui = 0, 0, nil, IDCF, IDCF, nil
+local tcRC, tcNeck, tcP, mR, mP, mM = nil, nil, NECK_P, nil, nil, IDCF
+-- phone check = the script's existing touch-only test; then real sensor availability (a phone is not assumed to have a gyroscope)
+local function detect()
+local ok, k, why = pcall(function()
+if not (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) then return nil, "Dynamic Head Movement is PHONE ONLY, no phone was detected on this device." end
+if UserInputService.GyroscopeEnabled then return "gyro" end
+if UserInputService.AccelerometerEnabled then return "accel" end
+return nil, "This device has no gyroscope or accelerometer, so Dynamic Head Movement is unavailable. The rest of the reanimation is unaffected."
+end)
+if ok then return k, why end
+return nil, "This device's motion sensors could not be read."
+end
+HM.Detect = detect
+-- disconnects only: calibration and smoothing state survive, so a short pause of the pose hooks never re-centres or snaps the head
+local function detach()
+if cGyro then cGyro:Disconnect() cGyro = nil end
+if cAcc then cAcc:Disconnect() cAcc = nil end
+kind, sCF, sV = nil, nil, nil
+end
+local function attach()
+local k = detect()
+if not k then return false end
+if k == "gyro" then
+cGyro = UserInputService.DeviceRotationChanged:Connect(function(_, cf)
+sCF, sT = cf, os.clock()
+if sT - useT > 1.5 then detach() end
+end)
+pcall(function()
+local _, cf = UserInputService:GetDeviceRotation()
+sCF, sT = cf, os.clock()
+end)
+else
+cAcc = UserInputService.DeviceAccelerationChanged:Connect(function(io)
+sV, sT = io.Position, os.clock()
+if sT - useT > 1.5 then detach() end
+end)
+pcall(function()
+sV, sT = UserInputService:GetDeviceAcceleration().Position, os.clock()
+end)
+end
+kind = k
+return true
+end
+local function lp(dt, fc)
+return dt / (dt + 1 / (TAU * fc))
+end
+-- One Euro filter: cutoff rises with the signal speed (no lag while moving, strong noise rejection while still)
+local function oneEuro(f, x, dt, fmin, beta)
+local px = f.x
+if not px then
+f.x, f.dx, f.raw = x, 0, x
+return x
+end
+local d = (x - f.raw) / dt
+f.raw = x
+local dh = f.dx + lp(dt, 1) * (d - f.dx)
+f.dx = dh
+local xh = px + lp(dt, fmin + beta * math.abs(dh)) * (x - px)
+f.x = xh
+return xh
+end
+-- soft dead zone (output starts from 0 at the threshold) + smooth saturation: 1:1 for small angles, easing into the limit instead of a hard stop
+local function shape(a, dz, lim)
+local m = a < 0 and -a or a
+if m <= dz then return 0 end
+local e = math.exp(-2 * (m - dz) / lim)
+local r = lim * (1 - e) / (1 + e)
+return a < 0 and -r or r
+end
+-- critically damped spring (SmoothDamp): frame-rate independent, position and velocity stay continuous, no overshoot
+local function damp(cur, vel, target, T, dt)
+local om = 2 / T
+local x = om * dt
+local ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x)
+local ch = cur - target
+local mx = MAXSPD * T
+if ch > mx then ch = mx elseif ch < -mx then ch = -mx end
+local tg = cur - ch
+local tmp = (vel + om * ch) * dt
+vel = (vel - om * tmp) * ex
+local out = tg + (ch + tmp) * ex
+if (target - cur > 0) == (out > target) then return target, 0 end
+return out, vel
+end
+local function step(now)
+local dt = lastT == 0 and 1 / 60 or now - lastT
+lastT = now
+if dt <= 0 then return end
+if dt > 0.25 then dt = 1 / 60 elseif dt > 0.1 then dt = 0.1 end
+local pg = pgui
+if not (pg and pg.Parent) then
+pg = Player:FindFirstChildOfClass("PlayerGui")
+pgui = pg
+end
+local ang = 0
+local o = pg and pg.CurrentScreenOrientation
+if o == Enum.ScreenOrientation.LandscapeLeft then ang = PI / 2 elseif o == Enum.ScreenOrientation.LandscapeRight then ang = -PI / 2 end
+if ang ~= lastAng then
+lastAng = ang
+scCF = CFrame.Angles(0, 0, ang)
+refCF, refG, gravV, pT = nil, nil, nil, 0 -- portrait <-> landscape: new neutral from the current sample (it is re-processed at once, the spring glides there)
+end
+-- stage 1-4: only when a NEW sensor sample arrived
+if sT > pT then
+local sdt = pT == 0 and 0.016 or sT - pT
+if sdt < 0.002 then sdt = 0.002 elseif sdt > 0.1 then sdt = 0.1 end
+pT = sT
+local ax, ay, az, ok = 0, 0, 0, false
+if kind == "gyro" then
+local g = sCF
+if g then
+g = g.Rotation
+if ang ~= 0 then g = g * scCF end
+if not refCF then refCF, uY, uR, pY, pR = g, 0, 0, 0, 0 end -- neutral = the phone orientation when the feature starts being used
+local rx, ry, rz = (refCF:Inverse() * g):ToEulerAnglesYXZ()
+uY = uY + ((ry - pY + PI) % TAU - PI)
+uR = uR + ((rz - pR + PI) % TAU - PI)
+pY, pR = ry, rz
+ax, ay, az, ok = rx, uY, uR, true
+end
+elseif kind == "accel" then
+local a = sV
+if a then
+if ang ~= 0 then a = scCF:VectorToObjectSpace(a) end
+local m = a.Magnitude
+if m > 1e-3 then
+if not gravV then
+gravV, gravLen, badT = a, m, 0
+else
+-- soft gate on how close the sample length is to 1 g: shakes and knocks (linear acceleration) fade out of the gravity low-pass instead of being cut hard
+local wg = 1 - math.abs(m - gravLen) / (0.35 * gravLen)
+if wg > 0 then
+gravV = gravV:Lerp(a, (1 - math.exp(-sdt / 0.12)) * wg)
+gravLen = gravLen + (m - gravLen) * (1 - math.exp(-sdt / 3))
+badT = 0
+else
+badT = badT + sdt
+if badT > 0.5 then gravV, gravLen, badT = a, m, 0 end -- the length reference was wrong: re-seed, the head can never stay stuck
+end
+end
+local gu = gravV.Unit
+if not refG then refG = gu end
+-- rotation that carries the neutral gravity direction onto the current one; sign-convention independent (iOS / Android differ in the sign of gravity, the cross product does not). Yaw is not observable: stays 0
+local cr = refG:Cross(gu)
+local s = cr.Magnitude
+if s > 1e-5 then
+local k = math.atan2(s, refG:Dot(gu)) / s
+ax, az = -cr.X * k, -cr.Z * k
+end
+ok = true
+end
+end
+end
+if ok then
+local gy = kind == "gyro"
+local dz = gy and 0.007 or 0.0175
+local fm, bt = 3.5, 6
+if not gy then fm, bt = 1.2, 1.5 end
+tP = oneEuro(fP, shape(ax, dz, LIM_P), sdt, fm, bt)
+tY = oneEuro(fY, shape(ay, dz, LIM_Y), sdt, fm, bt)
+tR = oneEuro(fR, shape(az, dz, LIM_R), sdt, fm, bt)
+end
+end
+-- stage 5: every frame, glide toward the latest target (gyro follows tightly, the accelerometer is smoothed much more)
+local T = kind == "accel" and 0.16 or 0.07
+pit, vP = damp(pit, vP, tP, T, dt)
+yaw, vY = damp(yaw, vY, tY, T, dt)
+rol, vR = damp(rol, vR, tR, T, dt)
+if wt < 1 then wt = math.min(1, wt + dt / RAMP) end
+local w = wt * wt * (3 - 2 * wt)
+if math.abs(pit) + math.abs(yaw) + math.abs(rol) < 1e-4 then
+outCF = IDCF
+else
+outCF = CFrame.fromEulerAnglesYXZ(pit * w, yaw * w, rol * w)
+end
+end
+-- the smoothed head offset (head axes: X = look up / down, Y = turn, Z = tilt), or nil while inactive / neutral
+local function get()
+if not HM.On then return nil end
+local cur = Reanimate.Current
+if not (cur and ALLOW[cur.Name]) then return nil end
+local now = os.clock()
+useT = now
+if not kind and not attach() then
+HM.On = false
+pcall(Util.UINotify, "Dynamic Head Movement turned off: the device motion sensor is no longer available.")
+return nil
+end
+if now - lastT >= 0.004 then step(now) end
+if outCF == IDCF then return nil end
+return outCF
+end
+-- Limb Reanimator family adapter (Reanimate.SafeLimbPose): cf = finished Motor6D pose Part0 (torso) -> Part1 (head), so cf * Offset turns the head in its own axes around the neck joint (C1), on top of the animation's own head pose
+function HM.LimbHead(v, cf)
+local R = get()
+if not R or cf == IDCF then return cf end
+local hl = Reanimate.HiddenLimbs
+if hl and (hl.Head or hl.Torso) then return cf end
+local c1 = v and v.C1
+local P = c1 and c1.Position or NECK_P
+local out = cf * CFrame.new(P) * R * CFrame.new(-P)
+if Reanimate.FiniteCF(out) then return out end
+return cf
+end
+-- Hats / Hair / Hat X Hair / Accessories adapter: lcf = world CFrame of the animated fake Head that a mapped hat / hair / accessory follows. They all receive the same already-smoothed head offset around the neck, so nothing gets a separate rotation
+function HM.HatFrame(rc, lcf)
+local R = get()
+if not R or not rc then return lcf end
+if tcRC ~= rc or (tcNeck and not tcNeck.Parent) then
+tcRC = rc
+local torso = rc:FindFirstChild("Torso")
+tcNeck = torso and torso:FindFirstChild("Neck")
+if tcNeck and tcNeck:IsA("Motor6D") then
+tcP = tcNeck.C1.Position
+else
+tcNeck = nil
+local okS, sc = pcall(rc.GetScale, rc)
+tcP = NECK_P * ((okS and tonumber(sc)) or 1)
+end
+end
+if mR ~= R or mP ~= tcP then -- one pivot matrix per frame, shared by every hat
+mR, mP = R, tcP
+mM = CFrame.new(tcP) * R * CFrame.new(-tcP)
+end
+local out = lcf * mM
+if Reanimate.FiniteCF(out) then return out end
+return lcf
+end
+-- drops every connection and all calibration / filter / spring state (stop, start, switch toggled); the user's switch is kept
+function HM.Reset()
+detach()
+refCF, refG, gravV, gravLen, badT = nil, nil, nil, nil, 0
+uY, uR, pY, pR = 0, 0, 0, 0
+fP.x, fP.dx, fP.raw, fY.x, fY.dx, fY.raw, fR.x, fR.dx, fR.raw = nil, 0, nil, nil, 0, nil, nil, 0, nil
+tP, tY, tR = 0, 0, 0
+pit, yaw, rol, vP, vY, vR, wt = 0, 0, 0, 0, 0, 0, 0
+lastT, pT, sT, lastAng, outCF = 0, 0, 0, nil, IDCF
+tcRC, tcNeck, mR, mP = nil, nil, nil, nil
+end
+function HM.Set(on)
+HM.Reset()
+if on then
+local k, why = detect()
+if not k then
+HM.Wanted, HM.On = false, false
+pcall(function() SaveData.Reanimator.DynamicHeadMovement = false end)
+return false, why
+end
+HM.Wanted, HM.On = true, true
+else
+HM.Wanted, HM.On = false, false
+end
+pcall(function() SaveData.Reanimator.DynamicHeadMovement = HM.Wanted end)
+return true
+end
+-- the one switch every applicable Config shares (Limb + its variants, Hats, Hair, Hat X Hair, Accessories)
+function HM.ConfigSwitch(parent)
+local k, why = detect()
+local lever = UI.CreateSwitch(parent, "Dynamic Head Movement (Phone Only)", (HM.Wanted and k ~= nil) == true)
+UI.CreateText(parent, "PHONE ONLY: Move your phone to control your reanimated character's head. Uses your phone's gyroscope when available, otherwise its accelerometer.", 10, Enum.TextXAlignment.Center)
+local status = why
+if k == "gyro" then
+status = "Detected: gyroscope (used automatically)."
+elseif k == "accel" then
+status = "Detected: accelerometer (no gyroscope, so the head follows pitch and roll only)."
+end
+UI.CreateText(parent, "PHONE ONLY — Requires a supported phone motion sensor.\n" .. tostring(status), 10, Enum.TextXAlignment.Center)
+local busy = false
+lever.Changed:Connect(function(val)
+if busy then return end
+local ok, msg = HM.Set(val == true)
+if not ok then
+busy = true
+lever.Value = false
+busy = false
+pcall(Util.UINotify, msg)
+end
+end)
+end
+pcall(function()
+if SaveData.Reanimator.DynamicHeadMovement == true and detect() then HM.Wanted, HM.On = true, true end
+end)
+end)
 -- limb pose guard: a non-finite pose never reaches a Motor6D (the last valid one is held), and a limb joint (neck / shoulder / hip) stays anchored to its parent, so a glitched pose can no longer throw a limb away from its pivot. Stateless (no extra smoothing), so it never fights an interpolating method. The root joint (HumanoidRootPart -> Torso) and hidden limbs are never modified here.
 function Reanimate.SanitizeLimbPose(map, v, cf, exact)
 if cf == CFrame.identity then return cf end
@@ -87427,6 +87763,11 @@ end
 function Reanimate.SafeLimbPose(map, v, RC, RootPart, tcf)
 local cf, exact = Reanimate.LimbPoseCFrame(map, v, RC, RootPart, tcf)
 cf = Reanimate.SanitizeLimbPose(map, v, cf, exact)
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): additive neck rotation on the finished head pose, shared by every limb variant
+if HMo and HMo.On and map.RPart1 == "Head" and map.RPart0 == "Torso" then
+local okHM, hcf = pcall(HMo.LimbHead, v, cf)
+if okHM and typeof(hcf) == "CFrame" then cf = hcf end
+end
 local LB = Util.LimbBlocks -- Building Limb Blocks: offsets are layered on the finished pose (Limb Reanimator only, only while Building Mode is on)
 if LB then
 local okLB, ncf = pcall(LB.LimbPose, map, v, RC, RootPart, tcf, cf)
@@ -90006,6 +90347,7 @@ repeat task.wait() until not Reanimate.Stopping
 Reanimate.Current.Running = nil
 Reanimate.Current = nil
 pcall(function() Util.LimbBlocks.Clear() end)
+pcall(function() Reanimate.HeadMotion.Reset() end)
 HumanoidLASetHookState(false)
 ReanimateText.Text = "Running: NONE"
 task.wait(1)
@@ -90037,6 +90379,7 @@ end
 ReanimateStartButtonText.Text = "Starting..."
 end
 Reanimate.Starting = true
+pcall(function() Reanimate.HeadMotion.Reset() end)
 Reanimate.Current = SelectedReanimator
 HumanoidLASetHookState(Reanimate.UseLoadAnimationHook)
 ReanimateText.Text = "Running: " .. Reanimate.Current.Name
@@ -90057,6 +90400,7 @@ repeat task.wait() until not Reanimate.Stopping
 Reanimate.Current.Running = nil
 Reanimate.Current = nil
 pcall(function() Util.LimbBlocks.Clear() end)
+pcall(function() Reanimate.HeadMotion.Reset() end)
 HumanoidLASetHookState(false)
 ReanimateText.Text = "Running: NONE"
 task.wait(1)
