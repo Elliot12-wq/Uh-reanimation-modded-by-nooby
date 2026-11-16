@@ -576,11 +576,147 @@ return _native_xpcall(func, handler, ...)
 end
 local b_getfenv = getfenv
 local Player = Players.LocalPlayer
+Util.Guard = (function()
+-- Narrow runtime guard for the official GitHub + Cloudflare Worker connection and the permanent device ban. It is a deterrent only:
+-- it can never stop someone who edits the script locally from deleting the guard itself, so the real authority is the Worker.
+local G = {
+BASE = "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/",
+BACKEND = "https://banner-system.elliptmal.workers.dev",
+VERSION = 1,
+MSG = "Even if you do it... You will still not. Use the official version. Or else.",
+State = "pending", Seen = {}, Warned = false, Down = false,
+}
+local PLACEHOLDER = {unknown = true, undefined = true, default = true, null = true, none = true, ["nil"] = true, error = true, failed = true, unsupported = true, notsupported = true, hwid = true}
+local function slash(v) return (tostring(v):gsub("/+$", "")) end
+-- nil = not overridden (the official default is used); anything else must be the official GitHub base / Worker URL
+function G.Official(base, backend)
+if base ~= nil and slash(base) ~= slash(G.BASE) then return false end
+if backend ~= nil and slash(backend) ~= slash(G.BACKEND) then return false end
+return true
+end
+-- Jarvis notification (the main UI notifier when it exists; the Roblox notification before the UI is built or when script notifications are off)
+function G.Notice(text)
+local okM, mode = pcall(function() return Util.FX.Cfg.NotifMode end)
+local ok = type(Util.UINotify) == "function" and not (okM and mode == 4) and pcall(Util.UINotify, "JARVIS: " .. text)
+if not ok then pcall(function() StarterGui:SetCore("SendNotification", {Title = "JARVIS", Text = text, Duration = 10}) end) end
+end
+-- one warning per execution session
+function G.Trip(reason)
+G.State, G.Reason = "violation", reason
+warn("[Jarvis Guard] official security connection is missing: " .. tostring(reason))
+if G.Warned then return end
+G.Warned = true
+G.Notice(G.MSG)
+end
+-- executor-provided device id: normalised the same way as on the Worker. It is only a lookup key, never a secret, and it can be spoofed.
+function G.Norm(v)
+if type(v) ~= "string" then return nil, "malformed" end
+v = v:gsub("^%s+", ""):gsub("%s+$", "")
+v = v:lower():gsub("^[{\"']+", ""):gsub("[}\"']+$", "")
+if #v == 0 then return nil, "empty" end
+if #v < 8 or #v > 128 or not v:match("^[0-9a-z][0-9a-z_.:%-]*$") then return nil, "malformed" end
+local seen, n = {}, 0
+for c in v:gmatch(".") do if not seen[c] then seen[c] = true; n += 1 end end
+if n < 6 or PLACEHOLDER[v] then return nil, "malformed" end
+return v
+end
+function G.Hwid()
+local okF, f = pcall(function() return gethwid end)
+if not okF or type(f) ~= "function" then return nil, "unsupported" end
+local ok, v = pcall(f)
+if not ok then return nil, "error" end
+return G.Norm(v)
+end
+-- POST /guard: startup handshake + device-ban check. Returns "ok" | "device" (banned device) | "violation" (explicitly rejected) | "unavailable" (network / backend down: never a ban, never an accusation)
+function G.Handshake()
+G.Seen.Handshake = true
+local req = request or http_request or (syn and syn.request)
+if type(req) ~= "function" then return "unavailable", "this executor has no request()" end
+local nonce = HttpService:GenerateGUID(false):gsub("-", ""):lower()
+local body = {userId = Player.UserId, nonce = nonce, gv = G.VERSION}
+local hw = G.Hwid()
+if hw then body.hwid = hw end
+local done, res
+task.spawn(function()
+local ok, r = pcall(req, {Url = G.BACKEND .. "/guard", Method = "POST", Headers = {["Content-Type"] = "application/json"}, Body = HttpService:JSONEncode(body)})
+res = ok and r or false
+done = true
+end)
+local t0 = os.clock()
+while not done and os.clock() - t0 < 8 do task.wait(0.05) end
+if type(res) ~= "table" then return "unavailable", "no response" end
+local okJ, d = pcall(HttpService.JSONDecode, HttpService, type(res.Body) == "string" and res.Body or "")
+if not okJ or type(d) ~= "table" then return "unavailable", "HTTP " .. tostring(res.StatusCode) end
+if tonumber(res.StatusCode) == 200 and d.ok == true and d.nonce == nonce and type(d.allow) == "boolean" then
+if d.allow then return "ok" end
+if d.reason == "device_banned" then return "device" end
+if d.reason == "rejected" then return "violation", "backend handshake rejected" end
+end
+return "unavailable", "HTTP " .. tostring(res.StatusCode)
+end
+function G.Deny() pcall(function() Player:Kick("BLACKLISTED by the owner/co-owner (device ban)") end) end
+-- stage 1, called by the official security init at the very top of the script (after its roles.json + blacklist.json requests)
+function G.Run(cfg)
+if not G.Official(cfg.Base, cfg.Backend) then G.Trip("official connection replaced") return "violation" end
+local st, why = G.Handshake()
+if st == "ok" or st == "device" then G.State = st
+elseif st == "violation" then G.Trip(why)
+else G.State, G.Why = "unavailable", why end
+return G.State
+end
+-- stage 2, called before the banner / backend system starts: required GitHub + backend code must have run and still point at the official hosts
+function G.Gate(cfg)
+if not (G.Seen.Roles and G.Seen.Blacklist and G.Seen.Handshake) then G.Trip("GitHub / backend initialisation missing") return false end
+if not G.Official(cfg.Base, cfg.Backend) then G.Trip("official connection replaced") return false end
+if G.State == "violation" then return false end
+if G.State == "device" then G.Deny() return false end
+if G.State ~= "ok" then
+-- GitHub / backend not reachable: a connection problem, not tampering. Security-dependent features stay paused (fail closed) and are retried.
+if not G.Down then
+G.Down = true
+G.Notice("Security connection unavailable (GitHub / backend not reachable). Online features stay paused and I will retry. This is not a ban.")
+end
+for _ = 1, 20 do
+task.wait(30)
+local st, why = G.Handshake()
+if st == "ok" then G.State = "ok" break end
+if st == "device" then G.State = "device" G.Deny() return false end
+if st == "violation" then G.Trip(why) return false end
+end
+if G.State ~= "ok" then return false end
+end
+return true
+end
+-- the blacklist module (GitHub list + backend) must be the real one and talk to the official hosts
+function G.Module(B, env)
+if type(B) == "table" and B.Official == "uh-mod-visual-system" and type(B.Fetch) == "function" and type(B.Watch) == "function" and type(B.Enforce) == "function" and type(B.CheckSelf) == "function" and env and G.Official(env.Base, env.Backend) then return true end
+G.Trip("GitHub blacklist / backend communication code missing")
+return false
+end
+function G.Halt()
+pcall(function()
+local g = (getgenv and getgenv()) or _G
+if g.UhBanner and g.UhBanner.Stop then g.UhBanner.Stop() end
+end)
+end
+-- periodic re-check while running (called from the blacklist watcher)
+function G.Recheck()
+local st, why = G.Handshake()
+if st == "device" then G.State = "device" G.Deny()
+elseif st == "violation" then G.Trip(why) G.Halt() end
+return st
+end
+return G
+end)()
 do
 local Cfg = (getgenv and getgenv().UhBannerConfig) or {}
+local G = Util.Guard
+if not G.Official(Cfg.Base, Cfg.Backend) then G.Trip("official connection replaced") return end
 local Base = Cfg.Base or "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/"
 pcall(Util.Roles.Fetch, Base, true)
+G.Seen.Roles = true
 local okGet, body = pcall(function() return game:HttpGet(Base .. "blacklist.json?t=" .. os.time()) end)
+G.Seen.Blacklist = true
 if okGet then
 local okJson, data = pcall(HttpService.JSONDecode, HttpService, body)
 if okJson and type(data) == "table" and type(data.entries) == "table" then
@@ -594,6 +730,14 @@ return
 end
 end
 end
+end
+local gs = G.Run(Cfg)
+if gs == "device" then
+G.Deny()
+warn("[Blacklist] this device is blocked from this script")
+return
+elseif gs == "violation" then
+return
 end
 end
 if not game:IsLoaded() then
@@ -1411,7 +1555,7 @@ LiquidGlass = false, GlassClarity = 0, Haptics = true,
 PageTrans = 1, BtnAnim = 1,
 RbxIconTheme = true, RbxBarTheme = true, ChatStyle = true, ChatTextSize = 14, ChatBgTr = 0.3, ChatWinW = 1, ChatWinH = 1, BubbleDur = 15, BubbleDist = 100, BubbleTail = true,
 LowEnd = false, PerfProfile = 1, UICache = true, FastExec = true,
-AutoReport = true, CModOn = true, CModSay = true, CModConf = 2,
+AutoReport = true, CModOn = true, CModSay = false, CModConf = 2,
 DeltaLogo = true, DeltaMotion = true, DeltaBlur = true, DeltaIntro = true, DeltaSpeed = 1, DeltaSource = "", DeltaEnabled = true, DeltaExecHelpers = true, DeltaFastExec = true,
 MusicDance = true, MusicColor = true,
 }
@@ -67753,6 +67897,8 @@ local genv = (getgenv and getgenv()) or _G
 local Cfg = genv.UhBannerConfig or {}
 local Base = Cfg.Base or "https://raw.githubusercontent.com/Elliot12-wq/uh-mod-visual-system/main/"
 local Backend = tostring(Cfg.Backend or "https://banner-system.elliptmal.workers.dev"):gsub("/+$", "")
+local Guard = Util.Guard
+if not (Guard and Guard.Gate(Cfg)) then return end
 local LocalOnly = Backend:find("YOUR%-SUBDOMAIN") ~= nil
 if LocalOnly then warn("[UhBanner] no backend set: LOCAL-ONLY mode (only you see your banner). Deploy worker.js (wrangler deploy) and set getgenv().UhBannerConfig = {Backend = '<worker url>'} for live sync.") end
 if genv.UhBanner and genv.UhBanner.Stop then pcall(genv.UhBanner.Stop) end
@@ -67799,6 +67945,7 @@ Deanimate = function() pcall(Util.ModDeanimate) end,
 Kick = function(msg) pcall(function() Player:Kick(msg) end) end,
 },
 }
+Env.Guard = Guard
 Env.Sign = function(path, body, bind) return body end -- no key, no SHA-256: the backend recognises the owner / co-owner / verified player by userId from roles.json on GitHub
 local EMBED = Cfg.Embedded == false and {} or {
 BannerUI = [==[
@@ -69464,7 +69611,7 @@ Blacklist = [==[
 -- Env needs: Player, Players, HttpService, Request, Base, Backend (owner / co-owner recognised by userId from roles.json on GitHub, no key)
 -- A blacklisted client kicks itself: "BLACKLISTED by the owner / co-owner" (checked at startup + every few seconds by B.Watch)
 return function(Env)
-	local B = {List = {}}
+	local B = {List = {}, Official = "uh-mod-visual-system"}
 	local function roleOfEntry(e) -- which rank blacklisted them: looked up in roles.json (Env.Roles), nothing hardcoded
 		local RL = Env.Roles
 		if not (RL and e) then return nil end
@@ -69516,9 +69663,12 @@ return function(Env)
 		if B.Watching then return end
 		B.Watching = true
 		task.spawn(function()
+			local rounds = 0
 			while B.Watching do
 				for _ = 1, 80 do if not B.Watching then return end task.wait(0.25) end
 				if B.Fetch() then B.Enforce() end
+				rounds += 1
+				if rounds % 15 == 0 and Env.Guard and Env.Guard.Recheck then pcall(Env.Guard.Recheck) end -- device ban / backend handshake re-check about every 5 min (a failed request never bans anyone)
 			end
 		end)
 	end
@@ -69528,6 +69678,10 @@ return function(Env)
 		if not (Env.IsOwner and Env.IsOwner()) then return false, "owner / co-owner only" end
 		local body = {room = Env.Room, by = Env.Player.Name, byId = Env.Player.UserId}
 		for k, v in pairs(extra) do body[k] = v end
+		if body.banDevice or path:sub(1, 8) == "/device/" then -- permanent device bans also need the owner secret set on the backend (read from UhBannerConfig.OwnerKey, never stored in this script)
+			local okC, c = pcall(function() return (getgenv and getgenv().UhBannerConfig or {}).OwnerKey end)
+			if okC and type(c) == "string" and c ~= "" then body.key = c end
+		end
 		if Env.Sign then Env.Sign(path, body, tostring(extra.userId)) end
 		local ok, res = pcall(Env.Request, {
 			Url = Env.Backend .. path, Method = "POST",
@@ -69539,15 +69693,19 @@ return function(Env)
 		if not okJ or type(data) ~= "table" then data = nil end
 		if type(res) ~= "table" or res.StatusCode ~= 200 then return false, "HTTP " .. tostring(type(res) == "table" and res.StatusCode) .. ((data and data.error) and (": " .. tostring(data.error)) or "") end
 		if data and type(data.entries) == "table" then B.List = data.entries; B.Fresh = os.clock() else B.Fetch() end -- the backend returns the new list: use it
-		return true
+		return true, nil, data
 	end
 
-	function B.Add(userId, username, reason)
-		return post("/blacklist", {userId = userId, username = username, reason = reason or ""})
+	function B.Add(userId, username, reason, banDevice) -- banDevice: also ban the account's device(s) permanently (owner secret required on the backend)
+		return post("/blacklist", {userId = userId, username = username, reason = reason or "", banDevice = banDevice == true or nil})
 	end
 
-	function B.Remove(userId) -- unblacklist (mistakes)
+	function B.Remove(userId) -- unblacklist (mistakes); a device ban is NOT lifted by this, it needs B.DeviceUnban
 		return post("/unblacklist", {userId = userId})
+	end
+
+	function B.DeviceUnban(userId) -- explicit, owner-authorised removal of the permanent device ban(s) recorded for an account
+		return post("/device/unban", {userId = userId})
 	end
 
 	local function toast(msg)
@@ -69555,43 +69713,64 @@ return function(Env)
 	end
 
 	-- Yes/No warning dialog. cb runs only on "Yes".
-	local function dialog(text, cb)
+	local function dialog(text, cb, cb2, label2)
 		local gui = Instance.new("ScreenGui")
 		gui.Name, gui.ResetOnSpawn, gui.DisplayOrder = "UhBlacklistConfirm", false, 1000
 		gui.Parent = Env.Player:WaitForChild("PlayerGui")
 		local f = Instance.new("Frame", gui)
-		f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(300, 150), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
+		f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(300, cb2 and 180 or 150), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
 		f.BackgroundColor3, f.BorderSizePixel = Color3.fromRGB(24, 24, 30), 0
 		Instance.new("UICorner", f).CornerRadius = UDim.new(0, 10)
 		local t = Instance.new("TextLabel", f)
-		t.Size, t.Position, t.BackgroundTransparency = UDim2.new(1, -20, 0, 84), UDim2.fromOffset(10, 8), 1
+		t.Size, t.Position, t.BackgroundTransparency = UDim2.new(1, -20, 0, cb2 and 114 or 84), UDim2.fromOffset(10, 8), 1
 		t.TextWrapped, t.TextColor3, t.Font, t.TextSize = true, Color3.new(1, 1, 1), Enum.Font.GothamMedium, 14
 		t.Text = text
-		local function btn(txt, x, col, fn)
+		local function btn(txt, x, w, col, fn)
 			local b = Instance.new("TextButton", f)
-			b.Size, b.Position, b.Text = UDim2.fromOffset(130, 36), UDim2.fromOffset(x, 100), txt
-			b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize = col, Color3.new(1, 1, 1), Enum.Font.GothamBold, 15
+			b.Size, b.Position, b.Text = UDim2.fromOffset(w, 36), UDim2.fromOffset(x, cb2 and 130 or 100), txt
+			b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize = col, Color3.new(1, 1, 1), Enum.Font.GothamBold, (w < 120) and 13 or 15
 			Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
 			b.Activated:Connect(function() gui:Destroy(); fn() end)
 		end
-		btn("Yes", 15, Color3.fromRGB(200, 60, 60), cb)
-		btn("No", 155, Color3.fromRGB(70, 70, 80), function() end)
+		if cb2 then
+			btn("Yes", 10, 84, Color3.fromRGB(200, 60, 60), cb)
+			btn(label2 or "Yes + Device", 100, 110, Color3.fromRGB(150, 40, 40), cb2)
+			btn("No", 216, 74, Color3.fromRGB(70, 70, 80), function() end)
+		else
+			btn("Yes", 15, 130, Color3.fromRGB(200, 60, 60), cb)
+			btn("No", 155, 130, Color3.fromRGB(70, 70, 80), function() end)
+		end
 	end
 
 	-- onDone(ok, err) is called after the request finishes (not called on "No").
 	function B.Confirm(userId, username, onDone)
-		dialog(("WARNING\nBlacklist %s (@%s)?\nThey will be blocked from using this script and kicked from the game."):format(username, username), function()
+		local function go(withDevice)
 			task.spawn(function()
-				local ok, err = B.Add(userId, username)
+				local ok, err, data = B.Add(userId, username, nil, withDevice)
 				if onDone then onDone(ok, err) end
+				if ok and withDevice then
+					local d = data and data.device
+					local st = d and d.status
+					toast(st == "banned" and "Device ban applied" or st == "pending" and "No device on record yet: it is banned the next time this account launches the script" or st == "protected" and "Device ban skipped: that device is shared with an owner / moderator account" or ("Device ban not applied" .. ((d and d.error) and (": " .. tostring(d.error)) or "")))
+				end
 			end)
-		end)
+		end
+		dialog(("WARNING\nBlacklist %s (@%s)?\nThey will be blocked from using this script and kicked from the game.\n\"Yes + Device\" also bans their device permanently."):format(username, username), function() go(false) end, function() go(true) end)
 	end
 
 	function B.ConfirmRemove(userId, username, onDone)
 		dialog(("Unblacklist %s (@%s)?\nThey will be able to use this script again."):format(username, username), function()
 			task.spawn(function()
 				local ok, err = B.Remove(userId)
+				if onDone then onDone(ok, err) end
+			end)
+		end)
+	end
+
+	function B.ConfirmDeviceRemove(userId, username, onDone)
+		dialog(("Remove the permanent device ban recorded for %s (@%s)?\nThe account blacklist stays as it is."):format(username, username), function()
+			task.spawn(function()
+				local ok, err = B.DeviceUnban(userId)
 				if onDone then onDone(ok, err) end
 			end)
 		end)
@@ -69608,7 +69787,7 @@ return function(Env)
 			gui.Parent = Env.Player:WaitForChild("PlayerGui")
 			B.Panel = gui
 			local f = Instance.new("Frame", gui)
-			f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(320, 300), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
+			f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(380, 300), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
 			f.BackgroundColor3, f.BorderSizePixel = Color3.fromRGB(24, 24, 30), 0
 			Instance.new("UICorner", f).CornerRadius = UDim.new(0, 10)
 			local t = Instance.new("TextLabel", f)
@@ -69634,7 +69813,7 @@ return function(Env)
 				row.Size, row.BackgroundColor3, row.BorderSizePixel, row.LayoutOrder = UDim2.new(1, -6, 0, 38), Color3.fromRGB(34, 34, 42), 0, i
 				Instance.new("UICorner", row).CornerRadius = UDim.new(0, 8)
 				local l = Instance.new("TextLabel", row)
-				l.Size, l.Position, l.BackgroundTransparency, l.Text = UDim2.new(1, -118, 1, 0), UDim2.fromOffset(10, 0), 1, name
+				l.Size, l.Position, l.BackgroundTransparency, l.Text = UDim2.new(1, -200, 1, 0), UDim2.fromOffset(10, 0), 1, name
 				l.TextColor3, l.Font, l.TextSize, l.TextXAlignment, l.TextTruncate = Color3.new(1, 1, 1), Enum.Font.GothamMedium, 13, Enum.TextXAlignment.Left, Enum.TextTruncate.AtEnd
 				local u = Instance.new("TextButton", row)
 				u.Size, u.Position, u.Text = UDim2.fromOffset(100, 26), UDim2.new(1, -106, 0.5, -13), "Unblacklist"
@@ -69646,6 +69825,14 @@ return function(Env)
 						toast(ok and (name .. " unblacklisted") or ("failed: " .. tostring(err)))
 						if ok and B.Panel then B.OpenPanel() end
 					end)
+				end)
+				local dv = Instance.new("TextButton", row)
+				dv.Size, dv.Position, dv.Text = UDim2.fromOffset(88, 26), UDim2.new(1, -198, 0.5, -13), "Unban device"
+				dv.BackgroundColor3, dv.TextColor3, dv.Font, dv.TextSize = Color3.fromRGB(150, 110, 40), Color3.new(1, 1, 1), Enum.Font.GothamBold, 11
+				Instance.new("UICorner", dv).CornerRadius = UDim.new(0, 6)
+				dv.Activated:Connect(function()
+					if not uid then return end
+					B.ConfirmDeviceRemove(uid, name, function(ok, err) toast(ok and "Device ban removed" or ("failed: " .. tostring(err))) end)
 				end)
 			end
 		end)
@@ -70118,6 +70305,7 @@ if src then return loadstring(src, "=" .. n)() end
 return loadstring(game:HttpGet(Base .. n .. ".lua"))()
 end
 do local okB, eB = pcall(function() Env.Blacklist = pull("Blacklist")(Env) end); if not okB then warn("[UhBanner] Blacklist module failed: " .. tostring(eB)) end end
+if not Guard.Module(Env.Blacklist, Env) then return end
 pcall(function() Env.Blacklist.Watch() end)
 local UI = pull("BannerUI")(Env)
 local Sender = pull("BannerSender")(Env)
@@ -70232,6 +70420,7 @@ end
 local LoadAnimation_nc = nil
 local _HumanoidDummy = Instance.new("Humanoid")
 local _HumanoidLA = _HumanoidDummy.LoadAnimation
+local _isA = game.IsA
 local newloadanimation = newcclosure(function(self, animation)
 if not checkcaller() and typeof(self) == "Instance" and (self:IsA("Humanoid") or self:IsA("Animator")) and typeof(animation) == "Instance" and animation:IsA("Animation") then
 return LoadAnimation_new(animation)
@@ -70240,11 +70429,12 @@ return LoadAnimation_old(self, animation)
 end)
 local newnamecall = newcclosure(function(...)
 local method = getnamecallmethod()
-if not checkcaller() and method and (method == "LoadAnimation" or method == "loadAnimation") then
+if method and (method == "LoadAnimation" or method == "loadAnimation") then
 local self, animation = ...
-if typeof(self) == "Instance" and (self:IsA("Humanoid") or self:IsA("Animator")) and typeof(animation) == "Instance" and animation:IsA("Animation") then
+if not checkcaller() and typeof(self) == "Instance" and (_isA(self, "Humanoid") or _isA(self, "Animator")) and typeof(animation) == "Instance" and _isA(animation, "Animation") then
 return LoadAnimation_new(animation)
 end
+if setnamecallmethod then setnamecallmethod(method) end -- everything above is function-style, but the namecall name is restored anyway before the original runs
 end
 return LoadAnimation_nc(...)
 end)
