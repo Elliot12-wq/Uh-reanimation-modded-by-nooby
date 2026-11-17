@@ -3834,13 +3834,20 @@ end)
 hit.InputBegan:Connect(function(input)
 if not isPress(input) then return end
 FX.Haptic(0.55, 0.045)
-local x0, p0, moving, c1, c2 = input.Position.X, pv.Value, false, nil, nil
+local x0, y0, p0, moving, c1, c2 = input.Position.X, input.Position.Y, pv.Value, false, nil, nil
+local cancelled = false
 local side = p0 > 0.5
 local travel = math.max(1, (W - 2 * PAD - KS) * sw.AbsoluteSize.X / W)
 c1 = UserInputService.InputChanged:Connect(function(i)
 if i ~= input and i.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+if cancelled then return end
 if not moving then
-if math.abs(i.Position.X - x0) < 4 then return end
+local adx, ady = math.abs(i.Position.X - x0), math.abs(i.Position.Y - y0)
+if ady > 8 and ady > adx then
+cancelled = true
+return
+end
+if adx < 4 then return end
 moving = true
 sw:SetAttribute("FXDrag", true)
 end
@@ -62952,7 +62959,7 @@ end
 end)
 return Button, ButtonText
 end
-function UI.CreateSwitch(parent, text, value)
+function UI.CreateSwitch(parent, text, value, fullRow)
 local margin = 5
 local switchsize = 50
 local Container = Util.Instance("Frame", parent)
@@ -63015,11 +63022,40 @@ SwitchDot.Visible = Lever.Value
 end
 Lever.Changed:Connect(updatesw)
 updatesw()
+if fullRow then
+-- legacy behaviour (whole row presses it); only used for the search result rows
 Button.Activated:Connect(function()
 if Switch:GetAttribute("FXDrag") then return end
 Lever.Value = not Lever.Value
 end)
 pcall(Util.FX.EnhanceSwitch, Button, Switch, SwitchDot, Lever)
+return Lever, ButtonText
+end
+-- the row / label is NOT pressable: pressing the text (or scrolling over it) must never toggle the switch.
+-- A dedicated hit button sits exactly on the switch itself.
+Button.Interactable = false
+local PillHit = Util.Instance("TextButton", Container)
+PillHit.AnchorPoint = Vector2.new(0.5, 0.5)
+PillHit.Position = Switch.Position
+PillHit.Size = Switch.Size
+PillHit.BackgroundTransparency = 1
+PillHit.BorderSizePixel = 0
+PillHit.Text = ""
+PillHit.AutoButtonColor = false
+PillHit.ZIndex = 3
+PillHit.Active = true
+PillHit.Activated:Connect(function()
+if Switch:GetAttribute("FXDrag") then return end
+Lever.Value = not Lever.Value
+end)
+pcall(Util.FX.EnhanceSwitch, PillHit, Switch, SwitchDot, Lever)
+do
+-- EnhanceSwitch resizes / re-anchors the switch, so fit the hit button to its final geometry (vertical grace only, no sideways grace)
+local sp, ss, sa = Switch.Position, Switch.Size, Switch.AnchorPoint
+PillHit.AnchorPoint = Vector2.new(0.5, 0.5)
+PillHit.Position = UDim2.new(sp.X.Scale, sp.X.Offset + (0.5 - sa.X) * ss.X.Offset, sp.Y.Scale, sp.Y.Offset + (0.5 - sa.Y) * ss.Y.Offset)
+PillHit.Size = UDim2.new(0, ss.X.Offset, 0, math.max(ss.Y.Offset + 8, 30))
+end
 return Lever, ButtonText
 end
 function UI.CreateTextbox(parent, text, placeholder, size)
@@ -63215,6 +63251,7 @@ local dragref = nil
 local start = nil
 local function begin(input)
 if input.UserInputState ~= Enum.UserInputState.Begin then return end
+if dragref and dragref ~= input and dragref.UserInputState ~= Enum.UserInputState.End and dragref.UserInputState ~= Enum.UserInputState.Cancel then return end
 local ty = input.UserInputType
 if ty == Enum.UserInputType.MouseButton1 then
 dragref, start = input, nil
@@ -64258,7 +64295,7 @@ end
 local refresh, render, runEntry
 local historyOpen = false
 local function newSwitchRow()
-local lever, label = origSwitch(Results, "", false)
+local lever, label = origSwitch(Results, "", false, true)
 local button = label.Parent
 local row = {Type = "switch", Lever = lever, Label = label, Container = button.Parent, Conns = {}}
 row.Container.Visible = false
