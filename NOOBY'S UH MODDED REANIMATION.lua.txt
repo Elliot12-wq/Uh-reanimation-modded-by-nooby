@@ -348,6 +348,137 @@ Util.Capabilities.namecall = not (ismissing(getnamecallmethod) or ismissing(setn
 Util.Capabilities.callerinfo = type(debug) == "table" and (type(debug.info) == "function" or type(debug.getinfo) == "function")
 Util.Capabilities.clipboard = not (ismissing(setclipboard) and ismissing(toclipboard) and ismissing(set_clipboard))
 Util.Capabilities.teleportqueue = not (ismissing(queue_on_teleport) and ismissing(queueonteleport) and ismissing(queueteleport))
+-- ===== Shared __namecall / __index dispatcher (Nameless Admin handlers: anticlientkick, ACL chat fix, freegamepass) =====
+-- Those handlers each stacked their own hookmetamethod(game, "__namecall", ...) with unguarded executor calls (a missing hookmetamethod / setreadonly was still called),
+-- getnamecallmethod():lower() on a possibly nil value, table.remove(args) used as the "method", global old-function variables (running a command twice made the hook call
+-- itself) and no setnamecallmethod restore before forwarding. They now register a filter here instead: ONE hook per metamethod is installed on demand (newcclosure when present,
+-- hookmetamethod first, the shared Instance metatable slot as fallback), the original is captured once and forwarded exactly once with the original arguments / results, the
+-- namecall method is restored before forwarding, a filter only runs for the Instance it registered for and is pcall-guarded (a failing filter is skipped and never breaks the
+-- calling game script), and a missing executor API is reported back (Add returns false + the API name) instead of being called.
+Util.Namecall = (function()
+	local NC = { Hooks = {} }
+	local function isfn(f) return type(f) == "function" end
+	local function getmeta() return getrawmetatable or (type(debug) == "table" and debug.getmetatable) or nil end
+	local function setro(mt, ro)
+		if isfn(setreadonly) then return pcall(setreadonly, mt, ro) end
+		if ro then return isfn(make_readonly) and pcall(make_readonly, mt) end
+		return isfn(make_writeable) and pcall(make_writeable, mt)
+	end
+
+	-- true when `meta` ("__namecall" / "__index") can be hooked on this executor, otherwise false + the missing executor API
+	function NC.Supported(meta)
+		meta = meta or "__namecall"
+		if meta == "__namecall" and not isfn(getnamecallmethod) then return false, "getnamecallmethod" end
+		if isfn(hookmetamethod) then return true end
+		if not isfn(getmeta()) then return false, "hookmetamethod" end
+		if not (isfn(setreadonly) or isfn(make_writeable)) then return false, "hookmetamethod" end
+		return true
+	end
+
+	-- NC.Add(meta, name, target, filter)
+	-- filter(self, method, ...) (for "__index": filter(self, key)) only runs when self == target (every Instance when target is nil). It returns `handled, result`:
+	-- handled = true answers the call with `result`; anything else lets the call through to the original untouched. Re-adding a name only replaces that filter.
+	-- Returns true, alreadyRegistered  |  false, reason (the missing executor API)
+	function NC.Add(meta, name, target, filter)
+		meta = meta or "__namecall"
+		if (meta ~= "__namecall" and meta ~= "__index") or type(name) ~= "string" or not isfn(filter) then return false, "valid arguments" end
+		local supported, missing = NC.Supported(meta)
+		if not supported then return false, missing end
+		local H = NC.Hooks[meta]
+		if H then
+			for i = 1, #H.List do
+				local f = H.List[i]
+				if f.name == name then
+					f.target = target
+					f.fn = filter
+					return true, true
+				end
+			end
+			H.List[#H.List + 1] = { name = name, target = target, fn = filter }
+			return true, false
+		end
+
+		local List = { { name = name, target = target, fn = filter } }
+		local old
+		local hook
+		if meta == "__namecall" then
+			local restore = isfn(setnamecallmethod) and setnamecallmethod or nil
+			hook = function(self, ...)
+				-- the method is read first and under pcall: an unreadable / non-string / empty method means no method-specific filter may run; nothing has touched the namecall state yet, so the call is forwarded once as it came in
+				local okm, method = pcall(getnamecallmethod)
+				if not okm or type(method) ~= "string" or method == "" then return old(self, ...) end
+				local ran = false
+				for i = 1, #List do
+					local f = List[i]
+					local t = f.target
+					if t == nil or t == self then
+						ran = true
+						local ok, handled, result = pcall(f.fn, self, method, ...)
+						if ok and handled then
+							if result == nil then return end
+							return result
+						end
+					end
+				end
+				-- a filter may have run other Instance calls: put the real method back (protected) before the original reads it. If it cannot be restored and the method really changed, the original is NOT forwarded (it would run a different method)
+				if ran and not (restore and pcall(restore, method)) then
+					local okc, cur = pcall(getnamecallmethod)
+					if not (okc and cur == method) then error("[UH Namecall] could not restore the " .. method .. " namecall method, call not forwarded", 0) end
+				end
+				-- single forward of the captured original (never the hook itself): receiver, arguments, every result (trailing nils included) and any error pass through untouched, nothing is retried
+				return old(self, ...)
+			end
+		else
+			hook = function(self, key)
+				for i = 1, #List do
+					local f = List[i]
+					local t = f.target
+					if t == nil or t == self then
+						local ok, handled, result = pcall(f.fn, self, key)
+						if ok and handled then
+							if result == nil then return end
+							return result
+						end
+					end
+				end
+				return old(self, key)
+			end
+		end
+
+		local wrapped = hook
+		if isfn(newcclosure) then
+			local okc, c = pcall(newcclosure, hook)
+			if okc and isfn(c) then wrapped = c end
+		end
+		local prev, why
+		if isfn(hookmetamethod) then
+			local okh, res = pcall(hookmetamethod, game, meta, wrapped)
+			if okh and isfn(res) then
+				prev = res
+			elseif okh then
+				return false, "hookmetamethod"
+			else
+				why = "hookmetamethod"
+			end
+		end
+		if not prev then
+			-- executors without a working hookmetamethod: chain through the shared Instance metatable slot instead
+			local gm = getmeta()
+			local okm, mt = false, nil
+			if isfn(gm) then okm, mt = pcall(gm, game) end
+			local cur = okm and type(mt) == "table" and mt[meta] or nil
+			if not isfn(cur) then return false, why or "getrawmetatable" end
+			if not setro(mt, false) then return false, why or "setreadonly" end
+			local okw = pcall(function() mt[meta] = wrapped end)
+			if not okw or mt[meta] ~= wrapped then return false, why or "setreadonly" end
+			prev = cur
+		end
+		old = prev
+		NC.Hooks[meta] = { List = List }
+		return true, false
+	end
+	return NC
+end)()
 
 if ismissing(isfile) then isfile = function() return false end end
 if ismissing(isfolder) then isfolder = function() return false end end
@@ -33911,29 +34042,42 @@ end)
 end)
 end)
 cmd.add({"anticlientkick", "antickick"}, {"anticlientkick (antickick)", "Makes local scripts not able to kick you"}, function()
-if not hookmetamethod then
+local NC = Util.Namecall
+local me = LocalPlayer or game:GetService("Players").LocalPlayer
+local supported, missing = NC.Supported("__namecall")
+if not supported or not me then
 Notify({
-Description = "Your executor does not support anticlientkick";
+Description = "Your executor does not support anticlientkick" .. (supported and "" or " (missing " .. tostring(missing) .. ")");
 Title = "Nameless Admin";
 Duration = 5;
 });
-end
-oldhmmi = hookmetamethod(game, "__index", function(self, method)
-if self == LocalPlayer and method:lower() == "kick" then
-return print("Expected ':' not '.' calling member function Kick")
-end
-return oldhmmi(self, method)
-end)
-oldhmmnc = hookmetamethod(game, "__namecall", function(self, ...)
-if self == LocalPlayer and getnamecallmethod():lower() == "kick" then
 return
-Notify({
+end
+-- shared hook, installed once: running the command again only refreshes these filters (no stacked hooks, no hook that calls itself)
+local hooked, info = NC.Add("__namecall", "AntiClientKick", me, function(self, method)
+if type(method) == "string" and string.lower(method) == "kick" then
+task.defer(Notify, {
 Description = "A kick was just attempted but was blocked";
 Title = "Nameless Admin";
 Duration = 5;
 });
+return true
 end
-return oldhmmnc(self, ...)
+end)
+if not hooked then
+Notify({
+Description = "Your executor does not support anticlientkick (missing " .. tostring(info) .. ")";
+Title = "Nameless Admin";
+Duration = 5;
+});
+return
+end
+-- dot-style access (LocalPlayer.Kick) is blocked as well; if only the __namecall route exists the colon-style kick above is still covered
+NC.Add("__index", "AntiClientKick", me, function(self, key)
+if type(key) == "string" and string.lower(key) == "kick" then
+print("Expected ':' not '.' calling member function Kick")
+return true
+end
 end)
 Notify({
 Description = "Anti kick executed";
@@ -35765,21 +35909,18 @@ Enum.CoreGuiType.All
 }
 local StarterGui = game:GetService("StarterGui")
 local FixCore = function(x)
-local CoreHook; CoreHook = hookmetamethod(x, "__namecall", function(self, ...)
-local Method = getnamecallmethod()
-local Arguments = {...}
-if self == x and Method == "SetCoreGuiEnabled" and not checkcaller() then
-local CoreType = Arguments[1]
-local Enabled = Arguments[2]
+-- observe-only filter on the shared __namecall hook: it never blocks anything (SetCoreGuiEnabled always reaches the original unchanged) and only a game-side call counts
+local hooked = Util.Namecall.Add("__namecall", "ACLChatFix", x, function(self, Method, CoreType, Enabled)
+if Method == "SetCoreGuiEnabled" and not (type(checkcaller) == "function" and checkcaller()) then
 if table.find(WhitelistedCoreTypes, CoreType) and not Enabled then
-if CoreType == ("Chat" or Enum.CoreGuiType.Chat) then
-OldSetting = Enabled
-end
+OldSetting = false
 ChatChanged = true
 end
 end
-return CoreHook(self, ...)
 end)
+if not hooked then
+return
+end
 x.CoreGuiChangedSignal:Connect(function(Type)
 if table.find(WhitelistedCoreTypes, Type) and ChatChanged then
 task.wait()
@@ -37348,18 +37489,20 @@ end
 until Loopvoid == false
 end)
 cmd.add({"freegamepass", "freegp"}, {"freegamepass (freegp)", "Makes the client think you own every gamepass in the game"}, function()
-local mt = getrawmetatable(game);
-local old = mt.__namecall
-local readonly = setreadonly or make_writeable
 local MarketplaceService = game:GetService("MarketplaceService");
-readonly(mt, false);
-mt.__namecall = function(self, ...)
-local args = {...}
-local method = table.remove(args)
-if (self == MarketplaceService and method:find("UserOwnsGamePassAsync")) then
-return true and 1
+-- real namecall method (getnamecallmethod) instead of "last argument"; only MarketplaceService is answered, every other call is forwarded untouched
+local hooked, info = Util.Namecall.Add("__namecall", "FreeGamepass", MarketplaceService, function(self, method)
+if method == "UserOwnsGamePassAsync" then
+return true, true
 end
-return old(self, ...)
+end)
+if not hooked then
+Notify({
+Description = "Your executor does not support freegamepass (missing " .. tostring(info) .. ")";
+Title = "Nameless Admin";
+Duration = 5;
+});
+return
 end
 wait();
 Notify({
@@ -72414,7 +72557,7 @@ UI.CreateSwitch(parent, "Show me how I look!", LimbReanimator.ReplicateFPS10).Ch
 LimbReanimator.ReplicateFPS10 = val
 SaveData.Reanimator.LimbReplicateFPS10 = val
 end)
-pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement
 Reanimate.LimbHider.Switches(parent, hiderKey or "Limbs")
 UI.CreateSwitch(parent, "Target Fling Enabled", LimbReanimator.FlingEnabled).Changed:Connect(function(val)
 LimbReanimator.FlingEnabled = val
@@ -76218,7 +76361,7 @@ return true
 end
 HatReanimator.DontFireCharAddOnThisChar = nil
 function HatReanimator.Config(parent)
-pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
 UI.CreateSwitch(parent, "dolteddown's permadeath", HatReanimator.Permadeath).Changed:Connect(function(val)
 HatReanimator.Permadeath = val
@@ -76913,7 +77056,7 @@ if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
 local lcf = limb.CFrame
-local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): whatever is mapped to the head follows the same neck rotation
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement: whatever is mapped to the head follows the same neck rotation
 if HMo and HMo.On and hatmapped.Limb == "Head" then
 local okHM, hcf = pcall(HMo.HatFrame, ReanimCharacter, lcf)
 if okHM and typeof(hcf) == "CFrame" then lcf = hcf end
@@ -78871,7 +79014,7 @@ return true
 end
 HairReanimator.DontFireCharAddOnThisChar = nil
 function HairReanimator.Config(parent)
-pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
 Reanimate.LimbHider.Switches(parent, "Hair")
 UI.CreateSwitch(parent, "dolteddown's permadeath", HairReanimator.Permadeath).Changed:Connect(function(val)
@@ -79573,7 +79716,7 @@ if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
 local lcf = limb.CFrame
-local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): whatever is mapped to the head follows the same neck rotation
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement: whatever is mapped to the head follows the same neck rotation
 if HMo and HMo.On and hatmapped.Limb == "Head" then
 local okHM, hcf = pcall(HMo.HatFrame, ReanimCharacter, lcf)
 if okHM and typeof(hcf) == "CFrame" then lcf = hcf end
@@ -81253,7 +81396,7 @@ return true
 end
 HatHairReanimator.DontFireCharAddOnThisChar = nil
 function HatHairReanimator.Config(parent)
-pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
 Reanimate.LimbHider.Switches(parent, "HatHair")
 UI.CreateSwitch(parent, "dolteddown's permadeath", HatHairReanimator.Permadeath).Changed:Connect(function(val)
@@ -81988,7 +82131,7 @@ if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
 local lcf = limb.CFrame
-local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): whatever is mapped to the head follows the same neck rotation
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement: whatever is mapped to the head follows the same neck rotation
 if HMo and HMo.On and hatmapped.Limb == "Head" then
 local okHM, hcf = pcall(HMo.HatFrame, ReanimCharacter, lcf)
 if okHM and typeof(hcf) == "CFrame" then lcf = hcf end
@@ -83679,7 +83822,7 @@ return true
 end
 AccessoriesReanimator.DontFireCharAddOnThisChar = nil
 function AccessoriesReanimator.Config(parent)
-pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement (Phone Only)
+pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement
 UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
 Reanimate.LimbHider.Switches(parent, "Accessories")
 UI.CreateSwitch(parent, "dolteddown's permadeath", AccessoriesReanimator.Permadeath).Changed:Connect(function(val)
@@ -84356,7 +84499,7 @@ if hatmapped.Limb then
 local limb = ReanimCharacter:FindFirstChild(hatmapped.Limb)
 if limb and limb:IsA("BasePart") then
 local lcf = limb.CFrame
-local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): whatever is mapped to the head follows the same neck rotation
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement: whatever is mapped to the head follows the same neck rotation
 if HMo and HMo.On and hatmapped.Limb == "Head" then
 local okHM, hcf = pcall(HMo.HatFrame, ReanimCharacter, lcf)
 if okHM and typeof(hcf) == "CFrame" then lcf = hcf end
@@ -87430,7 +87573,7 @@ local cf = rcRoot.CFrame * (rel or Reanimate.StableTorsoRel(rcRoot, rcTorso))
 if Reanimate.FiniteCF(cf) then return cf end
 return rcTorso.CFrame
 end
--- ===== DYNAMIC HEAD MOVEMENT (PHONE ONLY): one shared motion-sensor controller (Reanimate.HeadMotion) =====
+-- ===== DYNAMIC HEAD MOVEMENT: one shared controller (Reanimate.HeadMotion), control source = phone motion sensors OR the Roblox camera =====
 -- Additive and pull-based: the existing head pose hooks ask it for a head rotation (Reanimate.SafeLimbPose = every limb variant, GetHatMappedCFrame = Hats / Hair / Hat X Hair / Accessories). It owns no RunService connection and no update loop.
 -- Sensor choice is automatic: gyroscope when UserInputService.GyroscopeEnabled, otherwise the accelerometer (gravity-derived pitch / roll only, yaw is not observable and is never faked). The event connection is made on the first request and drops itself once requests stop (deanimate / respawn / method switch), when the switch is turned off, or on Reset.
 -- Motion pipeline (raw sensor data is never applied to the head directly):
@@ -87439,13 +87582,15 @@ end
 --   5. critically damped spring (SmoothDamp), run every frame with the frame dt: keeps position AND velocity continuous, so it glides between sensor updates and never snaps, whatever the sensor / frame rate
 --   6. the smoothed rotation is applied as a head-local offset around the neck joint: FinalHead = AnimatedHead * Offset (the animation's own head movement stays underneath)
 pcall(function()
-local HM = {Wanted = false, On = false}
+local HM = {Wanted = false, On = false, Source = "phone"}
+-- Control source (HM.Source, saved as SaveData.Reanimator.DynamicHeadSource): "phone" = the sensor pipeline below, untouched; "camera" = the Roblox camera (third person), READ only through workspace.CurrentCamera (never moved, never forced). The camera feeds the SAME One Euro filter + critically damped spring + ease-in + adapters (HM.LimbHead / HM.HatFrame): it only replaces stage 1-3 (camStep) and owns no connection and no loop.
 Reanimate.HeadMotion = HM
 local ALLOW = {Limbs = true, Ragdoll = true, ["Servo-Joint"] = true, ["Hybrid-Joint"] = true, ["Skeletal Retargeting"] = true, ["Kinematic Reanimation"] = true, ["Velocity-Interpolated"] = true, Hats = true, Hair = true, HatHair = true, Accessories = true}
 local IDCF, PI = CFrame.identity, math.pi
 local TAU, RAD = PI * 2, PI / 180
 local LIM_P, LIM_Y, LIM_R = 40 * RAD, 70 * RAD, 30 * RAD -- pitch / yaw / roll limits (soft)
 local MAXSPD, RAMP = 7, 0.4 -- max head speed in rad/s, ease-in time when the feature starts
+local YAW_MAX, REAR0, CAM_PU, CAM_PD, FP0, FP1 = 90 * RAD, 150 * RAD, 45 * RAD, 40 * RAD, 0.8, 2 -- camera source: yaw limit (+-90 = 180 total), angle where the head starts easing back to centre behind the character, pitch limit up / down, first-person fade range (studs camera -> focus)
 local NECK_P = Vector3.new(0, -0.5, 0) -- neck joint in head space (R6 / R15 Neck.C1)
 local cGyro, cAcc, kind = nil, nil, nil
 local sCF, sV, sT, pT = nil, nil, 0, 0 -- latest sensor sample, its arrival time, arrival time of the last processed sample
@@ -87456,10 +87601,11 @@ local tP, tY, tR = 0, 0, 0 -- filtered targets
 local pit, yaw, rol, vP, vY, vR, wt = 0, 0, 0, 0, 0, 0, 0 -- spring state (angles + velocities) and ease-in weight
 local lastT, useT, lastAng, scCF, outCF, pgui = 0, 0, nil, IDCF, IDCF, nil
 local tcRC, tcNeck, tcP, mR, mP, mM = nil, nil, NECK_P, nil, nil, IDCF
+local cRoot, cRaw = nil, 0 -- camera source: character root used as the forward reference, last valid horizontal camera angle
 -- phone check = the script's existing touch-only test; then real sensor availability (a phone is not assumed to have a gyroscope)
-local function detect()
+local function detectPhone()
 local ok, k, why = pcall(function()
-if not (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) then return nil, "Dynamic Head Movement is PHONE ONLY, no phone was detected on this device." end
+if not (UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled) then return nil, "Phone Motion Sensors need a phone, none was detected on this device. Choose Roblox Camera (Third Person) instead." end
 if UserInputService.GyroscopeEnabled then return "gyro" end
 if UserInputService.AccelerometerEnabled then return "accel" end
 return nil, "This device has no gyroscope or accelerometer, so Dynamic Head Movement is unavailable. The rest of the reanimation is unaffected."
@@ -87467,7 +87613,13 @@ end)
 if ok then return k, why end
 return nil, "This device's motion sensors could not be read."
 end
+-- the camera source needs no phone and no sensor (PC and mobile); the phone source keeps the original detection untouched
+local function detect()
+if HM.Source == "camera" then return "cam" end
+return detectPhone()
+end
 HM.Detect = detect
+HM.DetectPhone = detectPhone
 -- disconnects only: calibration and smoothing state survive, so a short pause of the pose hooks never re-centres or snaps the head
 local function detach()
 if cGyro then cGyro:Disconnect() cGyro = nil end
@@ -87477,6 +87629,7 @@ end
 local function attach()
 local k = detect()
 if not k then return false end
+if k == "cam" then kind = "cam" return true end -- polled in step(): no event connection, nothing to leak
 if k == "gyro" then
 cGyro = UserInputService.DeviceRotationChanged:Connect(function(_, cf)
 sCF, sT = cf, os.clock()
@@ -87539,11 +87692,59 @@ local out = tg + (ch + tmp) * ex
 if (target - cur > 0) == (out > target) then return target, 0 end
 return out, vel
 end
+-- Roblox camera source. Stateless angle mapping (nothing can accumulate, no unwrap drift):
+-- yaw = horizontal angle between the camera's look direction and the character's forward (+ = left), hard-limited to +-90 deg = 180 deg total. When the camera looks toward the character's back (|angle| > 90) the head HOLDS the limit, and only within the last 30 deg before the exact rear direction it eases (smoothstep) back to centre, so crossing the rear is one continuous curve: never a 360 turn, no neck flip, no snap.
+-- pitch = camera elevation relative to the character (soft dead zone, hard limits). Roll stays 0.
+-- first person (camera on top of its focus) fades the offset to neutral and back, so no unstable angles there. A missing camera / character eases to neutral too.
+local function camYaw(raw)
+local m = raw < 0 and -raw or raw
+local r = m
+if m > YAW_MAX then
+r = YAW_MAX
+if m > REAR0 then
+local s = (m - REAR0) / (PI - REAR0)
+r = YAW_MAX * (1 - s * s * (3 - 2 * s))
+end
+end
+return raw < 0 and -r or r
+end
+local function camStep(dt)
+local cam = workspace.CurrentCamera
+local root = cRoot
+if not (root and root.Parent) then
+local rc = Reanimate.Character
+root = rc and (rc:FindFirstChild("HumanoidRootPart") or rc:FindFirstChild("Torso") or rc:FindFirstChild("UpperTorso"))
+cRoot = root
+end
+local ax, ay = 0, 0
+if cam and root then
+local ccf = cam.CFrame
+local lv = root.CFrame:VectorToObjectSpace(ccf.LookVector)
+local hx, hy, hz = lv.X, lv.Y, lv.Z
+if hx == hx and hy == hy and hz == hz then -- finite
+if hx * hx + hz * hz > 1e-4 then cRaw = math.atan2(-hx, -hz) end -- looking straight up / down: keep the last yaw
+local fw = (ccf.Position - cam.Focus.Position).Magnitude
+if not (fw < 1e9) then fw = 1e9 end
+local f = (fw - FP0) / (FP1 - FP0)
+f = f < 0 and 0 or f > 1 and 1 or f
+f = f * f * (3 - 2 * f)
+ay = camYaw(cRaw) * f
+ax = shape(math.asin(hy > 1 and 1 or hy < -1 and -1 or hy), 0.1, PI / 2)
+ax = (ax > CAM_PU and CAM_PU or ax < -CAM_PD and -CAM_PD or ax) * f
+end
+end
+tP = oneEuro(fP, ax, dt, 3.5, 6)
+tY = oneEuro(fY, ay, dt, 3.5, 6)
+tR = 0
+end
 local function step(now)
 local dt = lastT == 0 and 1 / 60 or now - lastT
 lastT = now
 if dt <= 0 then return end
 if dt > 0.25 then dt = 1 / 60 elseif dt > 0.1 then dt = 0.1 end
+if kind == "cam" then
+camStep(dt) -- camera source: stage 1-4 replaced by the camera mapping + the same One Euro filter
+else
 local pg = pgui
 if not (pg and pg.Parent) then
 pg = Player:FindFirstChildOfClass("PlayerGui")
@@ -87618,8 +87819,9 @@ tY = oneEuro(fY, shape(ay, dz, LIM_Y), sdt, fm, bt)
 tR = oneEuro(fR, shape(az, dz, LIM_R), sdt, fm, bt)
 end
 end
+end -- phone sensor stages
 -- stage 5: every frame, glide toward the latest target (gyro follows tightly, the accelerometer is smoothed much more)
-local T = kind == "accel" and 0.16 or 0.07
+local T = kind == "accel" and 0.16 or kind == "cam" and 0.09 or 0.07
 pit, vP = damp(pit, vP, tP, T, dt)
 yaw, vY = damp(yaw, vY, tY, T, dt)
 rol, vR = damp(rol, vR, tR, T, dt)
@@ -87693,6 +87895,7 @@ tP, tY, tR = 0, 0, 0
 pit, yaw, rol, vP, vY, vR, wt = 0, 0, 0, 0, 0, 0, 0
 lastT, pT, sT, lastAng, outCF = 0, 0, 0, nil, IDCF
 tcRC, tcNeck, mR, mP = nil, nil, nil, nil
+cRoot, cRaw = nil, 0
 end
 function HM.Set(on)
 HM.Reset()
@@ -87710,18 +87913,50 @@ end
 pcall(function() SaveData.Reanimator.DynamicHeadMovement = HM.Wanted end)
 return true
 end
--- the one switch every applicable Config shares (Limb + its variants, Hats, Hair, Hat X Hair, Accessories)
-function HM.ConfigSwitch(parent)
+-- source selector: Reset drops the old source's connection / calibration / filter / spring state completely, so nothing accumulates across a switch. The switch state is kept; it is turned off only when the phone source is chosen on a device without a usable sensor
+function HM.SetSource(src)
+src = src == "camera" and "camera" or "phone"
+HM.Reset()
+HM.Source = src
+pcall(function() SaveData.Reanimator.DynamicHeadSource = src end)
+if not HM.Wanted then return true end
 local k, why = detect()
-local lever = UI.CreateSwitch(parent, "Dynamic Head Movement (Phone Only)", (HM.Wanted and k ~= nil) == true)
-UI.CreateText(parent, "PHONE ONLY: Move your phone to control your reanimated character's head. Uses your phone's gyroscope when available, otherwise its accelerometer.", 10, Enum.TextXAlignment.Center)
+if not k then
+HM.Wanted, HM.On = false, false
+pcall(function() SaveData.Reanimator.DynamicHeadMovement = false end)
+return false, why
+end
+HM.On = true
+return true
+end
+-- the one switch (+ source selector) every applicable Config shares (Limb + its variants, Hats, Hair, Hat X Hair, Accessories)
+function HM.ConfigSwitch(parent)
+local function cfgTexts()
+if HM.Source == "camera" then
+return "ROBLOX CAMERA (THIRD PERSON): rotate your normal Roblox camera to control your reanimated character's head. Works on PC and mobile, no motion sensor needed. The head follows where the camera looks, up to 90° left / right (180° total). Your camera is only read, never moved or changed.",
+"Source: Roblox Camera. " .. (workspace.CurrentCamera and "Camera detected." or "Waiting for a camera.") .. " In first person the head eases back to neutral."
+end
+local k, why = detectPhone()
 local status = why
 if k == "gyro" then
 status = "Detected: gyroscope (used automatically)."
 elseif k == "accel" then
 status = "Detected: accelerometer (no gyroscope, so the head follows pitch and roll only)."
 end
-UI.CreateText(parent, "PHONE ONLY — Requires a supported phone motion sensor.\n" .. tostring(status), 10, Enum.TextXAlignment.Center)
+return "PHONE MOTION SENSORS: move your phone to control your reanimated character's head. Uses your phone's gyroscope when available, otherwise its accelerometer.",
+"Requires a supported phone motion sensor.\n" .. tostring(status)
+end
+local lever = UI.CreateSwitch(parent, "Dynamic Head Movement", (HM.Wanted and detect() ~= nil) == true)
+local dsrc = UI.CreateDropdown(parent, "Head control source", {"Phone Motion Sensors", "Roblox Camera (Third Person)"}, HM.Source == "camera" and 2 or 1)
+local t1, t2 = cfgTexts()
+local info = UI.CreateText(parent, t1, 10, Enum.TextXAlignment.Center)
+local status = UI.CreateText(parent, t2, 10, Enum.TextXAlignment.Center)
+local function refresh()
+pcall(function()
+local a, b = cfgTexts()
+info.Text, status.Text = a, b
+end)
+end
 local busy = false
 lever.Changed:Connect(function(val)
 if busy then return end
@@ -87732,9 +87967,21 @@ lever.Value = false
 busy = false
 pcall(Util.UINotify, msg)
 end
+refresh()
+end)
+dsrc.Changed:Connect(function(val)
+local ok, msg = HM.SetSource(val == 2 and "camera" or "phone")
+if not ok then
+busy = true
+lever.Value = false
+busy = false
+pcall(Util.UINotify, msg)
+end
+refresh()
 end)
 end
 pcall(function()
+if SaveData.Reanimator.DynamicHeadSource == "camera" then HM.Source = "camera" end -- no / unknown saved source = Phone Motion Sensors: existing saves keep their behaviour
 if SaveData.Reanimator.DynamicHeadMovement == true and detect() then HM.Wanted, HM.On = true, true end
 end)
 end)
@@ -87763,7 +88010,7 @@ end
 function Reanimate.SafeLimbPose(map, v, RC, RootPart, tcf)
 local cf, exact = Reanimate.LimbPoseCFrame(map, v, RC, RootPart, tcf)
 cf = Reanimate.SanitizeLimbPose(map, v, cf, exact)
-local HMo = Reanimate.HeadMotion -- Dynamic Head Movement (Phone Only): additive neck rotation on the finished head pose, shared by every limb variant
+local HMo = Reanimate.HeadMotion -- Dynamic Head Movement: additive neck rotation on the finished head pose, shared by every limb variant
 if HMo and HMo.On and map.RPart1 == "Head" and map.RPart0 == "Torso" then
 local okHM, hcf = pcall(HMo.LimbHead, v, cf)
 if okHM and typeof(hcf) == "CFrame" then cf = hcf end
@@ -104131,21 +104378,35 @@ local HSVC = {RequestAsync = true, GetAsync = true, PostAsync = true}
 local function installNamecall()
 	if type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" or type(setnamecallmethod) ~= "function" then return false end
 	local old, inner
+	-- put the real method back (protected); false only when it could not be restored AND the current method differs, i.e. forwarding would run another method
+	local function back(m)
+		if pcall(setnamecallmethod, m) then return true end
+		local okc, cur = pcall(getnamecallmethod)
+		return okc and cur == m
+	end
 	inner = function(self, ...)
-		local m = getnamecallmethod()
+		-- an unreadable / non-string method means no interception logic for this call: it is forwarded once, untouched
+		local okm, m = pcall(getnamecallmethod)
+		if not okm or type(m) ~= "string" then return old(self, ...) end
 		local core = NC[m]
 		if not core or not X.Active or not X.NCOK then return old(self, ...) end
 		if HSVC[m] then
 			local okc, cn = pcall(function() return self.ClassName end)
 			if not (okc and cn == "HttpService") then
-				setnamecallmethod(m)
+				if not back(m) then error("[UH Security] could not restore the " .. m .. " namecall method, call not forwarded", 0) end
 				return old(self, ...)
 			end
 		end
-		local who = X.Caller(inner)
+		-- a failed caller lookup leaves who = nil (unknown caller): X.IsUH(nil) is false, so X.Gate still treats it as third-party and it is never authorized
+		local okw, who = pcall(X.Caller, inner)
+		if not okw then who = nil end
 		if m == "__UhProbe" then return core(who) end
+		local used = false
 		return core(who, function(...)
-			setnamecallmethod(m)
+			-- the original operation runs at most once per intercepted call, whatever the interception logic does; core errors (deliberate blocks included) are never swallowed or retried
+			if used then error("[UH Security] original call was already forwarded", 0) end
+			used = true
+			if not back(m) then error("[UH Security] could not restore the " .. m .. " namecall method, call not forwarded", 0) end
 			return old(...)
 		end, self, ...)
 	end
