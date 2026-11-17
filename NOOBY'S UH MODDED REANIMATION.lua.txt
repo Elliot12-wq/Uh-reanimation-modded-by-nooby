@@ -29385,9 +29385,44 @@ lib.disconnect = function(name)
 for title, connection in pairs(connections) do
 if title:find(name) == 1 then
 connection:Disconnect()
+connections[title] = nil
 end
 end
 end
+lib.parts = (function()
+local cm, cn, cd, c1, c2, c3 = nil, 0, false, nil, nil, nil
+local cl = {}
+local function mark() cd = true end
+local function release()
+if c1 then c1:Disconnect() end
+if c2 then c2:Disconnect() end
+if c3 then c3:Disconnect() end
+c1, c2, c3, cm, cn, cd = nil, nil, nil, nil, 0, false
+table.clear(cl)
+end
+return function(m)
+if m ~= cm then
+release()
+cm, cd = m, true
+c1 = m.DescendantAdded:Connect(mark)
+c2 = m.DescendantRemoving:Connect(mark)
+c3 = m.AncestryChanged:Connect(function()
+if not m.Parent then release() end
+end)
+end
+if cd then
+cd, cn = false, 0
+table.clear(cl)
+for _, v in ipairs(m:GetDescendants()) do
+if v:IsA("BasePart") then
+cn = cn + 1
+cl[cn] = v
+end
+end
+end
+return cl, cn
+end
+end)()
 m = math
 rad = m.rad
 clamp = m.clamp
@@ -33605,12 +33640,13 @@ local target = getPlr(Username)
 getChar().HumanoidRootPart.CFrame = target.Character.Humanoid.RootPart.CFrame * CFrame.new(0, -10, 4)
 wait()
 if connections["noclip"] then lib.disconnect("noclip") return end
+lib.disconnect("noclip")
 lib.connect("noclip", RunService.Stepped:Connect(function()
 if not character then return end
-for i, v in pairs(character:GetDescendants()) do
-if v:IsA("BasePart") then
+local parts, n = lib.parts(character)
+for i = 1, n do
+local v = parts[i]
 if v.CanCollide then v.CanCollide = false end
-end
 end
 end))
 wait()
@@ -34536,12 +34572,13 @@ pcall(unvfly)
 end)
 cmd.add({"noclip", "nclip", "nc"}, {"noclip", "Disable your player's collision"}, function()
 if connections["noclip"] then lib.disconnect("noclip") return end
+lib.disconnect("noclip")
 lib.connect("noclip", RunService.Stepped:Connect(function()
 if not character then return end
-for i, v in pairs(character:GetDescendants()) do
-if v:IsA("BasePart") then
+local parts, n = lib.parts(character)
+for i = 1, n do
+local v = parts[i]
 if v.CanCollide then v.CanCollide = false end
-end
 end
 end))
 end)
@@ -37705,12 +37742,13 @@ end)
 cmd.add({"cbring", "clientbring"}, {"clientbring <player> (cbring)", "Brings the player on your client"}, function(...)
 Username = (...)
 if connections["noclip"] then lib.disconnect("noclip") return end
+lib.disconnect("noclip")
 lib.connect("noclip", RunService.Stepped:Connect(function()
 if not character then return end
-for i, v in pairs(character:GetDescendants()) do
-if v:IsA("BasePart") then
+local parts, n = lib.parts(character)
+for i = 1, n do
+local v = parts[i]
 if v.CanCollide then v.CanCollide = false end
-end
 end
 end))
 if Username == "all" or Username == "others" then
@@ -39017,18 +39055,46 @@ local netlagtab = {}
 cmd.add({"netlag"}, {"netlag <player>", "If the person is using netless, or any reanimation it glitches them"}, function(...)
 Username = (...)
 target = getPlr(Username)
-table.insert(netlagtab, game:GetService("RunService").Heartbeat:Connect(function()
-for i,v in pairs(target.Character:GetDescendants()) do
+local cc, cl, cn, cd, ca, cr = nil, {}, 0, true, nil, nil
+local function mark() cd = true end
+local hb = game:GetService("RunService").Heartbeat:Connect(function()
+local ch = target and target.Character
+if ch ~= cc then
+if ca then ca:Disconnect() end
+if cr then cr:Disconnect() end
+ca, cr, cc, cd = nil, nil, ch, true
+if ch then
+ca = ch.DescendantAdded:Connect(mark)
+cr = ch.DescendantRemoving:Connect(mark)
+end
+end
+if not ch then return end
+if cd then
+cd, cn = false, 0
+table.clear(cl)
+for _, v in ipairs(ch:GetDescendants()) do
 if v:IsA("BasePart") then
-sethiddenproperty(v, "NetworkIsSleeping", true)
+cn = cn + 1
+cl[cn] = v
 end
 end
-end))
+end
+for i = 1, cn do
+sethiddenproperty(cl[i], "NetworkIsSleeping", true)
+end
+end)
+table.insert(netlagtab, {Disconnect = function()
+hb:Disconnect()
+if ca then ca:Disconnect() end
+if cr then cr:Disconnect() end
+ca, cr = nil, nil
+end})
 end)
 cmd.add({"unnetlag"}, {"unnetlag", "Stops netlegging"}, function()
 for i,v in pairs(netlagtab) do
 v:Disconnect()
 end
+table.clear(netlagtab)
 end)
 cmd.add({"noprompt", "nopurchaseprompts"}, {"noprompt (nopurchaseprompts)", "remove the stupid purchase prompt"}, function()
 wait();
@@ -41012,7 +41078,7 @@ SBT.Name = "SB"
 SBT.Parent = player.HumanoidRootPart
 SBT.Adornee = player.HumanoidRootPart
 SBT.Color3 = Color3.new(0,0,0)
-while wait(.3) do
+do
 key.InputBegan:Connect(function(k)
 if k.KeyCode == keyyy then
 local handle = mouse.Target
@@ -72596,10 +72662,12 @@ print(report)
 pcall(setclipboard, report)
 pcall(Util.Notify, "Limb state dumped to the console (and clipboard if supported).")
 end)
+local lastDM, lastDV, lastDI
 Util.LinkDestroyI2C(dmode, RunService.Heartbeat:Connect(function()
-dmode.Value = math.min(LimbReanimator.Mode + 1, #modenames)
-dvel.Value = LimbReanimator.Velocity + 1
-dinit.Value = LimbReanimator.InitMode + 1
+local m, v, i = math.min(LimbReanimator.Mode + 1, #modenames), LimbReanimator.Velocity + 1, LimbReanimator.InitMode + 1
+if m ~= lastDM then lastDM = m dmode.Value = m end
+if v ~= lastDV then lastDV = v dvel.Value = v end
+if i ~= lastDI then lastDI = i dinit.Value = i end
 end))
 end
 function LimbReanimator.Start()
@@ -93598,8 +93666,16 @@ lastScan = os.clock()
 if not find() then return end
 build()
 end
+local k = LC.K
+if not k or k.pill ~= pill or k.box ~= box then
+k = {pill = pill, box = box}
+LC.K = k
+end
 local vis = shown(bar)
+if k.vis ~= vis then
+k.vis = vis
 pill.Visible = vis
+end
 if not vis then box.Visible = false return end
 if not (mic and mic.Parent) and os.clock() - lastMic > 2 then lastMic = os.clock() mic = findMic() end
 local on = LC.On
@@ -93609,19 +93685,36 @@ local ph = math.clamp(math.floor(ns.Y * 0.62), 16, 28)
 local pw = math.floor(ph * 2.1)
 local re = (mic and mic.Parent and mic.Visible) and mic.AbsolutePosition.X or (bp.X + bs.X - 8)
 local px = re - 6 - pw
+if k.pw ~= pw or k.ph ~= ph then
+k.pw, k.ph, k.on = pw, ph, nil
 pill.Size = UDim2.fromOffset(pw, ph)
-pill.Position = UDim2.fromOffset(px - hp.X, np.Y + ns.Y / 2 - hp.Y)
-pill.BackgroundColor3 = on and Color3.fromRGB(46, 160, 90) or Color3.fromRGB(72, 74, 80)
 knob.Size = UDim2.fromOffset(ph - 6, ph - 6)
-knob.Position = UDim2.new(on and 1 or 0, on and -(ph - 3) or 3, 0.5, 0)
 label.Size = UDim2.fromOffset(pw - ph, ph)
-label.Position = UDim2.fromOffset(on and 3 or ph - 3, 0)
 label.TextSize = math.max(9, math.floor(ph * 0.5))
+end
+local ox, oy = px - hp.X, np.Y + ns.Y / 2 - hp.Y
+if k.ox ~= ox or k.oy ~= oy then
+k.ox, k.oy = ox, oy
+pill.Position = UDim2.fromOffset(ox, oy)
+end
+if k.on ~= on then
+k.on = on
+pill.BackgroundColor3 = on and Color3.fromRGB(46, 160, 90) or Color3.fromRGB(72, 74, 80)
+knob.Position = UDim2.new(on and 1 or 0, on and -(ph - 3) or 3, 0.5, 0)
+label.Position = UDim2.fromOffset(on and 3 or ph - 3, 0)
+end
 if on then
 hidden = true
 if native.Visible then native.Visible = false end
-box.Position = UDim2.fromOffset(np.X - hp.X, np.Y - hp.Y)
-box.Size = UDim2.fromOffset(math.max(40, px - 6 - np.X), ns.Y)
+local bx, by, bw, bh = np.X - hp.X, np.Y - hp.Y, math.max(40, px - 6 - np.X), ns.Y
+if k.bx ~= bx or k.by ~= by then
+k.bx, k.by = bx, by
+box.Position = UDim2.fromOffset(bx, by)
+end
+if k.bw ~= bw or k.bh ~= bh then
+k.bw, k.bh = bw, bh
+box.Size = UDim2.fromOffset(bw, bh)
+end
 if not box.Visible then
 pcall(function() box.FontFace = native.FontFace end)
 pcall(function() box.TextSize, box.TextColor3, box.PlaceholderColor3 = native.TextSize, native.TextColor3, native.PlaceholderColor3 end)
@@ -93644,6 +93737,7 @@ pcall(step)
 if conn then conn:Disconnect() conn = nil end
 if pill then pcall(pill.Destroy, pill) end
 if box then pcall(box.Destroy, box) end
+LC.K = nil
 end
 conn = RunService.RenderStepped:Connect(function() pcall(step) end)
 end
