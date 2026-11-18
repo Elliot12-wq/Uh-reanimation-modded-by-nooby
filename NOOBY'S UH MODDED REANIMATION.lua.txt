@@ -931,6 +931,10 @@ if not d then return false end
 local t = d.Tier or 4
 return t <= 1 or (t == 2 and d.Mobile == true)
 end
+-- [UIMOTION] UI animation lite check: ONLY the saved Low End UI Mode preference (touch devices / governor frame drops no longer strip UI motion)
+function FX.UILite()
+return RawCfg.LowEnd == true
+end
 do
 -- Adaptive Performance Engine v2: 5 profiles, multi-source device seed, windowed FPS governor (sustained drops, stability, cap-aware, hysteresis, gated probing), priority-ordered budgeted workload scaling
 local Perf = {}
@@ -1785,6 +1789,9 @@ end
 return fallback
 end
 local Springs, springConn, springAcc, springFrame = {}, nil, 0, 0
+-- [UIMOTION] allocation-free property access + "external writer wins": if a tween / assignment moves a sprung property, the spring yields instead of fighting it
+local function setProp(o, p, v) o[p] = v end
+local function getProp(o, p) return o[p] end
 local function springStep(dt)
 springFrame = springFrame + 1
 springAcc = springAcc + dt
@@ -1798,15 +1805,25 @@ Springs[obj] = nil
 else
 local live = false
 for prop, st in pairs(props) do
+local taken = false
+if st.w ~= nil then
+local okc, cur = pcall(getProp, obj, prop)
+if okc and type(cur) == "number" and math.abs(cur - st.w) > 0.004 + math.abs(st.w) * 0.0005 then taken = true end
+end
+if taken then
+props[prop] = nil
+else
 local a = st.k * (st.t - st.x) - st.c * st.v
 st.v = st.v + a * dt
 st.x = st.x + st.v * dt
 if math.abs(st.t - st.x) < 0.0006 and math.abs(st.v) < 0.01 then
-pcall(function() obj[prop] = st.t end)
+pcall(setProp, obj, prop, st.t)
 props[prop] = nil
 else
-pcall(function() obj[prop] = st.x end)
+pcall(setProp, obj, prop, st.x)
+st.w = st.x
 live = true
+end
 end
 end
 if live then any = true else Springs[obj] = nil end
@@ -1819,7 +1836,7 @@ end
 end
 function FX.SpringTo(obj, prop, target, k, z, from)
 if not obj then return end
-if not FX.Settings.Transitions or FX.Lite() then
+if not FX.Settings.Transitions or FX.UILite() then
 local props = Springs[obj]
 if props then props[prop] = nil end
 pcall(function()
@@ -1840,13 +1857,13 @@ if ok and type(cur) == "number" then
 local d = math.abs(target - (from or cur))
 if prop == "Rotation" then d = d / 20 end
 if d > 0.015 and not FX.NoMB then FX.MotionBlur(math.min(3, 1 + d * 5), 0.45) end
-if st and st.v and st.v * (target - st.x) < -0.01 then FX.MotionBlur(1.5, 0.45) end
+if st and st.v and st.v * (target - st.x) < -0.01 and not FX.NoMB then FX.MotionBlur(1.5, 0.45) end
 end
 if not st then
 st = {x = ok and cur or target, v = 0}
 props[prop] = st
 end
-if from then st.x, st.v = from, 0 end
+if from then st.x, st.v, st.w = from, 0, nil end
 k = k or 260
 st.t, st.k, st.c = target, k, 2 * (z or 0.7) * math.sqrt(k)
 if not springConn then springConn = RunService.Heartbeat:Connect(springStep) end
@@ -3550,38 +3567,73 @@ Util.Instance("UICorner", c).CornerRadius = UDim.new(1, 0)
 pool[host] = c
 end
 c.Position = UDim2.fromOffset(math.clamp(rel.X, 0, host.AbsoluteSize.X), math.clamp(rel.Y, 0, host.AbsoluteSize.Y))
-c.Size = UDim2.fromOffset(0, 0)
+c.Size = UDim2.fromOffset(6, 6)
 c.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
-c.BackgroundTransparency = 0.7
+c.BackgroundTransparency = 0.58
 local big = math.max(host.AbsoluteSize.X, 60) * 2.2
-FX.mtween(c, 0.55, Quint, EOut, {Size = UDim2.fromOffset(big, big), BackgroundTransparency = 1})
+tween(c, 0.62, Quint, EOut, {Size = UDim2.fromOffset(big, big)})
+tween(c, 0.62, Quad, EOut, {BackgroundTransparency = 1})
 end
 local sheenFns = setmetatable({}, {__mode = "k"})
 function FX.Sheen(b)
 local f = sheenFns[b]
 if f then f() end
 end
+-- [UIMOTION] accent ring pulse that follows the saved Low End UI preference only (FX.Ring also skips touch devices / governor stride)
+function FX.Pulse(parent, color, size, time, thick, pos)
+if not parent or not parent.Parent or not FX.Settings.Transitions or FX.UILite() then return end
+local r = Util.Instance("Frame", parent)
+r.AnchorPoint = Vector2.new(0.5, 0.5)
+r.Position = pos or UDim2.fromScale(0.5, 0.5)
+r.Size = UDim2.fromOffset(10, 10)
+r.BackgroundTransparency = 1
+r.BorderSizePixel = 0
+r.ZIndex = 30
+r.Interactable = false
+Util.Instance("UICorner", r).CornerRadius = UDim.new(1, 0)
+local s = Util.Instance("UIStroke", r)
+s.Color = color or WHITE
+s.Thickness = thick or 2
+s.Transparency = 0.25
+tween(r, time or 0.5, Quint, EOut, {Size = UDim2.fromOffset(size or 60, size or 60)})
+tween(s, time or 0.5, Quad, EOut, {Transparency = 1, Thickness = 0.5})
+Debris:AddItem(r, (time or 0.5) + 0.15)
+return r
+end
+-- [UIMOTION] staggered bubble-pop entrance: buttons rise + pop with spring overshoot, switches and slider knobs pop in the same wave
 function FX.Cascade(page, onlyVisible)
 if not FX.Settings.Transitions then return end
 local n = 0
+local bb = FX.BtnBase
 for _, d in ipairs(page:GetDescendants()) do
-if d:IsA("TextButton") and d:GetAttribute("FXB") and (not onlyVisible or Util.IsGuiVisible(d)) then
+local isBtn = d:IsA("TextButton") and d:GetAttribute("FXB")
+local isPop = not isBtn and d:IsA("Frame") and (d:GetAttribute("FXS") or d:GetAttribute("FXK"))
+if (isBtn or isPop) and (not onlyVisible or Util.IsGuiVisible(d)) then
 n = n + 1
-if n > 14 then break end
-local sc = btnScale[d]
+if n > 18 then break end
+local sc = isBtn and btnScale[d] or d:FindFirstChildOfClass("UIScale")
+local p0 = isBtn and bb and bb[d] or nil
+local par = d.Parent
+if p0 and par and (par:FindFirstChildOfClass("UIListLayout") or par:FindFirstChildOfClass("UIGridLayout")) then p0 = nil end
+if sc and sc.Parent then sc.Scale = 0.001 end
+if p0 then d.Position = p0 + UDim2.fromOffset(0, 14) end
+local tilt = (n % 2 == 0) and 2.2 or -2.2
+if isBtn and d.AbsoluteSize.X > 220 then tilt = tilt * 0.4 end
+task.delay(0.05 + 0.3 * (1 - 0.88 ^ n), function()
+if not d.Parent then return end
 if sc and sc.Parent then
-FX.SpringTo(sc, "Scale", 0.001, 400, 1, 0.001)
+FX.NoMB = true
+FX.SpringTo(sc, "Scale", 1, 240, 0.64, 0.001)
+FX.NoMB = nil
 end
-local tilt = (n % 2 == 0) and 2.5 or -2.5
-task.delay(0.08 + 0.36 * (1 - 0.86 ^ n), function()
-if sc and sc.Parent then
-FX.SpringTo(sc, "Scale", 1, 190, 0.76)
-if not FX.Lite() then
-d.Rotation = tilt * 0.35
-FX.SpringTo(d, "Rotation", 0, 160, 0.82)
-end
-end
+if p0 then tween(d, 0.55, Quint, EOut, {Position = p0}) end
+if isBtn then
+d.Rotation = tilt
+FX.NoMB = true
+FX.SpringTo(d, "Rotation", 0, 170, 0.72)
+FX.NoMB = nil
 FX.Sheen(d)
+end
 end)
 end
 end
@@ -3589,7 +3641,7 @@ end
 function FX.BtnAnim(b, sc, basePos, stroke, hover)
 local kind = tonumber(FX.Cfg.BtnAnim) or 1
 if kind <= 1 or kind > 11 or kind == 6 or kind == 9 or kind == 11 or not FX.Settings.Transitions or FX.IsLowEnd() or not b.Parent then return end
-local lite = FX.Lite()
+local lite = FX.UILite()
 local rest = hover and 1.015 or 1
 local restPos = basePos
 local col = FX.GetColor and FX.GetColor() or WHITE
@@ -3628,6 +3680,7 @@ if not lite then pcall(FX.Sheen, b) end
 FX.SpringTo(sc, "Scale", rest, 300, 0.55, rest * 1.05)
 end
 end
+-- [UIMOTION] tactile button: hover lift + spring scale, compress on press, elastic overshoot on release, accent ripple + stroke flash on activation
 function FX.EnhanceButton(b)
 if b:GetAttribute("FXB") then return end
 b:SetAttribute("FXB", true)
@@ -3635,7 +3688,7 @@ local M = FX.Matte
 local sc = Util.Instance("UIScale", b)
 local stroke = b:FindFirstChildOfClass("UIStroke")
 local hover, down = false, false
-local rest
+local rest, canLift, startPos
 if b:IsA("GuiButton") then b.AutoButtonColor = false end
 if b.AnchorPoint == Vector2.zero and b.Size.X.Scale == 1 and b.Position.X.Scale == 0 then
 b.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -3643,6 +3696,9 @@ b.Position = UDim2.new(0.5, 0, 0.5, 0)
 end
 local basePos = b.Position
 btnScale[b] = sc
+local bb = FX.BtnBase
+if not bb then bb = setmetatable({}, {__mode = "k"}) FX.BtnBase = bb end
+bb[b] = basePos
 local function paint(state, time)
 if b.BackgroundTransparency >= 1 then return end
 if state == 0 then
@@ -3666,16 +3722,42 @@ FX.mtween(b, time, Quad, EOut, {BackgroundColor3 = to})
 end
 end
 local function edge(on, time)
-if stroke then FX.mtween(stroke, time, Quad, EOut, {Color = on and M.BorderHover or M.Border}) end
+if not stroke then return end
+local to = M.Border
+if on then to = M.BorderHover:Lerp(FX.GetColor and FX.GetColor() or WHITE, 0.28) end
+tween(stroke, time, Quad, EOut, {Color = to})
 end
-local function squash(s, time, style)
-FX.mtween(sc, time, style, EOut, {Scale = s})
+local function spr(to, k, z)
+FX.NoMB = true
+FX.SpringTo(sc, "Scale", to, k, z)
+FX.NoMB = nil
+end
+local function hs()
+return 1 + math.clamp(7 / math.max(b.AbsoluteSize.X, 40), 0.012, 0.05)
+end
+local function lift(px, time, style)
+if not FX.Settings.Transitions then return end
+if canLift == nil then
+local p = b.Parent
+canLift = not (p and (p:FindFirstChildOfClass("UIListLayout") or p:FindFirstChildOfClass("UIGridLayout")))
+end
+if not canLift then return end
+tween(b, time, style or Quint, EOut, {Position = basePos + UDim2.fromOffset(0, -px)})
+end
+local function flash()
+if not stroke then return end
+stroke.Color = FX.GetColor and FX.GetColor() or WHITE
+tween(stroke, 0.55, Quint, EOut, {Color = hover and M.BorderHover or M.Border})
 end
 b.MouseEnter:Connect(function()
 if not FX.Settings.Transitions then return end
 hover = true
-if not down then paint(1, 0.14) end
-edge(true, 0.14)
+if not down then
+paint(1, 0.14)
+spr(hs(), 340, 0.55)
+lift(2, 0.18)
+end
+edge(true, 0.16)
 FX.Play("tick")
 end)
 b.MouseLeave:Connect(function()
@@ -3683,14 +3765,18 @@ if not hover and not down then return end
 hover, down = false, false
 paint(0, 0.18)
 edge(false, 0.18)
-squash(1, 0.2, Quint)
+spr(1, 280, 0.62)
+lift(0, 0.22)
 end)
 b.InputBegan:Connect(function(input)
 if not isPress(input) or not FX.Settings.Transitions then return end
 down = true
+startPos = input.Position
 FX.Click("click", 1.1, 0.75)
 paint(2, 0.06)
-squash(0.97, 0.08, Quad)
+spr(0.93, 560, 0.85)
+lift(-1, 0.08, Quad)
+pcall(ripple, b, input)
 end)
 b.InputEnded:Connect(function(input)
 if not isPress(input) or not down then return end
@@ -3698,8 +3784,24 @@ down = false
 FX.Click("release")
 paint(hover and 1 or 0, 0.16)
 edge(hover, 0.16)
-squash(1, 0.2, Quint)
+if hover then
+spr(hs(), 300, 0.36)
+lift(2, 0.32, Back)
+else
+spr(1, 300, 0.34)
+lift(0, 0.32, Back)
+end
+flash()
 FX.BtnAnim(b, sc, basePos, stroke, hover)
+end)
+b.InputChanged:Connect(function(input)
+if not down or not startPos or input.UserInputType ~= Enum.UserInputType.Touch then return end
+if (input.Position - startPos).Magnitude < 16 then return end
+down, hover = false, false
+paint(0, 0.18)
+edge(false, 0.18)
+spr(1, 260, 0.7)
+lift(0, 0.2)
 end)
 b.MouseMoved:Connect(function(x)
 if FX.Cfg.BtnAnim ~= 8 or down or not hover or not FX.Settings.Transitions or FX.IsLowEnd() then return end
@@ -3710,42 +3812,50 @@ FX.SpringTo(b, "Rotation", math.clamp((x - (b.AbsolutePosition.X + w)) / w, -1, 
 FX.NoMB = nil
 end)
 end
+-- [UIMOTION] text field pop: spring lift on hover / focus, compress on press, elastic release (no blur spam)
 function FX.EnhancePop(obj)
 if not obj or obj:GetAttribute("FXPop") then return end
 obj:SetAttribute("FXPop", true)
 local sc = Util.Instance("UIScale", obj)
 local hov, dn, foc = false, false, false
-local function settle(style, time)
-local k, z = liquidParams(style)
-FX.SpringTo(sc, "Scale", dn and 0.98 or ((hov or foc) and 1.01 or 1), k, z)
+local function settle(kind)
+if not FX.Settings.Transitions then return end
+local to, k, z = 1, 300, 0.62
+if dn then to, k, z = 0.975, 520, 0.9
+elseif foc then to, k, z = 1.022, 280, 0.5
+elseif hov then to, k, z = 1.014, 320, 0.6
+elseif kind == "release" then k, z = 260, 0.42 end
+FX.NoMB = true
+FX.SpringTo(sc, "Scale", to, k, z)
+FX.NoMB = nil
 end
 obj.MouseEnter:Connect(function()
 if not FX.Settings.Transitions then return end
 hov = true
-settle(Back, 0.22)
+settle()
 end)
 obj.MouseLeave:Connect(function()
 hov, dn = false, false
-settle(Back, 0.3)
+settle("release")
 end)
 obj.InputBegan:Connect(function(input)
 if not isPress(input) or not FX.Settings.Transitions then return end
 dn = true
-settle(Quad, 0.07)
+settle()
 end)
 obj.InputEnded:Connect(function(input)
 if not isPress(input) or not dn then return end
 dn = false
-settle(FX.Lite() and Quad or Enum.EasingStyle.Elastic, FX.Lite() and 0.1 or 0.5)
+settle("release")
 end)
 if obj:IsA("TextBox") then
 obj.Focused:Connect(function()
 foc = true
-settle(Back, 0.25)
+settle()
 end)
 obj.FocusLost:Connect(function()
 foc = false
-settle(Back, 0.3)
+settle("release")
 end)
 end
 end
@@ -3786,50 +3896,81 @@ dot.Size = UDim2.fromOffset(KS, KS)
 local dc = dot:FindFirstChildOfClass("UICorner")
 if dc then dc.CornerRadius = UDim.new(0.5, 0) else Util.Instance("UICorner", dot).CornerRadius = UDim.new(0.5, 0) end
 local pv = Util.Instance("NumberValue", sw)
+local sv = Util.Instance("NumberValue", sw)
 local function apply()
 local p = pv.Value
 local c = math.clamp(p, 0, 1)
+local s = sv.Value
 local lo, hi = PAD + KS / 2, W - PAD - KS / 2
 dot.Position = UDim2.new(0, lo + (hi - lo) * p, 0.5, 0)
+dot.Size = UDim2.fromOffset(KS + s, KS - s * 0.25)
 fill.BackgroundColor3 = OFFC:Lerp(ONC, c)
 dot.BackgroundColor3 = OFFK:Lerp(ONK, c)
 end
 pv.Changed:Connect(apply)
+sv.Changed:Connect(apply)
 pv.Value = lever.Value and 1 or 0
 apply()
 dot.Visible = true
 dot:GetPropertyChangedSignal("Visible"):Connect(function()
 if not dot.Visible then dot.Visible = true end
 end)
+-- [UIMOTION] switch: underdamped slide (spring overshoot + settle), knob stretches while pressed, pop + accent pulse on activation
+local hov, dn = false, false
+local function snap(on)
+FX.NoMB = true
+FX.SpringTo(pv, "Value", on and 1 or 0, 430, 0.5)
+FX.NoMB = nil
+end
+local function settle(kind)
+if not FX.Settings.Transitions then return end
+local to, k, z = 1, 330, 0.6
+if dn then to, k, z = 0.93, 560, 0.9
+elseif hov then to, k, z = 1.07, 340, 0.55
+elseif kind == "release" then k, z = 300, 0.4 end
+FX.NoMB = true
+FX.SpringTo(sc, "Scale", to, k, z)
+FX.SpringTo(sv, "Value", dn and 5 or 0, dn and 520 or 380, dn and 0.8 or 0.45)
+FX.NoMB = nil
+if stroke then tween(stroke, 0.16, Quad, EOut, {Color = (hov or dn) and M.BorderHover or M.Border}) end
+end
 lever.Changed:Connect(function()
 local on = lever.Value
-FX.SpringTo(pv, "Value", on and 1 or 0, 320, 1)
-if on and FX.Settings.Transitions then FX.Play("tick", 1.3) end
-end)
-local hov, dn = false, false
-local function settle(time)
-FX.mtween(sc, time, dn and Quad or Quint, EOut, {Scale = dn and 0.97 or 1})
-if stroke then FX.mtween(stroke, time, Quad, EOut, {Color = (hov or dn) and M.BorderHover or M.Border}) end
+snap(on)
+if not FX.Settings.Transitions then return end
+local acc = FX.GetColor and FX.GetColor() or WHITE
+sc.Scale = on and 1.16 or 0.88
+FX.NoMB = true
+FX.SpringTo(sc, "Scale", hov and 1.07 or 1, 470, 0.34, on and 1.16 or 0.88)
+FX.NoMB = nil
+if stroke then
+stroke.Color = on and acc or M.TextMuted
+tween(stroke, 0.6, Quint, EOut, {Color = (hov or dn) and M.BorderHover or M.Border})
 end
+if on then
+FX.Play("tick", 1.3)
+FX.Pulse(sw, acc, 64, 0.5, 2)
+end
+end)
 hit.MouseEnter:Connect(function()
 if not FX.Settings.Transitions then return end
 hov = true
-settle(0.14)
+settle()
 end)
 hit.MouseLeave:Connect(function()
 if not hov and not dn then return end
 hov, dn = false, false
-settle(0.18)
+settle()
 end)
 hit.InputBegan:Connect(function(input)
 if not isPress(input) or not FX.Settings.Transitions then return end
 dn = true
-settle(0.07)
+settle()
 end)
 hit.InputEnded:Connect(function(input)
 if not isPress(input) or not dn then return end
 dn = false
-settle(0.18)
+settle("release")
 end)
 hit.InputBegan:Connect(function(input)
 if not isPress(input) then return end
@@ -3862,14 +4003,15 @@ if i ~= input and not (input.UserInputType == Enum.UserInputType.MouseButton1 an
 c1:Disconnect()
 c2:Disconnect()
 dn = false
-settle(0.18)
+settle("release")
 if not moving then return end
 local on = pv.Value > 0.5
-if lever.Value ~= on then lever.Value = on else FX.SpringTo(pv, "Value", on and 1 or 0, 320, 1) end
+if lever.Value ~= on then lever.Value = on else snap(on) end
 task.delay(0.25, function() sw:SetAttribute("FXDrag", nil) end)
 end)
 end)
 end
+-- [UIMOTION] slider knob: grows with spring on hover, swells + accent halo while held, elastic release (hit areas unchanged)
 function FX.EnhanceKnob(track, knob)
 if knob:GetAttribute("FXK") then return end
 knob:SetAttribute("FXK", true)
@@ -3880,26 +4022,37 @@ knob.BackgroundTransparency = 0
 knob.BorderSizePixel = 0
 knob.Size = UDim2.fromOffset(16, 16)
 if not knob:FindFirstChildOfClass("UICorner") then Util.Instance("UICorner", knob).CornerRadius = UDim.new(1, 0) end
+local halo = Util.Instance("UIStroke", knob)
+halo.Thickness, halo.Transparency, halo.Color = 3, 1, M.Text
 local hov, dn, over = false, false, 0
-local function grow(time)
-FX.mtween(sc, time, Quad, EOut, {Scale = dn and 1.15 or (hov and 1.08 or 1)})
+local function grow(kind)
+if not FX.Settings.Transitions then return end
+local to, k, z = 1, 340, 0.6
+if dn then to, k, z = 1.38, 520, 0.58
+elseif hov then to, k, z = 1.16, 360, 0.55
+elseif kind == "release" then k, z = 320, 0.38 end
+FX.NoMB = true
+FX.SpringTo(sc, "Scale", to, k, z)
+FX.NoMB = nil
+if dn then halo.Color = FX.GetColor and FX.GetColor() or M.Text end
+tween(halo, 0.18, Quad, EOut, {Transparency = dn and 0.55 or (hov and 0.82 or 1)})
 end
 local function enter()
 over += 1
 if hov or not FX.Settings.Transitions then return end
 hov = true
-grow(0.14)
+grow()
 end
 local function leave()
 over = math.max(over - 1, 0)
 if over > 0 or not hov then return end
 hov = false
-if not dn then grow(0.18) end
+if not dn then grow("release") end
 end
 local function press(input)
 if not isPress(input) or not FX.Settings.Transitions then return end
 dn = true
-grow(0.08)
+grow()
 end
 for _, s in ipairs({track, knob}) do
 s.MouseEnter:Connect(enter)
@@ -3909,26 +4062,35 @@ end
 local conn = UserInputService.InputEnded:Connect(function(input)
 if not dn or not isPress(input) then return end
 dn = false
-grow(0.2)
+grow("release")
 end)
 knob.Destroying:Once(function()
 conn:Disconnect()
 end)
 end
+-- [UIMOTION] text field focus: accent border that swells in with an overshoot, then settles
 function FX.EnhanceField(box, tb)
 if box:GetAttribute("FXF") then return end
 box:SetAttribute("FXF", true)
 local M = FX.Matte
 local stroke = box:FindFirstChildOfClass("UIStroke")
+local restT
 pcall(function() tb.PlaceholderColor3 = M.TextMuted end)
 tb.Focused:Connect(function()
 pcall(function() tb.PlaceholderColor3 = M.TextMuted end)
-if stroke then FX.mtween(stroke, 0.18, Quad, EOut, {Color = M.Accent}) end
+if stroke then
+restT = restT or stroke.Thickness
+if FX.Settings.Transitions then stroke.Thickness = restT + 2.2 end
+tween(stroke, 0.32, Quint, EOut, {Color = M.Accent, Thickness = restT + 1})
+end
 end)
 tb.FocusLost:Connect(function()
-if stroke then FX.mtween(stroke, 0.22, Quad, EOut, {Color = M.Border}) end
+if stroke then
+tween(stroke, 0.26, Quad, EOut, {Color = M.Border, Thickness = restT or stroke.Thickness})
+end
 end)
 end
+-- [UIMOTION] dropdown option: text slides in on hover, brightens, press ripple, springy settle
 function FX.EnhanceItem(item)
 if item:GetAttribute("FXI") then return end
 item:SetAttribute("FXI", true)
@@ -3937,6 +4099,14 @@ if item:IsA("GuiButton") then item.AutoButtonColor = false end
 local init = item.BackgroundColor3
 local function base()
 return item:GetAttribute("MatteBase") or init
+end
+local pad
+local function nudge(px, time, style)
+if not FX.Settings.Transitions then return end
+if not pad or not pad.Parent then
+pad = item:FindFirstChildOfClass("UIPadding") or Util.Instance("UIPadding", item)
+end
+tween(pad, time, style or Quint, EOut, {PaddingLeft = UDim.new(0, px)})
 end
 local function paint(state, time)
 local b = base()
@@ -3948,24 +4118,35 @@ to = M.Active:Lerp(WHITE, 0.08)
 end
 FX.mtween(item, time, Quad, EOut, {BackgroundColor3 = to})
 end
+local function ink(on, time)
+local lit = on or base() == M.Active
+tween(item, time, Quad, EOut, {TextColor3 = lit and M.Text or M.TextSecondary})
+end
 local hover = false
 item.MouseEnter:Connect(function()
 if not FX.Settings.Transitions then return end
 hover = true
 paint(1, 0.12)
+ink(true, 0.12)
+nudge(7, 0.22, Back)
 FX.Play("tick", 1.2)
 end)
 item.MouseLeave:Connect(function()
 hover = false
 paint(0, 0.16)
+ink(false, 0.16)
+nudge(0, 0.2)
 end)
 item.InputBegan:Connect(function(input)
 if not isPress(input) or not FX.Settings.Transitions then return end
 paint(2, 0.05)
+nudge(3, 0.08, Quad)
+pcall(ripple, item, input)
 end)
 item.InputEnded:Connect(function(input)
 if not isPress(input) then return end
 paint(hover and 1 or 0, 0.14)
+nudge(hover and 7 or 0, 0.24, Back)
 end)
 local list = item.Parent
 if list then
@@ -3973,6 +4154,7 @@ list:GetPropertyChangedSignal("Visible"):Connect(function()
 if not list.Visible then
 hover = false
 item.BackgroundColor3 = base()
+if pad and pad.Parent then pad.PaddingLeft = UDim.new(0, 0) end
 end
 end)
 end
@@ -4465,23 +4647,27 @@ dropCells(strips)
 task.wait(0.15)
 end
 end
+-- [UIMOTION] default "Liquid" page transition: directional slide + depth spring + veil reveal; outgoing page exits fast, incoming page settles with overshoot
 Styles[16] = function(page, entering, goal, R)
-local lite = FX.Lite()
+local lite = FX.UILite()
+local k = 1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
 if entering then
-page.Position = goal + UDim2.fromOffset(0, lite and 0 or 34)
-R.veil.BackgroundTransparency = lite and 0.7 or 0.45
-tween(R.veil, 1, Quint, EOut, {BackgroundTransparency = 1})
-FX.SpringTo(R.scale, "Scale", 1, 34, 0.82, 0.94)
-tween(page, 1, Quint, EOut, {Position = goal})
-task.wait(1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1))
+local side = (R.fromX or 0) >= 0 and 1 or -1
+page.Position = goal + UDim2.fromOffset(lite and 0 or side * 56, lite and 0 or 16)
+R.scale.Scale = lite and 0.97 or 0.9
+R.veil.BackgroundTransparency = lite and 0.7 or 0.5
+tween(R.veil, 0.55, Quint, EOut, {BackgroundTransparency = 1})
+tween(page, 0.6, Quint, EOut, {Position = goal})
+FX.SpringTo(R.scale, "Scale", 1, 190, 0.5, lite and 0.97 or 0.9)
+task.wait(0.5 * k)
 else
-tween(R.scale, 1, Quint, EInOut, {Scale = 0.96})
-tween(R.veil, 0.62, Quint, EIn, {BackgroundTransparency = 0.55})
-tween(page, 1, Quint, EInOut, {Position = goal})
-task.delay(0.62, function()
-if R.alive() then tween(R.veil, 0.38, Quad, EOut, {BackgroundTransparency = 1}) end
+tween(R.scale, 0.4, Quint, EIn, {Scale = 0.94})
+tween(R.veil, 0.38, Quad, EIn, {BackgroundTransparency = 0.45})
+tween(page, 0.42, Quint, EIn, {Position = goal})
+task.delay(0.3 * k, function()
+if R.alive() then tween(R.veil, 0.25, Quad, EOut, {BackgroundTransparency = 1}) end
 end)
-task.wait(1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1))
+task.wait(0.42 * k)
 end
 end
 local function endWait() task.wait(1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)) end
@@ -4643,6 +4829,7 @@ local function pageTween(page, props)
 local goal = props.Position
 local entering = goal.X.Offset == 0 and goal.Y.Offset == 0
 local styleId = pickStyle(page)
+local fromX = page.Position.X.Offset
 local handle = {PlaybackState = Enum.PlaybackState.Begin}
 local done = Instance.new("BindableEvent")
 handle.Completed = done.Event
@@ -4651,7 +4838,7 @@ local function run()
 local token = (Active[page] or 0) + 1
 Active[page] = token
 local rig = getRig(page)
-local R = {scale = rig.scale, veil = getVeil()}
+local R = {scale = rig.scale, veil = getVeil(), fromX = fromX}
 R.alive = function()
 return Active[page] == token and not cancelled
 end
@@ -4659,16 +4846,20 @@ veilToken = veilToken + 1
 local myVeil = veilToken
 resetVeilGeometry()
 R.veil.BackgroundTransparency = 1
-FX.BlurPulse(entering and 6.5 or 5, 0.16, 0.8, true, 0.1)
+-- [UIMOTION] blur + focus coordinated with the page: outgoing page dips the focus, incoming page releases it as content cascades in
+FX.BlurPulse(entering and 5.5 or 4.2, 0.12, entering and 0.55 or 0.4, true, entering and 0.14 or 0.02)
 FX.Play(entering and "open" or "back")
-if entering then pcall(FX.Cascade, page) end
+if entering then
+pcall(FX.Cascade, page)
+if not FX.IntroActive then pcall(FX.FocusRing, FX.Window) end
+end
 local ok, err = pcall(Styles[styleId] or Styles[1], page, entering, goal, R)
 if not ok then warn("[UhhhhhhFX] transition error: " .. tostring(err)) end
 if not R.alive() then return false end
 page.Position = goal
 page.Rotation = 0
-if entering and FX.VQ() <= 3 and FX.Settings.Transitions then
-R.scale.Scale = 1.012
+if entering and FX.Settings.Transitions then
+if styleId ~= 16 and FX.VQ() <= 3 then R.scale.Scale = 1.012 end
 FX.SpringTo(R.scale, "Scale", 1, 300, 0.62)
 else
 R.scale.Scale = 1
@@ -23698,7 +23889,7 @@ function FX.WindowFold(win, content, closing, pos, full)
 if not FX.Settings.Transitions or not win.Parent then return nil end
 local Expo = FX.Expo
 local k = 1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
-local lite = FX.Lite()
+local lite = FX.UILite()
 local col = FX.GetColor and FX.GetColor() or WHITE
 local pill = UDim2.fromOffset(112, 30)
 local dest = pos or win.Position
@@ -23748,7 +23939,7 @@ function FX.RegisterLock(win, full, content)
 local Expo, parent = FX.Expo, win.Parent
 local col = FX.GetColor and FX.GetColor() or WHITE
 local fx, fy = full.X.Offset, full.Y.Offset
-local lite = FX.Lite()
+local lite = FX.UILite()
 local k = 1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
 local g, gs = FX.Plate(win, WHITE, 1.5, 0.25, UDim2.fromOffset(44, 30))
 g.BackgroundColor3, g.BackgroundTransparency = col:Lerp(WHITE, 0.55), 0.88
@@ -63469,7 +63660,7 @@ end
 return
 end
 if opened then
-if Util.FX.Settings.Transitions and not Util.FX.Lite() then
+if Util.FX.Settings.Transitions and not Util.FX.UILite() then
 local sdt = math.min(dt, 1 / 30)
 dropVel = dropVel + (210 * (1 - opentween) - 19.1 * dropVel) * sdt
 opentween = opentween + dropVel * sdt
@@ -87687,15 +87878,15 @@ end
 --   5. critically damped spring (SmoothDamp), run every frame with the frame dt: keeps position AND velocity continuous, so it glides between sensor updates and never snaps, whatever the sensor / frame rate
 --   6. the smoothed rotation is applied as a head-local offset around the neck joint: FinalHead = AnimatedHead * Offset (the animation's own head movement stays underneath)
 pcall(function()
-local HM = {Wanted = false, On = false, Source = "phone"}
+local HM = {Wanted = false, On = false, Source = "phone", Shiftlock = false}
 -- Control source (HM.Source, saved as SaveData.Reanimator.DynamicHeadSource): "phone" = the sensor pipeline below, untouched; "camera" = the Roblox camera (third person), READ only through workspace.CurrentCamera (never moved, never forced). The camera feeds the SAME One Euro filter + critically damped spring + ease-in + adapters (HM.LimbHead / HM.HatFrame): it only replaces stage 1-3 (camStep) and owns no connection and no loop.
 Reanimate.HeadMotion = HM
 local ALLOW = {Limbs = true, Ragdoll = true, ["Servo-Joint"] = true, ["Hybrid-Joint"] = true, ["Skeletal Retargeting"] = true, ["Kinematic Reanimation"] = true, ["Velocity-Interpolated"] = true, Hats = true, Hair = true, HatHair = true, Accessories = true}
 local IDCF, PI = CFrame.identity, math.pi
 local TAU, RAD = PI * 2, PI / 180
-local LIM_P, LIM_Y, LIM_R = 40 * RAD, 70 * RAD, 30 * RAD -- pitch / yaw / roll limits (soft)
-local MAXSPD, RAMP = 7, 0.4 -- max head speed in rad/s, ease-in time when the feature starts
-local YAW_MAX, REAR0, CAM_PU, CAM_PD, FP0, FP1 = 90 * RAD, 150 * RAD, 45 * RAD, 40 * RAD, 0.8, 2 -- camera source: yaw limit (+-90 = 180 total), angle where the head starts easing back to centre behind the character, pitch limit up / down, first-person fade range (studs camera -> focus)
+local LIM_P, LIM_PU, LIM_Y, LIM_R = 40 * RAD, 100 * RAD, 70 * RAD, 30 * RAD -- pitch (down / up: a phone can really be tilted up much further) / yaw / roll limits (soft)
+local MAXSPD, RAMP, CAM_SPD, SL_TAU = 7, 0.4, 10, 0.45 -- max head speed in rad/s (camera source: CAM_SPD, it has up to 180 deg of pitch to cover), ease-in time when the feature starts, Shift Lock heading-reference time constant (s)
+local YAW_MAX, REAR0, CAM_UE, CAM_PD, FP0, FP1 = 90 * RAD, 150 * RAD, 1.25, 40 * RAD, 0.8, 2 -- camera source: yaw limit (+-90 = 180 total), angle where the head starts easing back to centre behind the character, camera elevation (rad, after the dead zone) at which the head reaches the full 180 deg upward (Roblox's own camera stops at about 80 deg), downward pitch limit, first-person fade range (studs camera -> focus)
 local NECK_P = Vector3.new(0, -0.5, 0) -- neck joint in head space (R6 / R15 Neck.C1)
 local cGyro, cAcc, kind = nil, nil, nil
 local sCF, sV, sT, pT = nil, nil, 0, 0 -- latest sensor sample, its arrival time, arrival time of the last processed sample
@@ -87706,7 +87897,8 @@ local tP, tY, tR = 0, 0, 0 -- filtered targets
 local pit, yaw, rol, vP, vY, vR, wt = 0, 0, 0, 0, 0, 0, 0 -- spring state (angles + velocities) and ease-in weight
 local lastT, useT, lastAng, scCF, outCF, pgui = 0, 0, nil, IDCF, IDCF, nil
 local tcRC, tcNeck, tcP, mR, mP, mM = nil, nil, NECK_P, nil, nil, IDCF
-local cRoot, cRaw = nil, 0 -- camera source: character root used as the forward reference, last valid horizontal camera angle
+local cRoot, cRaw, cEl = nil, 0, 0 -- camera source: character root used as the forward reference, last valid horizontal camera angle, last valid (extended, +-180 deg) camera elevation
+local cRY, slW, rel = nil, 0, false -- Shift Lock: smoothed root heading used as the head's reference, its eased weight (0 = off); rel = the input ended and the head is gliding back to neutral
 -- phone check = the script's existing touch-only test; then real sensor availability (a phone is not assumed to have a gyroscope)
 local function detectPhone()
 local ok, k, why = pcall(function()
@@ -87730,6 +87922,13 @@ local function detach()
 if cGyro then cGyro:Disconnect() cGyro = nil end
 if cAcc then cAcc:Disconnect() cAcc = nil end
 kind, sCF, sV = nil, nil, nil
+end
+-- input ended (switch off / sensor lost): the spring keeps its state and only the targets drop to 0, so the head glides back to neutral instead of snapping; HM.Reset runs once it has arrived
+local function release()
+detach()
+tP, tY, tR = 0, 0, 0
+rel = outCF ~= IDCF
+if not rel then HM.Reset() end
 end
 local function attach()
 local k = detect()
@@ -87783,12 +87982,12 @@ local r = lim * (1 - e) / (1 + e)
 return a < 0 and -r or r
 end
 -- critically damped spring (SmoothDamp): frame-rate independent, position and velocity stay continuous, no overshoot
-local function damp(cur, vel, target, T, dt)
+local function damp(cur, vel, target, T, dt, ms)
 local om = 2 / T
 local x = om * dt
 local ex = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x)
 local ch = cur - target
-local mx = MAXSPD * T
+local mx = (ms or MAXSPD) * T
 if ch > mx then ch = mx elseif ch < -mx then ch = -mx end
 local tg = cur - ch
 local tmp = (vel + om * ch) * dt
@@ -87799,7 +87998,7 @@ return out, vel
 end
 -- Roblox camera source. Stateless angle mapping (nothing can accumulate, no unwrap drift):
 -- yaw = horizontal angle between the camera's look direction and the character's forward (+ = left), hard-limited to +-90 deg = 180 deg total. When the camera looks toward the character's back (|angle| > 90) the head HOLDS the limit, and only within the last 30 deg before the exact rear direction it eases (smoothstep) back to centre, so crossing the rear is one continuous curve: never a 360 turn, no neck flip, no snap.
--- pitch = camera elevation relative to the character (soft dead zone, hard limits). Roll stays 0.
+-- pitch = camera elevation relative to the character, EXTENDED to +-180 deg (atan2 of look.Y and up.Y, so it carries on past straight up instead of folding back at 90). Down: soft dead zone + hard limit (unchanged). Up: soft dead zone, then 1:1 at first, an eased gain, and an eased arrival at the full 180 deg when the camera reaches its own maximum, so the whole range is one continuous curve. Roll stays 0.
 -- first person (camera on top of its focus) fades the offset to neutral and back, so no unstable angles there. A missing camera / character eases to neutral too.
 local function camYaw(raw)
 local m = raw < 0 and -raw or raw
@@ -87813,6 +88012,13 @@ end
 end
 return raw < 0 and -r or r
 end
+-- Shift Lock detection = Roblox's own state (UserGameSettings.RotationType CameraRelative, or MouseBehavior LockCenter) while the camera is really in third person: first person uses the same states, so it is excluded by the camera -> focus distance (see camStep). Only READ, nothing is forced or hooked
+local UGS = nil
+pcall(function() UGS = UserSettings():GetService("UserGameSettings") end)
+local function shiftOn()
+if UGS and UGS.RotationType == Enum.RotationType.CameraRelative then return true end
+return UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter
+end
 local function camStep(dt)
 local cam = workspace.CurrentCamera
 local root = cRoot
@@ -87823,19 +88029,54 @@ cRoot = root
 end
 local ax, ay = 0, 0
 if cam and root then
-local ccf = cam.CFrame
-local lv = root.CFrame:VectorToObjectSpace(ccf.LookVector)
-local hx, hy, hz = lv.X, lv.Y, lv.Z
-if hx == hx and hy == hy and hz == hz then -- finite
-if hx * hx + hz * hz > 1e-4 then cRaw = math.atan2(-hx, -hz) end -- looking straight up / down: keep the last yaw
+local ccf, rcf = cam.CFrame, root.CFrame
+local lv, uv = rcf:VectorToObjectSpace(ccf.LookVector), rcf:VectorToObjectSpace(ccf.UpVector)
+local hx, hy, hz, ux, uy, uz = lv.X, lv.Y, lv.Z, uv.X, uv.Y, uv.Z
+if hx == hx and hy == hy and hz == hz and ux == ux and uy == uy and uz == uz then -- finite
+-- elevation from look AND up: atan2(look.Y, up.Y) keeps going past straight up (up.Y turns negative), where asin(look.Y) folds back at +-90 deg. A level camera rolled 90 deg is ill-conditioned: the last value is kept
+if hy * hy + uy * uy > 1e-3 then cEl = math.atan2(hy, uy) end
+-- heading from the same two vectors (look horizontal * cos(elevation) - up horizontal * sin(elevation)): well conditioned at every pitch and continuous through the zenith, so extreme pitch never distorts the turn. Degenerate = keep the last yaw
+local qx, qz = uy * hx - hy * ux, uy * hz - hy * uz
+if qx * qx + qz * qz > 1e-4 then cRaw = math.atan2(-qx, -qz) end
 local fw = (ccf.Position - cam.Focus.Position).Magnitude
 if not (fw < 1e9) then fw = 1e9 end
 local f = (fw - FP0) / (FP1 - FP0)
 f = f < 0 and 0 or f > 1 and 1 or f
 f = f * f * (3 - 2 * f)
-ay = camYaw(cRaw) * f
-ax = shape(math.asin(hy > 1 and 1 or hy < -1 and -1 or hy), 0.1, PI / 2)
-ax = (ax > CAM_PU and CAM_PU or ax < -CAM_PD and -CAM_PD or ax) * f
+-- "Use dynamic head on shiftlock": Shift Lock turns the root with the camera, so root-relative yaw collapses to ~0. While it is active (option on, third person) the yaw reference becomes the root heading smoothed with SL_TAU, so the head keeps following the camera and settles to neutral as the body catches up. The weight eases in / out and the reference starts at the current root heading, so entering and leaving Shift Lock never jumps. Option off = raw (the existing behaviour)
+local raw = cRaw
+local on = HM.Shiftlock and fw >= FP1 and shiftOn()
+slW = slW + ((on and 1 or 0) - slW) * (1 - math.exp(-dt / 0.2))
+local rl = rcf.LookVector
+local ry = math.atan2(-rl.X, -rl.Z)
+if slW > 0.001 and ry == ry then
+if not cRY then cRY = ry end
+cRY = cRY + ((ry - cRY + PI) % TAU - PI) * (1 - math.exp(-dt / SL_TAU))
+raw = (cRaw - ((ry - cRY + PI) % TAU - PI) * slW + PI) % TAU - PI
+else
+cRY = nil
+end
+ay = camYaw(raw) * f
+local e, a = cEl, 0
+if e < -PI / 2 then -- camera past straight down (custom cameras only): bridge from the down limit to the 180 deg up pose, so the extended circle has no jump
+local s = (-PI / 2 - e) / (PI / 2)
+a = -CAM_PD + (PI + CAM_PD) * s * s * (3 - 2 * s)
+elseif e < 0 then -- down: unchanged
+a = shape(e, 0.1, PI / 2)
+if a < -CAM_PD then a = -CAM_PD end
+else -- up: soft dead zone, 1:1 start, eased gain, eased arrival at 180 deg
+local m = e - 0.1
+if m > 0 then
+local t = m / CAM_UE
+if t >= 1 then
+a = PI
+else
+local u = t * math.sqrt(t)
+a = m + (PI - CAM_UE) * u * u * (3 - 2 * u)
+end
+end
+end
+ax = a * f
 end
 end
 tP = oneEuro(fP, ax, dt, 3.5, 6)
@@ -87847,7 +88088,9 @@ local dt = lastT == 0 and 1 / 60 or now - lastT
 lastT = now
 if dt <= 0 then return end
 if dt > 0.25 then dt = 1 / 60 elseif dt > 0.1 then dt = 0.1 end
-if kind == "cam" then
+if rel then
+tP, tY, tR = 0, 0, 0 -- input ended: only the spring runs, gliding the head back to neutral
+elseif kind == "cam" then
 camStep(dt) -- camera source: stage 1-4 replaced by the camera mapping + the same One Euro filter
 else
 local pg = pgui
@@ -87919,7 +88162,7 @@ local gy = kind == "gyro"
 local dz = gy and 0.007 or 0.0175
 local fm, bt = 3.5, 6
 if not gy then fm, bt = 1.2, 1.5 end
-tP = oneEuro(fP, shape(ax, dz, LIM_P), sdt, fm, bt)
+tP = oneEuro(fP, shape(ax, dz, ax > 0 and LIM_PU or LIM_P), sdt, fm, bt)
 tY = oneEuro(fY, shape(ay, dz, LIM_Y), sdt, fm, bt)
 tR = oneEuro(fR, shape(az, dz, LIM_R), sdt, fm, bt)
 end
@@ -87927,9 +88170,10 @@ end
 end -- phone sensor stages
 -- stage 5: every frame, glide toward the latest target (gyro follows tightly, the accelerometer is smoothed much more)
 local T = kind == "accel" and 0.16 or kind == "cam" and 0.09 or 0.07
-pit, vP = damp(pit, vP, tP, T, dt)
-yaw, vY = damp(yaw, vY, tY, T, dt)
-rol, vR = damp(rol, vR, tR, T, dt)
+local ms = kind == "cam" and CAM_SPD or MAXSPD
+pit, vP = damp(pit, vP, tP, T, dt, ms)
+yaw, vY = damp(yaw, vY, tY, T, dt, ms)
+rol, vR = damp(rol, vR, tR, T, dt, ms)
 if wt < 1 then wt = math.min(1, wt + dt / RAMP) end
 local w = wt * wt * (3 - 2 * wt)
 if math.abs(pit) + math.abs(yaw) + math.abs(rol) < 1e-4 then
@@ -87940,17 +88184,19 @@ end
 end
 -- the smoothed head offset (head axes: X = look up / down, Y = turn, Z = tilt), or nil while inactive / neutral
 local function get()
-if not HM.On then return nil end
+if not (HM.On or rel) then return nil end
 local cur = Reanimate.Current
 if not (cur and ALLOW[cur.Name]) then return nil end
 local now = os.clock()
 useT = now
-if not kind and not attach() then
+if not (rel or kind) and not attach() then
 HM.On = false
+release() -- sensor lost: the head glides home instead of snapping
 pcall(Util.UINotify, "Dynamic Head Movement turned off: the device motion sensor is no longer available.")
-return nil
 end
+if not (HM.On or rel) then return nil end
 if now - lastT >= 0.004 then step(now) end
+if rel and outCF == IDCF then HM.Reset() end -- the glide home has finished
 if outCF == IDCF then return nil end
 return outCF
 end
@@ -88000,10 +88246,10 @@ tP, tY, tR = 0, 0, 0
 pit, yaw, rol, vP, vY, vR, wt = 0, 0, 0, 0, 0, 0, 0
 lastT, pT, sT, lastAng, outCF = 0, 0, 0, nil, IDCF
 tcRC, tcNeck, mR, mP = nil, nil, nil, nil
-cRoot, cRaw = nil, 0
+cRoot, cRaw, cEl, cRY, slW, rel = nil, 0, 0, nil, 0, false
 end
 function HM.Set(on)
-HM.Reset()
+if not on and HM.On and outCF ~= IDCF then release() else HM.Reset() end -- switched off while the head is turned: it glides back to neutral instead of snapping
 if on then
 local k, why = detect()
 if not k then
@@ -88021,7 +88267,9 @@ end
 -- source selector: Reset drops the old source's connection / calibration / filter / spring state completely, so nothing accumulates across a switch. The switch state is kept; it is turned off only when the phone source is chosen on a device without a usable sensor
 function HM.SetSource(src)
 src = src == "camera" and "camera" or "phone"
+local a, b, c, d, e, g, h = pit, yaw, rol, vP, vY, vR, wt -- the spring keeps its pose across a source change: the head glides to the new source's pose instead of snapping to neutral
 HM.Reset()
+pit, yaw, rol, vP, vY, vR, wt = a, b, c, d, e, g, h
 HM.Source = src
 pcall(function() SaveData.Reanimator.DynamicHeadSource = src end)
 if not HM.Wanted then return true end
@@ -88034,11 +88282,16 @@ end
 HM.On = true
 return true
 end
+-- "Use dynamic head on shiftlock" (saved as SaveData.Reanimator.DynamicHeadOnShiftlock, default off). Only a flag that camStep reads: toggling it never resets calibration, filters or the spring
+function HM.SetShiftlock(on)
+HM.Shiftlock = on == true
+pcall(function() SaveData.Reanimator.DynamicHeadOnShiftlock = HM.Shiftlock end)
+end
 -- the one switch (+ source selector) every applicable Config shares (Limb + its variants, Hats, Hair, Hat X Hair, Accessories)
 function HM.ConfigSwitch(parent)
 local function cfgTexts()
 if HM.Source == "camera" then
-return "ROBLOX CAMERA (THIRD PERSON): rotate your normal Roblox camera to control your reanimated character's head. Works on PC and mobile, no motion sensor needed. The head follows where the camera looks, up to 90° left / right (180° total). Your camera is only read, never moved or changed.",
+return "ROBLOX CAMERA (THIRD PERSON): rotate your normal Roblox camera to control your reanimated character's head. Works on PC and mobile, no motion sensor needed. The head follows where the camera looks: up to 90° left / right (180° total) and up to 180° upward. If you play with Shift Lock, turn on \"Use dynamic head on shiftlock\". Your camera is only read, never moved or changed.",
 "Source: Roblox Camera. " .. (workspace.CurrentCamera and "Camera detected." or "Waiting for a camera.") .. " In first person the head eases back to neutral."
 end
 local k, why = detectPhone()
@@ -88053,6 +88306,8 @@ return "PHONE MOTION SENSORS: move your phone to control your reanimated charact
 end
 local lever = UI.CreateSwitch(parent, "Dynamic Head Movement", (HM.Wanted and detect() ~= nil) == true)
 local dsrc = UI.CreateDropdown(parent, "Head control source", {"Phone Motion Sensors", "Roblox Camera (Third Person)"}, HM.Source == "camera" and 2 or 1)
+local slsw = UI.CreateSwitch(parent, "Use dynamic head on shiftlock", HM.Shiftlock == true)
+slsw.Changed:Connect(function(val) HM.SetShiftlock(val == true) end)
 local t1, t2 = cfgTexts()
 local info = UI.CreateText(parent, t1, 10, Enum.TextXAlignment.Center)
 local status = UI.CreateText(parent, t2, 10, Enum.TextXAlignment.Center)
@@ -88088,6 +88343,7 @@ end
 pcall(function()
 if SaveData.Reanimator.DynamicHeadSource == "camera" then HM.Source = "camera" end -- no / unknown saved source = Phone Motion Sensors: existing saves keep their behaviour
 if SaveData.Reanimator.DynamicHeadMovement == true and detect() then HM.Wanted, HM.On = true, true end
+if SaveData.Reanimator.DynamicHeadOnShiftlock == true then HM.Shiftlock = true end -- no / unknown saved value = off: existing saves keep their behaviour
 end)
 end)
 -- limb pose guard: a non-finite pose never reaches a Motor6D (the last valid one is held), and a limb joint (neck / shoulder / hip) stays anchored to its parent, so a glitched pose can no longer throw a limb away from its pivot. Stateless (no extra smoothing), so it never fights an interpolating method. The root joint (HumanoidRootPart -> Torso) and hidden limbs are never modified here.
