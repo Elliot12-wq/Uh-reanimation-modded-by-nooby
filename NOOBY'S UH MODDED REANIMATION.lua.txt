@@ -95264,6 +95264,7 @@ local S, U, Drag, PD = nil, {}, nil, nil -- S = open editor session, U = widgets
 local THEMED = {}
 local lastWarn = 0
 local refreshAll, drawTimeline, refreshPose, refreshKf, refreshTransport, updateInfo, refreshStatus, startSession, stopSession, setLive, selectKf, timelineDrag, gzUpdate
+local Scene = {blocks = {}, effects = {}, map = {}, fxmap = {}, nid = 1, sel = nil, selFx = nil, prev = nil, ci = 0, inst = {}, instId = {}, cache = {}, fx = {}, dirty = true, acc = 0, fxt = 0} -- Blocks / Effects scene (functions: section "BLOCKS + EFFECTS" below)
 
 local function cur() return Work.anims[Work.cat] end
 local function curKf() local A = cur() return A.kfs[Work.sel] or A.kfs[1] end
@@ -95322,7 +95323,7 @@ local function cloneAnim(A)
 end
 local function pushUndo()
 	local h = Work.hist
-	h[#h + 1] = {cat = Work.cat, anim = cloneAnim(Work.anims[Work.cat]), sel = Work.sel}
+	h[#h + 1] = {cat = Work.cat, anim = cloneAnim(Work.anims[Work.cat]), sel = Work.sel, scene = Scene.snap()}
 	if #h > 60 then table.remove(h, 1) end
 	table.clear(Work.redo)
 end
@@ -95330,7 +95331,7 @@ local function stepHist(src, dst)
 	if not canEdit() then return end
 	local e = table.remove(src)
 	if not e then say(src == Work.hist and "Nothing to undo." or "Nothing to redo.") return end
-	dst[#dst + 1] = {cat = e.cat, anim = cloneAnim(Work.anims[e.cat]), sel = e.cat == Work.cat and Work.sel or 1}
+	dst[#dst + 1] = {cat = e.cat, anim = cloneAnim(Work.anims[e.cat]), sel = e.cat == Work.cat and Work.sel or 1, scene = Scene.snap()}
 	if S.live then setLive(false) end
 	local m = e.cat == "Dance" and "dance" or "moveset"
 	if m ~= Work.mode then
@@ -95341,6 +95342,7 @@ local function stepHist(src, dst)
 	Work.cat, Work.anims[e.cat] = e.cat, e.anim
 	if e.cat ~= "Dance" then Work.lastCat = e.cat end
 	Work.sel = math.clamp(e.sel, 1, #e.anim.kfs)
+	if e.scene then Scene.restore(e.scene) end
 	local A = cur()
 	S.t, S.playing = A.static and 0 or A.kfs[Work.sel].t, false
 	touch()
@@ -95434,10 +95436,970 @@ local ROWS = {
 	{id = "Right Arm", name = "Right Arm", kind = "part", part = "Right Arm", up = "rig"},
 	{id = "Left Leg", name = "Left Leg", kind = "part", part = "Left Leg", up = "rig"},
 	{id = "Right Leg", name = "Right Leg", kind = "part", part = "Right Leg", up = "rig"},
+	{id = "obj", name = "Objects", kind = "group", grp = true},
+	{id = "blk", name = "Block keys", kind = "blk", up = "obj"},
 }
 local HL = setmetatable({}, {__mode = "k"})
 local function sel(b, on) local d = HL[b]; if d then b.BackgroundColor3 = on and ACC or d end end
 local function addHl(b) HL[b] = b.BackgroundColor3 end
+
+-- ===== BLOCKS + EFFECTS (Animation Studio scene objects) =====
+-- Blocks: independent local preview parts (children of the camera, never of a character). A block can ONLY be attached to another block.
+-- Effects: visual effects attached ONLY to character body parts of real players. Never to blocks, never to other Workspace objects.
+-- Scene data lives in Scene (kept while the script runs, saved in the Studio project JSON under "scene"); preview instances are rebuilt on open and destroyed on close.
+do
+local BTYPES = {"Block", "Sphere", "Cylinder", "Wedge", "Corner Wedge"}
+local BCLASS = {Block = "Part", Sphere = "Part", Cylinder = "Part", Wedge = "WedgePart", ["Corner Wedge"] = "CornerWedgePart"}
+local MATS = {"SmoothPlastic", "Plastic", "Neon", "Metal", "Wood", "Glass", "Concrete", "Brick"}
+local FXKINDS = {"ParticleEmitter", "Trail", "Beam", "Highlight", "PointLight", "Fire", "Smoke", "Sparkles"}
+local FXPARTS = {"Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "Root"}
+local R15PART = {Torso = "UpperTorso", ["Left Arm"] = "LeftUpperArm", ["Right Arm"] = "RightUpperArm", ["Left Leg"] = "LeftUpperLeg", ["Right Leg"] = "RightUpperLeg"}
+local MAXBLK, MAXFX, MINSZ, MAXSZ, POSMAX = 64, 24, 0.05, 512, 100000
+local CYLROT = CFrame.Angles(0, 0, math.pi / 2) -- Roblox cylinders run along X; the editor's Y size is the cylinder height
+-- only the properties that make sense for each effect are exposed (k = property, t = color | num | bool)
+local FXPROPS = {
+	ParticleEmitter = {
+		{k = "Color", t = "color", d = {1, 0.65, 0.2}}, {k = "Transparency", t = "num", lo = 0, hi = 1, d = 0},
+		{k = "Size", t = "num", lo = 0.1, hi = 30, d = 1}, {k = "Lifetime", t = "num", lo = 0.1, hi = 20, d = 1.5},
+		{k = "Rate", t = "num", lo = 0, hi = 500, d = 20}, {k = "Speed", t = "num", lo = 0, hi = 100, d = 5},
+		{k = "Enabled", t = "bool", d = true},
+	},
+	Trail = {
+		{k = "Color", t = "color", d = {0.3, 0.8, 1}}, {k = "Transparency", t = "num", lo = 0, hi = 1, d = 0},
+		{k = "Size", t = "num", lo = 0.1, hi = 10, d = 1}, {k = "Lifetime", t = "num", lo = 0.1, hi = 10, d = 1},
+		{k = "Enabled", t = "bool", d = true},
+	},
+	Beam = {
+		{k = "Color", t = "color", d = {1, 0.3, 0.8}}, {k = "Transparency", t = "num", lo = 0, hi = 1, d = 0},
+		{k = "Size", t = "num", lo = 0.05, hi = 20, d = 0.5}, {k = "Brightness", t = "num", lo = 0, hi = 20, d = 1},
+		{k = "Enabled", t = "bool", d = true},
+	},
+	Highlight = {
+		{k = "Color", t = "color", d = {1, 1, 0.2}}, {k = "Transparency", t = "num", lo = 0, hi = 1, d = 0.5},
+		{k = "Enabled", t = "bool", d = true},
+	},
+	PointLight = {
+		{k = "Color", t = "color", d = {1, 0.9, 0.6}}, {k = "Brightness", t = "num", lo = 0, hi = 20, d = 2},
+		{k = "Size", t = "num", lo = 1, hi = 60, d = 12}, {k = "Enabled", t = "bool", d = true},
+	},
+	Fire = {
+		{k = "Color", t = "color", d = {1, 0.5, 0.1}}, {k = "Size", t = "num", lo = 2, hi = 30, d = 5},
+		{k = "Heat", t = "num", lo = -25, hi = 25, d = 9}, {k = "Enabled", t = "bool", d = true},
+	},
+	Smoke = {
+		{k = "Color", t = "color", d = {0.6, 0.6, 0.6}}, {k = "Opacity", t = "num", lo = 0, hi = 1, d = 0.5},
+		{k = "Size", t = "num", lo = 1, hi = 100, d = 5}, {k = "Speed", t = "num", lo = 0, hi = 50, d = 1},
+		{k = "Enabled", t = "bool", d = true},
+	},
+	Sparkles = {
+		{k = "Color", t = "color", d = {1, 0.9, 0.3}}, {k = "Speed", t = "num", lo = 0.1, hi = 10, d = 1},
+		{k = "Enabled", t = "bool", d = true},
+	},
+}
+Scene.BTYPES, Scene.MATS, Scene.FXPROPS, Scene.FXKINDS, Scene.MINSZ, Scene.MAXSZ = BTYPES, MATS, FXPROPS, FXKINDS, MINSZ, MAXSZ
+Scene.BICON = {Block = utf8.char(0x25A0), Sphere = utf8.char(0x25CF), Cylinder = utf8.char(0x25AE), Wedge = utf8.char(0x25E3), ["Corner Wedge"] = utf8.char(0x25E5)}
+
+-- ----- small helpers -----
+local function bname(s, d)
+	s = tostring(s or ""):gsub("[%c<>&\"\\]", "")
+	s = s:gsub("^%s+", "")
+	s = s:gsub("%s+$", "")
+	s = s:sub(1, 32)
+	return s ~= "" and s or d
+end
+local function selBlock() return Scene.sel and Scene.map[Scene.sel] or nil end
+local function selEffect() return Scene.selFx and Scene.fxmap[Scene.selFx] or nil end
+Scene.selBlock, Scene.selEffect = selBlock, selEffect
+local function newId(prefix) local n = Scene.nid; Scene.nid = n + 1; return prefix .. n end
+local function byT(a, b) return a.t < b.t end
+local function r3(v) return math.floor(v * 1000 + 0.5) / 1000 end
+local function snapCF(cf) local p = cf.Position; return CFrame.new(r3(p.X), r3(p.Y), r3(p.Z)) * cf.Rotation end
+local function c3(t) return Color3.new(t[1], t[2], t[3]) end
+local function parseColor(s)
+	s = tostring(s or ""):gsub("%s+", "")
+	local hex = s:match("^#?(%x%x%x%x%x%x)$")
+	if hex then return {tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255, tonumber(hex:sub(5, 6), 16) / 255} end
+	local r, g, b = s:match("^(%d+%.?%d*),(%d+%.?%d*),(%d+%.?%d*)$")
+	if r then return {math.clamp(tonumber(r), 0, 255) / 255, math.clamp(tonumber(g), 0, 255) / 255, math.clamp(tonumber(b), 0, 255) / 255} end
+end
+function Scene.colStr(c) return string.format("%d,%d,%d", math.floor(c[1] * 255 + 0.5), math.floor(c[2] * 255 + 0.5), math.floor(c[3] * 255 + 0.5)) end
+local function uniqueName(list, base)
+	local n, name = 1, base .. " 1"
+	local function taken(nm) for _, x in list do if x.name == nm then return true end end return false end
+	while taken(name) do n += 1; name = base .. " " .. n end
+	return name
+end
+local function cfArr(cf) return {cf:GetComponents()} end
+local function arrCF(a)
+	if type(a) ~= "table" then return nil end
+	local c = {}
+	for i = 1, 12 do
+		local v = tonumber(a[i])
+		if not v or v ~= v or math.abs(v) > 1e6 then return nil end
+		c[i] = v
+	end
+	return CFrame.new(table.unpack(c))
+end
+
+-- ----- block transforms (every block stores a CFrame relative to its parent block, or a world CFrame when it has no parent) -----
+function Scene.world(b, d) -- world CFrame of the DISPLAYED (animated) state
+	local p = b.parent and Scene.map[b.parent]
+	d = d or 0
+	if p and d < 32 then return Scene.world(p, d + 1) * b.dcf end
+	return b.dcf
+end
+function Scene.keyTime() -- block keys sit on the 30 FPS frame grid of the current animation
+	local A = cur()
+	local t = A.static and 0 or (S and S.t or 0)
+	return math.clamp(math.floor(t * FPS + 0.5) / FPS, 0, A.dur)
+end
+function Scene.keyAt(ks, t)
+	for _, k in ks do
+		if math.abs(k.t - t) < 0.5 / FPS then return k end
+	end
+end
+local function evalBlock(b, cat, t)
+	local ks = b.kf[cat]
+	if not ks or #ks == 0 then return b.cf, b.size, b.vis end
+	local k1, k2
+	for _, k in ks do
+		if k.t <= t + 1e-4 then k1 = k elseif not k2 then k2 = k end
+	end
+	if not k1 then return ks[1].cf, ks[1].sz, ks[1].vis end
+	if not k2 then return k1.cf, k1.sz, k1.vis end
+	local a = (t - k1.t) / math.max(k2.t - k1.t, 1e-4)
+	if k1.ease == "Constant" then
+		a = 0
+	else
+		a = TweenService:GetValue(a, Enum.EasingStyle[k1.ease], Enum.EasingDirection[k1.dir])
+	end
+	return k1.cf:Lerp(k2.cf, a), k1.sz:Lerp(k2.sz, a), k1.vis
+end
+function Scene.evalAll()
+	local A = cur()
+	local t = (S and not A.static) and S.t or 0
+	for _, b in Scene.blocks do b.dcf, b.dsz, b.dvis = evalBlock(b, Work.cat, t) end
+end
+-- writes an edit: into the key at the playhead when the block already has keys in this animation (a new key is inserted when missing), else into the base transform
+function Scene.commit(b, cf, sz, vis)
+	cf = snapCF(cf or b.dcf)
+	sz = sz or b.dsz
+	if vis == nil then vis = b.dvis end
+	local created = false
+	local ks = b.kf[Work.cat]
+	if ks and #ks > 0 and not cur().static then
+		local t = Scene.keyTime()
+		local k = Scene.keyAt(ks, t)
+		if k then
+			k.cf, k.sz, k.vis = cf, sz, vis
+		elseif #ks < MAXKF then
+			table.insert(ks, {t = t, cf = cf, sz = sz, vis = vis, ease = "Quad", dir = "InOut"})
+			table.sort(ks, byT)
+			created = true
+		else
+			say("Keyframe limit reached (" .. MAXKF .. ").")
+			return false
+		end
+	else
+		b.cf, b.size, b.vis = cf, sz, vis
+	end
+	b.dcf, b.dsz, b.dvis = cf, sz, vis
+	return created
+end
+
+-- ----- preview instances (local only: children of the camera folder, destroyed when the editor closes) -----
+function Scene.mkInst(b)
+	local p = Util.Instance(BCLASS[b.shape] or "Part", Scene.folder)
+	p.Name = "AS_" .. b.id
+	p.Anchored, p.CanCollide, p.CanTouch, p.Locked = true, false, false, true
+	p.CastShadow = not lowEnd()
+	p.TopSurface, p.BottomSurface = Enum.SurfaceType.Smooth, Enum.SurfaceType.Smooth
+	if b.shape == "Cylinder" then
+		p.Shape = Enum.PartType.Cylinder
+	elseif b.shape == "Sphere" then
+		local m = Util.Instance("SpecialMesh", p) -- ellipsoid: scales with the part size on every axis
+		m.MeshType = Enum.MeshType.Sphere
+	end
+	Scene.inst[b.id], Scene.instId[p] = p, b.id
+	return p
+end
+function Scene.apply() -- pushes only what changed to the preview parts
+	if not S then return end
+	local cam = workspace.CurrentCamera
+	if not (Scene.folder and Scene.folder.Parent) then
+		if Scene.folder then pcall(function() Scene.folder:Destroy() end) end
+		Scene.folder = nil
+		table.clear(Scene.inst); table.clear(Scene.instId); table.clear(Scene.cache)
+		if #Scene.blocks == 0 or not cam then return end
+		local f = Util.Instance("Folder", cam)
+		f.Name = "AnimStudioBlocks"
+		Scene.folder = f
+	end
+	local made = false
+	for _, b in Scene.blocks do
+		local p = Scene.inst[b.id]
+		if not (p and p.Parent) then
+			p = Scene.mkInst(b)
+			Scene.cache[b.id] = {}
+			made = true
+		end
+		local c = Scene.cache[b.id]
+		if not c then c = {}; Scene.cache[b.id] = c end
+		local w, sz = Scene.world(b), b.dsz
+		if c.w ~= w or c.sz ~= sz then
+			c.w, c.sz = w, sz
+			if b.shape == "Cylinder" then
+				p.Size = Vector3.new(sz.Y, sz.X, sz.Z)
+				p.CFrame = w * CYLROT
+			else
+				p.Size = sz
+				p.CFrame = w
+			end
+		end
+		if c.rev ~= b.vrev or c.vis ~= b.dvis then
+			c.rev, c.vis = b.vrev, b.dvis
+			p.Color = c3(b.color)
+			p.Material = Enum.Material[b.mat] or Enum.Material.SmoothPlastic
+			p.Transparency = b.dvis and b.transp or 1
+			p.CanQuery = b.dvis
+		end
+	end
+	if made then Scene.markSel() end
+end
+function Scene.markSel() -- selection outline around the selected block
+	local b = selBlock()
+	local p = b and Scene.inst[b.id]
+	if not (p and p.Parent) then
+		if Scene.selBox then pcall(function() Scene.selBox.Adornee = nil end) end
+		return
+	end
+	pcall(function()
+		if not Scene.selBox or not Scene.selBox.Parent then
+			local sb = Util.Instance("SelectionBox", workspace.CurrentCamera)
+			sb.Color3 = Color3.fromRGB(255, 196, 64)
+			sb.LineThickness = 0.03
+			sb.SurfaceTransparency = 1
+			Scene.selBox = sb
+		end
+		Scene.selBox.Adornee = p
+	end)
+end
+function Scene.listOrder() -- tree order: roots first, every child right below its parent
+	local out, kids = {}, {}
+	for _, b in Scene.blocks do
+		local k = b.parent or "_"
+		kids[k] = kids[k] or {}
+		table.insert(kids[k], b)
+	end
+	local function walk(key, depth)
+		for _, b in kids[key] or {} do
+			out[#out + 1] = {b = b, depth = depth}
+			if depth < 20 then walk(b.id, depth + 1) end
+		end
+	end
+	walk("_", 0)
+	return out
+end
+
+-- ----- effects: instances are created ONLY inside the character of a real player and destroyed only by id -----
+local function fxChar(e)
+	local plr = e.plr and Players:GetPlayerByUserId(e.plr)
+	local ch = plr and plr.Character
+	if typeof(ch) == "Instance" and ch.Parent and ch:IsDescendantOf(workspace) then return plr, ch end
+end
+local function fxPartOf(ch, name)
+	local p = ch:FindFirstChild(name == "Root" and "HumanoidRootPart" or name) or (R15PART[name] and ch:FindFirstChild(R15PART[name]))
+	if typeof(p) == "Instance" and p:IsA("BasePart") then return p end
+end
+local function fxKey(e) return e.kind .. "|" .. e.part .. "|" .. (e.part2 or "") end
+function Scene.fxApply(e, o)
+	local p, k = e.p, e.kind
+	local c = c3(p.Color)
+	if k == "ParticleEmitter" then
+		o.Color, o.Transparency, o.Size = ColorSequence.new(c), NumberSequence.new(p.Transparency), NumberSequence.new(p.Size)
+		o.Lifetime, o.Rate, o.Speed, o.Enabled = NumberRange.new(p.Lifetime), p.Rate, NumberRange.new(p.Speed), p.Enabled
+	elseif k == "Trail" then
+		o.Color, o.Transparency, o.WidthScale = ColorSequence.new(c), NumberSequence.new(p.Transparency), NumberSequence.new(p.Size)
+		o.Lifetime, o.Enabled = p.Lifetime, p.Enabled
+	elseif k == "Beam" then
+		o.Color, o.Transparency = ColorSequence.new(c), NumberSequence.new(p.Transparency)
+		o.Width0, o.Width1, o.Brightness, o.Enabled = p.Size, p.Size, p.Brightness, p.Enabled
+	elseif k == "Highlight" then
+		o.FillColor, o.OutlineColor, o.FillTransparency, o.Enabled = c, c, p.Transparency, p.Enabled
+	elseif k == "PointLight" then
+		o.Color, o.Brightness, o.Range, o.Enabled = c, p.Brightness, p.Size, p.Enabled
+	elseif k == "Fire" then
+		o.Color, o.SecondaryColor, o.Size, o.Heat, o.Enabled = c, c:Lerp(Color3.new(), 0.45), p.Size, p.Heat, p.Enabled
+	elseif k == "Smoke" then
+		o.Color, o.Opacity, o.Size, o.RiseVelocity, o.Enabled = c, p.Opacity, p.Size, p.Speed, p.Enabled
+	elseif k == "Sparkles" then
+		o.SparkleColor, o.TimeScale, o.Enabled = c, p.Speed, p.Enabled
+	end
+end
+function Scene.fxClear(id)
+	local rec = Scene.fx[id]
+	if not rec then return end
+	Scene.fx[id] = nil
+	for _, o in rec.list do pcall(function() o:Destroy() end) end -- only instances this Studio created
+end
+function Scene.fxClearAll()
+	for id in table.clone(Scene.fx) do Scene.fxClear(id) end
+end
+function Scene.fxMake(e)
+	local _, ch = fxChar(e)
+	if not ch then return end
+	local part = fxPartOf(ch, e.part)
+	if not part then return end
+	local rec = {list = {}, char = ch, key = fxKey(e)}
+	Scene.fx[e.id] = rec -- recorded first: a partially built effect is still cleaned up by id
+	local function mk(class, parent, tag)
+		local o = Util.Instance(class, parent)
+		o.Name = "AS_Fx_" .. e.id .. (tag or "")
+		o:SetAttribute("AnimStudioFx", e.id)
+		rec.list[#rec.list + 1] = o
+		return o
+	end
+	local kind, main = e.kind, nil
+	if kind == "Highlight" then
+		main = mk("Highlight", part)
+		main.Adornee = part
+	elseif kind == "Trail" then
+		local a0, a1 = mk("Attachment", part, "_A0"), mk("Attachment", part, "_A1")
+		a0.Position, a1.Position = Vector3.new(-0.5, 0, 0), Vector3.new(0.5, 0, 0)
+		main = mk("Trail", part)
+		main.Attachment0, main.Attachment1, main.LightEmission = a0, a1, 0.3
+	elseif kind == "Beam" then
+		local part2 = fxPartOf(ch, e.part2)
+		if not part2 or part2 == part then part2 = fxPartOf(ch, part.Name == "Head" and "Torso" or "Head") end
+		if not part2 or part2 == part then return end
+		local a0, a1 = mk("Attachment", part, "_A0"), mk("Attachment", part2, "_A1")
+		main = mk("Beam", part)
+		main.Attachment0, main.Attachment1, main.FaceCamera = a0, a1, true
+	else
+		main = mk(kind, part)
+	end
+	rec.main = main
+	Scene.fxApply(e, main)
+end
+function Scene.fxRefresh(e) Scene.fxClear(e.id); pcall(Scene.fxMake, e) end
+function Scene.fxSync() -- every 0.5 s while the editor is open: re-attaches after respawn / join, nothing else is touched
+	for _, e in Scene.effects do
+		local rec = Scene.fx[e.id]
+		local _, ch = fxChar(e)
+		if not (rec and ch and rec.char == ch and rec.key == fxKey(e) and rec.main and rec.main.Parent) then
+			Scene.fxClear(e.id)
+			if ch then pcall(Scene.fxMake, e) end
+		end
+	end
+end
+function Scene.fxPush(e)
+	local rec = Scene.fx[e.id]
+	if rec and rec.main and rec.main.Parent then pcall(Scene.fxApply, e, rec.main) else Scene.fxRefresh(e) end
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+function Scene.fxStatus(e)
+	if not e then return "" end
+	local plr = e.plr and Players:GetPlayerByUserId(e.plr)
+	if not plr then return (e.plrName or "?") .. " is not in this server - the effect attaches when that player is here." end
+	local _, ch = fxChar(e)
+	if not ch or not fxPartOf(ch, e.part) then return "Waiting for " .. (e.plrName or "?") .. "'s character / body part." end
+	return "Attached to " .. (e.plrName or "?") .. " (" .. e.part .. "). Only you see it."
+end
+local function fxDefaults(kind)
+	local p = {}
+	for _, d in FXPROPS[kind] do p[d.k] = type(d.d) == "table" and table.clone(d.d) or d.d end
+	return p
+end
+
+-- ----- instance lifetime -----
+function Scene.clearInst()
+	if Scene.folder then pcall(function() Scene.folder:Destroy() end) end
+	Scene.folder = nil
+	table.clear(Scene.inst); table.clear(Scene.instId); table.clear(Scene.cache)
+	if Scene.selBox then pcall(function() Scene.selBox:Destroy() end); Scene.selBox = nil end
+	Scene.fxClearAll()
+end
+Scene.teardown = Scene.clearInst -- editor closed: every preview part, outline and effect instance is destroyed (the data stays)
+function Scene.build() -- editor opened: recreate everything from the data
+	if not S then return end
+	Scene.fixMode()
+	Scene.evalAll()
+	Scene.apply()
+	Scene.markSel()
+	Scene.fxSync()
+	Scene.dirty = false
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+function Scene.fixMode() if not Scene.sel and U.mode3 == "scale" then U.mode3 = "move" end end
+function Scene.changed(keys)
+	Scene.dirty = true
+	Scene.fixMode()
+	Scene.evalAll()
+	Scene.apply()
+	Scene.markSel()
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+	if keys then pcall(drawTimeline) end
+	pcall(refreshTransport)
+	if U.updateSel then pcall(U.updateSel) end
+	if U.gzForce then pcall(U.gzForce) end
+end
+function Scene.tick(s, dt) -- called from the Studio's single Heartbeat step: nothing runs unless the playhead / data changed
+	local A = cur()
+	local t = A.static and 0 or s.t
+	local ch = Scene.dirty or Scene.lt ~= t or Scene.lc ~= Work.cat
+	if ch and s.playing and not Scene.dirty then
+		Scene.acc += dt
+		if Scene.acc < s.period then ch = false else Scene.acc = 0 end -- low-end mode: slower refresh while playing
+	end
+	if ch then
+		Scene.dirty, Scene.lt, Scene.lc = false, t, Work.cat
+		Scene.evalAll()
+		Scene.apply()
+	end
+	Scene.fxt += dt
+	if Scene.fxt > 0.5 then Scene.fxt = 0; Scene.fxSync() end
+end
+
+-- ----- undo / redo snapshots (stored inside the Studio's normal history entries) -----
+local function cloneKeys(kf)
+	local o = {}
+	for cat, ks in kf do
+		local n = {}
+		for i, k in ks do n[i] = {t = k.t, cf = k.cf, sz = k.sz, vis = k.vis, ease = k.ease, dir = k.dir} end
+		o[cat] = n
+	end
+	return o
+end
+local function cloneBlock(b)
+	return {id = b.id, name = b.name, shape = b.shape, cf = b.cf, size = b.size, color = table.clone(b.color), transp = b.transp, mat = b.mat, vis = b.vis, parent = b.parent, kf = cloneKeys(b.kf), vrev = (b.vrev or 1) + 1}
+end
+local function cloneP(p) local o = {} for k, v in p do o[k] = type(v) == "table" and table.clone(v) or v end return o end
+local function cloneFx(e) return {id = e.id, name = e.name, kind = e.kind, plr = e.plr, plrName = e.plrName, part = e.part, part2 = e.part2, p = cloneP(e.p)} end
+function Scene.snap()
+	local sn = {nid = Scene.nid, sel = Scene.sel, selFx = Scene.selFx, blocks = {}, effects = {}}
+	for i, b in Scene.blocks do sn.blocks[i] = cloneBlock(b) end
+	for i, e in Scene.effects do sn.effects[i] = cloneFx(e) end
+	return sn
+end
+local function reindex()
+	Scene.map, Scene.fxmap = {}, {}
+	for _, b in Scene.blocks do Scene.map[b.id] = b end
+	for _, e in Scene.effects do Scene.fxmap[e.id] = e end
+end
+function Scene.restore(sn)
+	Scene.clearInst()
+	Scene.blocks, Scene.effects = sn.blocks, sn.effects
+	Scene.nid = math.max(Scene.nid, sn.nid or 1)
+	reindex()
+	Scene.sel = Scene.map[sn.sel or ""] and sn.sel or nil
+	Scene.selFx = Scene.fxmap[sn.selFx or ""] and sn.selFx or nil
+	Scene.prev = nil
+	Scene.dirty = true
+	Scene.build()
+end
+
+-- ----- selection -----
+function Scene.select(id)
+	if id and not Scene.map[id] then id = nil end
+	if id ~= Scene.sel then
+		if id and Scene.sel then Scene.prev = Scene.sel end -- the previously selected block is the "child" for Attach to Selected
+		Scene.sel, Scene.ci = id, 0
+	end
+	Scene.fixMode()
+	Scene.markSel()
+	if U.updateSel then pcall(U.updateSel) end
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+	if U.gzForce then pcall(U.gzForce) end
+	pcall(drawTimeline)
+	pcall(refreshTransport)
+end
+function Scene.fxSelect(id)
+	Scene.selFx = Scene.fxmap[id or ""] and id or nil
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+
+-- ----- block operations -----
+function Scene.create(shape)
+	if not canEdit() or not table.find(BTYPES, shape) then return end
+	if #Scene.blocks >= MAXBLK then say("Block limit reached (" .. MAXBLK .. ").") return end
+	pushUndo()
+	local cam = workspace.CurrentCamera
+	local pos = cam and (cam.CFrame.Position + cam.CFrame.LookVector * 12) or Vector3.new(0, 5, 0)
+	local b = {id = newId("B"), name = uniqueName(Scene.blocks, shape), shape = shape, cf = snapCF(CFrame.new(math.round(pos.X), math.round(pos.Y), math.round(pos.Z))), size = Vector3.new(4, 4, 4),
+		color = {0.63, 0.65, 0.66}, transp = 0, mat = "SmoothPlastic", vis = true, parent = nil, kf = {}, vrev = 1}
+	b.dcf, b.dsz, b.dvis = b.cf, b.size, b.vis
+	table.insert(Scene.blocks, b)
+	Scene.map[b.id] = b
+	Scene.select(b.id)
+	Scene.changed(true)
+end
+function Scene.rename(text)
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	local nm = bname(text, nil)
+	if nm and nm ~= b.name then pushUndo(); b.name = nm end
+	Scene.changed()
+end
+function Scene.reparent(c, newParent) -- keeps the current WORLD pose: base transform and every key are converted into the new parent's space
+	local op = c.parent and Scene.map[c.parent]
+	local np = newParent and Scene.map[newParent]
+	local conv = (np and Scene.world(np) or CFrame.identity):ToObjectSpace(op and Scene.world(op) or CFrame.identity)
+	c.cf = conv * c.cf
+	for _, ks in c.kf do
+		for _, k in ks do k.cf = conv * k.cf end
+	end
+	c.parent = np and np.id or nil
+end
+function Scene.attach() -- previously selected block (child) -> currently selected block (parent); blocks only
+	if not canEdit() then return end
+	local p, c = selBlock(), Scene.prev and Scene.map[Scene.prev]
+	if not p then say("Select the parent block first.") return end
+	if not c or c == p then say("Select the CHILD block first, then the PARENT, then press Attach to Selected.") return end
+	local x, n = p, 0
+	while x and n < 64 do -- circular attachments are refused
+		if x == c then say("Not attached: " .. p.name .. " is already inside " .. c.name .. "'s hierarchy (that would be a loop).") return end
+		x = x.parent and Scene.map[x.parent]
+		n += 1
+	end
+	if c.parent == p.id then say(c.name .. " is already attached to " .. p.name .. ".") return end
+	pushUndo()
+	Scene.evalAll()
+	Scene.reparent(c, p.id)
+	Scene.changed(true)
+	say(c.name .. " attached to " .. p.name .. ".")
+end
+function Scene.detach()
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	if not b.parent then say(b.name .. " is not attached to anything.") return end
+	pushUndo()
+	Scene.evalAll()
+	Scene.reparent(b, nil)
+	Scene.changed(true)
+	say(b.name .. " detached (world position kept).")
+end
+function Scene.selParent()
+	local b = selBlock()
+	if b and b.parent then Scene.select(b.parent) else say("This block has no parent.") end
+end
+function Scene.selChild()
+	local b = selBlock()
+	if not b then return end
+	local kids = {}
+	for _, x in Scene.blocks do
+		if x.parent == b.id then kids[#kids + 1] = x end
+	end
+	if #kids == 0 then say("This block has no children.") return end
+	Scene.ci = Scene.ci % #kids + 1
+	Scene.select(kids[Scene.ci].id)
+end
+function Scene.duplicate() -- the block and everything attached below it
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	local list = {}
+	local function walk(x, d)
+		list[#list + 1] = x
+		if d > 20 then return end
+		for _, c in Scene.blocks do
+			if c.parent == x.id then walk(c, d + 1) end
+		end
+	end
+	walk(b, 0)
+	if #Scene.blocks + #list > MAXBLK then say("Block limit reached (" .. MAXBLK .. ").") return end
+	pushUndo()
+	local off, idMap, root = CFrame.new(1.5, 0, 0), {}, nil
+	for _, x in list do
+		local nb = cloneBlock(x)
+		nb.id, nb.vrev = newId("B"), 1
+		idMap[x.id] = nb.id
+		if x == b then
+			nb.name = bname(x.name .. " copy", x.name)
+			nb.cf = off * nb.cf
+			for _, ks in nb.kf do
+				for _, k in ks do k.cf = off * k.cf end
+			end
+			root = nb
+		else
+			nb.parent = idMap[x.parent]
+		end
+		nb.dcf, nb.dsz, nb.dvis = nb.cf, nb.size, nb.vis
+		table.insert(Scene.blocks, nb)
+		Scene.map[nb.id] = nb
+	end
+	Scene.select(root.id)
+	Scene.changed(true)
+end
+function Scene.delete() -- children are re-attached to the deleted block's parent (world poses kept)
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	pushUndo()
+	Scene.evalAll()
+	for _, c in Scene.blocks do
+		if c.parent == b.id then Scene.reparent(c, b.parent) end
+	end
+	for i, x in Scene.blocks do
+		if x == b then table.remove(Scene.blocks, i) break end
+	end
+	Scene.map[b.id] = nil
+	local p = Scene.inst[b.id]
+	if p then Scene.instId[p] = nil; pcall(function() p:Destroy() end) end
+	Scene.inst[b.id], Scene.cache[b.id] = nil, nil
+	if Scene.prev == b.id then Scene.prev = nil end
+	Scene.select(nil)
+	Scene.changed(true)
+end
+function Scene.setPos(c, v)
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	pushUndo()
+	local p = b.dcf.Position
+	local a = {p.X, p.Y, p.Z}
+	a[c] = math.clamp(v, -POSMAX, POSMAX)
+	Scene.commit(b, CFrame.new(a[1], a[2], a[3]) * b.dcf.Rotation)
+	Scene.changed(true)
+end
+function Scene.setRot(c, v)
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	pushUndo()
+	local rx, ry, rz = b.dcf:ToEulerAnglesXYZ()
+	local a = {math.deg(rx), math.deg(ry), math.deg(rz)}
+	a[c] = v
+	Scene.commit(b, CFrame.new(b.dcf.Position) * CFrame.Angles(math.rad(a[1]), math.rad(a[2]), math.rad(a[3])))
+	Scene.changed(true)
+end
+function Scene.setSize(c, v)
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	pushUndo()
+	local s = b.dsz
+	local a = {s.X, s.Y, s.Z}
+	a[c] = math.clamp(v, MINSZ, MAXSZ)
+	Scene.commit(b, nil, Vector3.new(a[1], a[2], a[3]))
+	Scene.changed(true)
+end
+function Scene.setColor(text)
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	local c = parseColor(text)
+	if not c then say("Color: type R,G,B (0-255) or #RRGGBB.") Scene.changed() return end
+	pushUndo()
+	b.color = c
+	b.vrev += 1
+	Scene.changed()
+end
+function Scene.setTransp(v)
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	pushUndo()
+	b.transp = math.clamp(v, 0, 1)
+	b.vrev += 1
+	Scene.changed()
+end
+function Scene.cycleMat()
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	pushUndo()
+	b.mat = MATS[(table.find(MATS, b.mat) or 0) % #MATS + 1]
+	b.vrev += 1
+	Scene.changed()
+end
+function Scene.toggleVis() -- visibility is animatable (keyed like position / rotation / size)
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	pushUndo()
+	Scene.commit(b, nil, nil, not b.dvis)
+	Scene.changed(true)
+end
+
+-- ----- block keyframes (30 FPS timeline of the current animation; independent of the R6 limb keyframes) -----
+function Scene.key()
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	if cur().static then say("Static pose has a single frame - turn Static off to key blocks.") return end
+	local ks = b.kf[Work.cat]
+	local t = Scene.keyTime()
+	local k = ks and Scene.keyAt(ks, t)
+	if not k and ks and #ks >= MAXKF then say("Keyframe limit reached (" .. MAXKF .. ").") return end
+	pushUndo()
+	if not ks then ks = {}; b.kf[Work.cat] = ks end
+	if k then
+		k.cf, k.sz, k.vis = b.dcf, b.dsz, b.dvis
+	else
+		table.insert(ks, {t = t, cf = b.dcf, sz = b.dsz, vis = b.dvis, ease = "Quad", dir = "InOut"})
+		table.sort(ks, byT)
+	end
+	Scene.changed(true)
+	say(b.name .. " keyed at frame " .. math.floor(t * FPS + 0.5))
+end
+function Scene.delKey()
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	local ks = b.kf[Work.cat]
+	local k = ks and Scene.keyAt(ks, Scene.keyTime())
+	if not k then say("No key of " .. b.name .. " at the playhead.") return end
+	pushUndo()
+	table.remove(ks, table.find(ks, k))
+	if #ks == 0 then b.kf[Work.cat] = nil end
+	Scene.changed(true)
+end
+function Scene.jump(d) -- playhead to the next (1) / previous (-1) key of the selected block
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	local ks = b.kf[Work.cat]
+	if not ks or #ks == 0 then say(b.name .. " has no keys in this animation.") return end
+	local t, target = S.t, nil
+	if d > 0 then
+		for _, k in ks do
+			if k.t > t + 0.01 then target = k.t break end
+		end
+		target = target or ks[1].t
+	else
+		for i = #ks, 1, -1 do
+			if ks[i].t < t - 0.01 then target = ks[i].t break end
+		end
+		target = target or ks[#ks].t
+	end
+	S.t, S.playing = target, false
+	touch(); updateInfo(); refreshTransport(); drawTimeline()
+	Scene.dirty = true
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+function Scene.cycleEase()
+	local b = selBlock()
+	if not b or not canEdit() then return end
+	local ks = b.kf[Work.cat]
+	local k = ks and Scene.keyAt(ks, Scene.keyTime())
+	if not k then say("Move the playhead onto a block key first.") return end
+	pushUndo()
+	k.ease = cycle(EASES, k.ease)
+	k.dir = k.ease == "Constant" and "Out" or "InOut"
+	Scene.changed()
+end
+function Scene.drawMarks(r, t0, span) -- timeline row "Block keys": the selected block's keys in the current animation
+	local b = selBlock()
+	local ks = (b and b.kf[Work.cat]) or {}
+	r.lbl.Text = b and ("Keys: " .. b.name:sub(1, 14)) or "Block keys (none)"
+	local A = cur()
+	for i, k in ks do
+		local m = r.marks[i]
+		if not m then
+			m = Util.Instance("Frame", r.lane)
+			m.AnchorPoint = Vector2.new(0.5, 0.5)
+			m.Rotation = 45
+			m.BorderSizePixel = 0
+			m.ZIndex = 3
+			Util.Instance("UICorner", m).CornerRadius = UDim.new(0, 2)
+			r.marks[i] = m
+		end
+		local x = (k.t - t0) / span
+		local show = not A.static and x >= -0.01 and x <= 1.01
+		m.Visible = show
+		if show then
+			local on = math.abs(k.t - (S and S.t or 0)) < 0.5 / FPS
+			m.BackgroundColor3 = on and ACC or Color3.fromRGB(255, 196, 64)
+			m.Size = on and UDim2.fromOffset(12, 12) or UDim2.fromOffset(9, 9)
+			m.Position = UDim2.new(x, 0, 0.5, 0)
+		end
+	end
+	for i = #ks + 1, #r.marks do r.marks[i].Visible = false end
+end
+
+-- ----- effect operations -----
+function Scene.fxCreate(kind)
+	if not canEdit() or not FXPROPS[kind] then return end
+	if #Scene.effects >= MAXFX then say("Effect limit reached (" .. MAXFX .. ").") return end
+	pushUndo()
+	local lp = Players.LocalPlayer
+	local e = {id = newId("E"), name = uniqueName(Scene.effects, kind), kind = kind, plr = lp and lp.UserId or nil, plrName = lp and bname(lp.DisplayName, lp.Name) or nil, part = "Head", part2 = "Torso", p = fxDefaults(kind)}
+	table.insert(Scene.effects, e)
+	Scene.fxmap[e.id] = e
+	Scene.selFx = e.id
+	Scene.fxRefresh(e)
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+function Scene.fxRename(text)
+	local e = selEffect()
+	if not e or not canEdit() then return end
+	local nm = bname(text, nil)
+	if nm and nm ~= e.name then pushUndo(); e.name = nm end
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+function Scene.fxDuplicate()
+	local e = selEffect()
+	if not e or not canEdit() then return end
+	if #Scene.effects >= MAXFX then say("Effect limit reached (" .. MAXFX .. ").") return end
+	pushUndo()
+	local n = cloneFx(e)
+	n.id, n.name = newId("E"), bname(e.name .. " copy", e.name)
+	table.insert(Scene.effects, n)
+	Scene.fxmap[n.id] = n
+	Scene.selFx = n.id
+	Scene.fxRefresh(n)
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+function Scene.fxDelete()
+	local e = selEffect()
+	if not e or not canEdit() then return end
+	pushUndo()
+	Scene.fxClear(e.id)
+	for i, x in Scene.effects do
+		if x == e then table.remove(Scene.effects, i) break end
+	end
+	Scene.fxmap[e.id] = nil
+	Scene.selFx = nil
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+function Scene.fxCyclePlayer()
+	local e = selEffect()
+	if not e or not canEdit() then return end
+	local list = Players:GetPlayers()
+	if #list == 0 then return end
+	table.sort(list, function(a, b) return a.Name:lower() < b.Name:lower() end)
+	local idx = 0
+	for i, pl in list do
+		if pl.UserId == e.plr then idx = i break end
+	end
+	local pl = list[idx % #list + 1]
+	pushUndo()
+	e.plr, e.plrName = pl.UserId, bname(pl.DisplayName, pl.Name)
+	Scene.fxRefresh(e)
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+function Scene.fxCyclePart(which)
+	local e = selEffect()
+	if not e or not canEdit() then return end
+	pushUndo()
+	if which == 2 then
+		e.part2 = FXPARTS[(table.find(FXPARTS, e.part2) or 0) % #FXPARTS + 1]
+	else
+		e.part = FXPARTS[(table.find(FXPARTS, e.part) or 0) % #FXPARTS + 1]
+	end
+	Scene.fxRefresh(e)
+	if Scene.refreshUI then pcall(Scene.refreshUI) end
+end
+function Scene.fxSet(i, text)
+	local e = selEffect()
+	local d = e and FXPROPS[e.kind][i]
+	if not d or not canEdit() then return end
+	if d.t == "color" then
+		local c = parseColor(text)
+		if not c then say("Color: type R,G,B (0-255) or #RRGGBB.") if Scene.refreshUI then pcall(Scene.refreshUI) end return end
+		pushUndo()
+		e.p[d.k] = c
+	elseif d.t == "num" then
+		local v = tonumber(text)
+		if not v or v ~= v then if Scene.refreshUI then pcall(Scene.refreshUI) end return end
+		pushUndo()
+		e.p[d.k] = math.clamp(v, d.lo, d.hi)
+	else
+		return
+	end
+	Scene.fxPush(e)
+end
+function Scene.fxToggle(i)
+	local e = selEffect()
+	local d = e and FXPROPS[e.kind][i]
+	if not d or d.t ~= "bool" or not canEdit() then return end
+	pushUndo()
+	e.p[d.k] = not e.p[d.k]
+	Scene.fxPush(e)
+end
+
+-- ----- save / load (stored inside the Studio project JSON as "scene"; the .anim format is not touched) -----
+function Scene.save()
+	local out = {v = 1, nid = Scene.nid, blocks = {}, effects = {}}
+	for _, b in Scene.blocks do
+		local kf = {}
+		for cat, ks in b.kf do
+			local arr = {}
+			for _, k in ks do arr[#arr + 1] = {t = k.t, cf = cfArr(k.cf), sz = {k.sz.X, k.sz.Y, k.sz.Z}, vis = k.vis, ease = k.ease, dir = k.dir} end
+			if #arr > 0 then kf[cat] = arr end
+		end
+		out.blocks[#out.blocks + 1] = {id = b.id, name = b.name, shape = b.shape, cf = cfArr(b.cf), size = {b.size.X, b.size.Y, b.size.Z}, color = table.clone(b.color), transp = b.transp, mat = b.mat, vis = b.vis, parent = b.parent, kf = kf}
+	end
+	for _, e in Scene.effects do out.effects[#out.effects + 1] = cloneFx(e) end
+	return out
+end
+function Scene.load(d)
+	Scene.clearInst()
+	Scene.blocks, Scene.effects = {}, {}
+	reindex()
+	Scene.sel, Scene.selFx, Scene.prev, Scene.nid = nil, nil, nil, 1
+	if type(d) == "table" then
+		Scene.nid = math.clamp(math.floor(tonumber(d.nid) or 1), 1, 1e9)
+		if type(d.blocks) == "table" then
+			for _, r in d.blocks do
+				local id = type(r) == "table" and type(r.id) == "string" and r.id:match("^B%d+$") and r.id or nil
+				if id and not Scene.map[id] and #Scene.blocks < MAXBLK then
+					local sz = type(r.size) == "table" and r.size or {}
+					local col = type(r.color) == "table" and r.color or {}
+					local b = {id = id, name = bname(r.name, id), shape = table.find(BTYPES, r.shape) and r.shape or "Block", cf = arrCF(r.cf) or CFrame.new(0, 5, 0),
+						size = Vector3.new(num(sz[1], MINSZ, MAXSZ, 4), num(sz[2], MINSZ, MAXSZ, 4), num(sz[3], MINSZ, MAXSZ, 4)),
+						color = {num(col[1], 0, 1, 0.63), num(col[2], 0, 1, 0.65), num(col[3], 0, 1, 0.66)}, transp = num(r.transp, 0, 1, 0),
+						mat = table.find(MATS, r.mat) and r.mat or "SmoothPlastic", vis = r.vis ~= false, parent = type(r.parent) == "string" and r.parent or nil, kf = {}, vrev = 1}
+					if type(r.kf) == "table" then
+						for cat, arr in r.kf do
+							if (cat == "Dance" or table.find(CATS, cat)) and type(arr) == "table" then
+								local ks = {}
+								for _, k in arr do
+									if type(k) == "table" and #ks < MAXKF then
+										local ksz = type(k.sz) == "table" and k.sz or {}
+										ks[#ks + 1] = {t = num(k.t, 0, 60, 0), cf = arrCF(k.cf) or b.cf, vis = k.vis ~= false,
+											sz = Vector3.new(num(ksz[1], MINSZ, MAXSZ, b.size.X), num(ksz[2], MINSZ, MAXSZ, b.size.Y), num(ksz[3], MINSZ, MAXSZ, b.size.Z)),
+											ease = table.find(EASES, k.ease) and k.ease or "Quad", dir = table.find(DIRS, k.dir) and k.dir or "InOut"}
+									end
+								end
+								table.sort(ks, byT)
+								if #ks > 0 then b.kf[cat] = ks end
+							end
+						end
+					end
+					b.dcf, b.dsz, b.dvis = b.cf, b.size, b.vis
+					table.insert(Scene.blocks, b)
+					Scene.map[id] = b
+				end
+			end
+		end
+		for _, b in Scene.blocks do -- parents must exist and never form a loop
+			if b.parent and (not Scene.map[b.parent] or b.parent == b.id) then b.parent = nil end
+		end
+		for _, b in Scene.blocks do
+			local x, n = b, 0
+			while x and x.parent and n < 70 do
+				x = Scene.map[x.parent]
+				n += 1
+				if x == b then b.parent = nil break end
+			end
+			if n >= 70 then b.parent = nil end
+		end
+		if type(d.effects) == "table" then
+			for _, r in d.effects do
+				local id = type(r) == "table" and type(r.id) == "string" and r.id:match("^E%d+$") and r.id or nil
+				if id and not Scene.fxmap[id] and FXPROPS[r.kind] and #Scene.effects < MAXFX then
+					local p, src = {}, type(r.p) == "table" and r.p or {}
+					for _, df in FXPROPS[r.kind] do
+						local v = src[df.k]
+						if df.t == "color" then
+							p[df.k] = type(v) == "table" and {num(v[1], 0, 1, df.d[1]), num(v[2], 0, 1, df.d[2]), num(v[3], 0, 1, df.d[3])} or table.clone(df.d)
+						elseif df.t == "num" then
+							p[df.k] = num(v, df.lo, df.hi, df.d)
+						else
+							p[df.k] = v ~= false
+						end
+					end
+					local e = {id = id, name = bname(r.name, r.kind), kind = r.kind, plr = tonumber(r.plr) and math.floor(tonumber(r.plr)) or nil, plrName = bname(r.plrName, nil),
+						part = table.find(FXPARTS, r.part) and r.part or "Head", part2 = table.find(FXPARTS, r.part2) and r.part2 or "Torso", p = p}
+					table.insert(Scene.effects, e)
+					Scene.fxmap[id] = e
+				end
+			end
+		end
+	end
+	Scene.dirty = true
+	if S then Scene.build() end
+end
+end
 local function wOf(k, n) local w = k.w and k.w[n]; if w == nil then return 1 end return w end
 local function fmtNum(v)
 	local s = string.format("%.3f", tonumber(v) or 0)
@@ -95455,6 +96417,7 @@ local function viewRange()
 	return t0, span
 end
 local function selectPart(n)
+	if Scene.sel then Scene.select(nil) end
 	if Work.part == n then return end
 	Work.part = n
 	refreshPose()
@@ -95532,7 +96495,8 @@ function drawTimeline()
 			end
 			for i = #A.kfs + 1, #marks do marks[i].Visible = false end
 		end
-		if r.hl then r.hl.Visible = r.part ~= nil and r.part == Work.part end
+		if r.kind == "blk" then Scene.drawMarks(r, t0, span) end
+		if r.hl then r.hl.Visible = r.part ~= nil and r.part == Work.part and not Scene.sel end
 		if r.chk then r.chk.Text = wOf(k0, r.part) > 0 and U.G.check or "" end
 	end
 	if U.hthumb then
@@ -95581,6 +96545,7 @@ function refreshTransport()
 	U.playBtn.Text = (S and S.playing) and G.pause or G.play
 	sel(U.modeMove, U.mode3 == "move")
 	sel(U.modeRot, U.mode3 == "rotate")
+	if U.modeScale then sel(U.modeScale, U.mode3 == "scale") end
 	U.loopBtn.Text = "Loop: " .. (cur().loop and "ON" or "OFF")
 	U.staticBtn.Text = "Static: " .. (cur().static and "ON" or "OFF")
 	U.liveBtn.Text = "Live Test: " .. ((S and S.live) and "ON" or "OFF")
@@ -95912,6 +96877,7 @@ local function step(dt)
 		s.acc += dt
 		if s.acc >= s.period then s.acc = 0; updateInfo() end
 	end
+	Scene.tick(s, dt)
 	s.keep += dt
 	if s.keep > s.guard then s.keep, s.dirty = 0, true end -- the Studio re-asserts its pose every frame (every 0.1 s on low-end): nothing left running from a moveset can hold a different pose
 	if s.dirty then
@@ -96219,6 +97185,7 @@ function startSession()
 	pcall(Studio.RefreshSaved)
 	U.nameBox.Text = Work.names[Work.mode] or ""
 	refreshAll()
+	pcall(Scene.build)
 end
 function stopSession(reason)
 	local s = S
@@ -96229,6 +97196,7 @@ function stopSession(reason)
 	table.clear(s.conns)
 	if s.live then pcall(s.live.Destroy, s.char); s.live = nil end
 	pcall(function() s.page.ScrollingEnabled = true end)
+	pcall(Scene.teardown)
 	if typeof(s.char) == "Instance" and s.char.Parent then
 		pcall(function()
 			for _, d in s.char:GetDescendants() do
@@ -96324,7 +97292,7 @@ local function saveCreation()
 	if blocked then error("the security scan blocked the generated module: " .. tostring(blocked)) end
 	local fn, cerr = loadstring(src, "=AnimStudio :: " .. modFile)
 	if not fn then error("generated module did not compile: " .. tostring(cerr)) end
-	local proj = {v = 1, kind = kind, name = name, internal = internal, module = modFile, files = files, anims = anims}
+	local proj = {v = 1, kind = kind, name = name, internal = internal, module = modFile, files = files, anims = anims, scene = Scene.save()}
 	local written, names = {}, nil
 	local ok, err = pcall(function()
 		for key, f in files do
@@ -96378,6 +97346,7 @@ local function loadSaved()
 		for _, c in CATS do Work.anims[c] = cleanAnim(data.anims[c], c) end
 	end
 	Work.mode, Work.cat, Work.sel = kind, kind == "dance" and "Dance" or "Idle", 1
+	Scene.load(type(data.scene) == "table" and data.scene or nil)
 	table.clear(Work.hist); table.clear(Work.redo)
 	Work.names[kind] = cleanName(data.name)
 	U.nameBox.Text = Work.names[kind]
@@ -96848,7 +97817,7 @@ local function buildEditor()
 	U.updateSel = function()
 		local rig = S and S.char
 		local part = rig and rig:FindFirstChild(Work.part)
-		if not (U.root and U.root.Visible and part and part:IsA("BasePart")) then
+		if Scene.sel or not (U.root and U.root.Visible and part and part:IsA("BasePart")) then
 			if U.selBox then pcall(function() U.selBox.Adornee = nil end) end
 			return
 		end
@@ -96864,6 +97833,7 @@ local function buildEditor()
 		end)
 	end
 	local function pickAt(pos, auto)
+		if U.pickBlock and U.pickBlock(pos, auto) then return end
 		local rig = S and S.char
 		local cam = workspace.CurrentCamera
 		if not rig or not cam then return end
@@ -97008,6 +97978,7 @@ local function buildEditor()
 		return predCF(rig, m.Part0, depth + 1) * m.C0 * m.Transform * m.C1:Inverse()
 	end
 	function gzUpdate(force)
+		if U.blkGz and U.blkGz(force) then return end
 		local s = S
 		local rig = s and s.char
 		local cam = workspace.CurrentCamera
@@ -97103,6 +98074,7 @@ local function buildEditor()
 	U.gzForce = function() gz.sig = nil; gzUpdate(true) end
 	-- begins a handle drag: i = axis (1..3), seg = +1 / -1 arrow half, or the ring segment grabbed
 	local function gzBegin(kind, i, seg, input)
+		if U.blkDrag and U.blkDrag(kind, i, seg, input) then return end
 		local ty = input.UserInputType
 		if ty ~= Enum.UserInputType.MouseButton1 and ty ~= Enum.UserInputType.Touch then return end
 		if PD or not canEdit() or not gz.shown or not gz.C then return end
@@ -97209,6 +98181,227 @@ local function buildEditor()
 			local r = mkHandle(AXC[i], 4, false)
 			gz.rings[i][k] = r
 			r.btn.InputBegan:Connect(function(input) gzBegin("rot", i, k, input) end)
+		end
+	end
+
+	-- ----- Blocks: tap-to-select + block gizmo. Reuses the limb gizmo handles (arrows / rings) and the pointer-drag system; it takes over while a block is selected -----
+	do
+		U.gzWorld = false -- move / rotate handles follow the block (Local) or the world axes (World); scale always follows the block
+		U.pickBlock = function(pos, auto)
+			if not S or #Scene.blocks == 0 then return false end
+			local cam = workspace.CurrentCamera
+			if not (cam and Scene.folder and Scene.folder.Parent) then return false end
+			local ray = cam:ScreenPointToRay(pos.X, pos.Y)
+			local rp = RaycastParams.new()
+			rp.FilterType = Enum.RaycastFilterType.Include
+			rp.FilterDescendantsInstances = {Scene.folder}
+			local res = workspace:Raycast(ray.Origin, ray.Direction * 1000, rp)
+			if not res then return false end
+			local rig = S.char
+			if rig then -- a limb in front of the block wins
+				local rp2 = RaycastParams.new()
+				rp2.FilterType = Enum.RaycastFilterType.Include
+				rp2.FilterDescendantsInstances = {rig}
+				local r2 = workspace:Raycast(ray.Origin, ray.Direction * 1000, rp2)
+				if r2 and r2.Distance < res.Distance then return false end
+			end
+			local id = Scene.instId[res.Instance]
+			if not id then return false end
+			Scene.select(id)
+			if not auto then setPick(false) end
+			return true
+		end
+		U.blkGz = function(force) -- returns true when a block is selected (the limb gizmo then stays out of the way)
+			local b = Scene.selBlock()
+			if not b then return false end
+			local s, cam = S, workspace.CurrentCamera
+			if not (root.Visible and cam and s and s.char and not s.playing and not s.live and U.gzOn) then
+				gzHide()
+				return true
+			end
+			if gz.hold and not PD then gz.hold = nil end
+			local camCF, vp = cam.CFrame, cam.ViewportSize
+			local wcf, mode, sz = Scene.world(b), U.mode3, b.dsz
+			local rot = (U.gzWorld and mode ~= "scale") and CFrame.identity or wcf.Rotation
+			local ras = root.AbsoluteSize
+			local ox, oy = vp.X - ras.X, vp.Y - ras.Y
+			ox = (ox > 0.5 and ox < 300) and ox / 2 or 0
+			oy = (oy > 0.5 and oy < 120) and oy or 0
+			local sg = gz.sig
+			if not force and gz.shown and sg and sg.b == b.id and sg.cam == camCF and sg.wcf == wcf and sg.sz == sz and sg.mode == mode and sg.rot == rot and sg.vy == vp.Y and sg.fov == cam.FieldOfView and sg.ox == ox and sg.oy == oy then return true end
+			gz.sig = {b = b.id, cam = camCF, wcf = wcf, sz = sz, mode = mode, rot = rot, vy = vp.Y, fov = cam.FieldOfView, ox = ox, oy = oy}
+			local C = wcf.Position
+			local depth = (C - camCF.Position):Dot(camCF.LookVector)
+			if depth < 0.5 then gzHide() return true end
+			local pxPerStud = vp.Y / (2 * depth * math.tan(math.rad(cam.FieldOfView) / 2))
+			local function P(w)
+				local v = cam:WorldToViewportPoint(w)
+				return v.X - ox, v.Y - oy, v.Z
+			end
+			gz.C, gz.shown = C, true
+			if mode == "rotate" then
+				for _, a in gz.arrows do
+					a.pos.btn.Visible = false
+					a.neg.btn.Visible = false
+				end
+				local R = math.min(math.max(2.6, 58 / pxPerStud, sz.Magnitude * 0.55), vp.Y * 0.32 / pxPerStud)
+				local cd = camCF.Position - C
+				local stepA = 2 * math.pi / NSEG
+				for i = 1, 3 do
+					local n = rot:VectorToWorldSpace(AXV[i])
+					local u = n:Cross(math.abs(n.Y) < 0.9 and Vector3.yAxis or Vector3.xAxis).Unit
+					local v = n:Cross(u)
+					gz.ring[i] = {C = C, n = n, u = u, v = v, R = R, px = R * pxPerStud}
+					local pts = {}
+					for k = 0, NSEG do
+						local th = k * stepA
+						pts[k] = Vector3.new(P(C + (u * math.cos(th) + v * math.sin(th)) * R))
+					end
+					local uc, vc = u:Dot(cd), v:Dot(cd)
+					for k = 1, NSEG do
+						local p, q, h = pts[k - 1], pts[k], gz.rings[i][k]
+						if p.Z > 0 and q.Z > 0 then
+							setSeg(h, p.X, p.Y, q.X, q.Y, 26, 2)
+							local thm = (k - 0.5) * stepA
+							h.vis.BackgroundTransparency = (uc * math.cos(thm) + vc * math.sin(thm) < 0) and 0.6 or 0.04
+							h.btn.Visible = true
+						else
+							h.btn.Visible = false
+						end
+					end
+				end
+			else
+				for _, r in gz.rings do
+					for _, h in r do h.btn.Visible = false end
+				end
+				local armLen = math.min(math.max(3.6, 80 / pxPerStud), vp.Y * 0.42 / pxPerStud)
+				gz.armLen = armLen
+				gz.bGrab = {{}, {}, {}}
+				local scaling = mode == "scale"
+				local half = {sz.X / 2, sz.Y / 2, sz.Z / 2}
+				for i = 1, 3 do
+					local d = rot:VectorToWorldSpace(AXV[i])
+					gz.dir[i] = d
+					for sgn = 1, 2 do
+						local dirS = sgn == 1 and 1 or -1
+						local h = sgn == 1 and gz.arrows[i].pos or gz.arrows[i].neg
+						local a0 = C + d * (dirS * (scaling and half[i] or 0)) -- scale handles start on the block's faces
+						local a1 = a0 + d * (dirS * armLen * (scaling and 0.6 or 1))
+						gz.bGrab[i][dirS] = a0 + d * (dirS * armLen * (scaling and 0.3 or 0.55))
+						local ax, ay, az = P(a0)
+						local bx, by, bz = P(a1)
+						if az > 0 and bz > 0 and (bx - ax) ^ 2 + (by - ay) ^ 2 > 100 then
+							setSeg(h, ax, ay, bx, by, 30, 0)
+							h.btn.Visible = true
+						else
+							h.btn.Visible = false
+						end
+					end
+				end
+			end
+			return true
+		end
+		U.blkDrag = function(kind, i, seg, input) -- handle drag for the selected block: move / scale (arrows) or rotate (rings)
+			local b = Scene.selBlock()
+			if not b then return false end
+			local ty = input.UserInputType
+			if ty ~= Enum.UserInputType.MouseButton1 and ty ~= Enum.UserInputType.Touch then return true end
+			if PD or not canEdit() or not gz.shown or not gz.C then return true end
+			local cam = workspace.CurrentCamera
+			if not cam then return true end
+			local scaling = U.mode3 == "scale"
+			local c0, ax, ring, grabW
+			if kind == "move" then
+				ax, c0 = gz.dir[i], gz.C
+				grabW = gz.bGrab and gz.bGrab[i] and gz.bGrab[i][seg]
+				if not (ax and grabW) then return true end
+			else
+				ring = gz.ring[i]
+				if not ring then return true end
+				local th = (seg - 0.5) * 2 * math.pi / NSEG
+				c0 = ring.C
+				grabW = c0 + (ring.u * math.cos(th) + ring.v * math.sin(th)) * ring.R
+			end
+			local gv = cam:WorldToViewportPoint(grabW)
+			if gv.Z <= 0 then return true end
+			local grab = Vector2.new(gv.X, gv.Y)
+			local axisParam, planeAngle, s0, a0, tanS
+			if kind == "move" then
+				axisParam = function(pt) -- position along the axis line that is closest to the pointer ray
+					local ray = cam:ViewportPointToRay(pt.X, pt.Y)
+					local d = ray.Direction
+					local w0 = c0 - ray.Origin
+					local bb = ax:Dot(d)
+					local den = 1 - bb * bb
+					if den < 1e-3 then return nil end
+					return (bb * d:Dot(w0) - ax:Dot(w0)) / den
+				end
+				s0 = axisParam(grab)
+				if not s0 then return true end
+			else
+				local rn, ru, rv = ring.n, ring.u, ring.v
+				planeAngle = function(pt) -- angle of the pointer ray where it crosses the ring's plane
+					local ray = cam:ViewportPointToRay(pt.X, pt.Y)
+					local d = ray.Direction
+					local den = d:Dot(rn)
+					if math.abs(den) < 0.12 then return nil end
+					local t = (c0 - ray.Origin):Dot(rn) / den
+					if t < 0 then return nil end
+					local r = ray.Origin + d * t - c0
+					return math.atan2(r:Dot(rv), r:Dot(ru))
+				end
+				a0 = planeAngle(grab)
+				if not a0 then -- ring seen edge-on: drag along the ring's screen tangent
+					local tw = rn:Cross(grabW - c0).Unit
+					local tv = cam:WorldToViewportPoint(grabW + tw * (ring.R * 0.1))
+					local tdir = Vector2.new(tv.X, tv.Y) - grab
+					if tdir.Magnitude < 0.5 then return true end
+					tanS = tdir.Unit
+				end
+			end
+			pushUndo()
+			S.playing = false
+			Scene.evalAll()
+			local wcf0, sz0 = Scene.world(b), b.dsz
+			local par = b.parent and Scene.map[b.parent]
+			local pw = par and Scene.world(par) or CFrame.identity
+			local p0 = Vector2.new(input.Position.X, input.Position.Y)
+			local acc, last = 0, a0
+			beginPtr(input, function(pos)
+				if not S or S.char == nil then return end
+				local tgt = grab + (pos - p0)
+				local created = false
+				if kind == "move" then
+					local s = axisParam(tgt)
+					if not s then return end
+					local dl = s - s0
+					if scaling then
+						local old = ({sz0.X, sz0.Y, sz0.Z})[i]
+						local new = math.clamp(old + seg * dl, Scene.MINSZ, Scene.MAXSZ)
+						local nsz = Vector3.new(i == 1 and new or sz0.X, i == 2 and new or sz0.Y, i == 3 and new or sz0.Z)
+						created = Scene.commit(b, pw:ToObjectSpace(wcf0 + ax * (seg * (new - old) / 2)), nsz) -- the opposite face stays where it is
+					else
+						created = Scene.commit(b, pw:ToObjectSpace(wcf0 + ax * dl))
+					end
+				else
+					if tanS then
+						acc = (pos - p0):Dot(tanS) / ring.px
+					else
+						local a = planeAngle(tgt)
+						if not a then return end
+						acc += (a - last + math.pi) % (2 * math.pi) - math.pi
+						last = a
+					end
+					created = Scene.commit(b, pw:ToObjectSpace(CFrame.new(wcf0.Position) * CFrame.fromAxisAngle(ring.n, acc) * wcf0.Rotation))
+				end
+				Scene.apply()
+				if created then drawTimeline() end
+				if Scene.refreshUI then Scene.refreshUI(true) end
+			end, function()
+				gz.hold, gz.sig = nil, nil
+				if S then Scene.changed(true) end
+			end)
+			return true
 		end
 	end
 
@@ -97363,6 +98556,8 @@ local function buildEditor()
 				applyRows()
 			elseif r.kind == "part" then
 				selectPart(r.part)
+			elseif r.kind == "blk" then
+				openPopup("blocks")
 			else
 				say("Camera tracks are not used by Dance / Moveset animations.")
 			end
@@ -97503,6 +98698,8 @@ local function buildEditor()
 	pb("Close Slot", closeSlot)
 	pb("Save Changes", onSave)
 	pb("Export", doExport)
+	pb("Blocks", function() openPopup("blocks") end)
+	pb("Effects", function() openPopup("effects") end)
 	pb(GL.gear, function() openPopup("settings") end, true)
 	U.camBtn = pb(GL.cam, FC.toggle, true) -- camera button = Freecam toggle (was: screenshot)
 	Util.Instance("UICorner", U.camBtn).CornerRadius = UDim.new(1, 0)
@@ -97552,11 +98749,15 @@ local function buildEditor()
 	U.modeMove = tool(U.toolsL, GL.move, 0, 1, function() setMode3("move") end)
 	tool(U.toolsL, GL.reset, 1, 1, resetPart)
 	tool(U.toolsL, GL.mirror, 0, 2, mirrorFrame)
-	tool(U.toolsR, GL.key, 0, 0, keyJoint)
-	tool(U.toolsR, GL.keyO, 1, 0, selectNextKf)
+	U.modeScale = tool(U.toolsL, ch(0x21F2), 1, 2, function()
+		if not Scene.sel then say("Scale works on blocks - open Blocks and select one.") return end
+		setMode3("scale")
+	end)
+	tool(U.toolsR, GL.key, 0, 0, function() if Scene.sel then Scene.key() else keyJoint() end end)
+	tool(U.toolsR, GL.keyO, 1, 0, function() if Scene.sel then Scene.jump(1) else selectNextKf() end end)
 	tool(U.toolsR, GL.copy, 0, 1, copyKf)
-	tool(U.toolsR, GL.edit, 1, 1, function() openPopup("edit") end)
-	tool(U.toolsR, GL.del, 0, 2, delKf)
+	tool(U.toolsR, GL.edit, 1, 1, function() openPopup(Scene.sel and "blocks" or "edit") end)
+	tool(U.toolsR, GL.del, 0, 2, function() if Scene.sel then Scene.delKey() else delKf() end end)
 	tool(U.toolsR, GL.cut, 1, 2, cutSplit)
 	tool(U.toolsR, GL.clip, 0, 3, function() openPopup("library") end)
 	local prevB = circ(root, GL.prev, function() stepFrame(-1) end)
@@ -97608,6 +98809,7 @@ local function buildEditor()
 		p.frame.Size = UDim2.fromOffset(math.min(p.w, W - 16), math.min(p.h, H - 16))
 		p.frame.Visible = true
 		U.popup = name
+		if name == "blocks" or name == "effects" then pcall(Scene.refreshUI) end
 		if name == "library" then
 			pcall(Studio.RefreshSaved)
 			U.refreshAssets()
@@ -97758,6 +98960,206 @@ local function buildEditor()
 		end
 		for i = n + 1, #U.asRows do U.asRows[i].Visible = false end
 		U.asEmpty.Visible = n == 0
+	end
+
+	-- ----- BLOCKS popup (primitive objects) + EFFECTS popup (player-attached effects) -----
+	do
+		local BI = Scene.BICON
+		local function listBox(parent, h)
+			local sf = newScroll(rowFrame(parent, h))
+			sf.Size = UDim2.fromScale(1, 1)
+			return sf
+		end
+		local function tri(parent, label, setter) -- X / Y / Z number boxes
+			fill(newLabel(rowFrame(parent, 18), label, 13))
+			local row = rowFrame(parent, 48)
+			local boxes = {}
+			for c = 1, 3 do
+				local col = newFrame(row)
+				col.Position = UDim2.new((c - 1) / 3, 0, 0, 0)
+				col.Size = UDim2.new(1 / 3, c < 3 and -3 or 0, 1, 0)
+				local l = newLabel(col, ({"X", "Y", "Z"})[c], 12, TL, AXC[c])
+				l.Position = UDim2.fromOffset(2, 0)
+				l.Size = UDim2.new(1, -2, 0, 16)
+				local box = newBox(col)
+				box.Position = UDim2.fromOffset(0, 18)
+				box.Size = UDim2.new(1, 0, 0, 28)
+				box.FocusLost:Connect(function()
+					local v = tonumber(box.Text)
+					if v and v == v then setter(c, v) else Scene.refreshUI(true) end
+				end)
+				boxes[c] = box
+			end
+			return boxes
+		end
+		local function listRow(pool, ids, list, i, cb) -- pooled list button (created once, reused)
+			local btn = pool[i]
+			if not btn then
+				btn = newBtn(list, "", function() cb(ids[i]) end)
+				btn.LayoutOrder = i
+				btn.Size = UDim2.new(1, 0, 0, 26)
+				btn.TextXAlignment = TL
+				btn.TextTruncate = Enum.TextTruncate.AtEnd
+				Util.Instance("UIPadding", btn).PaddingLeft = UDim.new(0, 8)
+				pool[i] = btn
+			end
+			btn.Visible = true
+			return btn
+		end
+
+		-- ===== Blocks =====
+		local bp = newPopup("blocks", "Blocks - primitive objects", 340, 600)
+		fill(newLabel(rowFrame(bp, 18), "Create (appears in front of the camera)", 13, TL, DIM))
+		btnRow(bp, {{BI.Block .. " Block", function() Scene.create("Block") end}, {BI.Sphere .. " Sphere", function() Scene.create("Sphere") end}, {BI.Cylinder .. " Cylinder", function() Scene.create("Cylinder") end}}, 28)
+		btnRow(bp, {{BI.Wedge .. " Wedge", function() Scene.create("Wedge") end}, {BI["Corner Wedge"] .. " Corner Wedge", function() Scene.create("Corner Wedge") end}}, 28)
+		fill(newLabel(rowFrame(bp, 18), "Objects (tap to select - or tap a block in the viewport)", 13, TL, DIM))
+		U.bList, U.bRows, U.bIds = listBox(bp, 124), {}, {}
+		U.bNameBox = field(bp, "Name")
+		U.bNameBox.FocusLost:Connect(function() Scene.rename(U.bNameBox.Text) end)
+		btnRow(bp, {{"Duplicate", function() Scene.duplicate() end}, {"Delete Object", function() Scene.delete() end}, {"Deselect", function() Scene.select(nil) end}}, 28)
+		U.bAttInfo = fill(newLabel(rowFrame(bp, 32), "", 12, TL, DIM))
+		U.bAttInfo.TextWrapped = true
+		btnRow(bp, {{"Attach to Selected", function() Scene.attach() end}, {"Detach", function() Scene.detach() end}}, 28)
+		btnRow(bp, {{"Select Parent", function() Scene.selParent() end}, {"Select Child", function() Scene.selChild() end}}, 28)
+		U.bPos = tri(bp, "Position - studs (relative to the parent when attached)", function(c, v) Scene.setPos(c, v) end)
+		U.bRot = tri(bp, "Rotation - degrees", function(c, v) Scene.setRot(c, v) end)
+		U.bSize = tri(bp, "Size - studs", function(c, v) Scene.setSize(c, v) end)
+		U.bColor = field(bp, "Color (R,G,B or #hex)")
+		U.bColor.FocusLost:Connect(function() Scene.setColor(U.bColor.Text) end)
+		U.bTransp = field(bp, "Transparency (0-1)")
+		U.bTransp.FocusLost:Connect(function()
+			local v = tonumber(U.bTransp.Text)
+			if v and v == v then Scene.setTransp(v) else Scene.refreshUI(true) end
+		end)
+		local mb = btnRow(bp, {{"Material", function() Scene.cycleMat() end}, {"Visible: ON", function() Scene.toggleVis() end}}, 28)
+		U.bMatBtn, U.bVisBtn = mb[1], mb[2]
+		local gb = btnRow(bp, {{"Gizmo: Local", function()
+			U.gzWorld = not U.gzWorld
+			Scene.refreshUI(true)
+			if U.gzForce then U.gzForce() end
+		end}}, 28)
+		U.bSpaceBtn = gb[1]
+		fill(newLabel(rowFrame(bp, 18), "Keyframes - selected block, current animation (30 FPS)", 13, TL, DIM))
+		U.bKeyInfo = fill(newLabel(rowFrame(bp, 20), "", 12, TL, DIM))
+		btnRow(bp, {{"Key @ playhead", function() Scene.key() end}, {"Delete key", function() Scene.delKey() end}}, 28)
+		local kb = btnRow(bp, {{"< Prev key", function() Scene.jump(-1) end}, {"Next key >", function() Scene.jump(1) end}, {"Ease", function() Scene.cycleEase() end}}, 28)
+		U.bEaseBtn = kb[3]
+		local bh = fill(newLabel(rowFrame(bp, 74), "Attach: select the CHILD block, then the PARENT block, then press Attach to Selected. Blocks attach to other blocks only. Once a block has keys, moving / scaling / rotating / hiding it at another frame creates a key there. Preview parts are local to you.", 12, TL, DIM))
+		bh.TextWrapped = true
+		bh.TextYAlignment = Enum.TextYAlignment.Top
+
+		-- ===== Effects =====
+		local ep = newPopup("effects", "Effects - attached to players", 340, 600)
+		fill(newLabel(rowFrame(ep, 18), "Create", 13, TL, DIM))
+		local function fxBtn(label, kind) return {label, function() Scene.fxCreate(kind) end} end
+		btnRow(ep, {fxBtn("Particles", "ParticleEmitter"), fxBtn("Trail", "Trail"), fxBtn("Beam", "Beam")}, 28)
+		btnRow(ep, {fxBtn("Highlight", "Highlight"), fxBtn("PointLight", "PointLight"), fxBtn("Fire", "Fire")}, 28)
+		btnRow(ep, {fxBtn("Smoke", "Smoke"), fxBtn("Sparkles", "Sparkles")}, 28)
+		fill(newLabel(rowFrame(ep, 18), "Effects (tap to select)", 13, TL, DIM))
+		U.fList, U.fRows, U.fIds = listBox(ep, 100), {}, {}
+		U.fNameBox = field(ep, "Name")
+		U.fNameBox.FocusLost:Connect(function() Scene.fxRename(U.fNameBox.Text) end)
+		btnRow(ep, {{"Duplicate", function() Scene.fxDuplicate() end}, {"Delete", function() Scene.fxDelete() end}}, 28)
+		fill(newLabel(rowFrame(ep, 18), "Attach to a player (character body part)", 13, TL, DIM))
+		U.fPlayerBtn = fill(newBtn(rowFrame(ep, 28), "Player: -", function() Scene.fxCyclePlayer() end))
+		U.fPartBtn = fill(newBtn(rowFrame(ep, 28), "Body part: Head", function() Scene.fxCyclePart(1) end))
+		U.fPart2Row = rowFrame(ep, 28)
+		U.fPart2Btn = fill(newBtn(U.fPart2Row, "Beam end: Torso", function() Scene.fxCyclePart(2) end))
+		U.fStatus = fill(newLabel(rowFrame(ep, 30), "", 12, TL, DIM))
+		U.fStatus.TextWrapped = true
+		fill(newLabel(rowFrame(ep, 18), "Properties", 13, TL, DIM))
+		U.fProps = {}
+		for i = 1, 7 do
+			local r = rowFrame(ep, 28)
+			local l = newLabel(r, "", ts)
+			l.Size = UDim2.new(0.5, 0, 1, 0)
+			local box = newBox(r)
+			box.Position, box.Size = UDim2.new(0.5, 0, 0, 0), UDim2.new(0.5, 0, 1, 0)
+			box.FocusLost:Connect(function() Scene.fxSet(i, box.Text) end)
+			local tg = newBtn(r, "", function() Scene.fxToggle(i) end)
+			tg.Position, tg.Size = UDim2.new(0.5, 0, 0, 0), UDim2.new(0.5, 0, 1, 0)
+			r.Visible = false
+			U.fProps[i] = {row = r, lbl = l, box = box, tgl = tg}
+		end
+		local fh = fill(newLabel(rowFrame(ep, 62), "Effects attach only to real players' character body parts (never to blocks). Only your own client sees them. They are removed when this editor closes and re-attached when it opens; they are saved with the project.", 12, TL, DIM))
+		fh.TextWrapped = true
+		fh.TextYAlignment = Enum.TextYAlignment.Top
+
+		-- ===== refresh (lists, fields, button texts); fieldsOnly = true skips the list rebuild (used while dragging) =====
+		local function setBox(box, text) if box and not box:IsFocused() then box.Text = text end end
+		Scene.refreshUI = function(fieldsOnly)
+			local b, e = Scene.selBlock(), Scene.selEffect()
+			if not fieldsOnly then
+				local order = Scene.listOrder()
+				for i, ent in order do
+					U.bIds[i] = ent.b.id
+					local btn = listRow(U.bRows, U.bIds, U.bList, i, function(id) Scene.select(id) end)
+					btn.Text = string.rep("    ", ent.depth) .. (ent.depth > 0 and (ch(0x2514) .. " ") or "") .. BI[ent.b.shape] .. " " .. ent.b.name
+					sel(btn, ent.b.id == Scene.sel)
+				end
+				for i = #order + 1, #U.bRows do U.bRows[i].Visible = false end
+				for i, x in Scene.effects do
+					U.fIds[i] = x.id
+					local btn = listRow(U.fRows, U.fIds, U.fList, i, function(id) Scene.fxSelect(id) end)
+					btn.Text = x.kind .. " - " .. x.name
+					sel(btn, x.id == Scene.selFx)
+				end
+				for i = #Scene.effects + 1, #U.fRows do U.fRows[i].Visible = false end
+			end
+			-- block fields
+			U.bSpaceBtn.Text = "Gizmo: " .. (U.gzWorld and "World (move / rotate)" or "Local")
+			if b then
+				local p = b.dcf.Position
+				local rx, ry, rz = b.dcf:ToEulerAnglesXYZ()
+				setBox(U.bNameBox, b.name)
+				setBox(U.bPos[1], fmtNum(p.X)); setBox(U.bPos[2], fmtNum(p.Y)); setBox(U.bPos[3], fmtNum(p.Z))
+				setBox(U.bRot[1], fmtNum(math.deg(rx))); setBox(U.bRot[2], fmtNum(math.deg(ry))); setBox(U.bRot[3], fmtNum(math.deg(rz)))
+				setBox(U.bSize[1], fmtNum(b.dsz.X)); setBox(U.bSize[2], fmtNum(b.dsz.Y)); setBox(U.bSize[3], fmtNum(b.dsz.Z))
+				setBox(U.bColor, Scene.colStr(b.color))
+				setBox(U.bTransp, fmtNum(b.transp))
+				U.bMatBtn.Text = "Material: " .. b.mat
+				U.bVisBtn.Text = "Visible: " .. (b.dvis and "ON" or "OFF")
+				local par, kids = b.parent and Scene.map[b.parent], 0
+				for _, x in Scene.blocks do
+					if x.parent == b.id then kids += 1 end
+				end
+				local pv = Scene.prev and Scene.map[Scene.prev]
+				U.bAttInfo.Text = string.format("%s | parent: %s | children: %d\nAttach: child = %s, parent = %s", b.name, par and par.name or "none", kids, (pv and pv ~= b) and pv.name or "(select the child first)", b.name)
+				local ks = b.kf[Work.cat]
+				local k = ks and Scene.keyAt(ks, Scene.keyTime())
+				U.bKeyInfo.Text = string.format("%s: %d key(s)%s", Work.cat, ks and #ks or 0, k and (" - key at frame " .. math.floor(k.t * FPS + 0.5)) or "")
+				U.bEaseBtn.Text = k and ("Ease: " .. (k.ease == "Constant" and "Stepped" or k.ease)) or "Ease"
+			else
+				for _, bx in {U.bNameBox, U.bPos[1], U.bPos[2], U.bPos[3], U.bRot[1], U.bRot[2], U.bRot[3], U.bSize[1], U.bSize[2], U.bSize[3], U.bColor, U.bTransp} do setBox(bx, "") end
+				U.bMatBtn.Text, U.bVisBtn.Text = "Material", "Visible"
+				U.bAttInfo.Text = "No block selected. Create one above or tap a block."
+				U.bKeyInfo.Text = ""
+				U.bEaseBtn.Text = "Ease"
+			end
+			-- effect fields
+			U.fPlayerBtn.Text = "Player: " .. (e and (e.plrName or "-") or "-")
+			U.fPartBtn.Text = "Body part: " .. (e and e.part or "-")
+			U.fPart2Row.Visible = e ~= nil and e.kind == "Beam"
+			U.fPart2Btn.Text = "Beam end: " .. (e and e.part2 or "-")
+			U.fStatus.Text = e and Scene.fxStatus(e) or "No effect selected. Create one above."
+			setBox(U.fNameBox, e and e.name or "")
+			for i = 1, 7 do
+				local r, d = U.fProps[i], e and Scene.FXPROPS[e.kind][i]
+				r.row.Visible = d ~= nil
+				if d then
+					r.lbl.Text = d.k
+					local v = e.p[d.k]
+					if d.t == "bool" then
+						r.box.Visible, r.tgl.Visible = false, true
+						r.tgl.Text = v and "ON" or "OFF"
+						sel(r.tgl, v)
+					else
+						r.box.Visible, r.tgl.Visible = true, false
+						setBox(r.box, d.t == "color" and Scene.colStr(v) or fmtNum(v))
+					end
+				end
+			end
+		end
 	end
 
 	-- ----- layout (proportions follow the Free Animator reference: pill top-centre, tools left / right, play buttons bottom-centre, window centred) -----
