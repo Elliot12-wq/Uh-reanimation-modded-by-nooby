@@ -65221,7 +65221,7 @@ local H = {
 ["preload assets on load"] = "Loads game assets right at the start.",
 ["hook loadanimation"] = ADV,
 ["apply rotvelocity"] = ADV,
-["patchma-like netless"] = ADV,
+["netless mode"] = ADV,
 ["use physics glue"] = ADV,
 ["target fling enabled"] = "Turns on fling-at-a-target mode.",
 ["auto force respawn when stuck"] = "Respawns you automatically if the reanimation gets stuck.",
@@ -67383,6 +67383,13 @@ SaveData.ShiftlockDisabled = not not SaveData.ShiftlockDisabled
 SaveData.NoLoadAnimationHook = not not SaveData.NoLoadAnimationHook
 SaveData.NoPhysicsRepRootPart = not not SaveData.NoPhysicsRepRootPart
 SaveData.NetlessVelocity = SaveData.NetlessVelocity or 25.01
+do
+local legacy = SaveData.UsePatchmaLikeNetless
+local m = SaveData.NetlessMode
+if m ~= "Original Netless" and m ~= "Patchma's Style Netless" and m ~= "Nooby's Netless" then
+SaveData.NetlessMode = legacy == true and "Patchma's Style Netless" or (legacy == false and "Original Netless" or "Nooby's Netless")
+end
+end
 SaveData.UsePatchmaLikeNetless = not not SaveData.UsePatchmaLikeNetless
 SaveData.UseAngularVelocity = not not SaveData.UseAngularVelocity
 SaveData.PatchmaVoidFloat = not not SaveData.PatchmaVoidFloat
@@ -67521,6 +67528,121 @@ end,
 }
 }
 }
+-- Netless modes: 1 = Original, 2 = Patchma's Style, 3 = Nooby's (smoothed, frame-rate independent)
+Reanimate.NetlessModeNames = {"Original Netless", "Patchma's Style Netless", "Nooby's Netless"}
+do
+local NooState = setmetatable({}, {__mode = "k"})
+local function Get(handle, claimtime)
+local st = NooState[handle]
+if not st then
+st = {claim = claimtime, vx = 0, vz = 0, vy = 0, vt = 0, pt = -math.huge, settled = nil}
+NooState[handle] = st
+elseif st.claim ~= claimtime then
+st.claim = claimtime
+st.vx, st.vz, st.vy, st.vt, st.settled = 0, 0, 0, 0, nil
+end
+return st
+end
+local function WritePhysics(handle, settled)
+if settled then
+handle.Massless = true
+handle.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
+else
+handle.Massless = false
+handle.CustomPhysicalProperties = nil
+end
+end
+function Reanimate.SetNetlessMode(mode)
+local id = type(mode) == "number" and math.clamp(math.floor(mode), 1, 3) or table.find(Reanimate.NetlessModeNames, mode) or 3
+Reanimate.NetlessModeId = id
+Reanimate.NetlessMode = Reanimate.NetlessModeNames[id]
+Reanimate.UsePatchmaLikeNetless = id == 2
+SaveData.NetlessMode = Reanimate.NetlessMode
+SaveData.UsePatchmaLikeNetless = id == 2
+table.clear(NooState)
+end
+-- claim-age physics properties; Original/Patchma write every frame (unchanged), Nooby's only on change + a 2s refresh
+function Reanimate.NetlessPhysics(handle, timing, claimtime)
+local settled = timing - claimtime >= 5.67
+if Reanimate.NetlessModeId ~= 3 then return WritePhysics(handle, settled) end
+local st = Get(handle, claimtime)
+if st.settled ~= settled or timing - st.pt > 2 then
+st.settled = settled
+st.pt = timing
+WritePhysics(handle, settled)
+end
+end
+-- velocity applied to a settled, non-fling handle. vel = measured motion, tvel = target velocity from the caller
+function Reanimate.NetlessVelocityFor(handle, vel, tvel, netless, dt, timing, claimtime)
+local id = Reanimate.NetlessModeId
+if id == 3 then
+local st = Get(handle, claimtime)
+-- one odd frame can never move the velocity by more than accel * clamped dt
+local sdt = dt < 1 / 240 and 1 / 240 or (dt > 1 / 30 and 1 / 30 or dt)
+if timing - st.vt > 0.25 then
+st.vx, st.vz, st.vy = 0, 0, 0 -- drop outdated movement information
+end
+st.vt = timing
+-- horizontal target: measured motion fused with the caller's target velocity (when it supplies one)
+local gx, gz = vel.X, vel.Z
+local tx, tz = tvel.X, tvel.Z
+if tx * tx + tz * tz > 0.0001 then
+gx = gx * 0.4 + tx * 0.6
+gz = gz * 0.4 + tz * 0.6
+end
+local g2 = gx * gx + gz * gz
+if g2 ~= g2 then
+gx, gz, g2 = 0, 0, 0
+elseif g2 > netless * netless then
+local k = netless / math.sqrt(g2)
+gx, gz, g2 = gx * k, gz * k, netless * netless
+end
+-- adaptive time constant: small errors are smoothed heavily, real direction changes are followed quickly
+local ex, ez = gx - st.vx, gz - st.vz
+local tau = 0.14 / (1 + math.sqrt(ex * ex + ez * ez) / 5)
+if tau < 0.02 then tau = 0.02 end
+local alpha = 1 - math.exp(-sdt / tau)
+local sx, sz = ex * alpha, ez * alpha
+local sm = math.sqrt(sx * sx + sz * sz)
+if sm > 0 then
+local lim = ((sx * st.vx + sz * st.vz) >= 0 and 700 or 1100) * sdt -- accelerate / decelerate limits
+if sm > lim then
+local k = lim / sm
+sx, sz = sx * k, sz * k
+end
+end
+local vx, vz = st.vx + sx, st.vz + sz
+if g2 < 0.0144 and vx * vx + vz * vz < 0.0625 then
+vx, vz = 0, 0 -- idle: settle to exactly zero instead of micro-wobbling
+end
+st.vx, st.vz = vx, vz
+-- vertical is filtered on its own; only upward motion adds on top of the netless floor
+local gy = vel.Y
+if gy ~= gy or gy < 0 then gy = 0 end
+local cap = netless * 0.35
+if gy > cap then gy = cap end
+local sy = (gy - st.vy) * (1 - math.exp(-sdt / 0.09))
+local ly = 500 * sdt
+if sy > ly then sy = ly elseif sy < -ly then sy = -ly end
+st.vy += sy
+return Vector3.new(vx, netless + st.vy, vz)
+elseif id == 2 then
+vel = tvel
+vel *= Vector3.new(1, 0, 1)
+if vel.Magnitude > netless then
+vel = vel.Unit * netless
+end
+return Vector3.new(vel.X * 10, netless, vel.Z * 10)
+end
+vel += tvel
+vel *= Vector3.new(1, 0, 1)
+if vel.Magnitude > netless then
+vel = vel.Unit * netless
+end
+return Vector3.new(vel.X, math.max(vel.Y, netless), vel.Z)
+end
+Reanimate.SetNetlessMode(SaveData.NetlessMode)
+end
 Reanimate.Camera.IsFirstPerson = function(self)
 return self.Zoom < 0.75
 end
@@ -71008,7 +71130,7 @@ Util.Fling.Descriptions = {
 "Fling 3: adapted from the hidden-fling target sweep + flight sequence",
 "Alt-fling: your Nameless Admin alt does the flinging. Your own character never flings.",
 "instant fling: saves your position, snaps your root + limbs onto the target for 1-2 frames with extreme velocity, then snaps straight back",
-"overflow fling: constant 9 sextillion (9e21) finite velocity and angular impulses across all axes with independent per-axis alternation, aperiodic drift, and rapid spin; no NaN, no infinity",
+"overflow fling: instantly applies a finite 1 decillion (1e33) velocity and angular impulse across all axes with independent per-axis alternation, aperiodic drift and rapid spin; hard-capped at 1e36, no NaN, no infinity",
 }
 Util.Fling.InstantDuration = 0.02
 Util.Fling.WeakDuration = 0.4
@@ -71238,6 +71360,21 @@ return nil, CFrame.identity, true
 end
 return ft, flingcf, false
 end
+-- Overflow Fling numerical scaling: magnitudes are carried as base-10 exponents (log scale, so 1e100 or 1e300 requests are representable) and only converted to a finite, clamped value right before they reach Roblox physics
+Util.Fling.OverflowPresets = {Million = 1e6, Billion = 1e9, Trillion = 1e12, Quadrillion = 1e15, Quintillion = 1e18, Sextillion = 1e21, Septillion = 1e24, Octillion = 1e27, Nonillion = 1e30, Decillion = 1e33, Undecillion = 1e36, Googol = 1e100}
+Util.Fling.OverflowMaxExp, Util.Fling.OverflowDefault = 36, 1e33 -- hard cap 1e36 | default magnitude: 1 decillion, applied instantly
+-- request (any number, preset name or scientific notation) -> finite physics magnitude in [0, 10^OverflowMaxExp]; NaN/inf/garbage can never pass through
+Util.Fling.OverflowScale = function(req)
+if type(req) == "string" then req = Util.Fling.OverflowPresets[req] or tonumber(req) end
+if type(req) ~= "number" or req ~= req or req <= 0 then return 0 end
+local cap = 10 ^ Util.Fling.OverflowMaxExp
+if req >= cap then return cap end
+return req
+end
+-- instant decillion: no ramp, full magnitude on the first frame and every frame after
+Util.Fling.OverflowMagnitude = function()
+return Util.Fling.OverflowScale(Util.Fling.OverflowDefault)
+end
 Util.Fling.ApplyRoot = function(RootPart, ft, flingcf)
 local mode = ft.Mode or 1
 local t = os.clock()
@@ -71292,9 +71429,9 @@ p.AssemblyLinearVelocity, p.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
 end
 end)
 elseif mode == 10 then
--- Overflow Fling: constant 9 sextillion (9e21) finite physics
+-- Overflow Fling: scaled finite physics (see Util.Fling.OverflowMagnitude)
 local elapsed = math.max(0, t - (ft and ft.Start or t))
-local mag = 9e21
+local mag = Util.Fling.OverflowMagnitude(elapsed)
 local flipA = (math.floor(t * 480)             % 2 == 0) and 1 or -1
 local flipB = (math.floor(t * 480 * 1.618034)  % 2 == 0) and 1 or -1
 local flipC = (math.floor(t * 480 * 1.414214)  % 2 == 0) and 1 or -1
@@ -77479,34 +77616,14 @@ local a, b = rvel:ToAxisAngle()
 rvel = (a * b) / dt
 lastcf = newcf
 if claimtime then
-if timing - claimtime < 5.67 then
-handle.Massless = false
-handle.CustomPhysicalProperties = nil
-else
-handle.Massless = true
-handle.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
-end
+Reanimate.NetlessPhysics(handle, timing, claimtime)
 if timing - claimtime < 0.51 then
 handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
 else
 if fling then
 handle.AssemblyLinearVelocity = Vector3.new(16384, 16384, 16384)
 else
-if Reanimate.UsePatchmaLikeNetless then
-vel = tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X * 10, netless, vel.Z * 10)
-else
-vel += tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, netless), vel.Z)
-end
+handle.AssemblyLinearVelocity = Reanimate.NetlessVelocityFor(handle, vel, tvel, netless, dt, timing, claimtime)
 end
 end
 else
@@ -80134,34 +80251,14 @@ local a, b = rvel:ToAxisAngle()
 rvel = (a * b) / dt
 lastcf = newcf
 if claimtime then
-if timing - claimtime < 5.67 then
-handle.Massless = false
-handle.CustomPhysicalProperties = nil
-else
-handle.Massless = true
-handle.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
-end
+Reanimate.NetlessPhysics(handle, timing, claimtime)
 if timing - claimtime < 0.51 then
 handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
 else
 if fling then
 handle.AssemblyLinearVelocity = Vector3.new(16384, 16384, 16384)
 else
-if Reanimate.UsePatchmaLikeNetless then
-vel = tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X * 10, netless, vel.Z * 10)
-else
-vel += tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, netless), vel.Z)
-end
+handle.AssemblyLinearVelocity = Reanimate.NetlessVelocityFor(handle, vel, tvel, netless, dt, timing, claimtime)
 end
 end
 else
@@ -82549,34 +82646,14 @@ local a, b = rvel:ToAxisAngle()
 rvel = (a * b) / dt
 lastcf = newcf
 if claimtime then
-if timing - claimtime < 5.67 then
-handle.Massless = false
-handle.CustomPhysicalProperties = nil
-else
-handle.Massless = true
-handle.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
-end
+Reanimate.NetlessPhysics(handle, timing, claimtime)
 if timing - claimtime < 0.51 then
 handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
 else
 if fling then
 handle.AssemblyLinearVelocity = Vector3.new(16384, 16384, 16384)
 else
-if Reanimate.UsePatchmaLikeNetless then
-vel = tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X * 10, netless, vel.Z * 10)
-else
-vel += tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, netless), vel.Z)
-end
+handle.AssemblyLinearVelocity = Reanimate.NetlessVelocityFor(handle, vel, tvel, netless, dt, timing, claimtime)
 end
 end
 else
@@ -84917,34 +84994,14 @@ local a, b = rvel:ToAxisAngle()
 rvel = (a * b) / dt
 lastcf = newcf
 if claimtime then
-if timing - claimtime < 5.67 then
-handle.Massless = false
-handle.CustomPhysicalProperties = nil
-else
-handle.Massless = true
-handle.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
-end
+Reanimate.NetlessPhysics(handle, timing, claimtime)
 if timing - claimtime < 0.51 then
 handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
 else
 if fling then
 handle.AssemblyLinearVelocity = Vector3.new(16384, 16384, 16384)
 else
-if Reanimate.UsePatchmaLikeNetless then
-vel = tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X * 10, netless, vel.Z * 10)
-else
-vel += tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, netless), vel.Z)
-end
+handle.AssemblyLinearVelocity = Reanimate.NetlessVelocityFor(handle, vel, tvel, netless, dt, timing, claimtime)
 end
 end
 else
@@ -86913,34 +86970,14 @@ local a, b = rvel:ToAxisAngle()
 rvel = (a * b) / dt
 lastcf = newcf
 if claimtime then
-if timing - claimtime < 5.67 then
-handle.Massless = false
-handle.CustomPhysicalProperties = nil
-else
-handle.Massless = true
-handle.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
-end
+Reanimate.NetlessPhysics(handle, timing, claimtime)
 if timing - claimtime < 0.51 then
 handle.AssemblyLinearVelocity = Vector3.new(0, netless, 0)
 else
 if fling then
 handle.AssemblyLinearVelocity = Vector3.new(16384, 16384, 16384)
 else
-if Reanimate.UsePatchmaLikeNetless then
-vel = tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X * 10, netless, vel.Z * 10)
-else
-vel += tvel
-vel *= Vector3.new(1, 0, 1)
-if vel.Magnitude > netless then
-vel = vel.Unit * netless
-end
-handle.AssemblyLinearVelocity = Vector3.new(vel.X, math.max(vel.Y, netless), vel.Z)
-end
+handle.AssemblyLinearVelocity = Reanimate.NetlessVelocityFor(handle, vel, tvel, netless, dt, timing, claimtime)
 end
 end
 else
@@ -93171,10 +93208,10 @@ Reanimate.UsePhysicsRepRootPart = val
 SaveData.NoPhysicsRepRootPart = not val
 end)
 UI.CreateText(MainPage, "internals for physics based reanimation\n(like hat reanimator)", 10, Enum.TextXAlignment.Center)
-UI.CreateSwitch(MainPage, "Patchma-like Netless", Reanimate.UsePatchmaLikeNetless).Changed:Connect(function(val)
-Reanimate.UsePatchmaLikeNetless = val
-SaveData.UsePatchmaLikeNetless = val
+UI.CreateDropdown(MainPage, "Netless Mode", Reanimate.NetlessModeNames, Reanimate.NetlessModeId).Changed:Connect(function(val)
+Reanimate.SetNetlessMode(val)
 end)
+UI.CreateText(MainPage, "Nooby's Netless is the smoothest (recommended)", 10, Enum.TextXAlignment.Center)
 local NetVelSlider = UI.CreateSlider(MainPage, "Netless Velocity", Reanimate.NetlessVelocity, 25.01, 30, 0.1)
 NetVelSlider.Changed:Connect(function(val)
 val = math.clamp(val, 25.01, 30)
@@ -103383,7 +103420,8 @@ local Security = {
 Findings = {},
 Errors = {},
 Skipped = {},
-Stats = {Scanned = 0, PassScanned = 0, Flagged = 0, Deleted = 0, Skipped = 0, Passes = 0, Errors = 0, Quarantined = 0},
+Stats = {Scanned = 0, PassScanned = 0, Flagged = 0, Deleted = 0, Skipped = 0, Passes = 0, Errors = 0, Quarantined = 0, Incomplete = 0, Unverified = 0, Malicious = 0, Suspicious = 0},
+Records = {},
 StatusText = "Security: starting...",
 OnStatus = nil,
 OnMalicious = nil,
@@ -103447,6 +103485,12 @@ BgMin = 131072,
 BgMinNoHash = 524288,
 StartDelay = 12,
 MemoMax = 48,
+DecodeTokenMax = 12000,
+MaxDecoded = 12,
+DecodeBudget = 98304,
+NestDepth = 3,
+NestOps = 24,
+PartialDelete = false,
 }
 Security.Config = cfg
 do
@@ -103474,7 +103518,7 @@ local REQ = "request%w*%s*[%({]"
 local SPAWNERS = KL{"task|.spawn", "task|.defer", "task|.delay", "coroutine|.wrap"}
 local DECODERS = KL{"string.|char", "base|64", "b|64", "decod", "|reverse(", "from|hex", "utf8.|char", "bit32.|bxor"}
 local TRUSTED = KL{"raw.github|usercontent.com", "github.com", "gitlab.com", "roblox.com", "rbxcdn.com", "cdn.jsdelivr.net"}
-local OBF = {obfuscator = 2, esc_dense = 2, obf_ident = 2, concat_build = 2, env_exec = 2, decode_exec = 2, spawn_blob = 2, byte_array = 1, b64_payload = 1, embedded_exec = 1}
+local OBF = {obfuscator = 2, esc_dense = 2, obf_ident = 2, concat_build = 2, env_exec = 2, decode_exec = 2, spawn_blob = 2, byte_array = 1, b64_payload = 1, embedded_exec = 1, char_build = 2, rev_str = 2, xor_decode = 2, alias_exec = 1, nested_payload = 2, rev_kw = 2}
 local AX, WF, AF, LF, DF, DD, B64A = K("auto|exec"), K("write|file"), K("append|file"), K("list|files"), K("del|file%s*%("), K("del|folder%s*%("), K("01234|56789+/")
 local RULES = {
 {id = "cookie_header", cat = "cred", w = 100, crit = true, grp = "cookie", f = K("_|warning:-do-not-|share-this"), desc = "contains a Roblox login-cookie value"},
@@ -103496,6 +103540,13 @@ local RULES = {
 {id = "obfuscator", cat = "obf", w = 25, any = KL{"moon|sec", "lur|aph", "iron|brew", "luaobfus|cator"}, desc = "is hidden by a script obfuscator"},
 {id = "paste_host", cat = "net", w = 25, any = KL{"pastebin.com/|raw", "hast|ebin", "rentry|.co", "ghost|bin", "paste|.ee/r", "paste|fy", "controlc|.com", "paste.|gg"}, desc = "loads code from an editable paste site"},
 {id = "env_exec", cat = "obf", w = 20, p = "[%[%(]%s*[\"']" .. K("load|string") .. "[\"']%s*[%]%)]", desc = "calls the code loader through an environment lookup to hide it"},
+{id = "clip_write", cat = "intel", w = 4, any = KL{"setclip|board", "toclip|board"}, desc = "writes to the clipboard"},
+{id = "tele_queue", cat = "persist", w = 10, any = KL{"queue_on_|teleport", "queueon|teleport", "queue|teleport"}, desc = "queues code to run again after a teleport"},
+{id = "url_short", cat = "net", w = 12, any = KL{"bit.|ly/", "tinyurl.|com/", "cutt.|ly/", "is.|gd/", "rb.|gy/", "shorturl.|at/", "t.|ly/", "ow.|ly/"}, desc = "uses a URL shortener that hides the real destination"},
+{id = "hook_fn", cat = "evasion", w = 8, any = KL{"hookfunc|tion", "hookmeta|method", "restorefunc|tion", "replace|closure"}, desc = "hooks or replaces other functions"},
+{id = "rev_kw", cat = "obf", w = 35, any = KL{"gnirts|daol", "tegp|tth", "ytiruces|olbor"}, desc = "contains a reversed loader / cookie keyword (hidden by string reversal)"},
+{id = "ws_conn", cat = "net", w = 8, any = KL{"websocket.|connect"}, desc = "opens a websocket connection"},
+{id = "dyn_dns", cat = "net", w = 15, any = KL{"ngr|ok.", "trycloud|flare.com", "serve|o.net", "duck|dns.org", "no-|ip.", "playit|.gg", "loca.|lt"}, desc = "talks to a tunnel / dynamic-DNS host often used for control servers"},
 }
 local function normalize(p) return (tostring(p):gsub("\\", "/")) end
 local function shortName(p) return normalize(p):match("([^/]+)$") or tostring(p) end
@@ -103519,7 +103570,7 @@ end
 local function status(prefix)
 local text = string.format("%s | scanned this pass: %d | flagged: %d | deleted: %d", prefix, Stats.PassScanned, Stats.Flagged, Stats.Deleted)
 if Stats.Errors > 0 or Stats.Skipped > 0 then
-text = text .. string.format(" | errors: %d | skipped: %d", Stats.Errors, Stats.Skipped)
+text = text .. string.format(" | errors: %d | skipped: %d | incomplete: %d", Stats.Errors, Stats.Skipped, Stats.Incomplete)
 end
 Security.StatusText = text
 if Security.OnStatus then pcall(Security.OnStatus, text) end
@@ -103657,6 +103708,204 @@ local RUNDEC = "\\%d%d?%d?\\%d%d?%d?\\%d%d?%d?\\%d%d?%d?"
 local RUNHEX = "\\x%x%x\\x%x%x\\x%x%x\\x%x%x"
 local TINYP = "[\"'][^\"'\n][^\"'\n]?[\"']%s*%.%.%s*[\"']"
 local ILP = string.rep("[il1]", 9)
+local harvestAll, refine, newState
+do
+-- encoded payloads are only ever analysed as data: they are decoded to text and scanned, never executed
+local B64V = {}
+do
+local a = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+for i = 1, 64 do B64V[a:byte(i)] = i - 1 end
+end
+local function unb64(s)
+s = s:gsub("=+$", "")
+local out, no, acc, bits = {}, 0, 0, 0
+for i = 1, #s do
+local v = B64V[s:byte(i)]
+if not v then return nil end
+acc = acc * 64 + v
+bits += 6
+if bits >= 8 then
+bits -= 8
+local p = 2 ^ bits
+local b = math.floor(acc / p)
+acc = acc % p
+no += 1
+out[no] = string.char(b % 256)
+end
+end
+return table.concat(out)
+end
+local function unhex(s)
+return (s:gsub("%x%x", function(h) return string.char(tonumber(h, 16)) end))
+end
+local function texty(s)
+local n = #s
+if n < 12 then return false end
+local step, seen, bad = math.max(1, n // 256), 0, 0
+for i = 1, n, step do
+local b = s:byte(i)
+seen += 1
+if b < 9 or (b > 13 and b < 32) or b > 126 then bad += 1 end
+end
+return bad * 10 <= seen
+end
+-- identical encoded strings are decoded once (bounded cache; the key is the full token, never a weak fingerprint)
+local decMemo, decOrder = {}, {}
+local function memoDecode(key, tok, fn)
+local hit = decMemo[key]
+if hit ~= nil then return hit end
+local raw = fn(tok)
+hit = (raw and texty(raw)) and raw or false
+if #tok <= 4096 then
+decMemo[key] = hit
+decOrder[#decOrder + 1] = key
+if #decOrder > 32 then decMemo[table.remove(decOrder, 1)] = nil end
+end
+return hit
+end
+local B64TOK = string.rep("[%w%+/]", 120) .. "[%w%+/]*=?=?"
+local HEXTOK = string.rep("%x%x", 60) .. "%x*"
+local BYTESP = "[{%(]%s*(%d+%s*,[%d%s,]+)[}%)]"
+local function decNote(state, text, line)
+if #text == 0 or state.decBytes + #text > cfg.DecodeBudget then return end
+state.decBytes += #text
+state.dec[#state.dec + 1] = {text = text, line = line}
+end
+local function harvest(blk, state, line0)
+local ini = 1
+while state.nDec < cfg.MaxDecoded do
+local s, e = blk:find(B64TOK, ini)
+if not s then break end
+ini = e + 1
+local tok = blk:sub(s, e)
+if #tok <= cfg.DecodeTokenMax then
+state.nDec += 1
+local raw = memoDecode("b" .. tok, tok, unb64)
+if raw then decNote(state, raw, line0 + count(blk:sub(1, s - 1), "\n")) end
+end
+end
+ini = 1
+while state.nDec < cfg.MaxDecoded do
+local s, e = blk:find(HEXTOK, ini)
+if not s then break end
+ini = e + 1
+local tok = blk:sub(s, e)
+if #tok % 2 == 1 then tok = tok:sub(1, -2) end
+if #tok <= cfg.DecodeTokenMax then
+state.nDec += 1
+local raw = memoDecode("h" .. tok, tok, unhex)
+if raw then decNote(state, raw, line0 + count(blk:sub(1, s - 1), "\n")) end
+end
+end
+ini = 1
+while state.nDec < cfg.MaxDecoded do
+local s, e, list = blk:find(BYTESP, ini)
+if not s then break end
+ini = e + 1
+if #list >= 40 then
+state.nDec += 1
+local out, n, ok = {}, 0, true
+for num in list:gmatch("%d+") do
+local b = tonumber(num)
+if b > 255 then ok = false break end
+n += 1
+out[n] = string.char(b)
+end
+if ok and n >= 20 then
+local raw = table.concat(out)
+if texty(raw) then decNote(state, raw, line0 + count(blk:sub(1, s - 1), "\n")) end
+end
+end
+end
+end
+newState = function(gen, depth)
+return {ev = {}, flags = {}, esc = 0, escRuns = 0, hexid = 0, tiny = 0, chr = 0, rev = 0, dec = {}, nDec = 0, decBytes = 0, depth = depth or 0, t0 = os.clock(), gen = gen, bg = type(gen) == "number"}
+end
+-- finds base64 / hex / decimal-byte-array payloads in the original (case-preserved) source
+harvestAll = function(content, state, gen)
+local n, pos, line = #content, 1, 1
+while pos <= n and state.nDec < cfg.MaxDecoded do
+local stop = pos + cfg.ChunkSize - 1
+if stop >= n then
+stop = n
+else
+local nl = content:find("\n", stop, true)
+if nl and nl - stop <= 2048 then
+stop = nl
+else
+local br = content:find("[^%w%+/=]", stop)
+if br and br - stop <= cfg.DecodeTokenMax then stop = br end
+end
+end
+local blk = content:sub(pos, stop)
+harvest(blk, state, line)
+line += count(blk, "\n")
+pos = stop + 1
+if pos <= n and not slice(state, gen) then return false end
+end
+return true
+end
+local FOLDP = "([\"'`])(%s*)%.%.(%s*)([\"'`])"
+local function charsRepl(state)
+return function(list)
+local out, n = {}, 0
+for num in list:gmatch("%d+") do
+n += 1
+if n > 600 then return nil end
+local b = tonumber(num)
+if b > 255 then return nil end
+out[n] = (b < 32 or b == 34 or b == 39 or b == 92 or b > 126) and "?" or string.char(b):lower()
+end
+if n < 3 then return nil end
+return "\"" .. table.concat(out) .. "\""
+end
+end
+local function revRepl(state)
+return function(_, s, par)
+if #s < 4 or #s > 4096 then return nil end
+state.rev += 1
+return "\"" .. s:reverse() .. "\"" .. (par or "")
+end
+end
+-- rebuilds strings that are hidden behind string.char / utf8.char / reverse so the normal rules can see them (comment-masked, lower-case view in, same view out)
+refine = function(view, state, gen)
+if not (view:find("char", 1, true) or view:find("reverse", 1, true)) then return view end
+local n, pos, out, no = #view, 1, {}, 0
+local cr, rr = charsRepl(state), revRepl(state)
+while pos <= n do
+local stop = pos + 65535
+if stop >= n then
+stop = n
+else
+local nl = view:find("\n", stop, true)
+if nl and nl - stop <= 4096 then
+stop = nl
+else
+local br = view:find("[%s,;%(%)]", stop)
+if br and br - stop <= 512 then stop = br end
+end
+end
+local blk = view:sub(pos, stop)
+if blk:find("char", 1, true) then
+state.chr += count(blk, "string%.char%s*%(%s*%d")
+blk = blk:gsub("string%.char%s*%(([%d%s,]+)%)", cr)
+blk = blk:gsub("utf8%.char%s*%(([%d%s,]+)%)", cr)
+end
+if blk:find("reverse", 1, true) then
+blk = blk:gsub("string%.reverse%s*%(%s*([\"'])([^\"'\n]*)%1%s*%)", rr)
+blk = blk:gsub("([\"'])([^\"'\n]*)%1(%)?)%s*:%s*reverse%s*%(%s*%)", rr)
+end
+if blk:find("..", 1, true) then
+blk = blk:gsub(FOLDP, function(_, w1, w2) return foldRepl(nil, w1, w2) end)
+end
+no += 1
+out[no] = blk
+pos = stop + 1
+if pos <= n and not slice(state, gen) then return nil end
+end
+return table.concat(out)
+end
+end
 local function prepare(content, state, gen)
 local masked = maskComments(content, state, gen)
 if not masked then return nil end
@@ -103791,6 +104040,115 @@ end
 end
 local B64P = string.rep("[%w%+/]", 160)
 local NUMLIST = string.rep("%d+%s*,%s*", 20)
+local loaderExtras, aliasCalls, extraChunk
+do
+local EVH = KL{"onclient|event", "onserver|event", "onclient|invoke", "onserver|invoke"}
+local BXOR = "bxor"
+-- the same loader window analysis for a call made through a stored alias of the loader
+local function loaderAt(state, seg, e, abs, name)
+local fl = state.flags
+local w = seg:sub(e + 1, e + cfg.LoaderWindow)
+if w:find(HG, 1, true) or w:find(GA, 1, true) or w:find(REQ) then
+local host = w:match("https?://([%w%.%-_]+)")
+local wt, d
+if not host then
+wt, d = 15, "downloads and runs code from a computed address (through the alias " .. name .. ")"
+elseif trusted(host) then
+wt, d = 8, "downloads and runs code from " .. host .. " (through the alias " .. name .. ")"
+else
+wt, d = 28, "downloads and runs code from unrecognized host " .. host .. " (through the alias " .. name .. ")"
+end
+add(state, "remote_exec", "rce", wt, d, abs)
+fl.remote = fl.remote or abs
+end
+local head = w:sub(1, 160)
+for j = 1, #DECODERS do
+if head:find(DECODERS[j], 1, true) then
+add(state, "decode_exec", "rce", 45, "executes a string that was decoded at runtime (through the alias " .. name .. ")", abs)
+break
+end
+end
+end
+-- runs for every loader call: alias creation, remote-event handlers, polling loops and websocket command channels that feed the loader
+loaderExtras = function(state, seg, s, e, abs)
+local ev = state.ev
+local pre = seg:sub(math.max(1, s - 700), s - 1)
+local nx = seg:match("^%s*(.)", e + 1)
+if nx and nx ~= "(" and nx ~= "\"" and nx ~= "'" and nx ~= "[" and nx ~= "{" and nx ~= "." and (state.nalias or 0) < 8 then
+local an = pre:sub(-80):match("([%a_][%w_]*)%s*=%s*[%w_%.]*$")
+if an and an ~= LS then
+local al = state.alias
+if not al then
+al = {}
+state.alias = al
+end
+if not al[an] then
+al[an] = abs
+state.nalias = (state.nalias or 0) + 1
+end
+add(state, "alias_exec", "obf", 15, "stores the code loader under another name (" .. an .. ")", abs)
+end
+end
+local a = seg:match("^%s*%(%s*(.)", e + 1)
+if a == nil or a == "\"" or a == "'" or a == "[" then return end
+if not ev.remote_event_exec then
+local pl = pre:sub(-400)
+for i = 1, #EVH do
+if pl:find(EVH[i], 1, true) then
+add(state, "remote_event_exec", "backdoor", 55, "runs code from inside a remote-event handler (remote command channel)", abs)
+break
+end
+end
+end
+if not ev.c2_poll then
+local pl = pre:sub(-600)
+if (pl:find("while%s+true%s+do") or pl:find("repeat")) and (pl:find(HG, 1, true) or pl:find(GA, 1, true) or pl:find(REQ)) then
+add(state, "c2_poll", "backdoor", 60, "polls a remote server in a loop and runs what it returns", abs)
+end
+end
+if not ev.ws_exec then
+local pl = pre:sub(-500)
+if pl:find("onmessage", 1, true) or pl:find("websocket", 1, true) then
+add(state, "ws_exec", "backdoor", 60, "runs code received over a websocket connection", abs)
+end
+end
+end
+aliasCalls = function(state, seg, base, zone)
+local al = state.alias
+if not al then return end
+for an in pairs(al) do
+local pat = "%f[%w_]" .. an .. "%s*%("
+local ini, c = 1, 0
+while c < 60 do
+local s, e = seg:find(pat, ini)
+if not s or s > zone then break end
+c += 1
+ini = e + 1
+local pc = s > 1 and seg:sub(s - 1, s - 1) or ""
+if pc ~= "." and pc ~= ":" and not seg:sub(math.max(1, s - 12), s - 1):find("function%s*$") then
+state.flags.ls = state.flags.ls or (base + s - 1)
+loaderAt(state, seg, e, base + s - 1, an)
+end
+end
+end
+end
+extraChunk = function(state, seg, base, zone)
+if not state.ev.xor_decode then
+local ini, c = 1, 0
+while c < 20 do
+local s, e = seg:find(BXOR, ini, true)
+if not s or s > zone then break end
+c += 1
+ini = e + 1
+local w = seg:sub(math.max(1, s - 240), s + 240)
+if w:find("char", 1, true) and (w:find("byte", 1, true) or w:find("for ", 1, true)) then
+add(state, "xor_decode", "obf", 25, "rebuilds hidden text with an XOR routine", base + s - 1)
+break
+end
+end
+end
+end
+end
 local function scanChunk(state, seg, base, zone)
 local ev, fl = state.ev, state.flags
 for i = 1, #RULES do
@@ -103821,6 +104179,7 @@ cnt += 1
 init = e + 1
 local abs = base + s - 1
 fl.ls = fl.ls or abs
+loaderExtras(state, seg, s, e, abs)
 local w = seg:sub(e + 1, e + cfg.LoaderWindow)
 if w:find(HG, 1, true) or w:find(GA, 1, true) or w:find(REQ) then
 local host = w:match("https?://([%w%.%-_]+)")
@@ -103850,6 +104209,7 @@ add(state, "embedded_exec", "obf", 20, "runs a large string blob embedded in the
 end
 end
 end
+aliasCalls(state, seg, base, zone)
 for i = 1, #SPAWNERS do
 local needle = SPAWNERS[i]
 local ini, c = 1, 0
@@ -103950,6 +104310,7 @@ if not fl.b64b then
 local s = seg:find(B64P)
 if s and s <= zone then fl.b64b = base + s - 1 end
 end
+extraChunk(state, seg, base, zone)
 end
 local function scanView(view, state, gen)
 local n, pos = #view, 1
@@ -104007,6 +104368,8 @@ if state.hexid >= cfg.HexIdentLimit * scale then add(state, "obf_ident", "obf", 
 if state.tiny >= cfg.TinyJoinLimit * scale then add(state, "concat_build", "obf", 20, "assembles strings from many tiny fragments") end
 if state.banner then add(state, "obfuscator", "obf", 25, "is hidden by a script obfuscator", state.banner) end
 if fl.b64a and fl.b64b then add(state, "b64_payload", "obf", 20, "bundles a base64 decoder with a large encoded blob", fl.b64b) end
+if state.chr >= 10 * scale then add(state, "char_build", "obf", 20, "rebuilds strings from character codes (string.char / utf8.char)") end
+if state.rev >= 1 then add(state, "rev_str", "obf", 20, "reverses text strings at runtime to hide keywords") end
 local list, best = {}, {}
 for _, e in pairs(ev) do
 if e.grp then
@@ -104081,6 +104444,27 @@ end
 if ev.autoexec_write and (fl.ls or ev.remote_exec) then
 combo("persist_loader", 30, "installs a loader that survives restarts", A("autoexec_write"))
 end
+if ev.tele_queue and (ev.remote_exec or ev.decode_exec or ev.nested_payload) then
+combo("persist_tele", 35, "queues a downloaded or decoded loader to run again after every teleport", A("tele_queue"))
+end
+if ev.remote_exec and (ev.decode_exec or ev.nested_payload) then
+combo("multi_stage", 30, "multi-stage loader: downloads code, decodes it and runs it", A("remote_exec"))
+end
+if (ev.remote_event_exec or ev.c2_poll or ev.ws_exec) and (obfCount >= 2 or ev.raw_ip or ev.dyn_dns or ev.paste_host or ev.webhook) then
+combo("backdoor_chain", 40, "remote command channel combined with hidden or untrusted infrastructure", A("remote_event_exec", "c2_poll", "ws_exec"))
+end
+if ev.hook_fn and (ev.remote_exec or ev.decode_exec or ev.webhook or ev.cookie_ref) then
+combo("evasion_chain", 30, "hooks functions while it also loads code or sends data out (security evasion)", A("hook_fn"))
+end
+if ev.clip_write and ev.cookie_ref then
+combo("clip_cred", 40, "puts the login cookie on the clipboard", A("cookie_ref"))
+end
+if ev.rev_kw and (fl.ls or ev.remote_exec) then
+combo("rev_exec", 30, "hides loader or cookie keywords by reversing them", A("rev_kw"))
+end
+if ev.url_short and (fl.ls or ev.remote_exec) then
+combo("short_loader", 25, "loads code through a URL shortener that hides its destination", A("url_short"))
+end
 local cats, crit = {}, false
 for _, e in ipairs(list) do
 local c = cats[e.cat]
@@ -104120,7 +104504,7 @@ verdict = "SUSPICIOUS"
 end
 local reasons = {}
 for i, e in ipairs(list) do
-reasons[i] = {id = e.id, cat = e.cat, weight = e.weight, desc = e.desc, line = lineOfAbs(state, e.abs), count = e.count, conf = math.min(0.99, 0.3 + e.weight / 150)}
+reasons[i] = {id = e.id, cat = e.cat, weight = e.weight, desc = e.desc, line = e.line or lineOfAbs(state, e.abs), crit = e.crit, count = e.count, conf = math.min(0.99, 0.3 + e.weight / 150)}
 end
 local conf
 if verdict == "CLEAN" then
@@ -104139,7 +104523,44 @@ severity = "medium"
 elseif total >= cfg.LowScore then
 severity = "low"
 end
-return {verdict = verdict, score = math.floor(total + 0.5), confidence = conf, severity = severity, reasons = reasons}
+return {verdict = verdict, score = math.floor(total + 0.5), confidence = conf, severity = severity, reasons = reasons, ncat = ncat, flags = {send = fl.send ~= nil, get = fl.get ~= nil, ls = fl.ls ~= nil, remote = fl.remote ~= nil}}
+end
+local function nested(state, gen)
+local dec = state.dec
+if #dec == 0 then return true end
+local root = state.root or state
+local depth = state.depth
+for i = 1, #dec do
+root.nestOps = (root.nestOps or 0) + 1
+if root.nestOps > cfg.NestOps then return true end
+local d = dec[i]
+local sub = newState(gen, depth + 1)
+sub.root = root
+local v = prepare(d.text, sub, gen)
+if not v then return false end
+v = refine(v, sub, gen)
+if not v then return false end
+if depth + 1 < cfg.NestDepth and not harvestAll(d.text, sub, gen) then return false end
+sub.view = v
+if not scanView(v, sub, gen) then return false end
+if depth + 1 < cfg.NestDepth and not nested(sub, gen) then return false end
+local r = evaluate(sub)
+local top = r.reasons[1]
+local w, crit
+if r.verdict == "MALICIOUS" then
+w, crit = 90, r.severity == "critical"
+elseif r.verdict == "SUSPICIOUS" then
+w = 55
+elseif r.score >= cfg.LowScore then
+w = 20
+end
+if w then
+local e = add(state, "nested_payload", "obf", w, "hides an encoded payload that decodes to " .. r.verdict:lower() .. " code" .. (top and (": " .. top.desc) or ""), nil, {crit = crit})
+e.line = e.line or d.line
+if crit then e.crit = true end
+end
+end
+return true
 end
 local memo, memoOrder = {}, {}
 -- identical sources (verified SHA-256) are analysed once; the report is a pure function of the text
@@ -104157,12 +104578,13 @@ local key = memoKey(content)
 local hit = key and memo[key]
 if hit then return hit end
 ensureClock()
-local state = {ev = {}, flags = {}, esc = 0, escRuns = 0, hexid = 0, tiny = 0, t0 = os.clock(), gen = gen, bg = type(gen) == "number"}
+local state = newState(gen, 0)
 local view = prepare(content, state, gen)
+if view then view = refine(view, state, gen) end
 local report
-if view then
+if view and harvestAll(content, state, gen) then
 state.view = view
-if scanView(view, state, gen) then report = evaluate(state) end
+if scanView(view, state, gen) and nested(state, gen) then report = evaluate(state) end
 end
 Security._act[state] = nil
 if report and key then
@@ -104196,6 +104618,27 @@ return true, type(Security._emb[h]) == "string" and Security._emb[h] or nil
 end
 function Security.Enabled() return SaveData.SecurityScan ~= false end
 function Security.AutoDelete() return SaveData.SecurityAutoDelete == true end
+-- one analysis pipeline for local files, modules and external scripts: Util.ExtGuard.Check = engine + relational rules + URL analysis + behavioural chains.
+-- identical source text therefore gets the same verdict from the background scanner and from the execution firewall
+local function unified(content, gen, path, sha)
+local x = Util.ExtGuard
+if x and type(x.Check) == "function" and #content <= (x.MaxSource or 0) then
+local ok, rep = pcall(x.Check, content, {name = path and shortName(path) or nil, origin = path and ("file: " .. normalize(path)) or nil, gen = gen, sha = sha})
+if ok and type(rep) == "table" then return rep end
+end
+local rep = Security.Analyze(content, gen)
+if rep then rep.engineOnly = true end
+return rep
+end
+-- verified SHA-256 identity of a source (nil when the executor has no verified digest): the only identity accepted for scan caching
+local function identity(content)
+local x = Util.ExtGuard
+if x and x.CanHash and x.SecHash and x.CanHash() then
+local okH, h = pcall(x.SecHash, content)
+if okH and type(h) == "string" and h ~= "" then return "sha:" .. h end
+end
+return nil
+end
 local qSeq = 0
 local function quarantineName(path)
 qSeq += 1
@@ -104239,6 +104682,23 @@ local okG, still = pcall(isfile, path)
 if not okG or still then return false, target, "delete did not remove the file" end
 return true, target
 end
+-- automatic deletion needs a confirmed, high-confidence MALICIOUS verdict from a complete inspection, an eligible file inside the scan scope, and never touches UH Admin's protected folders
+local function deletable(path, report)
+local p = normalize(path)
+if p:find("^/") or p:find("^%a:") or p:find("^%.%./") or p:find("/%.%./") then return false, "path is outside the scan scope: kept" end
+if under(p, cfg.ReportOnlyDirs) or under(p, cfg.SkipDirs) then return false, "protected UH Admin folder: report only, never deleted" end
+local ext = shortName(p):match("%.([%w_]+)$")
+if not (ext and cfg.Extensions[ext:lower()] == true) then return false, "not an eligible script file: kept" end
+if report.complete == false or report.engineOnly then return false, "inspection was incomplete: kept" end
+if (report.confidence or 0) < cfg.AutoDeleteMinConfidence then return false, "confidence too low for auto-delete" end
+if report.severity ~= "critical" and report.severity ~= "high" then return false, "severity too low for auto-delete" end
+local strong = 0
+for _, r in ipairs(report.reasons) do
+if (r.w or r.weight or 0) >= 45 then strong += 1 end
+end
+if strong < 2 and report.severity ~= "critical" then return false, "needs at least two strong independent indicators" end
+return true
+end
 local reported, byKey = {}, {}
 local function respond(path, report, content, blocked)
 local key = normalize(path) .. "|" .. report.verdict .. "|" .. report.score .. "|" .. #content
@@ -104249,22 +104709,29 @@ local name = shortName(path)
 local malicious = report.verdict == "MALICIOUS"
 local deleted, qpath, dwhy = false, nil, nil
 local prior = byKey[key]
-if malicious and not (prior and prior.deleted) and Security.AutoDelete() and not under(path, cfg.ReportOnlyDirs) then
-if report.confidence >= cfg.AutoDeleteMinConfidence then
+if malicious and not (prior and prior.deleted) and Security.AutoDelete() then
+local okD, whyNo = deletable(path, report)
+if okD then
 deleted, qpath, dwhy = deleteFile(path, content)
 else
-dwhy = "confidence too low for auto-delete"
+dwhy = whyNo
 end
 end
 if qpath then Stats.Quarantined += 1 end
+if qpath or deleted then
+table.insert(Security.Records, {path = path, quarantine = qpath, deleted = deleted, verdict = report.verdict, confidence = report.confidence, reason = why, time = os.time()})
+if #Security.Records > cfg.MaxFindings then table.remove(Security.Records, 1) end
+end
 if first then
 Stats.Flagged += 1
+if malicious then Stats.Malicious += 1 elseif report.verdict == "SUSPICIOUS" then Stats.Suspicious += 1 end
 local ev, lines = {}, {}
 for i = 1, math.min(8, #report.reasons) do
 ev[i] = report.reasons[i]
 if report.reasons[i].line then lines[#lines + 1] = report.reasons[i].line end
 end
-local finding = {path = path, verdict = report.verdict, score = report.score, why = why, deleted = deleted, time = os.time(), confidence = report.confidence, severity = report.severity, evidence = ev, lines = lines, quarantined = qpath, note = dwhy}
+local top = report.reasons[1]
+local finding = {path = path, name = name, origin = "file", verdict = report.verdict, score = report.score, why = why, deleted = deleted, time = os.time(), confidence = report.confidence, severity = report.severity, category = top and top.cat, snippet = top and top.snippet, url = report.urls and report.urls[1] and report.urls[1].url or nil, blocked = blocked == true, id = report.sha, evidence = ev, lines = lines, quarantined = qpath, note = dwhy}
 byKey[key] = finding
 table.insert(Security.Findings, finding)
 if #Security.Findings > cfg.MaxFindings then table.remove(Security.Findings, 1) end
@@ -104305,6 +104772,7 @@ Stats.Errors += 1
 local key = tostring(path) .. "|" .. what
 if noted[key] then return end
 noted[key] = true
+Stats.Incomplete += 1
 keep(Security.Errors, {path = path, what = what, err = tostring(err), time = os.time()})
 log("ERROR " .. what .. ": " .. tostring(path) .. " (" .. tostring(err) .. ")")
 end
@@ -104313,6 +104781,7 @@ local key = tostring(path) .. "|skip|" .. reason
 if noted[key] then return end
 noted[key] = true
 Stats.Skipped += 1
+Stats.Incomplete += 1
 keep(Security.Skipped, {path = path, reason = reason, time = os.time()})
 log("SKIPPED " .. tostring(path) .. ": " .. reason)
 end
@@ -104325,7 +104794,7 @@ if cfg.BlockOversize then return msg end
 return nil
 end
 if Security.IsEmbedded(content) then return nil end
-local ok, report = pcall(Security.Analyze, content)
+local ok, report = pcall(unified, content, nil, path)
 if not ok or type(report) ~= "table" then
 Stats.Errors += 1
 local msg = "security scan failed: " .. tostring(report)
@@ -104333,6 +104802,13 @@ log("ERROR " .. tostring(path) .. ": " .. msg)
 report = {verdict = "SUSPICIOUS", score = cfg.SuspiciousScore, confidence = 0.2, severity = "medium", reasons = {{id = "scan_error", cat = "error", weight = 0, desc = msg, conf = 0}}}
 respond(path, report, content, true)
 if cfg.BlockOnScanError then return msg end
+return nil
+end
+if report.verdict == "UNVERIFIED" then
+Stats.Unverified += 1
+local why = "not inspected: " .. tostring(report.note or "inspection incomplete")
+noteSkip(path, why)
+if cfg.BlockOnScanError then return why end
 return nil
 end
 if report.verdict == "CLEAN" then return nil end
@@ -104386,19 +104862,27 @@ Stats.Scanned += 1
 Stats.PassScanned += 1
 return
 end
-local key, fp = normalize(path):lower(), fingerprint(content)
+local key = normalize(path):lower()
+local id = identity(content)
 local cached, report = Security._cache[key], nil
-if cached and cached.fp == fp and Stats.Passes - cached.pass < cfg.CacheFullRescanEvery then
+-- a cached verdict is reused only when the content is provably identical: verified SHA-256, or (without one) the exact same text for small files
+if cached and Stats.Passes - cached.pass < cfg.CacheFullRescanEvery and cached.size == #content and ((id and cached.id == id) or (not id and cached.raw ~= nil and cached.raw == content)) then
 report = cached.report
 else
-local okA, res = pcall(Security.Analyze, content, gen)
+local okA, res = pcall(unified, content, gen, path, id)
 if not okA then
 noteError(path, "scan failed", res)
 return
 end
 if not res then return end
 report = res
-Security._cache[key] = {fp = fp, report = report, pass = Stats.Passes + spread(key)}
+if report.verdict == "UNVERIFIED" then
+if Security._gen ~= gen then return end
+Stats.Unverified += 1
+noteSkip(path, "not inspected: " .. tostring(report.note or "inspection incomplete"))
+return
+end
+Security._cache[key] = {id = id, size = #content, raw = (not id and #content <= 65536) and content or nil, report = report, pass = Stats.Passes + spread(key)}
 end
 Stats.Scanned += 1
 Stats.PassScanned += 1
@@ -104539,7 +105023,7 @@ end
 do
 local okA, errA = pcall(function()
 local X = {
-	Stats = {Intercepted = 0, Scanned = 0, MaliciousBlocked = 0, SuspiciousDetected = 0, PhishingBlocked = 0, RuntimeBlocked = 0},
+	Stats = {Intercepted = 0, Scanned = 0, MaliciousBlocked = 0, SuspiciousDetected = 0, PhishingBlocked = 0, RuntimeBlocked = 0, Unverified = 0},
 	Findings = {}, History = {}, List = {}, Map = {}, Downloads = {}, NDown = 0, Trusted = {}, Approved = {}, CapLines = {},
 	Limits = {
 		"Scripts run from the executor's editor, clipboard or script hub are compiled by the executor itself before UH can see them: their source cannot be inspected (UNVERIFIED). Only their later calls through guarded functions are monitored.",
@@ -104581,6 +105065,7 @@ function X.Hist(kind, text, id)
 end
 function X.AddFinding(f)
 	f.t = os.time()
+	if f.category == nil and type(f.evidence) == "table" and type(f.evidence[1]) == "table" then f.category = f.evidence[1].cat end
 	push(X.Findings, f, X.MaxFindings)
 	X.Touch()
 end
@@ -104885,6 +105370,9 @@ local TLD2 = S{"co", "com", "org", "net", "gov", "edu", "ac", "or", "ne"}
 local CREDW = {"login", "log-in", "signin", "sign-in", "verify", "verification", "authenticate", "2fa", "captcha", "security-check", "recover", "unlock", "appeal", "validate"}
 local LUREW = {"free-robux", "freerobux", "robux-gen", "get-robux", "robux-generator", "free-rbx", "rbx-gen", "free-limited", "robux4free", "claim-robux", "gift-card"}
 local STEALW = {"cookie", "roblosecurity", "grabber", "stealer", "logger"}
+local TUNNEL = S{"ngrok.io", "ngrok-free.app", "ngrok.app", "trycloudflare.com", "serveo.net", "duckdns.org", "no-ip.org", "no-ip.com", "ddns.net", "loca.lt", "playit.gg", "pagekite.me", "localtunnel.me", "hopto.org", "zapto.org"}
+local EXEC = S{"exe", "dll", "bat", "cmd", "scr", "msi", "ps1", "vbs", "jar", "apk", "dmg"}
+local EXFILK = S{"hwid", "ip", "token", "cookie", "key", "pass", "password", "user", "username", "userid", "ticket", "auth", "session", "clientid", "machineid", "email"}
 
 local function hostIn(set, host)
 	local l = {}
@@ -104941,6 +105429,7 @@ local function parseURL(u)
 	return {scheme = scheme:lower(), userinfo = userinfo, host = host, path = path or "", query = query or "", full = u}
 end
 X.ParseURL = parseURL
+function X.TrustedHost(host) return type(host) == "string" and (hostIn(OFFICIAL, host) or hostIn(TRUSTED, host)) end
 
 function X.AnalyzeURL(url, depth)
 	depth = depth or 0
@@ -105023,6 +105512,17 @@ function X.AnalyzeURL(url, depth)
 	if (hostIn(DISCORD, host) and hay:find("/api/webhooks/", 1, true)) or hostIn(HOOKPX, host) then
 		R("webhook", 60, "Discord webhook endpoint (data leaves your device)")
 	end
+	if hostIn(TUNNEL, host) then R("tunnel", 25, "tunnel / dynamic-DNS host often used to hide a control server") end
+	local fext = p.path:lower():match("%.(%w+)$")
+	if fext and EXEC[fext] and not official then R("exe", 45, "downloads an executable or installer file (." .. fext .. ")") end
+	if not trusted and p.query ~= "" then
+		local nx = 0
+		for k, v in p.query:gmatch("([^&=]+)=([^&]*)") do
+			if EXFILK[k:lower()] and #v >= 8 then nx += 1 end
+		end
+		if nx > 0 then R("exfilq", 30 + math.min(2, nx - 1) * 10, "query string carries " .. nx .. " identifier-like value(s) (token / ip / hwid / user)") end
+	end
+	if host:find("^0x%x+%.") or host:find("^0%d+%.%d+%.") then R("iphost", 50, "destination is an obfuscated (octal / hex) IP address") end
 	if depth < 3 and p.query ~= "" then
 		for k, v in p.query:gmatch("([^&=]+)=([^&]*)") do
 			if REDIR[k:lower()] then
@@ -105071,6 +105571,22 @@ local function unb64(s)
 	end
 	return table.concat(out)
 end
+local function charsToStr(list)
+	local out, n = {}, 0
+	for num in list:gmatch("%d+") do
+		n += 1
+		if n > 600 then return nil end
+		local b = tonumber(num)
+		if b > 255 then return nil end
+		out[n] = string.char(b)
+	end
+	if n < 3 then return nil end
+	return "\"" .. table.concat(out):gsub("[\"\\\n]", "?") .. "\""
+end
+local function revToStr(_, s, par)
+	if #s < 4 or #s > 4096 then return nil end
+	return "\"" .. s:reverse():gsub("[\"\\\n]", "?") .. "\"" .. (par or "")
+end
 local URLPAT = "[Hh][Tt][Tt][Pp][Ss]?://[%w%-%._~:/%?#@!%$&%*%+,;=%%%[%]]+"
 -- Returns {url, line} entries found in plain text, \x / \ddd escapes, "a".."b" joins and base64 strings.
 function X.ExtractURLs(src)
@@ -105098,6 +105614,13 @@ function X.ExtractURLs(src)
 					local v = tonumber(c)
 					if v and v < 256 then return string.char(v) end
 				end)
+			end
+			if d:find("char", 1, true) then
+				d = d:gsub("char%s*%(([%d%s,]+)%)", charsToStr)
+			end
+			if d:find("reverse", 1, true) then
+				d = d:gsub("([\"'])([^\"'\n]*)%1(%)?)%s*:%s*reverse%s*%(%s*%)", revToStr)
+				d = d:gsub("reverse%s*%(%s*([\"'])([^\"'\n]*)%1%s*%)", revToStr)
 			end
 			if d:find("..", 1, true) then
 				for _ = 1, 8 do
@@ -105332,7 +105855,7 @@ function checkRaw(src, meta)
 	if #src > X.MaxSource then return X.Unverified("script is larger than " .. X.MaxSource .. " bytes: not inspected") end
 	local sec = Util.Security
 	if not sec or type(sec.Analyze) ~= "function" then return X.Unverified("the static analysis engine is not available") end
-	local ok, erep = pcall(sec.Analyze, src, coroutine.isyieldable() and true or nil)
+	local ok, erep = pcall(sec.Analyze, src, meta.gen or (coroutine.isyieldable() and true or nil))
 	if not ok or type(erep) ~= "table" then return X.Unverified("static analysis failed or was interrupted: source inspection incomplete") end
 	local reasons, cats = {}, {}
 	local total, crit = erep.score or 0, erep.severity == "critical"
@@ -105439,7 +105962,7 @@ function checkRaw(src, meta)
 			end
 		end
 	end
-	local sl = {t0 = os.clock()}
+	local sl = {t0 = os.clock(), bg = type(meta.gen) == "number"}
 	local ln = 0
 	for l in src:gmatch("([^\n]*)\n?") do
 		ln += 1
@@ -105450,7 +105973,7 @@ function checkRaw(src, meta)
 			for i = 1, #l, MAXLINE do scan(ln, l:sub(i, i + MAXLINE - 1)) end
 		end
 		if canYield and ln % 128 == 0 then
-			if sec.Slice then sec.Slice(sl, true) elseif ln % 3000 == 0 then task.wait() end
+			if sec.Slice then sec.Slice(sl, meta.gen or true) elseif ln % 3000 == 0 then task.wait() end
 		end
 	end
 	if sec.Done then sec.Done(sl) end
@@ -105481,7 +106004,51 @@ function checkRaw(src, meta)
 		if not r.snippet and r.line then r.snippet = snips[r.line] end
 	end
 	table.sort(reasons, function(a, b) return (a.w or 0) > (b.w or 0) end)
-	total = total + mine + urlScore
+	-- behavioural correlation: independent indicators (engine, relational rules, URL analysis) are linked by what they enable together
+	local have = {}
+	for _, r in ipairs(reasons) do have[r.id] = true end
+	local ef = erep.flags or {}
+	local corr = 0
+	local function chain(id, w, desc, cr, ...)
+		if have["chain:" .. id] then return end
+		have["chain:" .. id] = true
+		local ln, sn
+		for _, want in ipairs({...}) do
+			for _, r in ipairs(reasons) do
+				if r.id == want and r.line then
+					ln, sn = r.line, r.snippet
+					break
+				end
+			end
+			if ln then break end
+		end
+		corr += w
+		cats.chain = true
+		if cr then crit = true end
+		reasons[#reasons + 1] = {id = "chain:" .. id, cat = "chain", desc = desc, w = w, line = ln, snippet = sn, src = "chain"}
+	end
+	local cred = have.cookie_ref or have.cookie_hdr or have.auth_ticket
+	local sendOut = have.webhook or have.ip_logger or have.url
+	if have.auth_ticket and (sendOut or ef.send) then
+		chain("ticket_exfil", 60, "reads Roblox authentication tickets and has a way to send them out", true, "auth_ticket")
+	end
+	if cred and have.url then
+		chain("cred_url", 50, "uses Roblox login data and contacts a suspicious address", true, "url", "cookie_ref", "auth_ticket")
+	end
+	if (have.ip_lookup or have.hwid or have.acct_info or have.clip_read) and (sendOut or ef.send) and not have["combo:webhook_ident"] then
+		chain("intel_exfil", 35, "collects device, account or clipboard information and has a way to send it out", false, "ip_lookup", "hwid", "acct_info", "clip_read")
+	end
+	if (have.sec_hook or have.uh_tamper or have.debug_tamper) and (have.remote_exec or have.decode_exec or have.nested_payload or have.cookie_ref or have.webhook or have.autoexec_write or have["combo:obf_exec"]) then
+		chain("evasion_exec", 40, "tampers with security hooks or UH internals while it also loads code or sends data", false, "sec_hook", "uh_tamper", "debug_tamper")
+	end
+	if (have.autoexec_persist or have.tele_remote) and (have.remote_exec or have.decode_exec or have.nested_payload) and not (have["combo:persist_loader"] or have["combo:persist_tele"]) then
+		chain("persist_remote", 30, "installs persistence for code that is downloaded or decoded at runtime", false, "autoexec_persist", "tele_remote")
+	end
+	if (have.fs_wipe or have.fs_walk_delete or have.bulk_delete or have.wipe_workspace) and (have.remote_exec or have.decode_exec or have.nested_payload or have.autoexec_write) then
+		chain("destruct_hidden", 40, "destructive file operations combined with remote or hidden code", false, "fs_wipe", "wipe_workspace", "fs_walk_delete", "bulk_delete")
+	end
+	table.sort(reasons, function(a, b) return (a.w or 0) > (b.w or 0) end)
+	total = total + mine + urlScore + corr
 	local ncat = 0
 	for _ in pairs(cats) do ncat += 1 end
 	local v = "CLEAN"
@@ -105493,8 +106060,23 @@ function checkRaw(src, meta)
 	if (RANK[erep.verdict] or 0) > RANK[v] then v = erep.verdict end
 	local sev = "none"
 	if crit then sev = "critical" elseif v == "MALICIOUS" then sev = "high" elseif v == "SUSPICIOUS" then sev = "medium" elseif #reasons > 0 then sev = "low" end
+	local ncomb = 0
+	for _, r in ipairs(reasons) do
+		if type(r.id) == "string" and (r.id:find("^combo:") or r.id:find("^chain:")) then ncomb += 1 end
+	end
+	local conf
+	if v == "CLEAN" then
+		conf = math.max(0.5, 1 - 0.5 * total / 60)
+	else
+		conf = 0.4 + 0.08 * math.min(#reasons, 5) + (ncomb > 0 and 0.15 or 0) + (crit and 0.25 or 0) + (ncat >= 2 and 0.05 or 0)
+		conf = v == "MALICIOUS" and math.min(0.99, math.max(conf, 0.6)) or math.min(0.9, conf - 0.1)
+	end
+	local catList = {}
+	for c in pairs(cats) do catList[#catList + 1] = c end
+	table.sort(catList)
+	local shaId = meta.sha or ((#src <= 65536 and X.CanHash and X.CanHash()) and X.SecHash(src) or nil)
 	return {
-		verdict = v, severity = sev, score = math.floor(total + 0.5), reasons = reasons, urls = urls, critical = crit,
+		verdict = v, severity = sev, score = math.floor(total + 0.5), reasons = reasons, urls = urls, critical = crit, confidence = conf, sha = shaId, complete = true, categories = catList,
 		name = meta.name, origin = meta.origin,
 		note = v == "CLEAN" and "CLEAN means no known malicious pattern was found. It is not a guarantee of safety." or nil,
 	}
@@ -105720,6 +106302,21 @@ function X.GuardNet(s, via, method, url, body, headers)
 		X.Incident(s, "credential exfiltration", via .. " to " .. host .. " carries Roblox login / authentication data", "critical", true, false, url)
 		return "Roblox login data may not leave this device"
 	end
+	-- runtime correlation: clipboard read followed by data sent to an unfamiliar host is asked about like any other suspicious destination
+	if rt and s.clipReadAt and os.clock() - s.clipReadAt <= 120 and type(body) == "string" and #body >= 8 and (method == "POST" or method == "PUT" or method == "PATCH") and not (X.TrustedHost and X.TrustedHost(host)) and s.allow and not s.allow[host] then
+		if X.On("ExtFirewall") then
+			X.Stats.SuspiciousDetected += 1
+			local okc, cwhy = X.Decide({id = s.id, name = s.name, origin = s.origin, verdict = "SUSPICIOUS", severity = "medium", items = {{desc = "read the clipboard, then sent data to " .. host}, {desc = "full address", snippet = url:sub(1, 160)}}, note = "Clipboard data may be leaving your device"})
+			if not okc then
+				X.Incident(s, "clipboard exfiltration", "clipboard was read and data was sent to " .. host .. " (" .. tostring(cwhy) .. ")", "high", false, false, url)
+				return "sending data right after reading the clipboard was not authorized"
+			end
+			s.allow[host] = true
+			X.Hist("decision", s.id .. " allowed clipboard-then-send to " .. host, s.id)
+		else
+			X.Hist("flow", s.id .. " read the clipboard, then sent data to " .. host .. " (firewall off: allowed)", s.id)
+		end
+	end
 	local a = ph and X.AnalyzeURL(url) or nil
 	if not a or a.verdict == "CLEAN" then
 		if rt then
@@ -105829,7 +106426,10 @@ function X.GateLoad(call, kind, parent, origin, src, chunk, ...)
 		rep = X.Unverified("the chunk source is not a string, so it cannot be inspected")
 	end
 	s.verdict = rep.verdict
-	X.Hist("scan", string.format("%s %s -> %s (%s) via %s", s.id, nm, rep.verdict, rep.severity, kind), s.id)
+	s.parent = parent and parent.id or nil
+	s.depth = ((parent and parent.depth) or 0) + 1
+	if rep.verdict == "UNVERIFIED" then X.Stats.Unverified = (X.Stats.Unverified or 0) + 1 end
+	X.Hist("scan", string.format("%s %s -> %s (%s) via %s%s", s.id, nm, rep.verdict, rep.severity, kind, (s.parent and (" | parent " .. s.parent .. ", loader depth " .. s.depth)) or ""), s.id)
 	if rep.verdict == "CLEAN" then return X.Compile(call, s, chunk, src, ...) end
 	if rep.verdict == "SUSPICIOUS" then X.Stats.SuspiciousDetected += 1 end
 	local strictFile = (kind == "loadfile" or kind == "dofile") and rep.verdict == "UNVERIFIED"
@@ -105848,7 +106448,7 @@ function X.GateLoad(call, kind, parent, origin, src, chunk, ...)
 		prompted = true
 		if allow and not id then why = tostring(why) .. "; approval not cached (no verified SHA-256 on this executor)" end
 	end
-	X.AddFinding({kind = "script", id = s.id, name = nm, origin = s.origin, severity = rep.severity, verdict = rep.verdict, evidence = rep.reasons, urls = rep.urls, note = rep.note, decision = (allow and "ALLOWED: " or "BLOCKED: ") .. tostring(why)})
+	X.AddFinding({kind = "script", id = s.id, name = nm, origin = s.origin, severity = rep.severity, verdict = rep.verdict, evidence = rep.reasons, urls = rep.urls, note = rep.note, confidence = rep.confidence, score = rep.score, parent = s.parent, decision = (allow and "ALLOWED: " or "BLOCKED: ") .. tostring(why)})
 	X.Hist(allow and "decision" or "blocked", s.id .. " " .. nm .. " " .. (allow and "allowed" or "blocked") .. ": " .. tostring(why), s.id)
 	if allow then
 		if prompted and id then X.Approve(id) end
@@ -106010,6 +106610,7 @@ C.setclip = function(who, call, text, ...)
 end
 C.getclip = function(who, call, ...)
 	local s = X.Gate(who)
+	if s and s ~= X.Overflow then s.clipReadAt = os.clock() end
 	if s and X.On("ExtRuntime") and not s.clipRead then
 		s.clipRead = true
 		X.Hist("clipboard", s.id .. " read the clipboard", s.id)
@@ -106358,6 +106959,9 @@ function X.Install()
 	end
 	group("hook protection (hookfunction / restorefunction)", {{g.hookfunction, g, "hookfunction", mkHook(C.hookguard)}, {g.restorefunction, g, "restorefunction", mkHook(C.hookguard)}})
 	L[#L + 1] = "[LIMIT] editor / clipboard / script-hub scripts are compiled by the executor before UH sees them: UNVERIFIED, runtime monitoring only"
+	L[#L + 1] = "[LIMIT] a script that cached the original executor functions before UH Security installed its hooks, or that calls an executor API namespace UH does not hook, is outside what hooks can see: only static analysis and the file scan cover it"
+	L[#L + 1] = "[LIMIT] hooks cannot prove that no bypass exists: runtime protection covers only the functions listed above"
+	if not (X.CanHash and X.CanHash()) then L[#L + 1] = "[LIMIT] this executor has no verified SHA-256: approvals are not cached and file-scan caching only reuses byte-identical small files" end
 
 	task.spawn(function()
 		while X.Active do
@@ -107698,16 +108302,21 @@ else
 	fnd.Parent.Visible, his.Parent.Visible, cap.Parent.Visible = false, false, false
 	local function refresh()
 		local st = X.Stats
+		local S = Util.Security and Util.Security.Stats
+		local more = string.format("\nUnverified scripts: %d", st.Unverified or 0)
+		if S then
+			more = more .. string.format("\nBackground files scanned: %d | quarantined: %d | deleted: %d\nMalicious files: %d | suspicious files: %d | incomplete scans: %d", S.Scanned or 0, S.Quarantined or 0, S.Deleted or 0, S.Malicious or 0, S.Suspicious or 0, S.Incomplete or 0)
+		end
 		local mon = 0
 		for _, s in ipairs(X.List) do
 			if s.status == "monitored" then mon += 1 end
 		end
-		stat.Text = string.format("<b>Statistics</b>  [%s]\nScripts intercepted: %d | scanned: %d\nMalicious blocked: %d | suspicious detected: %d\nPhishing links blocked: %d | runtime ops blocked: %d\nCurrently monitored scripts: %d", X.Active and "ACTIVE" or "INACTIVE - see capabilities", st.Intercepted, st.Scanned, st.MaliciousBlocked, st.SuspiciousDetected, st.PhishingBlocked, st.RuntimeBlocked, mon)
+		stat.Text = string.format("<b>Statistics</b>  [%s]\nScripts intercepted: %d | scanned: %d\nMalicious blocked: %d | suspicious detected: %d\nPhishing links blocked: %d | runtime ops blocked: %d\nCurrently monitored scripts: %d", X.Active and "ACTIVE" or "INACTIVE - see capabilities", st.Intercepted, st.Scanned, st.MaliciousBlocked, st.SuspiciousDetected, st.PhishingBlocked, st.RuntimeBlocked, mon) .. more
 		if fnd.Parent.Visible then
 			local out = {"<b>Security Findings</b> (latest " .. math.min(6, #X.Findings) .. ")"}
 			for i = 1, math.min(6, #X.Findings) do
 				local f = X.Findings[i]
-				out[#out + 1] = string.format("\n[%s] %s %s | %s\norigin: %s\ndecision: %s", string.upper(f.severity or "?"), f.id or "?", X.Esc(f.name or "?"), f.verdict or f.kind or "", X.Esc(f.origin or "?"), X.Esc(f.decision or "?"))
+				out[#out + 1] = string.format("\n[%s] %s %s | %s\norigin: %s\ndecision: %s", string.upper(f.severity or "?"), f.id or "?", X.Esc(f.name or "?"), f.verdict or f.kind or "", X.Esc(f.origin or "?"), X.Esc(f.decision or "?") .. (f.category and ("\ncategory: " .. X.Esc(tostring(f.category))) or "") .. (f.confidence and string.format("\nconfidence: %.0f%%", f.confidence * 100) or "") .. (f.parent and ("\nparent script: " .. X.Esc(tostring(f.parent))) or ""))
 				local ev = f.evidence or {}
 				for j = 1, math.min(3, #ev) do
 					local e = ev[j]
