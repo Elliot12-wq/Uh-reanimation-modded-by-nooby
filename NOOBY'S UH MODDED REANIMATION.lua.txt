@@ -707,6 +707,9 @@ return _native_xpcall(func, handler, ...)
 end
 local b_getfenv = getfenv
 local Player = Players.LocalPlayer
+-- chunk identities of this script's OWN banner modules (embedded copies, or the file from this script's official GitHub repo). The banner loader compiles them long before UH Security exists,
+-- so it queues them here and UH Security imports the queue when it is created (see X.TrustEmbedded). Nothing else ever adds to it.
+Util.OwnChunks = Util.OwnChunks or {}
 Util.Guard = (function()
 -- Narrow runtime guard for the official GitHub + Cloudflare Worker connection and the permanent device ban. It is a deterrent only:
 -- it can never stop someone who edits the script locally from deleting the guard itself, so the real authority is the Worker.
@@ -70847,8 +70850,14 @@ end
 }
 local function pull(n)
 local src = EMBED[n]
-if src then return loadstring(src, "=" .. n)() end
-return loadstring(game:HttpGet(Base .. n .. ".lua"))()
+-- this module is part of THIS script: the embedded copy, or the file from this script's official repo (Guard.Gate above already refuses any Base other than the official one). It gets an explicit chunk name and that
+-- identity is registered as UH's own, so its later calls to the backend are not judged as an unknown outside script. Registered now when UH Security exists, otherwise queued for when it is created.
+local cname = "=" .. n
+Util.OwnChunks = Util.OwnChunks or {}
+Util.OwnChunks[cname] = true
+pcall(function() local G = Util.ExtGuard if G and G.TrustEmbedded then G.TrustEmbedded(cname) end end)
+if src then return loadstring(src, cname)() end
+return loadstring(game:HttpGet(Base .. n .. ".lua"), cname)()
 end
 do local okB, eB = pcall(function() Env.Blacklist = pull("Blacklist")(Env) end); if not okB then warn("[UhBanner] Blacklist module failed: " .. tostring(eB)) end end
 if not Guard.Module(Env.Blacklist, Env) then return end
@@ -104596,25 +104605,62 @@ memo[key] = report
 end
 return report
 end
-Security._emb, Security._embLen = {}, {}
--- internal only: the embedded Nameless Admin runner registers its own embedded sources (verified SHA-256 identity, so a modified or external copy never matches); the optional name is the verified chunk identity of that source
+Security._emb, Security._embLen, Security._embTxt = {}, {}, {}
+-- internal only: the embedded Nameless Admin runner registers its own embedded sources; the optional name is the verified chunk identity of that source.
+-- Identity is the EXACT TEXT (same length and byte-for-byte equal, so a modified or external copy never matches) and, when the executor has a verified SHA-256, also the digest.
+-- The exact-text identity needs no digest API, so the embedded runtime stays trusted on executors that cannot hash (the strings are already held by the embedded runner; nothing is copied).
 function Security.TrustEmbedded(src, name)
-local x = Util.ExtGuard
-if type(src) ~= "string" or #src < 64 or not (x and x.CanHash and x.CanHash()) then return end
-local h = x.SecHash(src)
-if h then
-if Security._emb[h] == nil or Security._emb[h] == true then Security._emb[h] = (type(name) == "string" and name ~= "") and name or true end
-Security._embLen[#src] = true
-return true
+if type(src) ~= "string" or #src < 64 then return end
+local nm = (type(name) == "string" and name ~= "") and name or true
+local n = #src
+local bucket = Security._embTxt[n]
+if not bucket then
+bucket = {}
+Security._embTxt[n] = bucket
 end
+local rec
+for i = 1, #bucket do
+if bucket[i].src == src then
+rec = bucket[i]
+break
+end
+end
+if not rec then
+if #bucket >= 64 then return end
+bucket[#bucket + 1] = {src = src, name = nm}
+elseif rec.name == true then
+rec.name = nm
+end
+Security._embLen[n] = true
+local x = Util.ExtGuard
+if x and x.CanHash and x.SecHash and x.CanHash() then
+local h = x.SecHash(src)
+if h and (Security._emb[h] == nil or Security._emb[h] == true) then Security._emb[h] = nm end
+end
+return true
 end
 -- returns (isEmbedded, verifiedChunkName or nil)
 function Security.IsEmbedded(content)
 if type(content) ~= "string" or not Security._embLen[#content] then return false end
+local bucket = Security._embTxt[#content]
+if bucket then
+for i = 1, #bucket do
+local rec = bucket[i]
+if rec.src == content then return true, type(rec.name) == "string" and rec.name or nil end
+end
+end
 local x = Util.ExtGuard
 local h = x and x.SecHash and x.SecHash(content)
 if h == nil or Security._emb[h] == nil then return false end
 return true, type(Security._emb[h]) == "string" and Security._emb[h] or nil
+end
+-- returns (sourceLabel, address) when the text is byte-identical to a script that a guarded download fetched from an approved official repository (Util.ExtGuard.OfficialSource); nil otherwise
+function Security.IsOfficial(content)
+local x = Util.ExtGuard
+if type(content) ~= "string" or not (x and type(x.OfficialSource) == "function") then return nil end
+local ok, label, url = pcall(x.OfficialSource, content)
+if ok and label then return label, url end
+return nil
 end
 function Security.Enabled() return SaveData.SecurityScan ~= false end
 function Security.AutoDelete() return SaveData.SecurityAutoDelete == true end
@@ -104622,6 +104668,10 @@ function Security.AutoDelete() return SaveData.SecurityAutoDelete == true end
 -- identical source text therefore gets the same verdict from the background scanner and from the execution firewall
 local function unified(content, gen, path, sha)
 local x = Util.ExtGuard
+local offLabel, offUrl = Security.IsOfficial(content)
+if offLabel then
+return {verdict = "CLEAN", severity = "none", score = 0, confidence = 1, reasons = {}, urls = {}, critical = false, complete = true, official = offLabel, sha = sha, name = path and shortName(path) or nil, origin = path and ("file: " .. normalize(path)) or nil, note = "Official source verified: byte-identical to " .. tostring(offUrl) .. " (" .. tostring(offLabel) .. ")."}
+end
 if x and type(x.Check) == "function" and #content <= (x.MaxSource or 0) then
 local ok, rep = pcall(x.Check, content, {name = path and shortName(path) or nil, origin = path and ("file: " .. normalize(path)) or nil, gen = gen, sha = sha})
 if ok and type(rep) == "table" then return rep end
@@ -104793,7 +104843,7 @@ noteSkip(path, msg)
 if cfg.BlockOversize then return msg end
 return nil
 end
-if Security.IsEmbedded(content) then return nil end
+if Security.IsEmbedded(content) or Security.IsOfficial(content) then return nil end
 local ok, report = pcall(unified, content, nil, path)
 if not ok or type(report) ~= "table" then
 Stats.Errors += 1
@@ -104854,10 +104904,15 @@ Stats.PassScanned += 1
 return
 end
 if size > cfg.MaxFileBytes then
+if Security.IsEmbedded(content) or Security.IsOfficial(content) then
+Stats.Scanned += 1
+Stats.PassScanned += 1
+return
+end
 noteSkip(path, "larger than " .. cfg.MaxFileBytes .. " bytes (" .. size .. ")")
 return
 end
-if Security.IsEmbedded(content) then
+if Security.IsEmbedded(content) or Security.IsOfficial(content) then
 Stats.Scanned += 1
 Stats.PassScanned += 1
 return
@@ -105031,6 +105086,7 @@ local X = {
 		"Redirect chains are judged from the address text only: following hops would need requests, and UH Security makes none.",
 		"require(assetId) and native Roblox services that are not reached through a guarded call are not intercepted.",
 		"UH Admin's own runners (P.execute, runUrl, Nameless Admin, built-in modules) are intentionally excluded.",
+		"Scripts byte-identical to a download from an approved official repository (the official Nameless Admin repo, UH Admin's own repos, or an owner/repo you add to SaveData.TrustedRepos) skip the pre-run scan and the pause prompt; runtime monitoring still applies to them. All other GitHub downloads are scanned as usual.",
 		"CLEAN only means no known pattern was found. It is not a guarantee of safety.",
 	},
 	NScripts = 0, Seq = 0, NTrust = 0, Active = false,
@@ -105202,11 +105258,128 @@ function X.SecHash(s)
 end
 function X.Download(url, body)
 	if type(url) ~= "string" or type(body) ~= "string" or #body < 40 or #body > 8 * 1024 * 1024 then return end
+	pcall(X.TrustSource, url, body)
 	if X.NDown >= 200 then
 		X.Downloads, X.NDown = {}, 0
 	end
 	X.Downloads[X.FP(body)] = url
 	X.NDown += 1
+end
+
+-- Official sources: trusted by PROVENANCE, never by name.
+-- A script is "official" only when its text is identical to a body that a guarded download fetched over https from an exact repository path on raw.githubusercontent.com that is on the approved list below
+-- (or in SaveData.TrustedRepos, a list of "owner/repo" strings that only the user can edit). Identity is the verified SHA-256 when the executor has one, otherwise the exact text, so a look-alike, a modified copy,
+-- or a script that merely mentions the repository's name or address never qualifies. An official script skips the pre-run scan and the pause prompt (a source over MaxSource, such as the 6 MB Nameless Admin,
+-- would otherwise always come back UNVERIFIED and be paused or blocked). Runtime monitoring, the credential / clipboard / network guards and the UH folder protections still apply to it.
+-- Everything else from GitHub, including other repositories, is scanned exactly as before.
+-- The list below is THIS script's own repositories only. It is the only thing that grants "official": the backend / Worker address that lives inside those files is NOT trusted by name anywhere, it is simply
+-- never reported, because the file it sits in is verified by provenance. A script from any other repository (or any other host) that contains the very same backend address is still scanned in full.
+X.OfficialRepos = {
+	["ltseverydayyou/nameless-admin"] = "Nameless Admin",
+	["elliot12-wq/uh-mod-visual-system"] = "UH Admin visual system",
+	["elliot12-wq/offline-ai-system"] = "UH Admin offline assistant",
+	["steve-916-create/uhhhhhh"] = "Uhhhhhh (original UH Admin)",
+}
+X.Official = {Items = {}, Len = {}, Held = 0}
+local OFF_MAX_BODY, OFF_MAX_ITEMS, OFF_MAX_HELD = 8 * 1024 * 1024, 64, 16 * 1024 * 1024 -- 64 (was 24): UH Admin's own downloads are remembered now as well, so a module is not pushed out before it is scanned
+-- A ref that can reach commits outside this repository's own history is never accepted: a commit made in a fork stays reachable under the PARENT repository's address, and so does a pull-request ref,
+-- so a third-party script could otherwise borrow this script's repository path to look official. Branch / tag names (main, refs/heads/main, ...) are fine.
+function X.OfficialRef(ref)
+	if type(ref) ~= "string" or ref == "" then return false end
+	local r = ref:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end):lower()
+	if r:find("^refs/pull") or r:find("^pull/") or r:find("^refs/remotes") or r:find("^remotes/") or r:find("^refs/merge") then return false end
+	if #r >= 7 and not r:find("%X") then return false end -- a bare commit id
+	return true
+end
+-- returns label, "owner/repo" for an approved download address of THIS script's repositories, otherwise nil (no port, no user@ prefix, no dot-dot or encoded slash / dot tricks). Two address forms count:
+--   https://raw.githubusercontent.com/<owner>/<repo>/<ref>/<file>
+--   https://api.github.com/repos/<owner>/<repo>/contents/<file>[?ref=<ref>]   (GitHub Contents API, the file itself; a directory listing - trailing slash - is never a script)
+function X.OfficialURL(url)
+	if type(url) ~= "string" or #url > 700 or url:sub(1, 8):lower() ~= "https://" or not X.ParseURL then return nil end
+	local auth = url:match("^%a+://([^/?#\\]*)")
+	if not auth or auth:find("[:@]") then return nil end
+	local p = X.ParseURL(url)
+	if not p or p.scheme ~= "https" then return nil end
+	local lp = p.path:lower()
+	if lp:find("..", 1, true) or lp:find("\\", 1, true) or lp:find("%%2e") or lp:find("%%2f") or lp:find("%%5c") then return nil end
+	local owner, repo
+	if p.host == "raw.githubusercontent.com" then
+		local rest
+		owner, repo, rest = p.path:match("^/([^/]+)/([^/]+)/([^/]+/.+)$")
+		if not owner or not X.OfficialRef(rest:match("^[^/]+")) or not X.OfficialRef(rest) then return nil end
+	elseif p.host == "api.github.com" then
+		local fpath
+		owner, repo, fpath = p.path:match("^/repos/([^/]+)/([^/]+)/contents/(.+)$")
+		if not owner or fpath:sub(-1) == "/" then return nil end
+		local ref = ("&" .. p.query):match("&ref=([^&]*)")
+		if ref ~= nil and not X.OfficialRef(ref) then return nil end
+	else
+		return nil
+	end
+	local key = (owner .. "/" .. repo):lower()
+	local label = X.OfficialRepos[key]
+	if not label then
+		local t = SaveData and SaveData.TrustedRepos
+		if type(t) == "table" then
+			for _, v in ipairs(t) do
+				if type(v) == "string" and v:lower() == key then
+					label = "trusted repository " .. key
+					break
+				end
+			end
+		end
+	end
+	if label then return label, key end
+	return nil
+end
+local function offRebuild()
+	local O = X.Official
+	O.Len, O.Held = {}, 0
+	for _, it in ipairs(O.Items) do
+		O.Len[it.n] = true
+		if it.body ~= nil then O.Held += it.n end
+	end
+end
+-- called for every body a guarded download returned: only bodies fetched from an approved address are remembered (as a digest, or as the exact text when the executor has no verified digest API)
+function X.TrustSource(url, body)
+	if type(body) ~= "string" or #body < 40 or #body > OFF_MAX_BODY then return false end
+	local label, repo = X.OfficialURL(url)
+	if not label then return false end
+	local O = X.Official
+	local n = #body
+	local id = X.CanHash() and X.SecHash(body) or nil
+	for _, it in ipairs(O.Items) do
+		if it.n == n and ((id and it.id == id) or (not id and it.body == body)) then
+			it.label, it.repo, it.url = label, repo, url:sub(1, 200)
+			return true
+		end
+	end
+	O.Items[#O.Items + 1] = {n = n, id = id, body = (not id) and body or nil, label = label, repo = repo, url = url:sub(1, 200)}
+	offRebuild()
+	while #O.Items > 1 and (#O.Items > OFF_MAX_ITEMS or O.Held > OFF_MAX_HELD) do
+		table.remove(O.Items, 1)
+		offRebuild()
+	end
+	return true
+end
+-- returns label, address when src is byte-identical to a remembered official download, otherwise nil
+function X.OfficialSource(src)
+	if type(src) ~= "string" then return nil end
+	local O = X.Official
+	local n = #src
+	if not O.Len[n] then return nil end
+	local sid
+	for _, it in ipairs(O.Items) do
+		if it.n == n then
+			if it.body ~= nil then
+				if it.body == src then return it.label, it.url end
+			else
+				if sid == nil then sid = X.SecHash(src) or false end
+				if sid and sid == it.id then return it.label, it.url end
+			end
+		end
+	end
+	return nil
 end
 
 local function norm(s)
@@ -105259,6 +105432,10 @@ end
 -- internal only: the embedded Nameless Admin runner registers its own chunk identities through this call before it compiles them
 function X.TrustEmbedded(name)
 	if type(name) == "string" and name ~= "" then X.Trusted[X.Norm(name)] = true end
+end
+-- this script's own banner modules that were compiled before this guard existed (queued by the banner loader's pull()): they keep a trusted chunk identity, and X.Compile still renames any outside script that asks for the same name
+if type(Util.OwnChunks) == "table" then
+	for name in pairs(Util.OwnChunks) do X.TrustEmbedded(name) end
 end
 -- internal only: called solely for functions compiled from a SHA-256-verified embedded source; records the chunk identity the executor really reports for them (accepted only when it is derived from the requested name, never a generic one)
 X.NAlias = X.NAlias or 0
@@ -105816,6 +105993,13 @@ function X.Check(src, meta)
 	if type(src) == "string" and Util.Security and Util.Security.IsEmbedded and Util.Security.IsEmbedded(src) then
 		local m = type(meta) == "table" and meta or {}
 		return {verdict = "CLEAN", severity = "none", score = 0, reasons = {}, urls = {}, critical = false, name = m.name, origin = m.origin, note = "Verified embedded Nameless Admin source (byte-identical SHA-256 match): trusted, not inspected."}
+	end
+	if type(src) == "string" and X.OfficialSource then
+		local okO, label, url = pcall(X.OfficialSource, src)
+		if okO and label then
+			local m = type(meta) == "table" and meta or {}
+			return {verdict = "CLEAN", severity = "none", score = 0, reasons = {}, urls = {}, critical = false, official = label, name = m.name, origin = m.origin, note = "Official source verified: byte-identical to " .. tostring(url) .. " (" .. tostring(label) .. "). Pre-run scan skipped; runtime monitoring still applies."}
+		end
 	end
 	if type(src) ~= "string" then return checkRaw(src, meta) end
 	local n = #src
@@ -106426,6 +106610,10 @@ function X.GateLoad(call, kind, parent, origin, src, chunk, ...)
 		rep = X.Unverified("the chunk source is not a string, so it cannot be inspected")
 	end
 	s.verdict = rep.verdict
+	if rep.official then
+		s.official = rep.official
+		X.Hist("scan", s.id .. " " .. nm .. " is an official source (" .. tostring(rep.official) .. "): pre-run scan skipped, runtime monitoring on", s.id)
+	end
 	s.parent = parent and parent.id or nil
 	s.depth = ((parent and parent.depth) or 0) + 1
 	if rep.verdict == "UNVERIFIED" then X.Stats.Unverified = (X.Stats.Unverified or 0) + 1 end
@@ -106530,9 +106718,25 @@ C.loadfile = function(kind)
 		return f, e
 	end
 end
+-- This script's own downloads. UH Admin's own calls are not gated (X.Gate returns nil for them), so they never reached X.Download: the files UH Admin itself pulls from its own GitHub repositories were never
+-- remembered as official, were scanned later like a stranger's script, and the Cloudflare Worker (backend) address inside them was reported as an unrecognized host. The provenance record is now kept for UH's
+-- own calls too. It is still granted only by X.OfficialURL (this script's approved repositories, exact https address, HTTP 200, text not binary), so any other repository or host is not remembered and is scanned as before.
+function X.OwnDownload(url, body, res)
+	if type(url) ~= "string" or type(body) ~= "string" then return end
+	if type(res) == "table" then
+		local sc = tonumber(res.StatusCode)
+		if res.Success == false or (sc ~= nil and sc ~= 200) then return end
+	end
+	if body:sub(1, 512):find("\0", 1, true) then return end
+	pcall(X.TrustSource, url, body)
+end
 C.request = function(who, call, opts, ...)
 	local s = X.Gate(who)
-	if not s or type(opts) ~= "table" then return call(opts, ...) end
+	if not s or type(opts) ~= "table" then
+		local res = call(opts, ...)
+		if type(opts) == "table" and type(res) == "table" then X.OwnDownload(opts.Url or opts.URL or opts.url, res.Body, res) end
+		return res
+	end
 	local url = opts.Url or opts.URL or opts.url
 	local m = X.GuardNet(s, "request", tostring(opts.Method or "GET"):upper(), url, opts.Body, opts.Headers)
 	if m then error("[UH Security] " .. m, 0) end
@@ -106542,7 +106746,11 @@ C.request = function(who, call, opts, ...)
 end
 C.reqAsync = function(who, call, self, opts, ...)
 	local s = X.Gate(who)
-	if not s or type(opts) ~= "table" then return call(self, opts, ...) end
+	if not s or type(opts) ~= "table" then
+		local res = call(self, opts, ...)
+		if type(opts) == "table" and type(res) == "table" then X.OwnDownload(opts.Url or opts.URL or opts.url, res.Body, res) end
+		return res
+	end
 	local url = opts.Url or opts.URL or opts.url
 	local m = X.GuardNet(s, "RequestAsync", tostring(opts.Method or "GET"):upper(), url, opts.Body, opts.Headers)
 	if m then error("[UH Security] " .. m, 0) end
@@ -106553,7 +106761,11 @@ end
 C.get = function(name)
 	return function(who, call, self, url, ...)
 		local s = X.Gate(who)
-		if not s then return call(self, url, ...) end
+		if not s then
+			local res = call(self, url, ...)
+			X.OwnDownload(url, res)
+			return res
+		end
 		local m = X.GuardNet(s, name, "GET", url)
 		if m then error("[UH Security] " .. m, 0) end
 		local res = call(self, url, ...)
