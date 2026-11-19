@@ -1798,6 +1798,9 @@ springAcc = springAcc + dt
 if FX.Gov and FX.Gov.Stride > 1 and springFrame % FX.Gov.Stride ~= 0 then return end
 dt = math.min(springAcc, 1 / 30)
 springAcc = 0
+-- [DRAGFIX] sub-step the integrator (<= 1/90 s): stiff, well damped springs (the 900 / 1.0 drag-follow spring, the press springs) are unstable at the 1/30 s step used on slow or governed frames, which made switches and buttons shake violently while dragged
+local steps = math.max(1, math.ceil(dt * 90 - 0.0001))
+local h = dt / steps
 local any = false
 for obj, props in pairs(Springs) do
 if obj.Parent == nil then
@@ -1813,9 +1816,11 @@ end
 if taken then
 props[prop] = nil
 else
-local a = st.k * (st.t - st.x) - st.c * st.v
-st.v = st.v + a * dt
-st.x = st.x + st.v * dt
+for _ = 1, steps do
+st.v = st.v + (st.k * (st.t - st.x) - st.c * st.v) * h
+st.x = st.x + st.v * h
+end
+if st.x ~= st.x or st.v ~= st.v or math.abs(st.x) > 1e6 then st.x, st.v = st.t, 0 end
 if math.abs(st.t - st.x) < 0.0006 and math.abs(st.v) < 0.01 then
 pcall(setProp, obj, prop, st.t)
 props[prop] = nil
@@ -1986,14 +1991,15 @@ if my ~= B.token or not B.live then return end
 local left = B.releaseAt - os.clock()
 if left > 0.02 then task.delay(left, finish, my) return end
 B.live, B.peak = false, 0
-go(B.base, B.outT, Sine, B.soft and EOut or EInOut)
+-- [UIMOTION v492] long releases are a focus pull (in-out), short ones stay a quick ease-out
+if B.outT >= 0.5 then go(B.base, B.outT, Quad, EInOut) else go(B.base, B.outT, Sine, B.soft and EOut or EInOut) end
 task.delay(B.outT / math.max(0.2, FX.Cfg.UIAnimSpeed or 1) + 0.35, idle, my)
 end
 local function comb(a, b) return math.sqrt(a * a + b * b) end
 function FX.BlurPulse(peak, inTime, outTime, soft, hold)
 if not FX.Settings.Blur or type(peak) ~= "number" or peak <= 0 then return end
 local k = PK[lvl()] or 1
-peak = math.max(1.4, math.min(peak * k, 20))
+peak = math.max(1.4, math.min(peak * k, 22))
 inTime, outTime = inTime or 0.15, outTime or 0.45
 local releaseAt = os.clock() + (inTime + (hold or 0)) / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
 if B.live and peak <= B.peak + 0.05 then
@@ -2005,8 +2011,13 @@ end
 B.token = B.token + 1
 local my = B.token
 B.live, B.peak, B.releaseAt, B.outT, B.soft = true, peak, releaseAt, outTime, soft and true or false
-go(comb(B.base, peak), inTime, Quart, EOut)
+-- [UIMOTION v492] long builds ramp in on an in-out curve (smooth activation), short motion-blur taps keep the fast attack
+if inTime >= 0.12 then go(comb(B.base, peak), inTime, Quad, EInOut) else go(comb(B.base, peak), inTime, Quart, EOut) end
 task.delay(math.max(0.01, releaseAt - os.clock()), finish, my)
+end
+-- [UIMOTION v492] UI-only strength boost on the SAME controller: page / window / sidebar motion reads clearly while effect + moveset pulses stay untouched
+function FX.UIBlur(peak, inTime, outTime, hold)
+FX.BlurPulse((peak or 6) * 1.5, inTime or 0.16, outTime or 0.7, true, hold or 0.1)
 end
 function FX.MotionBlur(peak, settle)
 if not FX.Settings.Blur or FX.IsLowEnd() or (FX.Gov and FX.Gov.Stride > 1) then return end
@@ -2037,8 +2048,8 @@ local st = win:FindFirstChildOfClass("UIStroke")
 if not st then return end
 local base = ringBase[st]
 if base == nil then base = st.Transparency ringBase[st] = base end
-st.Transparency = math.max(0, base - 0.5)
-tween(st, 1.1, Quint, EOut, {Transparency = base})
+st.Transparency = math.max(0, base - 0.75)
+tween(st, 1.4, Quint, EOut, {Transparency = base})
 end
 -- border light sweep: an engine-side repeating tween (no Lua per frame) on Ultra / High only, cancelled automatically on weaker profiles / Low End UI Mode
 local sweeps = setmetatable({}, {__mode = "k"})
@@ -3569,10 +3580,10 @@ end
 c.Position = UDim2.fromOffset(math.clamp(rel.X, 0, host.AbsoluteSize.X), math.clamp(rel.Y, 0, host.AbsoluteSize.Y))
 c.Size = UDim2.fromOffset(6, 6)
 c.BackgroundColor3 = FX.GetColor and FX.GetColor() or WHITE
-c.BackgroundTransparency = 0.58
-local big = math.max(host.AbsoluteSize.X, 60) * 2.2
-tween(c, 0.62, Quint, EOut, {Size = UDim2.fromOffset(big, big)})
-tween(c, 0.62, Quad, EOut, {BackgroundTransparency = 1})
+c.BackgroundTransparency = 0.4
+local big = math.max(host.AbsoluteSize.X, 60) * 2.7
+tween(c, 0.82, Quint, EOut, {Size = UDim2.fromOffset(big, big)})
+tween(c, 0.82, Quad, EOut, {BackgroundTransparency = 1})
 end
 local sheenFns = setmetatable({}, {__mode = "k"})
 function FX.Sheen(b)
@@ -3610,23 +3621,23 @@ local isBtn = d:IsA("TextButton") and d:GetAttribute("FXB")
 local isPop = not isBtn and d:IsA("Frame") and (d:GetAttribute("FXS") or d:GetAttribute("FXK"))
 if (isBtn or isPop) and (not onlyVisible or Util.IsGuiVisible(d)) then
 n = n + 1
-if n > 18 then break end
+if n > 26 then break end
 local sc = isBtn and btnScale[d] or d:FindFirstChildOfClass("UIScale")
 local p0 = isBtn and bb and bb[d] or nil
 local par = d.Parent
 if p0 and par and (par:FindFirstChildOfClass("UIListLayout") or par:FindFirstChildOfClass("UIGridLayout")) then p0 = nil end
 if sc and sc.Parent then sc.Scale = 0.001 end
-if p0 then d.Position = p0 + UDim2.fromOffset(0, 14) end
-local tilt = (n % 2 == 0) and 2.2 or -2.2
+if p0 then d.Position = p0 + UDim2.fromOffset(0, 26) end
+local tilt = (n % 2 == 0) and 3.4 or -3.4
 if isBtn and d.AbsoluteSize.X > 220 then tilt = tilt * 0.4 end
-task.delay(0.05 + 0.3 * (1 - 0.88 ^ n), function()
+task.delay(0.06 + 0.46 * (1 - 0.9 ^ n), function()
 if not d.Parent then return end
 if sc and sc.Parent then
 FX.NoMB = true
-FX.SpringTo(sc, "Scale", 1, 240, 0.64, 0.001)
+FX.SpringTo(sc, "Scale", 1, 230, 0.55, 0.001)
 FX.NoMB = nil
 end
-if p0 then tween(d, 0.55, Quint, EOut, {Position = p0}) end
+if p0 then tween(d, 0.7, Back, EOut, {Position = p0}) end
 if isBtn then
 d.Rotation = tilt
 FX.NoMB = true
@@ -3753,9 +3764,9 @@ b.MouseEnter:Connect(function()
 if not FX.Settings.Transitions then return end
 hover = true
 if not down then
-paint(1, 0.14)
-spr(hs(), 340, 0.55)
-lift(2, 0.18)
+paint(1, 0.16)
+spr(hs(), 380, 0.5)
+lift(3, 0.26, Back)
 end
 edge(true, 0.16)
 FX.Play("tick")
@@ -3774,8 +3785,8 @@ down = true
 startPos = input.Position
 FX.Click("click", 1.1, 0.75)
 paint(2, 0.06)
-spr(0.93, 560, 0.85)
-lift(-1, 0.08, Quad)
+spr(0.9, 620, 0.8)
+lift(-2, 0.07, Quad)
 pcall(ripple, b, input)
 end)
 b.InputEnded:Connect(function(input)
@@ -3785,11 +3796,11 @@ FX.Click("release")
 paint(hover and 1 or 0, 0.16)
 edge(hover, 0.16)
 if hover then
-spr(hs(), 300, 0.36)
-lift(2, 0.32, Back)
+spr(hs(), 340, 0.3)
+lift(3, 0.4, Back)
 else
-spr(1, 300, 0.34)
-lift(0, 0.32, Back)
+spr(1, 340, 0.3)
+lift(0, 0.4, Back)
 end
 flash()
 FX.BtnAnim(b, sc, basePos, stroke, hover)
@@ -3822,7 +3833,7 @@ local function settle(kind)
 if not FX.Settings.Transitions then return end
 local to, k, z = 1, 300, 0.62
 if dn then to, k, z = 0.975, 520, 0.9
-elseif foc then to, k, z = 1.022, 280, 0.5
+elseif foc then to, k, z = 1.03, 260, 0.46
 elseif hov then to, k, z = 1.014, 320, 0.6
 elseif kind == "release" then k, z = 260, 0.42 end
 FX.NoMB = true
@@ -3898,9 +3909,9 @@ if dc then dc.CornerRadius = UDim.new(0.5, 0) else Util.Instance("UICorner", dot
 local pv = Util.Instance("NumberValue", sw)
 local sv = Util.Instance("NumberValue", sw)
 local function apply()
-local p = pv.Value
+local p = math.clamp(pv.Value, -0.15, 1.15)
 local c = math.clamp(p, 0, 1)
-local s = sv.Value
+local s = math.clamp(sv.Value, -4, 10)
 local lo, hi = PAD + KS / 2, W - PAD - KS / 2
 dot.Position = UDim2.new(0, lo + (hi - lo) * p, 0.5, 0)
 dot.Size = UDim2.fromOffset(KS + s, KS - s * 0.25)
@@ -3916,21 +3927,21 @@ dot:GetPropertyChangedSignal("Visible"):Connect(function()
 if not dot.Visible then dot.Visible = true end
 end)
 -- [UIMOTION] switch: underdamped slide (spring overshoot + settle), knob stretches while pressed, pop + accent pulse on activation
-local hov, dn = false, false
+local hov, dn, pressing = false, false, false
 local function snap(on)
 FX.NoMB = true
-FX.SpringTo(pv, "Value", on and 1 or 0, 430, 0.5)
+FX.SpringTo(pv, "Value", on and 1 or 0, 400, 0.42)
 FX.NoMB = nil
 end
 local function settle(kind)
 if not FX.Settings.Transitions then return end
 local to, k, z = 1, 330, 0.6
-if dn then to, k, z = 0.93, 560, 0.9
+if dn then to, k, z = 0.92, 580, 0.88
 elseif hov then to, k, z = 1.07, 340, 0.55
 elseif kind == "release" then k, z = 300, 0.4 end
 FX.NoMB = true
 FX.SpringTo(sc, "Scale", to, k, z)
-FX.SpringTo(sv, "Value", dn and 5 or 0, dn and 520 or 380, dn and 0.8 or 0.45)
+FX.SpringTo(sv, "Value", dn and 7.5 or 0, dn and 540 or 360, dn and 0.78 or 0.4)
 FX.NoMB = nil
 if stroke then tween(stroke, 0.16, Quad, EOut, {Color = (hov or dn) and M.BorderHover or M.Border}) end
 end
@@ -3939,9 +3950,9 @@ local on = lever.Value
 snap(on)
 if not FX.Settings.Transitions then return end
 local acc = FX.GetColor and FX.GetColor() or WHITE
-sc.Scale = on and 1.16 or 0.88
+sc.Scale = on and 1.24 or 0.84
 FX.NoMB = true
-FX.SpringTo(sc, "Scale", hov and 1.07 or 1, 470, 0.34, on and 1.16 or 0.88)
+FX.SpringTo(sc, "Scale", hov and 1.07 or 1, 440, 0.3, on and 1.24 or 0.84)
 FX.NoMB = nil
 if stroke then
 stroke.Color = on and acc or M.TextMuted
@@ -3949,15 +3960,17 @@ tween(stroke, 0.6, Quint, EOut, {Color = (hov or dn) and M.BorderHover or M.Bord
 end
 if on then
 FX.Play("tick", 1.3)
-FX.Pulse(sw, acc, 64, 0.5, 2)
+FX.Pulse(sw, acc, 80, 0.65, 2.5)
 end
 end)
 hit.MouseEnter:Connect(function()
 if not FX.Settings.Transitions then return end
 hov = true
+if pressing then return end
 settle()
 end)
 hit.MouseLeave:Connect(function()
+if pressing then hov = false return end
 if not hov and not dn then return end
 hov, dn = false, false
 settle()
@@ -3965,10 +3978,13 @@ end)
 hit.InputBegan:Connect(function(input)
 if not isPress(input) or not FX.Settings.Transitions then return end
 dn = true
+pressing = true
 settle()
 end)
 hit.InputEnded:Connect(function(input)
-if not isPress(input) or not dn then return end
+if not isPress(input) then return end
+pressing = false
+if not dn then return end
 dn = false
 settle("release")
 end)
@@ -3986,6 +4002,8 @@ if not moving then
 local adx, ady = math.abs(i.Position.X - x0), math.abs(i.Position.Y - y0)
 if ady > 8 and ady > adx then
 cancelled = true
+dn = false
+settle("release")
 return
 end
 if adx < 4 then return end
@@ -4003,6 +4021,7 @@ if i ~= input and not (input.UserInputType == Enum.UserInputType.MouseButton1 an
 c1:Disconnect()
 c2:Disconnect()
 dn = false
+pressing = false
 settle("release")
 if not moving then return end
 local on = pv.Value > 0.5
@@ -4028,14 +4047,14 @@ local hov, dn, over = false, false, 0
 local function grow(kind)
 if not FX.Settings.Transitions then return end
 local to, k, z = 1, 340, 0.6
-if dn then to, k, z = 1.38, 520, 0.58
-elseif hov then to, k, z = 1.16, 360, 0.55
-elseif kind == "release" then k, z = 320, 0.38 end
+if dn then to, k, z = 1.5, 540, 0.55
+elseif hov then to, k, z = 1.22, 380, 0.5
+elseif kind == "release" then k, z = 300, 0.3 end
 FX.NoMB = true
 FX.SpringTo(sc, "Scale", to, k, z)
 FX.NoMB = nil
 if dn then halo.Color = FX.GetColor and FX.GetColor() or M.Text end
-tween(halo, 0.18, Quad, EOut, {Transparency = dn and 0.55 or (hov and 0.82 or 1)})
+tween(halo, 0.22, Quad, EOut, {Transparency = dn and 0.38 or (hov and 0.78 or 1)})
 end
 local function enter()
 over += 1
@@ -4080,13 +4099,13 @@ tb.Focused:Connect(function()
 pcall(function() tb.PlaceholderColor3 = M.TextMuted end)
 if stroke then
 restT = restT or stroke.Thickness
-if FX.Settings.Transitions then stroke.Thickness = restT + 2.2 end
-tween(stroke, 0.32, Quint, EOut, {Color = M.Accent, Thickness = restT + 1})
+if FX.Settings.Transitions then stroke.Thickness = restT + 3.4 end
+tween(stroke, 0.55, Quint, EOut, {Color = M.Accent, Thickness = restT + 1.4})
 end
 end)
 tb.FocusLost:Connect(function()
 if stroke then
-tween(stroke, 0.26, Quad, EOut, {Color = M.Border, Thickness = restT or stroke.Thickness})
+tween(stroke, 0.42, Quint, EOut, {Color = M.Border, Thickness = restT or stroke.Thickness})
 end
 end)
 end
@@ -4128,7 +4147,7 @@ if not FX.Settings.Transitions then return end
 hover = true
 paint(1, 0.12)
 ink(true, 0.12)
-nudge(7, 0.22, Back)
+nudge(11, 0.3, Back)
 FX.Play("tick", 1.2)
 end)
 item.MouseLeave:Connect(function()
@@ -4647,170 +4666,100 @@ dropCells(strips)
 task.wait(0.15)
 end
 end
--- [UIMOTION] default "Liquid" page transition: directional slide + depth spring + veil reveal; outgoing page exits fast, incoming page settles with overshoot
+-- [UIMOTION v492] remastered page transitions. One shared helper table (TM) + data-driven presets keep the ten selectable styles distinct
+-- without duplicated code: each style has its own entry vector, depth, tilt, spring, curtain and blur arc. Same Styles[] / PageTrans system.
+local TM = {}
+-- per-style blur arc {incoming peak, outgoing peak, hold}: zooms / pops / swings get the stronger pulse, calm slides the softer one
+TM.Blur = {
+[16] = {7, 5, 0.16}, [17] = {6.5, 4.5, 0.14}, [18] = {6, 4.5, 0.14}, [19] = {9, 6, 0.2}, [20] = {9, 6, 0.2},
+[21] = {7.5, 5.5, 0.16}, [22] = {8.5, 6, 0.18}, [23] = {6.5, 5, 0.14}, [24] = {6.5, 5, 0.14}, [25] = {9.5, 6.5, 0.2}, [26] = {8, 5.5, 0.18},
+}
+function TM.k() return 1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1) end
+-- curtain starts slightly accent-tinted (controlled highlight) and clears to the matte background colour
+function TM.curtain(R, from, mix)
+local v = R.veil
+local bg = bgColor()
+v.BackgroundColor3 = bg:Lerp(accentColor(), mix or 0.1)
+v.BackgroundTransparency = from
+tween(v, 0.5, Quad, EOut, {BackgroundColor3 = bg})
+end
+function TM.preset(p)
+return function(page, entering, goal, R)
+local k = TM.k()
+local lite = FX.UILite()
+local sc, v = R.scale, R.veil
+if entering then
+page.Position = goal + UDim2.fromOffset(lite and 0 or p.ex, lite and 0 or p.ey)
+page.Rotation = lite and 0 or p.er
+sc.Scale = lite and (1 + (p.es - 1) * 0.35) or p.es
+TM.curtain(R, lite and math.max(p.ev, 0.7) or p.ev, p.mix)
+tween(v, p.t * 0.9, Quint, EOut, {BackgroundTransparency = 1})
+tween(page, p.t, Quint, EOut, {Position = goal})
+if p.er ~= 0 and not lite then tween(page, p.t * 0.95, Back, EOut, {Rotation = 0}) end
+FX.SpringTo(sc, "Scale", 1, p.k, p.z, sc.Scale)
+task.wait(p.t * 0.88 * k)
+else
+local to = goal
+if p.xx then to = CENTER + UDim2.fromOffset(p.xx, p.xy) end
+tween(sc, p.te, Quint, EIn, {Scale = p.xs})
+tween(page, p.te, Quint, p.ease or EIn, {Position = to})
+if p.xr and p.xr ~= 0 and not lite then tween(page, p.te, Quad, EIn, {Rotation = p.xr}) end
+tween(v, p.te * 0.9, Quad, EIn, {BackgroundTransparency = p.xv})
+task.delay(p.te * 0.78 * k, function()
+if R.alive() then tween(v, 0.25, Quad, EOut, {BackgroundTransparency = 1}) end
+end)
+task.wait(p.te * k)
+end
+end
+end
+-- default "Liquid": diagonal glide + depth rise with a spring settle and a slight tilt that rights itself; outgoing page recedes into the curtain
 Styles[16] = function(page, entering, goal, R)
 local lite = FX.UILite()
-local k = 1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
+local k = TM.k()
+local sc, v = R.scale, R.veil
 if entering then
 local side = (R.fromX or 0) >= 0 and 1 or -1
-page.Position = goal + UDim2.fromOffset(lite and 0 or side * 56, lite and 0 or 16)
-R.scale.Scale = lite and 0.97 or 0.9
-R.veil.BackgroundTransparency = lite and 0.7 or 0.5
-tween(R.veil, 0.55, Quint, EOut, {BackgroundTransparency = 1})
-tween(page, 0.6, Quint, EOut, {Position = goal})
-FX.SpringTo(R.scale, "Scale", 1, 190, 0.5, lite and 0.97 or 0.9)
-task.wait(0.5 * k)
+page.Position = goal + UDim2.fromOffset(lite and 0 or side * 104, lite and 0 or 30)
+page.Rotation = lite and 0 or side * 1.8
+sc.Scale = lite and 0.97 or 0.82
+TM.curtain(R, lite and 0.7 or 0.6, 0.14)
+tween(v, 0.75, Quint, EOut, {BackgroundTransparency = 1})
+tween(page, 0.78, Quint, EOut, {Position = goal})
+if not lite then tween(page, 0.85, Back, EOut, {Rotation = 0}) end
+FX.SpringTo(sc, "Scale", 1, 150, 0.44, lite and 0.97 or 0.82)
+task.wait(0.66 * k)
 else
-tween(R.scale, 0.4, Quint, EIn, {Scale = 0.94})
-tween(R.veil, 0.38, Quad, EIn, {BackgroundTransparency = 0.45})
-tween(page, 0.42, Quint, EIn, {Position = goal})
-task.delay(0.3 * k, function()
-if R.alive() then tween(R.veil, 0.25, Quad, EOut, {BackgroundTransparency = 1}) end
+local sx = goal.X.Offset >= 0 and 1 or -1
+tween(sc, 0.48, Quint, EIn, {Scale = 0.88})
+tween(v, 0.42, Quad, EIn, {BackgroundTransparency = 0.38})
+tween(page, 0.48, Quint, EIn, {Position = goal})
+if not lite then tween(page, 0.48, Quad, EIn, {Rotation = sx * 2.2}) end
+task.delay(0.34 * k, function()
+if R.alive() then tween(v, 0.28, Quad, EOut, {BackgroundTransparency = 1}) end
 end)
-task.wait(0.42 * k)
+task.wait(0.48 * k)
 end
 end
-local function endWait() task.wait(1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)) end
-local function dim(R, from)
-R.veil.BackgroundTransparency = from
-tween(R.veil, 1, Quint, EOut, {BackgroundTransparency = 1})
-end
-local function blurAt(t, peak)
-task.delay(t / math.max(0.2, FX.Cfg.UIAnimSpeed or 1), function() FX.MotionBlur(peak, 0.5) end)
-end
-Styles[17] = function(page, entering, goal, R)
-if entering then
-page.Position = goal + UDim2.fromOffset(340, 0)
-dim(R, 0.55)
-tween(page, 1, Quint, EOut, {Position = goal})
-else
-tween(R.scale, 1, Quint, EInOut, {Scale = 0.94})
-tween(page, 1, Quint, EInOut, {Position = goal})
-end
-endWait()
-end
-Styles[18] = function(page, entering, goal, R)
-if entering then
-page.Position = goal + UDim2.fromOffset(0, 235)
-R.scale.Scale = 0.95
-dim(R, 0.5)
-tween(page, 1, Quint, EOut, {Position = goal})
-tween(R.scale, 1, Quint, EOut, {Scale = 1})
-else
-tween(R.scale, 1, Quint, EInOut, {Scale = 0.96})
-tween(page, 1, Quint, EInOut, {Position = UDim2.new(0.5, 0, 0.5, 235)})
-end
-endWait()
-end
-Styles[19] = function(page, entering, goal, R)
-if entering then
-page.Position = goal
-R.scale.Scale = 0.78
-dim(R, 0.75)
-tween(R.scale, 1, Quint, EOut, {Scale = 1})
-else
-tween(R.scale, 1, Quint, EInOut, {Scale = 0.82})
-tween(page, 1, Quint, EIn, {Position = goal})
-end
-endWait()
-end
-Styles[20] = function(page, entering, goal, R)
-if entering then
-page.Position = goal
-R.scale.Scale = 1.2
-dim(R, 0.65)
-tween(R.scale, 1, Quint, EOut, {Scale = 1})
-else
-tween(R.scale, 1, Quint, EInOut, {Scale = 0.88})
-tween(page, 1, Quint, EInOut, {Position = goal})
-end
-endWait()
-end
-Styles[21] = function(page, entering, goal, R)
-if entering then
-page.Position = goal + UDim2.fromOffset(-300, 10)
-page.Rotation = -9
-dim(R, 0.5)
-tween(page, 1, Quint, EOut, {Position = goal})
-tween(page, 1, Back, EOut, {Rotation = 0})
-blurAt(0.35, 1.6)
-else
-tween(page, 1, Quint, EInOut, {Rotation = 9})
-tween(page, 1, Quint, EInOut, {Position = goal})
-end
-endWait()
-end
-Styles[22] = function(page, entering, goal, R)
-if entering then
-page.Position = goal + UDim2.fromOffset(0, -80)
-R.scale.Scale = 0.42
-dim(R, 0.6)
-tween(R.scale, 1, Back, EOut, {Scale = 1})
-tween(page, 1, Quint, EOut, {Position = goal})
-blurAt(0.4, 1.6)
-else
-tween(R.scale, 1, Quint, EInOut, {Scale = 0.42})
-tween(page, 1, Quint, EInOut, {Position = UDim2.new(0.5, 0, 0.5, -235)})
-end
-endWait()
-end
-Styles[23] = function(page, entering, goal, R)
-if entering then
-page.Position = goal + UDim2.fromOffset(0, -235)
-R.scale.Scale = 1.03
-dim(R, 0.45)
-tween(page, 1, Quint, EOut, {Position = goal})
-tween(R.scale, 1, Quint, EOut, {Scale = 1})
-else
-tween(page, 1, Quint, EInOut, {Position = UDim2.new(0.5, 0, 0.5, 235)})
-end
-endWait()
-end
-Styles[24] = function(page, entering, goal, R)
-if entering then
-page.Position = goal + UDim2.fromOffset(0, 28)
-page.Rotation = 3
-R.scale.Scale = 0.9
-dim(R, 0.6)
-tween(page, 1, Quint, EOut, {Position = goal})
-tween(page, 1, Quint, EOut, {Rotation = 0})
-tween(R.scale, 1, Quint, EOut, {Scale = 1})
-else
-tween(page, 1, Quint, EIn, {Rotation = -5})
-tween(R.scale, 1, Quint, EInOut, {Scale = 0.9})
-tween(page, 1, Quint, EIn, {Position = goal})
-end
-endWait()
-end
-Styles[25] = function(page, entering, goal, R)
-if entering then
-page.Position = goal
-R.scale.Scale = 0.55
-dim(R, 0.55)
-tween(R.scale, 1, Back, EOut, {Scale = 1})
-blurAt(0.4, 1.5)
-else
-tween(R.scale, 1, Back, EIn, {Scale = 0.55})
-tween(page, 1, Quint, EIn, {Position = goal})
-end
-endWait()
-end
-Styles[26] = function(page, entering, goal, R)
-if entering then
-page.Position = goal + UDim2.fromOffset(-150, 190)
-page.Rotation = 7
-R.scale.Scale = 0.9
-dim(R, 0.55)
-tween(page, 1, Quint, EOut, {Position = goal})
-tween(page, 1, Quint, EOut, {Rotation = 0})
-tween(R.scale, 1, Quint, EOut, {Scale = 1})
-else
-tween(page, 1, Quint, EInOut, {Rotation = -9})
-tween(R.scale, 1, Quint, EInOut, {Scale = 0.92})
-tween(page, 1, Quint, EInOut, {Position = UDim2.new(0.5, 150, 0.5, -235)})
-end
-endWait()
-end
+-- 17 Slide: parallax push from the right, outgoing page recedes in depth
+Styles[17] = TM.preset({ex = 380, ey = 0, er = 0, es = 0.92, ev = 0.5, mix = 0.08, k = 170, z = 0.55, t = 0.88, te = 0.72, xs = 0.88, xv = 0.4, ease = EInOut})
+-- 18 Rise: lifts up from below, outgoing page sinks away
+Styles[18] = TM.preset({ex = 0, ey = 235, er = 0, es = 0.92, ev = 0.5, mix = 0.08, k = 160, z = 0.5, t = 0.9, te = 0.7, xs = 0.93, xv = 0.45, xx = 0, xy = 235, ease = EInOut})
+-- 19 Fly-in: incoming page flies in from depth while the outgoing page swells toward the camera and dissolves
+Styles[19] = TM.preset({ex = 0, ey = 0, er = 0, es = 0.66, ev = 0.8, mix = 0.14, k = 120, z = 0.56, t = 0.95, te = 0.6, xs = 1.18, xv = 0.3})
+-- 20 Pull-back: incoming page pulls back from close up, outgoing page shrinks away
+Styles[20] = TM.preset({ex = 0, ey = 0, er = 0, es = 1.3, ev = 0.7, mix = 0.1, k = 140, z = 0.6, t = 0.9, te = 0.62, xs = 0.8, xv = 0.35})
+-- 21 Swing: swings in from the left with a tilt that overshoots and rights itself
+Styles[21] = TM.preset({ex = -340, ey = 14, er = -12, es = 0.94, ev = 0.5, mix = 0.08, k = 170, z = 0.52, t = 0.95, te = 0.76, xs = 0.9, xr = 10, xv = 0.42, ease = EInOut})
+-- 22 Drop: bubble-drops from above with a big spring overshoot, outgoing page shrinks upward
+Styles[22] = TM.preset({ex = 0, ey = -100, er = 0, es = 0.42, ev = 0.62, mix = 0.1, k = 190, z = 0.5, t = 0.9, te = 0.68, xs = 0.45, xv = 0.4, xx = 0, xy = -235})
+-- 23 Push: vertical push, new page descends while the old one falls away
+Styles[23] = TM.preset({ex = 0, ey = -235, er = 0, es = 1.05, ev = 0.45, mix = 0.06, k = 200, z = 0.6, t = 0.88, te = 0.7, xs = 0.95, xv = 0.45, xx = 0, xy = 235, ease = EInOut})
+-- 24 Tilt: tilted rise that levels out, outgoing page tips the other way
+Styles[24] = TM.preset({ex = 0, ey = 34, er = 4, es = 0.88, ev = 0.6, mix = 0.1, k = 170, z = 0.5, t = 0.88, te = 0.62, xs = 0.9, xr = -6, xv = 0.42})
+-- 25 Pop: springy in-place pop with a pronounced overshoot
+Styles[25] = TM.preset({ex = 0, ey = 0, er = 0, es = 0.5, ev = 0.6, mix = 0.14, k = 230, z = 0.4, t = 0.9, te = 0.56, xs = 0.55, xv = 0.38})
+-- 26 Swoop: diagonal swoop with tilt, outgoing page exits up and to the right
+Styles[26] = TM.preset({ex = -170, ey = 210, er = 8, es = 0.88, ev = 0.55, mix = 0.1, k = 170, z = 0.5, t = 0.95, te = 0.78, xs = 0.9, xr = -10, xv = 0.42, xx = 150, xy = -235, ease = EInOut})
 local cycleN, cycleAt = 0, -1
 local function pickStyle(page)
 local st = PageStyle[page] or assignStyle(page)
@@ -4847,7 +4796,8 @@ local myVeil = veilToken
 resetVeilGeometry()
 R.veil.BackgroundTransparency = 1
 -- [UIMOTION] blur + focus coordinated with the page: outgoing page dips the focus, incoming page releases it as content cascades in
-FX.BlurPulse(entering and 5.5 or 4.2, 0.12, entering and 0.55 or 0.4, true, entering and 0.14 or 0.02)
+local sb = TM.Blur[styleId] or TM.Blur[16]
+if entering then FX.UIBlur(sb[1], 0.16, 0.75, sb[3]) else FX.UIBlur(sb[2], 0.13, 0.45, 0.04) end
 FX.Play(entering and "open" or "back")
 if entering then
 pcall(FX.Cascade, page)
@@ -4912,7 +4862,7 @@ return pageTween(obj, props)
 end
 if obj == FX.Window then
 local small = props.Size and props.Size.X.Offset < 200
-FX.BlurPulse(small and 5 or 6.5, 0.14, small and 0.7 or 0.95, true, small and 0 or 0.08)
+FX.UIBlur(small and 6 or 7.5, 0.16, small and 0.8 or 1.05, small and 0.02 or 0.12)
 FX.Play(small and "close" or "open")
 pcall(FX.SweepRefresh)
 if not small and not FX.IntroActive then pcall(FX.FocusRing, obj) end
@@ -23885,6 +23835,8 @@ s.Color, s.Thickness, s.Transparency = color, thick, tr
 Debris:AddItem(p, 6)
 return p, s
 end
+-- [UIMOTION v492] window fold remaster: layered reveal / collapse. Glass plate + frame + interior curtain + held blur + spring settle + rings.
+-- Same signature / return value (seconds to wait) as before, so minimize / restore state handling in the caller is untouched.
 function FX.WindowFold(win, content, closing, pos, full)
 if not FX.Settings.Transitions or not win.Parent then return nil end
 local Expo = FX.Expo
@@ -23905,35 +23857,63 @@ tween(st, t, Quint, EOut, {Transparency = 1, Thickness = 0.5})
 tween(p, t, Quint, EOut, {BackgroundTransparency = 1})
 Debris:AddItem(p, t * k + 0.25)
 end
+-- interior curtain: contents dissolve as the frame collapses and are revealed as it opens (non-interactive; a previous one is always removed first)
+local function curtain(from)
+if FX.FoldCurtain and FX.FoldCurtain.Parent then FX.FoldCurtain:Destroy() end
+FX.FoldCurtain = nil
+if not content or not content.Parent then return nil end
+local c = Util.Instance("Frame", content)
+c.Size, c.Position = UDim2.fromScale(1, 1), UDim2.fromScale(0, 0)
+c.BackgroundColor3 = FX.GetBG and FX.GetBG() or Color3.new(0, 0, 0)
+c.BackgroundTransparency = from
+c.BorderSizePixel, c.ZIndex, c.Interactable, c.Active = 0, 60, false, false
+Debris:AddItem(c, 1.4 * k + 0.4)
+FX.FoldCurtain = c
+return c
+end
 if closing then
 local from = win.Size
 local g, gs = glass(from, 0.4)
+local cur = curtain(1)
 FX.Play("close", 0.9)
-FX.BlurPulse(lite and 3 or 6, 0.12, 0.88)
+FX.UIBlur(lite and 4 or 7.5, 0.14, 1, 0.2)
+if cur then tween(cur, 0.4, Quint, EIn, {BackgroundTransparency = 0}) end
 tween(win, 1, Quint, EInOut, {Position = dest})
-tween(win, 0.45, Quint, EInOut, {Size = UDim2.fromOffset(from.X.Offset, 30)})
-after(0.2, function() tween(win, 0.8, Quint, EInOut, {Size = pill}) end)
+-- anticipation: a small lift before the collapse
+tween(win, 0.1, Enum.EasingStyle.Sine, EOut, {Size = UDim2.fromOffset(from.X.Offset, from.Y.Offset + 8)})
+after(0.1, function() tween(win, 0.5, Quint, EInOut, {Size = UDim2.fromOffset(from.X.Offset, 30)}) end)
+after(0.3, function() tween(win, 0.7, Quint, EInOut, {Size = pill}) end)
 after(0.05, function() tween(g, 0.95, Quint, EInOut, {Size = pill, Position = dest}) end)
 after(0.6, function() melt(g, gs, 0.4) end)
+if not lite then after(0.88, function() FX.Ring(win.Parent, col, 74, 0.5, 1.5, dest) end) end
 return 1 * k
 end
 local g, gs = glass(pill, 0.3)
+local cur = curtain(0)
 FX.Play("open", 0.85)
-FX.BlurPulse(lite and 5 or 10, 0.1, 0.9)
+FX.UIBlur(lite and 6 or 11, 0.16, 1.05, 0.3)
 tween(win, 0.6, Quint, EOut, {Position = dest})
 tween(g, 0.4, Expo, EOut, {Size = UDim2.fromOffset(fx + 24, 34)})
 after(0.08, function() tween(win, 0.4, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)}) end)
 after(0.3, function()
-tween(win, 0.7, Quint, EOut, {Size = full})
-tween(g, 0.65, Quint, EOut, {Size = full})
+-- Back easing = spring settle on the final height
+tween(win, 0.76, Back, EOut, {Size = full})
+tween(g, 0.7, Back, EOut, {Size = full})
 FX.Play("hit", 0.85)
 pcall(FX.Cascade, content, true)
 end)
-after(0.55, function()
-if not lite then FX.Ring(win.Parent, col, math.max(fx, fy) * 1.1, 0.5, 1.5, dest) end
-melt(g, gs, 0.45)
+after(0.42, function()
+if cur and cur.Parent then tween(cur, 0.5, Quint, EOut, {BackgroundTransparency = 1}) end
 end)
-return 1 * k
+after(0.6, function()
+if not lite then
+FX.Ring(win.Parent, col, math.max(fx, fy) * 1.1, 0.55, 1.5, dest)
+task.delay(0.12 * k, function() FX.Ring(win.Parent, col, math.max(fx, fy) * 1.45, 0.65, 1, dest) end)
+end
+melt(g, gs, 0.45)
+pcall(FX.FocusRing, win)
+end)
+return 1.1 * k
 end
 function FX.RegisterLock(win, full, content)
 local Expo, parent = FX.Expo, win.Parent
@@ -23943,7 +23923,7 @@ local lite = FX.UILite()
 local k = 1 / math.max(0.2, FX.Cfg.UIAnimSpeed or 1)
 local g, gs = FX.Plate(win, WHITE, 1.5, 0.25, UDim2.fromOffset(44, 30))
 g.BackgroundColor3, g.BackgroundTransparency = col:Lerp(WHITE, 0.55), 0.88
-FX.BlurPulse(lite and 5 or 10, 0.1, 0.9)
+FX.UIBlur(lite and 6 or 11, 0.16, 1.05, 0.3)
 task.wait(0.08 * k)
 FX.Play("open", 0.8)
 tween(g, 0.4, Expo, EOut, {Size = UDim2.fromOffset(fx + 40, 34)})
@@ -23951,8 +23931,8 @@ task.wait(0.08 * k)
 tween(win, 0.36, Expo, EOut, {Size = UDim2.fromOffset(fx, 30)})
 task.wait(0.2 * k)
 FX.Cascade(content, true)
-tween(win, 0.64, Quint, EOut, {Size = full})
-tween(g, 0.58, Quint, EOut, {Size = full})
+tween(win, 0.62, Back, EOut, {Size = full})
+tween(g, 0.58, Back, EOut, {Size = full})
 FX.Play("hit", 0.85)
 task.wait(0.3 * k)
 if not lite then FX.Ring(parent, col, math.max(fx, fy) * 1.15, 0.5, 1.5, win.Position) end
@@ -24899,12 +24879,12 @@ D.Closing = pg
 pg.Visible = true
 sc = settleOf(pg)
 sc.Scale = 1
-tw(sc, 0.3, Quad, EIn, {Scale = 0.92})
+tw(sc, 0.38, Quint, EIn, {Scale = 0.9})
 end
-tw(sidebar, 0.34, Quint, EIn, {Position = CLOSED})
+tw(sidebar, 0.4, Quint, EIn, {Position = CLOSED})
 pcall(FX.Click, "close", 1, 1)
-if cfg("DeltaBlur") == true then pcall(FX.BlurPulse, 5, 0.1, 0.4 / speed()) end
-task.delay(0.36 / speed(), function()
+if cfg("DeltaBlur") == true then pcall(FX.UIBlur, 5.5, 0.12, 0.6 / speed(), 0.1) end
+task.delay(0.42 / speed(), function()
 if tok ~= D.CloseTok then return end
 D.Closing = nil
 if pg then pg.Visible = false end
@@ -24920,13 +24900,20 @@ D.CloseTok = (D.CloseTok or 0) + 1
 local tok = D.CloseTok
 sidebar.Position = CLOSED
 prevX = CLOSED.X.Scale
-tw(sidebar, 0.5, Enum.EasingStyle.Back, EOut, {Position = OPEN})
+tw(sidebar, 0.62, Enum.EasingStyle.Back, EOut, {Position = OPEN})
+-- [UIMOTION v492] the page behind pops back up in depth as the sidebar springs in, with a matching blur arc
+if D.LastPage and D.LastPage.Visible then
+local psc = settleOf(D.LastPage)
+psc.Scale = 0.92
+tw(psc, 0.6, Enum.EasingStyle.Back, EOut, {Scale = 1})
+end
+if cfg("DeltaBlur") == true then pcall(FX.UIBlur, 4.5, 0.12, 0.55 / speed(), 0.06) end
 local stok = (sweepTok[sidebar] or 0) + 1
 sweepTok[sidebar] = stok
 clearRun(sidebar)
 pcall(cascade, sidebar:FindFirstChildWhichIsA("ScrollingFrame") or sidebar, sidebar, stok)
 pcall(FX.Click, "open", 1.05, 1)
-task.delay(0.52 / speed(), function()
+task.delay(0.64 / speed(), function()
 if tok ~= D.CloseTok then return end
 prevX = sidebar.Position.X.Scale
 D.Busy = false
