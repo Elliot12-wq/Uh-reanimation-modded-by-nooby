@@ -109402,6 +109402,36 @@ end)
 local hubDesc = UI.CreateText(Hub, "<font color=\"#AAAAAA\">" .. c[3] .. "</font>", 10, Enum.TextXAlignment.Center)
 end
 end
+-- "I have a bug issue" tab: shows the Discord invite, lets the user copy it, and asks users to report bugs there
+pcall(function()
+local bugPage = newPage()
+pcall(function() Util.Search.Titles[bugPage] = "I have a bug issue" end)
+local CENTER = Enum.TextXAlignment.Center
+UI.CreateButton(bugPage, "&lt; Back", 20).Activated:Connect(closePage)
+UI.CreateText(bugPage, "<b>I HAVE A BUG ISSUE</b>", 15, CENTER)
+UI.CreateText(bugPage, "If you ever had bugs, please tell them in the discord server. Let's make the script better for everyone else.", 12, CENTER)
+UI.CreateSeparator(bugPage)
+UI.CreateText(bugPage, "<font color=\"#AAAAAA\">Discord invite</font>", 10, CENTER)
+local inviteUrl = Util.DiscordInvite()
+UI.CreateText(bugPage, "<font color=\"#8EA1FF\"><b>" .. (inviteUrl or "Invite is not configured yet") .. "</b></font>", 15, CENTER)
+local copyBtn, copyLabel = UI.CreateButton(bugPage, "Copy Invite", 20)
+local copyT
+copyBtn.Activated:Connect(function()
+local ok, res = pcall(Util.OpenDiscord) -- copies the invite to the clipboard and shows a notification (the invite itself if the executor has no clipboard)
+if ok and res and type(setclipboard) == "function" then
+copyLabel.Text = "Link copied!"
+if copyT then pcall(task.cancel, copyT) end
+copyT = task.delay(1.6, function()
+if copyLabel.Parent then copyLabel.Text = "Copy Invite" end
+end)
+end
+end)
+UI.CreateText(bugPage, "<font color=\"#AAAAAA\">Tap Copy Invite, then paste the link into your browser or Discord to join.</font>", 10, CENTER)
+UI.CreateButton(Hub, "I have a bug issue &gt;", 20).Activated:Connect(function()
+openCat(bugPage)
+end)
+UI.CreateText(Hub, "<font color=\"#AAAAAA\">Found a bug? Join the Discord server and tell us so we can fix it.</font>", 10, CENTER)
+end)
 pcall(function() Util.Search.Titles[Hub] = "Feature Center" end)
 local fcBtn = UI.CreateButton(MainPage, "Feature Center &gt;", 20)
 fcBtn.Activated:Connect(function()
