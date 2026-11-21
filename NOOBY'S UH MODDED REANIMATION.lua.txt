@@ -68854,6 +68854,7 @@ Room = tostring(game.PlaceId) .. "-" .. tostring(game.JobId), Token = HttpServic
 GetColor = function() return FXcall("GetColor") end, GetBG = function() return FXcall("GetBG") end,
 IsLowEnd = function() return FXcall("IsLowEnd") == true end,
 GetLocalCharacter = function() return Reanimate.Character or Player.Character end,
+SilentHellSong = function() return Util.Intro15Song end, -- Silent Hell: the already bundled "Who Will Know (24 Bigslow)" asset
 TopGui = function() return Util.TopGui end,
 NewTriangle = function(parent, o)
 local FX = Util.FX
@@ -69804,7 +69805,7 @@ end
 		local items = {{"Teleport", Color3.fromRGB(60, 110, 200), function() R.Teleport(uid) end}}
 		if mod then table.insert(items, {"Users...", Color3.fromRGB(60, 140, 120), function() R.OpenUsers() end}) end
 		if mod then -- moderators: kick / kill / deanimate only (relayed to script users, never to verified players)
-			for _, a in ipairs({{"Kill", "kill"}, {"Deanimate", "deanimate"}, {"Kick", "kick"}, {"Bring", "bring"}, {"Hallucinate", "hallucinate"}, {"Dizzy", "dizzy"}}) do
+			for _, a in ipairs({{"Kill", "kill"}, {"Deanimate", "deanimate"}, {"Kick", "kick"}, {"Bring", "bring"}, {"Hallucinate", "hallucinate"}, {"Dizzy", "dizzy"}, {"Silent Hell", "silenthell"}}) do
 				table.insert(items, {a[1], Color3.fromRGB(205, 125, 40), function()
 					task.spawn(function()
 						local ok, err = Env.Mod.Send(uid, a[2])
@@ -69852,7 +69853,7 @@ end
 		gui.Parent = Env.Player:WaitForChild("PlayerGui")
 		picker = gui
 		local f = Instance.new("Frame", gui)
-		f.Size, f.Position, f.BackgroundColor3, f.BorderSizePixel = UDim2.fromOffset(400, 270), UDim2.new(0.5, -200, 0.5, -135), Color3.fromRGB(24, 24, 30), 0
+		f.Size, f.Position, f.BackgroundColor3, f.BorderSizePixel = UDim2.fromOffset(440, 270), UDim2.new(0.5, -220, 0.5, -135), Color3.fromRGB(24, 24, 30), 0
 		Instance.new("UICorner", f).CornerRadius = UDim.new(0, 8)
 		local t = Instance.new("TextLabel", f)
 		t.Size, t.Position, t.BackgroundTransparency, t.Text = UDim2.new(1, -44, 0, 28), UDim2.fromOffset(10, 4), 1, "Active script users"
@@ -69876,9 +69877,9 @@ end
 				local nm = Instance.new("TextLabel", row)
 				nm.Size, nm.BackgroundTransparency, nm.Text = UDim2.new(0, 92, 1, 0), 1, p.DisplayName
 				nm.TextColor3, nm.Font, nm.TextSize, nm.TextXAlignment, nm.TextTruncate = Color3.new(1, 1, 1), Enum.Font.GothamMedium, 13, Enum.TextXAlignment.Left, Enum.TextTruncate.AtEnd
-				for i, a in ipairs({{"Bring", "bring"}, {"Hallucinate", "hallucinate"}, {"Dizzy", "dizzy"}}) do
+				for i, a in ipairs({{"Bring", "bring"}, {"Hallucinate", "hallucinate"}, {"Dizzy", "dizzy"}, {"Silent Hell", "silenthell"}}) do
 					local b = Instance.new("TextButton", row)
-					b.Size, b.Position, b.Text = UDim2.fromOffset(90, 28), UDim2.fromOffset(96 + (i - 1) * 94, 1), a[1]
+					b.Size, b.Position, b.Text = UDim2.fromOffset(78, 28), UDim2.fromOffset(92 + (i - 1) * 80, 1), a[1]
 					b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize = Color3.fromRGB(60, 110, 200), Color3.new(1, 1, 1), Enum.Font.GothamBold, 11
 					Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
 					b.Activated:Connect(function()
@@ -70088,7 +70089,7 @@ return function(Env, R)
 	local HS, Players, RS = Env.HttpService, Env.Players, Env.RunService
 	local M = {Running = false}
 	local ACTIONS = {kill = true, deanimate = true, kick = true}
-	local FXA = {bring = true, hallucinate = true, dizzy = true} -- handled by Env.Fx (VerifiedPlayerFeatures.lua)
+	local FXA = {bring = true, hallucinate = true, dizzy = true, silenthell = true} -- handled by Env.Fx (VerifiedPlayerFeatures.lua)
 
 	function M.CanModerate()
 		return Env.Request ~= nil and R.RoleOf(Env.Player.UserId) ~= nil -- owner / co-owner / verified players: no key (the backend recognises their userId)
@@ -70167,7 +70168,7 @@ end
 end
 ]==],
 VerifiedPlayerFeatures = [==[
--- VerifiedPlayerFeatures.lua | Bring Users / Hallucinate Users / Dizzy
+-- VerifiedPlayerFeatures.lua | Bring Users / Hallucinate Users / Dizzy / Silent Hell (10 s, recipient-side, ends with the existing Kill)
 -- ONE permission gate for all three features: OWNER, CO-OWNER and VERIFIED players have identical access. Roles come from roles.json + whitelist.json through
 -- BannerReceiver.RoleOf (nothing hardcoded); anyone else gets no controls and cannot send.
 -- Targets: only OTHER script users with a live banner (R.Banners), never owner / co-owner / verified. The target is always notified (toast), no prompt.
@@ -70179,10 +70180,10 @@ return function(Env, R)
 	local Players, RS, HS = Env.Players, Env.RunService, Env.HttpService
 	local genv = (getgenv and getgenv()) or _G
 	local F = {Enabled = genv.UhFxEnabled ~= false}
-	local ACT = {bring = true, hallucinate = true, dizzy = true}
-	local TIME = {hallucinate = 60, dizzy = 20}
-	local DEFT = {hallucinate = 60, dizzy = 20} -- default effect lengths (TIME may be overridden per command by F.Run)
-	F.Actions = {{key = "bring", label = "Bring Users"}, {key = "hallucinate", label = "Hallucinate Users"}, {key = "dizzy", label = "Dizzy"}}
+	local ACT = {bring = true, hallucinate = true, dizzy = true, silenthell = true}
+	local TIME = {hallucinate = 60, dizzy = 20, silenthell = 10}
+	local DEFT = {hallucinate = 60, dizzy = 20, silenthell = 10} -- default effect lengths (TIME may be overridden per command by F.Run)
+	F.Actions = {{key = "bring", label = "Bring Users"}, {key = "hallucinate", label = "Hallucinate Users"}, {key = "dizzy", label = "Dizzy"}, {key = "silenthell", label = "Silent Hell"}}
 	F.Time = TIME
 
 	-- ===== permissions: the single gate =====
@@ -70522,6 +70523,197 @@ return function(Env, R)
 		end)
 	end
 
+	-- ===== Silent Hell =====
+	-- 10 s sequence that runs ONLY on this client: smooth dark-red colour grade (a ColorCorrectionEffect under the camera - Lighting is never touched), the bundled "Who Will Know (24 Bigslow)" track
+	-- (Env.SilentHellSong() = Util.Intro15Song, played from 0:00 at low volume), ten black silhouettes creeping in from different directions while movement is frozen (Humanoid values of the real AND the
+	-- reanimated character + the PlayerModule controls; nothing is anchored, destroyed or disconnected), then the existing Env.ModActions.Kill exactly once.
+	-- ONE stop function cleans up every exit (completion, re-trigger, respawn, FX disabled, unload, lost character); only normal completion kills.
+	local function silenthell()
+		stopFx("silenthell")
+		if not F.Enabled then return end
+		local cam = workspace.CurrentCamera
+		local me0 = myChar()
+		local root0 = me0 and me0:FindFirstChild("HumanoidRootPart")
+		if not (cam and root0) then return toast("Silent Hell unavailable: no character") end
+		local TS, SND = Env.TweenService or game:GetService("TweenService"), game:GetService("SoundService")
+		local T = TIME.silenthell
+		local OUTRO, STEPS, VOL = 0.8, 7, 0.14 -- figures finish converging when the last 0.8 s (final impact) start
+		local TC = T - OUTRO
+		local okL, low = pcall(function() return Env.IsLowEnd and Env.IsLowEnd() end)
+		local interval = (okL and low) and 1 / 20 or 0
+		local hum0 = me0:FindFirstChildOfClass("Humanoid")
+		local lift = math.max(((hum0 and hum0.HipHeight) or 2) + root0.Size.Y / 2, 3)
+		local c0 = root0.Position
+		local folder = Instance.new("Folder")
+		folder.Name = "UhSilentHell"
+		local figs = {}
+		for i = 1, 10 do -- six anchored, non-colliding black parts each (no Humanoid, no scripts, nothing replicated)
+			local s = (lift / 3) * (0.9 + math.random() * 0.25)
+			local m, ps = Instance.new("Model"), {}
+			m.Name = "F" .. i
+			local function part(name, size, off, ball)
+				local p = Instance.new("Part")
+				p.Name, p.Size, p.Color, p.Material = name, size * s, Color3.new(0, 0, 0), Enum.Material.SmoothPlastic
+				p.Anchored, p.CanCollide, p.CanTouch, p.CanQuery, p.CastShadow, p.Massless = true, false, false, false, false, true
+				p.TopSurface, p.BottomSurface, p.Transparency = Enum.SurfaceType.Smooth, Enum.SurfaceType.Smooth, 1
+				if ball then p.Shape = Enum.PartType.Ball end
+				p.CFrame = CFrame.new(off * s)
+				p.Parent = m
+				ps[#ps + 1] = p
+				return p
+			end
+			m.PrimaryPart = part("Torso", Vector3.new(2, 2, 1), Vector3.zero)
+			part("Head", Vector3.new(1.2, 1.2, 1.2), Vector3.new(0, 1.6, 0), true)
+			part("LArm", Vector3.new(1, 2, 1), Vector3.new(-1.5, 0, 0))
+			part("RArm", Vector3.new(1, 2, 1), Vector3.new(1.5, 0, 0))
+			part("LLeg", Vector3.new(1, 2, 1), Vector3.new(-0.5, -2, 0))
+			part("RLeg", Vector3.new(1, 2, 1), Vector3.new(0.5, -2, 0))
+			m.Parent = folder
+			figs[i] = {m = m, p = ps, s = s, a = (i - 1) / 10 * math.pi * 2 + (math.random() - 0.5) * 0.4, r0 = 20 + math.random() * 9, r1 = 3 + (i % 2) * 1.2,
+				d = math.random() * 1.2, ph = math.random() * 6.28, lean = (math.random() - 0.5) * 0.3, fade = -1, gy = c0.Y - lift, gyT = c0.Y - lift}
+		end
+
+		local t0 = os.clock()
+		local dead, outro, lost, lastMe, n = false, false, nil, nil, 0
+		local tw, frozen, snd, ctl, ctlOff, conn, cconn = {}, {}, nil, nil, false, nil, nil
+		local rp = RaycastParams.new()
+		rp.FilterType, rp.RespectCanCollide = Enum.RaycastFilterType.Exclude, true
+		local cc = Instance.new("ColorCorrectionEffect")
+		cc.Name = "UhSilentHellTint"
+
+		local function tween(o, secs, props)
+			pcall(function()
+				local x = TS:Create(o, TweenInfo.new(secs, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), props)
+				tw[#tw + 1] = x
+				x:Play()
+			end)
+		end
+		local function hold(h) -- freeze one Humanoid; a value somebody else sets meanwhile becomes the one restored
+			local r = frozen[h]
+			if not r then
+				r = {ws = h.WalkSpeed, jp = h.JumpPower, jh = h.JumpHeight, up = h.UseJumpPower}
+				frozen[h] = r
+			end
+			if h.WalkSpeed ~= 0 then r.ws = h.WalkSpeed; h.WalkSpeed = 0 end
+			if h.JumpPower ~= 0 then r.jp = h.JumpPower; h.JumpPower = 0 end
+			if h.JumpHeight ~= 0 then r.jh = h.JumpHeight; h.JumpHeight = 0 end
+		end
+		local function stop() -- the ONE cleanup
+			dead = true
+			if conn then conn:Disconnect(); conn = nil end
+			if cconn then cconn:Disconnect(); cconn = nil end
+			for _, x in ipairs(tw) do pcall(function() x:Cancel() end) end
+			table.clear(tw)
+			if snd then pcall(function() snd:Stop(); snd:Destroy() end); snd = nil end
+			pcall(function() cc:Destroy() end)
+			pcall(function() folder:Destroy() end)
+			for h, r in pairs(frozen) do
+				pcall(function()
+					if h.Parent then
+						h.WalkSpeed, h.JumpPower, h.JumpHeight = r.ws, r.jp, r.jh
+						h.UseJumpPower = r.up
+					end
+				end)
+			end
+			table.clear(frozen)
+			if ctl and ctlOff then pcall(function() ctl:Enable(true) end); ctlOff = false end
+		end
+		fx.silenthell = stop
+		local function complete() -- normal end only: clean up, then the existing Kill (Player.Character + Reanimate.Character), once
+			if fx.silenthell ~= stop then return end
+			stopFx("silenthell")
+			local A = Env.ModActions
+			if A and A.Kill then pcall(A.Kill) end
+		end
+
+		local function step()
+			local t = os.clock() - t0
+			if t >= T then return complete() end
+			local cur = workspace.CurrentCamera
+			if cur and cur ~= cam then cam = cur; cc.Parent = cam; folder.Parent = cam end
+			local me = myChar()
+			local tr = me and me:FindFirstChild("HumanoidRootPart")
+			if not tr then
+				lost = lost or t
+				if t - lost > 1.5 then stopFx("silenthell") end -- character / reanimation model gone: clean up, no Kill
+				return
+			end
+			lost = nil
+			for _, ch in ipairs({Env.Player.Character or false, me}) do -- real character AND the active reanimated one
+				local h = ch and ch:FindFirstChildOfClass("Humanoid")
+				if h then hold(h) end
+			end
+			if me ~= lastMe then
+				lastMe = me
+				rp.FilterDescendantsInstances = {folder, me, Env.Player.Character}
+			end
+			if not outro and t >= TC then -- final impact: the grade goes black-red, the song fades out
+				outro = true
+				tween(cc, OUTRO, {Brightness = -0.6, Contrast = 0.55, TintColor = Color3.fromRGB(190, 20, 20)})
+				if snd then tween(snd, OUTRO, {Volume = 0}) end
+			end
+			n += 1
+			local c = tr.Position
+			local gy0 = c.Y - lift
+			for i, f in ipairs(figs) do
+				local u = math.clamp((t - f.d) / (TC - f.d), 0, 1)
+				local x = u * STEPS -- creep: STEPS short lunges with a pause after each, finishing exactly at u = 1
+				local k = math.floor(x)
+				local fr = math.clamp((x - k) / 0.6, 0, 1)
+				local g = (k + fr * fr * (3 - 2 * fr)) / STEPS
+				local r = f.r1 + (f.r0 - f.r1) * (1 - g)
+				local a = f.a + 0.35 * u
+				local px, pz = c.X + math.cos(a) * r, c.Z + math.sin(a) * r
+				if n % 6 == i % 6 then
+					local hit = workspace:Raycast(Vector3.new(px, c.Y + 6, pz), Vector3.new(0, -40, 0), rp)
+					f.gyT = hit and hit.Position.Y or gy0
+				end
+				f.gy = f.gy + (f.gyT - f.gy) * 0.3
+				local pos = Vector3.new(px, f.gy + 3 * f.s + 0.06 * f.s * math.sin(t * 2 + f.ph), pz)
+				f.m:PivotTo(CFrame.lookAt(pos, Vector3.new(c.X, pos.Y, c.Z)) * CFrame.Angles(f.lean, 0, math.rad(3) * math.sin(t * 1.6 + f.ph)))
+				local fade = math.clamp((t - f.d) / 1.6, 0, 1)
+				if fade ~= f.fade then
+					f.fade = fade
+					for _, p in ipairs(f.p) do p.Transparency = 1 - fade end
+				end
+			end
+		end
+
+		cc.Parent = cam
+		tween(cc, 1.4, {TintColor = Color3.fromRGB(255, 80, 70), Saturation = -0.25, Contrast = 0.25, Brightness = -0.1}) -- smooth fade into the red atmosphere
+		pcall(function() -- no walking / jumping input (the Humanoid values are held every step as well)
+			local ps = Env.Player:FindFirstChild("PlayerScripts")
+			local pm = ps and ps:FindFirstChild("PlayerModule")
+			local c = pm and require(pm):GetControls()
+			if c and c.controlsEnabled ~= false then c:Disable(); ctl, ctlOff = c, true end
+		end)
+		cconn = Env.Player.CharacterAdded:Connect(function() stopFx("silenthell") end) -- respawn: back to normal at once, no Kill
+		task.delay(T, complete) -- hard stop even if the frame loop stalls
+		if not pcall(step) then return stopFx("silenthell") end
+		folder.Parent = cam
+		task.spawn(function() -- the supplied track from the existing bundled asset (written to the asset folder once), local to this client
+			local S = Env.SilentHellSong and Env.SilentHellSong()
+			if not S then return end
+			local okE, ready = pcall(S.Ensure, 60)
+			if dead or not (okE and ready) or os.clock() - t0 > T - 1.5 then return end
+			local okA, id = pcall(getcustomasset, S.Path)
+			if dead or not okA or type(id) ~= "string" or id == "" then return end
+			local sn = Instance.new("Sound")
+			sn.Name, sn.SoundId, sn.Volume, sn.Looped, sn.TimePosition = "UhSilentHellSong", id, 0, false, 0
+			sn.Parent = SND
+			snd = sn
+			sn:Play()
+			tween(sn, 1.5, {Volume = VOL})
+		end)
+		local acc = interval
+		conn = RS.Heartbeat:Connect(function(dt)
+			acc += dt
+			if acc < interval then return end
+			acc = 0
+			if not pcall(step) then stopFx("silenthell") end
+		end)
+	end
+
 	-- ===== recipient: entry point (called by ModTools for every queued command) =====
 	-- returns true when the command was one of the three effects (handled or rejected here), false for everything else
 	function F.Receive(c)
@@ -70537,6 +70729,9 @@ return function(Env, R)
 		elseif action == "hallucinate" then
 			toast(sp.Name .. " made you hallucinate (" .. TIME.hallucinate .. " s)")
 			hallucinate()
+		elseif action == "silenthell" then
+			toast(sp.Name .. " sent you to Silent Hell (" .. TIME.silenthell .. " s)")
+			silenthell()
 		else
 			toast(sp.Name .. " made you dizzy (" .. TIME.dizzy .. " s)")
 			dizzy()
@@ -70548,7 +70743,13 @@ return function(Env, R)
 	-- The Worker already verified the moderator's role and addressed THIS script session, so the same-server sender check of F.Receive does not apply.
 	-- `secs` = optional effect length (clamped 5..120 s). Returns ok, reason.
 	function F.Run(action, who, secs)
-		if action ~= "hallucinate" and action ~= "dizzy" then return false, "unsupported" end
+		if action ~= "hallucinate" and action ~= "dizzy" and action ~= "silenthell" then return false, "unsupported" end
+		if action == "silenthell" then -- fixed 10 s; never overrides a recipient who switched effects off
+			if not F.Enabled then return false, "effects disabled by the recipient" end
+			toast(tostring(who) .. " sent you to Silent Hell (" .. TIME.silenthell .. " s)")
+			silenthell()
+			return true
+		end
 		local dt = tonumber(secs)
 		TIME[action] = dt and math.clamp(math.floor(dt), 5, 120) or DEFT[action]
 		toast(tostring(who) .. " made you " .. (action == "dizzy" and "dizzy" or "hallucinate") .. " (" .. TIME[action] .. " s)")
@@ -110510,7 +110711,7 @@ do
 -- Roles come ONLY from roles.json (owner / co-owner / verified) and whitelist.json (verified): the Worker reads them on every request. Every signed-in script client publishes its own
 -- presence (automatic; a notice and the registry page disclose exactly what is shared); only verified players / co-owners / owner can read the roster, and the Worker re-checks that on every request.
 -- The active-user count comes from the Worker (unique accounts with unexpired presence), never from a client.
--- Moderation commands arrive on the existing heartbeat response; this client validates every one and acknowledges it on the next presence request.
+-- Moderation commands reach the target through a fast short poll of GET /live/commands (same pattern as the banner system's /commands poll; the heartbeat response is only a fallback); this client validates every one and acknowledges it immediately.
 -- Everything here is client convenience: hiding UI is not the security boundary, the Worker is.
 local okLPL, errLPL = pcall(function()
 local Player = Players.LocalPlayer
@@ -110518,12 +110719,20 @@ local TeleportService = cloneref(game:GetService("TeleportService"))
 local MarketplaceService = cloneref(game:GetService("MarketplaceService"))
 local LIVE_BACKEND = "https://live-player-log-system.elliptmal.workers.dev" -- the standalone Live Player Log Worker (/live/*). nil would use the old banner Worker, which has no /live routes.
 local HB_BASE, HB_JITTER = 100, 10 -- presence heartbeat (seconds), jittered. Not changed: the same heartbeat also carries commands + acknowledgements.
+local CMD_POLL = 2 -- seconds between command pulls on the target (same cadence as the banner system's /commands poll; backs off to 12s on errors; the Worker expires an unanswered command after 45s)
 local STALE_AFTER = 150 -- seconds without a heartbeat before an entry is shown as STALE (the Worker removes it at 240s)
 local PAGE_SIZE = 40 -- roster cards drawn at once (search narrows the whole global list; "Show more" draws the next page)
 local FILE = "UhhhhhhReanim/LivePlayerLog.json"
 local GREEN, YELLOW, RED, GRAY = "#6EE7A0", "#FFE066", "#FF8080", "#AAAAAA"
 local FINAL = {EXECUTED = true, REJECTED = true, EXPIRED = true, TARGET_OFFLINE = true, ACTION_UNSUPPORTED = true, FAILED = true}
-local ACTS = {"kick", "kill", "deanimate", "dizzy", "hallucinate", "ban"}
+local ACTS = {"kick", "kill", "deanimate", "dizzy", "hallucinate", "silenthell", "ban"}
+-- backend lifecycle -> what the log shows: PENDING (accepted / handed over, not finished), SUCCESS (backend confirmed execution), TIMEOUT (no answer in time), FAILED (anything else)
+local function shown(st)
+	if st == "PENDING" or st == "DELIVERED" then return "PENDING" end
+	if st == "EXECUTED" then return "SUCCESS" end
+	if st == "EXPIRED" then return "TIMEOUT" end
+	return "FAILED"
+end
 local LPL = {}
 local Fallback = {}
 local SID = (HttpService:GenerateGUID(false):gsub("-", "")):lower() -- one id per script run (several simultaneous runs of one account are counted once)
@@ -110703,7 +110912,7 @@ local function caps()
 	if type(Util.ModActions) == "table" and type(Util.ModActions.Kill) == "function" then t[#t + 1] = "kill" end
 	if type(Util.ModDeanimate) == "function" then t[#t + 1] = "deanimate" end
 	local F = Util.ModFx
-	if type(F) == "table" and type(F.Run) == "function" then t[#t + 1] = "dizzy"; t[#t + 1] = "hallucinate" end
+	if type(F) == "table" and type(F.Run) == "function" then t[#t + 1] = "dizzy"; t[#t + 1] = "hallucinate"; t[#t + 1] = "silenthell" end
 	t[#t + 1] = "ban" -- applied by the backend; this client exits when the backend reports the ban
 	return t
 end
@@ -110741,12 +110950,35 @@ local function safeBeat(gen) -- an error inside one heartbeat is a failed heartb
 	if okB then return r, m end
 	return "fail", "internal error: " .. tostring(r):sub(1, 80)
 end
+-- target side: banner-style short poll for commands addressed to this account + script session (no waiting for the ~100s heartbeat); acknowledgements leave at once via Pub.Flush
+function Cmd.StartPoll(gen)
+	task.spawn(function()
+		local fails = 0
+		while Pub.Gen == gen and Auth.Token and not Pub.Departed and not Pub.Banned do
+			local wait_ = CMD_POLL + math.random() * 0.5
+			if Pub.LastOk and guardOk() then -- only once this session is registered
+				local ok, code, d = call("GET", "/live/commands?sid=" .. SID, nil, true)
+				if Pub.Gen ~= gen then return end
+				if isBanned(ok, code, d) then LPL.OnBanned() return end
+				if ok and code == 200 and type(d) == "table" and d.ok == true then
+					fails = 0
+					if type(d.cmd) == "table" then pcall(Cmd.Receive, d.cmd) end
+				elseif ok and code == 401 then return -- the presence loop signs in again and restarts this poll
+				elseif ok and (code == 409 or code == 410) then wait_ = 10 -- session not registered / already left
+				elseif ok and code == 404 then wait_ = 60 -- Worker without /live/commands: the heartbeat still carries commands
+				else fails += 1; wait_ = math.min(CMD_POLL + fails * 2, 12) end
+			end
+			task.wait(wait_)
+		end
+	end)
+end
 function Pub.Start()
 	if Pub.Running or Pub.Banned or Pub.Departed or not Auth.Token then return end
 	if Pub.Left ~= nil then SID, Pub.Left = newId(), nil end -- the previous session id already left the registry: a (re)join is a brand-new session
 	Pub.Running = true
 	Pub.Gen += 1
 	local gen = Pub.Gen
+	Cmd.StartPoll(gen)
 	setPubStatus("starting")
 	task.spawn(function()
 		local fails = 0
@@ -110885,7 +111117,7 @@ function Cmd.Handle(c)
 	local ttl, iat, exp = tonumber(c.ttl), tonumber(c.iat), tonumber(c.exp)
 	if not (ttl and ttl > 0 and iat and exp and exp > iat) then return bad("REJECTED", "expired or malformed") end
 	if not rank or not mu or mu < 1 or mu == Player.UserId then return bad("REJECTED", "unauthorized sender") end
-	if not (a == "kick" or a == "kill" or a == "deanimate" or a == "dizzy" or a == "hallucinate") then return bad("ACTION_UNSUPPORTED", "unknown action") end
+	if not (a == "kick" or a == "kill" or a == "deanimate" or a == "dizzy" or a == "hallucinate" or a == "silenthell") then return bad("ACTION_UNSUPPORTED", "unknown action") end
 	if rank <= myRank() then return bad("REJECTED", "target outranks sender") end
 	local have = {}
 	for _, x in ipairs(caps()) do have[x] = true end
@@ -111023,8 +111255,9 @@ function V.SendCommand(e, act)
 		if ok and code == 200 and type(d) == "table" and d.ok == true and type(d.id) == "string" then
 			local st = tostring(d.st)
 			V.Cmds[d.id] = {st = st, a = act, tn = e.n, note = tostring(d.note or ""), t = os.clock(), noted = FINAL[st] == true}
-			notify(label .. ": " .. st .. (st == "PENDING" and " (waiting for the target's next heartbeat)" or ""))
+			notify(label .. ": " .. shown(st) .. (V.Cmds[d.id].note ~= "" and (" (" .. V.Cmds[d.id].note .. ")") or ""))
 			V.Interval, V.NextAt = 20, os.clock() + 20
+			if not FINAL[st] then V.Watch() end
 		elseif isBanned(ok, code, d) then LPL.OnBanned()
 		elseif ok and code == 401 then Auth.Forget(); V.Halt = "auth"
 		elseif ok and type(d) == "table" and (d.err == "target_offline" or d.st == "TARGET_OFFLINE") then
@@ -111039,16 +111272,42 @@ function V.SendCommand(e, act)
 			V.Cursor, V.Halt, V.NextAt = nil, nil, 0 -- the old cursor cannot be trusted: full snapshot now (the poll loop retries if one is still running)
 			V.Poll()
 		elseif ok and type(d) == "table" then
+			if type(d.id) == "string" and type(d.st) == "string" and V.Cmds[d.id] == nil then -- rejected / failed by the backend (or an already open duplicate): show its real status
+				V.Cmds[d.id] = {st = d.st, a = act, tn = e.n, note = tostring(d.note or ""), t = os.clock(), noted = FINAL[d.st] == true}
+				if not FINAL[d.st] then V.Watch() end
+			end
 			if d.msg then notify(label .. ": " .. tostring(d.msg))
-			else notify(label .. ": " .. tostring(d.st or d.err or ("HTTP " .. code))) end
+			elseif d.st then notify(label .. ": " .. shown(tostring(d.st)))
+			else notify(label .. ": FAILED (" .. tostring(d.err or ("HTTP " .. code)) .. ")") end
+		elseif not ok then -- the backend did not answer within the request timeout
+			V.Cmds["local" .. newId()] = {st = "EXPIRED", a = act, tn = e.n, note = "backend did not respond", t = os.clock(), noted = true}
+			notify(label .. ": TIMEOUT (" .. describe(ok, code, d, err) .. ")")
 		else
-			notify(label .. ": " .. describe(ok, code, d, err))
+			notify(label .. ": FAILED (" .. describe(ok, code, d, err) .. ")")
 		end
 		V.Render()
 	end)
 end
+-- while one of my commands is still open: ask the backend for its status every 3s (instead of the slow roster loop); anything still unanswered after ~50s shows TIMEOUT
+function V.Watch()
+	if V.Watching then return end
+	V.Watching = true
+	task.spawn(function()
+		local t0 = os.clock()
+		while V.IsOpen and V.OpenCmds() and os.clock() - t0 < 55 do
+			task.wait(3)
+			if not V.IsOpen then break end
+			V.Poll(); V.Render()
+		end
+		for _, x in pairs(V.Cmds) do
+			if not FINAL[x.st] and os.clock() - x.t >= 50 then x.st, x.note, x.noted = "EXPIRED", "no response in time", true end
+		end
+		V.Watching = false
+		if V.IsOpen then V.Render() end
+	end)
+end
 
-local SHORT = {kick = "KICK", kill = "KILL", deanimate = "DEAN", dizzy = "DIZZ", hallucinate = "HALL", ban = "BAN"}
+local SHORT = {kick = "KICK", kill = "KILL", deanimate = "DEAN", dizzy = "DIZZ", hallucinate = "HALL", silenthell = "HELL", ban = "BAN"}
 local function modButton(c, parent, act, order)
 	local b = newButton(parent, SHORT[act] or act:upper(), order, act == "ban" and Color3.fromRGB(122, 40, 44) or nil)
 	b.Size, b.TextSize = UDim2.new(0, 40, 1, 0), 10
@@ -111221,7 +111480,7 @@ local function cmdLines()
 	for i = 1, math.min(5, #arr) do
 		local x = arr[i]
 		local col = x.st == "EXECUTED" and GREEN or ((x.st == "PENDING" or x.st == "DELIVERED") and YELLOW or RED)
-		out[#out + 1] = "<b>" .. esc(x.a:upper()) .. "</b> " .. esc(x.tn) .. ': <font color="' .. col .. '">' .. esc(x.st) .. "</font>" .. (x.note ~= "" and (' <font color="' .. GRAY .. '">' .. esc(x.note) .. "</font>") or "")
+		out[#out + 1] = "<b>" .. esc(x.a:upper()) .. "</b> " .. esc(x.tn) .. ': <font color="' .. col .. '">' .. esc(shown(x.st)) .. "</font>" .. (x.note ~= "" and (' <font color="' .. GRAY .. '">' .. esc(x.note) .. "</font>") or "")
 	end
 	return table.concat(out, "\n")
 end
@@ -111299,7 +111558,7 @@ local function applyMeta(d)
 				if isNew then x.noted = FINAL[st] == true
 				elseif FINAL[st] and not x.noted then
 					x.noted = true
-					notify(x.a:upper() .. " on " .. x.tn .. ": " .. st .. (x.note ~= "" and (" (" .. x.note .. ")") or ""))
+					notify(x.a:upper() .. " on " .. x.tn .. ": " .. shown(st) .. (x.note ~= "" and (" (" .. x.note .. ")") or ""))
 				end
 			end
 		end
@@ -111498,7 +111757,7 @@ function LPL.AttachViewer(page, closeFn)
 end
 
 -- ---------- registry page (information + status; no switch: registration is automatic while the script runs) ----------
-local EXPLAIN = "While this script runs, your session is automatically listed in the <b>global registry of active UH script users</b> and counted in the active-user total. Verified players, co-owners and the owner can see, in the Live Player Log: your <b>Roblox username, display name and UserId</b>, the <b>experience</b> you are in (name + PlaceId) and the <b>public server ID</b> of that server (they can join it). Authorized moderators can also send your script a moderation action (kick, kill, deanimate, dizzy, hallucinate) and the owner / co-owner can ban you from UH script services.\nNo IP address, device ID or other personal data is collected. Private server IDs are never shared. You can leave the registry for the current session below."
+local EXPLAIN = "While this script runs, your session is automatically listed in the <b>global registry of active UH script users</b> and counted in the active-user total. Verified players, co-owners and the owner can see, in the Live Player Log: your <b>Roblox username, display name and UserId</b>, the <b>experience</b> you are in (name + PlaceId) and the <b>public server ID</b> of that server (they can join it). Authorized moderators can also send your script a moderation action (kick, kill, deanimate, dizzy, hallucinate, Silent Hell) and the owner / co-owner can ban you from UH script services.\nNo IP address, device ID or other personal data is collected. Private server IDs are never shared. You can leave the registry for the current session below."
 function LPL.AttachShare(page, closeFn)
 	local C, L = Enum.TextXAlignment.Center, Enum.TextXAlignment.Left
 	UI.CreateButton(page, "&lt; Back", 20).Activated:Connect(closeFn)
