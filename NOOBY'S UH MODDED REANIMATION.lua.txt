@@ -3886,12 +3886,14 @@ function FX.Cascade(page, onlyVisible)
 if not FX.Settings.Transitions then return end
 local n = 0
 local bb = FX.BtnBase
-for _, d in ipairs(page:GetDescendants()) do
+-- [DANCEFIX] depth-first walk with early exit instead of page:GetDescendants(); lists marked "NoCascade" (Movesets / Dances rows) are never entered
+local function walk(parent)
+for _, d in ipairs(parent:GetChildren()) do
 local isBtn = d:IsA("TextButton") and d:GetAttribute("FXB")
 local isPop = not isBtn and d:IsA("Frame") and (d:GetAttribute("FXS") or d:GetAttribute("FXK"))
 if (isBtn or isPop) and (not onlyVisible or Util.IsGuiVisible(d)) then
 n = n + 1
-if n > 26 then break end
+if n > 26 then return true end
 local sc = isBtn and btnScale[d] or d:FindFirstChildOfClass("UIScale")
 local p0 = isBtn and bb and bb[d] or nil
 local par = d.Parent
@@ -3917,7 +3919,11 @@ FX.Sheen(d)
 end
 end)
 end
+if not (d:IsA("ScrollingFrame") and d:GetAttribute("NoCascade")) and walk(d) then return true end
 end
+return false
+end
+walk(page)
 end
 function FX.BtnAnim(b, sc, basePos, stroke, hover)
 local kind = tonumber(FX.Cfg.BtnAnim) or 1
@@ -64367,6 +64373,158 @@ UIList.SortOrder = Enum.SortOrder.LayoutOrder
 Util.LinkDestroyI2I(ListBox, Container)
 return ListBox
 end
+-- [DANCEFIX] Util.ListGate: incremental ("lazy") row reveal for long item lists (Movesets / Dances).
+-- Rows are still created exactly as before (so search entries, hooks and descriptions all keep working) but only a small window of them is
+-- Visible. Invisible rows cost no layout / text / stroke rendering, so opening, sliding and leaving the page stays cheap. More rows are
+-- revealed in small steps only when the person scrolls near the end of what is already shown.
+Util.ListGate = (function()
+local G = {}
+local gates = setmetatable({}, {__mode = "k"})
+local keyName = setmetatable({}, {__mode = "k"})
+local keyLow = setmetatable({}, {__mode = "k"})
+local FIRST, STEP = 12, 8
+local function keyOf(row)
+local n = row.Name
+if keyName[row] ~= n then
+keyName[row] = n
+keyLow[row] = n:lower()
+end
+return keyLow[row]
+end
+function G.Get(box)
+return gates[box]
+end
+function G.Reset(box)
+local g = gates[box]
+if g then g.Reset() end
+end
+function G.Attach(page)
+local box = page and page:FindFirstChild("List")
+if not box then return nil end
+if gates[box] then return gates[box] end
+local gate = {
+box = box, rows = {}, match = {}, shown = 0, limit = FIRST, filter = "",
+order = #box:GetChildren(), active = false, pumping = false, token = 0, dirty = false, queued = false,
+}
+gates[box] = gate
+box:SetAttribute("NoCascade", true)
+local function needMore()
+local win = box.AbsoluteWindowSize.Y
+if win < 60 then win = 240 end
+return gate.shown < #gate.match and (box.AbsoluteCanvasSize.Y - (box.CanvasPosition.Y + win)) < win * 1.5
+end
+local function grow(k)
+local m = gate.match
+local to = math.min(#m, gate.shown + k)
+for i = gate.shown + 1, to do
+m[i].Visible = true
+end
+gate.shown = to
+if to > gate.limit then gate.limit = to end
+end
+function gate.Sync()
+local rows, m, f, lim = gate.rows, {}, gate.filter, gate.limit
+local w = 0
+for i = 1, #rows do
+local r = rows[i]
+if r.Parent == box then
+w += 1
+rows[w] = r
+local vis = false
+if f == "" or string.find(keyOf(r), f, 1, true) then
+m[#m + 1] = r
+vis = #m <= lim
+end
+if r.Visible ~= vis then r.Visible = vis end
+end
+end
+for i = w + 1, #rows do rows[i] = nil end
+gate.match = m
+gate.shown = math.min(lim, #m)
+gate.dirty = false
+end
+function gate.Add(row)
+local rows = gate.rows
+rows[#rows + 1] = row
+gate.order += 1
+row.LayoutOrder = gate.order
+if gate.filter == "" and not gate.dirty then
+local m = gate.match
+m[#m + 1] = row
+if #m > gate.limit then
+row.Visible = false
+else
+gate.shown = #m
+end
+else
+row.Visible = false
+gate.dirty = true
+if not gate.queued then
+gate.queued = true
+task.defer(function()
+gate.queued = false
+if gate.dirty then gate.Sync() end
+end)
+end
+end
+end
+function gate.Pump()
+if gate.pumping or not gate.active then return end
+if gate.dirty then gate.Sync() end
+if not needMore() then return end
+gate.pumping = true
+local tok = gate.token
+task.spawn(function()
+local guard = 0
+while gate.active and gate.token == tok and WindowContent.Visible and box.Parent ~= nil and needMore() and guard < 300 do
+grow(STEP)
+guard += 1
+task.wait()
+end
+if gate.token == tok then gate.pumping = false end
+end)
+end
+function gate.SetActive(on)
+gate.active = on and true or false
+if gate.active then gate.Pump() end
+end
+function gate.Collapse()
+gate.token += 1
+gate.pumping = false
+local m = gate.match
+for i = FIRST + 1, gate.shown do
+local r = m[i]
+if r then r.Visible = false end
+end
+if gate.shown > FIRST then gate.shown = FIRST end
+gate.limit = FIRST
+end
+function gate.Search(text)
+gate.token += 1
+gate.pumping = false
+gate.filter = string.lower(text or "")
+gate.limit = FIRST
+gate.Sync()
+if gate.active then gate.Pump() end
+end
+function gate.Reset()
+gate.token += 1
+gate.pumping = false
+table.clear(gate.rows)
+gate.match = {}
+gate.shown, gate.limit, gate.dirty = 0, FIRST, false
+gate.order = #box:GetChildren()
+end
+Util.LinkDestroyI2C(box, box:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
+if gate.active and not gate.pumping and needMore() then gate.Pump() end
+end))
+Util.LinkDestroyI2C(box, WindowContent:GetPropertyChangedSignal("Visible"):Connect(function()
+if gate.active and WindowContent.Visible then gate.Pump() end
+end))
+return gate
+end
+return G
+end)()
 function UI.CreateItemListPage()
 local margin = 5
 local Frame = Util.Instance("Frame", WindowContent)
@@ -64487,9 +64645,15 @@ SearchBox.Name = "Search"
 SearchBoxText.Name = "Box"
 ListBox.Name = "List"
 SearchBoxText:GetPropertyChangedSignal("Text"):Connect(function()
+local gate = Util.ListGate and Util.ListGate.Get(ListBox)
+if gate then
+gate.Search(SearchBoxText.Text)
+return
+end
+local txt = SearchBoxText.Text:lower()
 for _,v in ListBox:GetChildren() do
 if v:IsA("GuiObject") then
-v.Visible = not not v.Name:lower():find(SearchBoxText.Text:lower())
+v.Visible = txt == "" or not not v.Name:lower():find(txt, 1, true)
 end
 end
 end)
@@ -64501,7 +64665,12 @@ local Container = Util.Instance("Frame", parent)
 Container.AnchorPoint = Vector2.new(0.5, 0)
 Container.Size = UDim2.new(1, 0, 0, 30)
 Container.BackgroundTransparency = 1
+local gate = Util.ListGate and Util.ListGate.Get(parent)
+if gate then
+gate.Add(Container)
+else
 Container.LayoutOrder = #parent:GetChildren()
+end
 Container.AutomaticSize = Enum.AutomaticSize.Y
 local Padding = Util.Instance("UIPadding", Container)
 Padding.PaddingTop = UDim.new(0, 2)
@@ -95898,69 +96067,78 @@ local OldReanimCharacter = nil
 if type(SaveData.MovesetIndex) == "number" then
 MovementStyleIndex = SaveData.MovesetIndex
 end
+-- [DANCEFIX] shared navigation for the Movesets / Dances list pages: one transition at a time, tween cancelled when interrupted, one-shot
+-- completion callbacks (no accumulating connections), and the lazy row window is collapsed / refilled around the slide so the animation
+-- only ever moves a handful of rows instead of the whole catalogue.
+local function BindListPageNav(page, gate, openButton)
+local nav = {state = "closed", token = 0, tween = nil}
+local function play(goalX, direction, onDone)
+nav.token += 1
+local tok = nav.token
+local old = nav.tween
+nav.tween = nil
+if old then pcall(old.Cancel, old) end
+local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, direction), {
+Position = UDim2.new(0.5, goalX, 0.5, 0),
+})
+nav.tween = tween
+tween:Play()
+tween.Completed:Once(function()
+if nav.token ~= tok then return end
+nav.tween = nil
+onDone()
+end)
+end
+openButton.Activated:Connect(function()
+if nav.state == "opening" or nav.state == "open" then return end
+nav.state = "opening"
+page.Interactable = false
+page.Visible = true
+MainPage.Interactable = false
+play(0, Enum.EasingDirection.In, function()
+nav.state = "open"
+page.Interactable = true
+if gate then gate.SetActive(true) end
+end)
+end)
+page.Back.Activated:Connect(function()
+if nav.state == "closing" or nav.state == "closed" then return end
+nav.state = "closing"
+page.Interactable = false
+page.Visible = true
+MainPage.Interactable = false
+if gate then
+gate.SetActive(false)
+if gate.shown > 40 then gate.Collapse() end
+end
+if Util.Preview then pcall(Util.Preview.Release) end
+play(360, Enum.EasingDirection.Out, function()
+nav.state = "closed"
+MainPage.Interactable = true
+page.Visible = false
+if gate then gate.Collapse() end
+end)
+end)
+end
 local MovesetsPage = UI.CreateItemListPage()
 pcall(function() Util.Search.Titles[MovesetsPage] = "Movesets" end)
 MovesetsPage.ZIndex = 1
 MovesetsPage.Position = UDim2.new(0.5, 360, 0.5, 0)
 MovesetsPage.Interactable = false
 MovesetsPage.Visible = false
+local MovesetsGate = Util.ListGate.Attach(MovesetsPage)
 Util.FCMark("moves")
-UI.CreateButton(MainPage, "Movesets &gt;", 20).Activated:Connect(function()
-MovesetsPage.Interactable = false
-MovesetsPage.Visible = true
-MainPage.Interactable = false
-local tween = TweenService:Create(MovesetsPage, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.In), {
-Position = UDim2.new(0.5, 0, 0.5, 0),
-})
-tween:Play()
-tween.Completed:Connect(function()
-MovesetsPage.Interactable = true
-end)
-end)
-MovesetsPage.Back.Activated:Connect(function()
-MovesetsPage.Interactable = false
-MovesetsPage.Visible = true
-MainPage.Interactable = false
-local tween = TweenService:Create(MovesetsPage, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
-Position = UDim2.new(0.5, 360, 0.5, 0),
-})
-tween:Play()
-tween.Completed:Connect(function()
-MainPage.Interactable = true
-MovesetsPage.Visible = false
-end)
-end)
+local MovesetsOpenButton = UI.CreateButton(MainPage, "Movesets &gt;", 20)
+BindListPageNav(MovesetsPage, MovesetsGate, MovesetsOpenButton)
 local DancesPage = UI.CreateItemListPage()
 pcall(function() Util.Search.Titles[DancesPage] = "Dances" end)
 DancesPage.ZIndex = 1
 DancesPage.Position = UDim2.new(0.5, 360, 0.5, 0)
 DancesPage.Interactable = false
 DancesPage.Visible = false
-UI.CreateButton(MainPage, "Dances &gt;", 20).Activated:Connect(function()
-DancesPage.Interactable = false
-DancesPage.Visible = true
-MainPage.Interactable = false
-local tween = TweenService:Create(DancesPage, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.In), {
-Position = UDim2.new(0.5, 0, 0.5, 0),
-})
-tween:Play()
-tween.Completed:Connect(function()
-DancesPage.Interactable = true
-end)
-end)
-DancesPage.Back.Activated:Connect(function()
-DancesPage.Interactable = false
-DancesPage.Visible = true
-MainPage.Interactable = false
-local tween = TweenService:Create(DancesPage, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
-Position = UDim2.new(0.5, 360, 0.5, 0),
-})
-tween:Play()
-tween.Completed:Connect(function()
-MainPage.Interactable = true
-DancesPage.Visible = false
-end)
-end)
+local DancesGate = Util.ListGate.Attach(DancesPage)
+local DancesOpenButton = UI.CreateButton(MainPage, "Dances &gt;", 20)
+BindListPageNav(DancesPage, DancesGate, DancesOpenButton)
 local KeybindsPage = UI.CreateItemListPage()
 pcall(function() Util.Search.Titles[KeybindsPage] = "Dance Keybinds" end)
 KeybindsPage.ZIndex = 1
@@ -96312,6 +96490,8 @@ table.clear(MovementStyles)
 table.clear(DanceableDances)
 Util.ClearAllChildrenGui(MovesetsPage.List)
 Util.ClearAllChildrenGui(DancesPage.List)
+Util.ListGate.Reset(MovesetsPage.List)
+Util.ListGate.Reset(DancesPage.List)
 RefreshKeybinds()
 end
 local function GetModuleHash(m)
@@ -96337,7 +96517,9 @@ return str
 end
 Util.Preview = (function()
 local P = {Enabled = true, AutoDownload = true, Loop = true}
-local S = {rig = nil, rigFor = nil, building = false, session = nil, stash = Instance.new("Folder")}
+-- [DANCEFIX] S.rig / S.motors = cached avatar rig (reused across sessions); S.cache = parsed .anim tracks + their Animators (small LRU)
+local S = {rig = nil, rigFor = nil, motors = nil, building = false, session = nil, stash = Instance.new("Folder"), cache = {}, order = {}}
+local CACHE_MAX = 8
 local JOINTS = {Torso = true, Head = true, ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true}
 local STATE = {loading = "Loading", playing = "Playing", paused = "Paused", stopped = "Stopped", finished = "Finished", failed = "Unavailable"}
 local function fileExists(path)
@@ -96371,6 +96553,26 @@ return order[a] < order[b]
 end)
 return list
 end
+local function cacheGet(path)
+local e = S.cache[path]
+if e then
+local order = S.order
+for i = #order, 1, -1 do
+if order[i] == path then table.remove(order, i) break end
+end
+order[#order + 1] = path
+end
+return e
+end
+local function cachePut(path, e)
+S.cache[path] = e
+local order = S.order
+order[#order + 1] = path
+while #order > CACHE_MAX do
+local old = table.remove(order, 1)
+S.cache[old] = nil
+end
+end
 local function buildRig()
 local desc
 pcall(function()
@@ -96385,10 +96587,13 @@ if not desc then return nil end
 local ok, rig = pcall(Players.CreateHumanoidModelFromDescription, Players, desc, Enum.HumanoidRigType.R6)
 if not ok or typeof(rig) ~= "Instance" then return nil end
 rig.Name = "PreviewRig"
+local motors = {}
 for _, d in ipairs(rig:GetDescendants()) do
 if d:IsA("BasePart") then
 d.Anchored = d.Name == "HumanoidRootPart"
 d.CanCollide, d.CanTouch, d.CanQuery = false, false, false
+elseif d:IsA("Motor6D") then
+motors[#motors + 1] = d
 elseif d:IsA("LuaSourceContainer") or d:IsA("Sound") then
 d:Destroy()
 end
@@ -96398,27 +96603,35 @@ local hum = rig:FindFirstChildOfClass("Humanoid")
 hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 hum.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
 end)
-return rig
+return rig, motors
 end
-local function getRig(wm)
-if S.rig and S.rig.Parent == wm then return S.rig end
-for _ = 1, 200 do
-if not S.building then break end
+local function rigAlive()
+local r = S.rig
+return r ~= nil and r.Parent ~= nil
+end
+-- [DANCEFIX] the avatar rig is built once per player and reused by every preview session (it used to be rebuilt from a HumanoidDescription whenever the character changed)
+local function getRig(stale)
+local uid = Player.UserId
+if rigAlive() and S.rigFor == uid then return S.rig end
+local waited = 0
+while S.building and waited < 20 do
+if stale() then return nil end
 task.wait(0.1)
+waited += 0.1
 end
-local ch = Player.Character
+if rigAlive() and S.rigFor == uid then return S.rig end
+if stale() then return nil end
 if S.rig then
-local alive = pcall(function() S.rig.Parent = S.stash end)
-if alive and (not ch or S.rigFor == ch) then return S.rig end
 pcall(S.rig.Destroy, S.rig)
-S.rig = nil
+S.rig, S.motors = nil, nil
+for _, e in pairs(S.cache) do e.a = nil end
 end
 S.building = true
-local ok, rig = pcall(buildRig)
+local ok, rig, motors = pcall(buildRig)
 S.building = false
 if ok and rig then
 rig.Parent = S.stash
-S.rig, S.rigFor = rig, ch
+S.rig, S.rigFor, S.motors = rig, uid, motors
 return rig
 end
 return nil
@@ -96426,7 +96639,7 @@ end
 function P.Attach(page, m, kind)
 if P.Enabled == false or type(m) ~= "table" then return end
 if S.session then S.session.Close() end
-local ses = {conns = {}, alive = true, token = 0}
+local ses = {conns = {}, alive = true, token = 0, first = true, posed = false}
 S.session = ses
 local files = animFiles(m, kind)
 local idx, state, looped = 1, "loading", P.Loop ~= false
@@ -96507,28 +96720,44 @@ dist = (math.max(size.Y, size.X * 0.6) / 2) / math.tan(math.rad(cam.FieldOfView 
 end)
 updateCam()
 end
+-- [DANCEFIX] only the 6 cached Motor6Ds are touched, and only if this session actually posed the rig (no more rig:GetDescendants() on every Stop / Back)
 local function resetPose()
-if not S.rig then return end
-for _, d in ipairs(S.rig:GetDescendants()) do
-if d:IsA("Motor6D") then d.Transform = CFrame.identity end
+local ms = S.motors
+if not ms or not ses.posed then return end
+ses.posed = false
+pcall(function()
+for i = 1, #ms do
+ms[i].Transform = CFrame.identity
 end
+end)
 end
 local function halt()
 if hb then hb:Disconnect() hb = nil end
 end
+local function shown()
+return WindowContent.Visible and page.Visible and holder.Parent ~= nil
+end
+-- [DANCEFIX] controlled stepping: Heartbeat (never delays rendering) at a fixed interval, no connection at all while paused / hidden / closed
 local function startLoop()
 halt()
-if not (animator and track) then return end
+if not (animator and track) or not ses.alive or not shown() then return end
 local acc, bad = 0, 0
-hb = RunService.RenderStepped:Connect(function(dt)
-if not WindowContent.Visible then return end
+hb = RunService.Heartbeat:Connect(function(dt)
 acc += dt
-if acc < ((Util.FX.IsLowEnd() or (Util.FX.Gov and Util.FX.Gov.Stride > 1)) and 1 / 30 or 0) then return end
+local FXm = Util.FX
+local iv = (FXm.IsLowEnd() or (FXm.Gov and FXm.Gov.Stride > 1)) and 1 / 20 or (compact and 1 / 30 or 1 / 45)
+if acc < iv then return end
+if not (track and animator) then halt() return end
 t += acc
 acc = 0
 local done = false
 if not looped and t >= track.Time then t, done = track.Time, true end
-if pcall(animator.Step, animator, t) then bad = 0 else bad += 1 end
+if pcall(animator.Step, animator, t) then
+bad = 0
+ses.posed = true
+else
+bad += 1
+end
 if done then
 halt()
 state = "finished"
@@ -96539,6 +96768,16 @@ fail("Preview stopped: the animation data errored while playing.")
 end
 end)
 end
+local function onVisibility()
+if not ses.alive then return end
+if shown() then
+if state == "playing" and animator and track and not hb then startLoop() end
+else
+halt()
+end
+end
+link(WindowContent:GetPropertyChangedSignal("Visible"):Connect(onVisibility))
+link(page:GetPropertyChangedSignal("Visible"):Connect(onVisibility))
 local function loadAnim()
 ses.token += 1
 local tok = ses.token
@@ -96552,14 +96791,19 @@ local file = files[idx]
 if not file then
 return fail("No .anim file is listed in this module's Assets, so there is nothing to preview (it may animate procedurally in code).")
 end
-local rig = getRig(wm)
+-- [DANCEFIX] first load waits for the page slide-in to finish so rig parenting / parsing never lands inside the transition
+if ses.first then
+ses.first = false
+local w = 0
+while w < 0.4 and not stale() do
+task.wait(0.1)
+w += 0.1
+end
 if stale() then return end
-if not rig then return fail("Could not build a preview rig from your avatar (avatar data unavailable).") end
-if rig.Parent ~= wm then
-rig.Parent = wm
-frameRig(rig)
 end
 local path = AssetGetPathFromFilename(file)
+local entry = cacheGet(path)
+if not entry then
 if not fileExists(path) then
 if not P.AutoDownload then return fail("Animation file not downloaded yet: " .. file) end
 pcall(AssetDownload, file)
@@ -96571,6 +96815,8 @@ end
 if stale() then return end
 if not fileExists(path) then return fail("Could not download " .. file .. ".") end
 end
+task.wait()
+if stale() then return end
 local ok, tr = pcall(AnimLib.Track.fromfile, path)
 if stale() then return end
 if not ok or type(tr) ~= "table" or type(tr.Keyframes) ~= "table" or #tr.Keyframes == 0 then
@@ -96583,8 +96829,23 @@ if JOINTS[p.Name] then matched = true break end
 end
 if matched then break end
 end
-if not matched then return fail(file .. " does not target an R6 rig, so it cannot be previewed.") end
-local a = AnimLib.Animator.new()
+entry = {tr = tr, ok = matched}
+cachePut(path, entry)
+end
+if not entry.ok then return fail(file .. " does not target an R6 rig, so it cannot be previewed.") end
+local rig = getRig(stale)
+if stale() then return end
+if not rig then return fail("Could not build a preview rig from your avatar (avatar data unavailable).") end
+if rig.Parent ~= wm then
+rig.Parent = wm
+frameRig(rig)
+end
+local tr = entry.tr
+local a = entry.a
+if not a then
+a = AnimLib.Animator.new()
+entry.a = a
+end
 a.rig, a.track, a.speed = rig, tr, 1
 a.looped = looped and tr.Time > 0
 track, animator, t, state = tr, a, 0, "playing"
@@ -96675,13 +96936,17 @@ end))
 link(vp.InputEnded:Connect(function(i)
 if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end))
+-- Release = stop all work for this session (token bump cancels any pending download / parse, stepping disconnected, rig returned to the stash)
 function ses.Release()
 ses.token += 1
 halt()
 track, animator = nil, nil
-if S.rig then
-pcall(resetPose)
-pcall(function() S.rig.Parent = S.stash end)
+local rig = S.rig
+if rig then
+resetPose()
+if rig.Parent == wm then
+pcall(function() rig.Parent = S.stash end)
+end
 end
 end
 function ses.Close()
@@ -96749,24 +97014,37 @@ return nil
 end,
 })
 end)
+-- [DANCEFIX] one detail page per row at a time; the exit runs once (no stacked Back activations), uses a single one-shot completion callback and
+-- always tears the page (and with it the preview session) down, even if the tween's Completed event never fires
+local detail
 Util.LinkDestroyI2C(item, item.Activated:Connect(function()
+if detail and detail.Parent then return end
 local page = UI.CreatePage()
+detail = page
 page.ZIndex = 2
 page.Position = UDim2.new(0.5, 360, 0.5, 0)
 page.Interactable = false
 page.Visible = true
+local leaving = false
 UI.CreateButton(page, " &lt; Hurry back", 20).Activated:Connect(function()
+if leaving then return end
+leaving = true
 page.Interactable = false
 pcall(Util.Preview.Release)
 MovesetsPage.Interactable = false
 local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 Position = UDim2.new(0.5, 360, 0.5, 0),
 })
-tween:Play()
-tween.Completed:Connect(function()
+local finished = false
+local function finish()
+if finished then return end
+finished = true
 MovesetsPage.Interactable = true
-page:Destroy()
-end)
+if page.Parent then page:Destroy() end
+end
+tween:Play()
+tween.Completed:Once(finish)
+task.delay(3, finish)
 end)
 UI.CreateSeparator(page)
 UI.CreateText(page, m.Name, 20, Enum.TextXAlignment.Left)
@@ -96783,13 +97061,14 @@ MovementStyleIndex = table.find(MovementStyles, m)
 end)
 UI.CreateSeparator(page)
 UI.CreateText(page, "* Configuration *", 15, Enum.TextXAlignment.Center)
-m.Config(page)
+local cfgOk, cfgErr = pcall(m.Config, page)
+if not cfgOk then warn("[Movesets] config error for " .. tostring(m.Name) .. ": " .. tostring(cfgErr)) end
 MovesetsPage.Interactable = false
 local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.In), {
 Position = UDim2.new(0.5, 0, 0.5, 0),
 })
 tween:Play()
-tween.Completed:Connect(function()
+tween.Completed:Once(function()
 page.Interactable = true
 end)
 end))
@@ -96837,24 +97116,35 @@ return nil
 end,
 })
 end)
+local detail
 Util.LinkDestroyI2C(item, item.Activated:Connect(function()
+if detail and detail.Parent then return end
 local page = UI.CreatePage()
+detail = page
 page.ZIndex = 2
 page.Position = UDim2.new(0.5, 360, 0.5, 0)
 page.Interactable = false
 page.Visible = true
+local leaving = false
 UI.CreateButton(page, " &lt; Hurry back", 20).Activated:Connect(function()
+if leaving then return end
+leaving = true
 page.Interactable = false
 pcall(Util.Preview.Release)
 DancesPage.Interactable = false
 local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 Position = UDim2.new(0.5, 360, 0.5, 0),
 })
-tween:Play()
-tween.Completed:Connect(function()
+local finished = false
+local function finish()
+if finished then return end
+finished = true
 DancesPage.Interactable = true
-page:Destroy()
-end)
+if page.Parent then page:Destroy() end
+end
+tween:Play()
+tween.Completed:Once(finish)
+task.delay(3, finish)
 end)
 UI.CreateSeparator(page)
 UI.CreateText(page, m.Name, 20, Enum.TextXAlignment.Left)
@@ -96875,13 +97165,14 @@ end
 end)
 UI.CreateSeparator(page)
 UI.CreateText(page, "* Configuration *", 15, Enum.TextXAlignment.Center)
-m.Config(page)
+local cfgOk, cfgErr = pcall(m.Config, page)
+if not cfgOk then warn("[Dances] config error for " .. tostring(m.Name) .. ": " .. tostring(cfgErr)) end
 DancesPage.Interactable = false
 local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.In), {
 Position = UDim2.new(0.5, 0, 0.5, 0),
 })
 tween:Play()
-tween.Completed:Connect(function()
+tween.Completed:Once(function()
 page.Interactable = true
 end)
 end))
