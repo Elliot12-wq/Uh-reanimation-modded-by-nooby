@@ -68890,6 +68890,92 @@ Kick = function(msg) pcall(function() Player:Kick(msg) end) end,
 },
 }
 Env.Guard = Guard
+-- Visible-body resolver for the banner anchor, banner Teleport and Bring Users. While reanimated, a player's REAL root is parked (void / sky / 16 studs under the fake) and that real character is the reset one.
+-- Local player: the active fake character (Reanimate.Character, read fresh on every call, never cached). Other clients never see that local fake rig, only replicated parts, so for them the visible body is
+-- every body part the player's replicated model(s) carry that is NOT around the parked root: limbs posed onto the fake rig, Accessory / Tool handles (Hat, Hair, Hat+Hair, Accessories, Tool reanimators: the
+-- hats / tools stay in the character, or in the left-behind model carrying the player's name when the character was replaced). Banner = highest such part (top of the hats / head), Teleport / Bring = the part
+-- nearest the centre of the group around it. A normal player's parts all sit around the root, so nothing changes for them. Returns character, head-like part, root-like part.
+do
+local function parts(c)
+if not (c and c.Parent) then return nil, nil end
+local head, root = c:FindFirstChild("Head"), c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart
+if head and not head:IsA("BasePart") then head = nil end
+if root and not root:IsA("BasePart") then root = nil end
+return head, root
+end
+local function finite(v) return v.X == v.X and v.Y == v.Y and v.Z == v.Z and v.Magnitude < 1e6 end
+local function carry(m, out)
+for _, v in ipairs(m:GetChildren()) do
+if v:IsA("BasePart") then
+if v.Name ~= "HumanoidRootPart" then out[#out + 1] = v end
+elseif v:IsA("Accessory") or v:IsA("Tool") then
+local h = v:FindFirstChild("Handle")
+if h and h:IsA("BasePart") then out[#out + 1] = h end
+end
+end
+end
+local function visible(models, root)
+local all = {}
+for _, m in ipairs(models) do carry(m, all) end
+local rp = root and root.Position
+local far, top = {}, nil
+for _, v in ipairs(all) do
+local pp = v.Position
+if finite(pp) and (not rp or (pp - rp).Magnitude > 12) then
+far[#far + 1] = v
+if not top or pp.Y > top.Position.Y then top = v end
+end
+end
+if not top then return nil end
+local tp, sum, group = top.Position, Vector3.zero, {}
+for _, v in ipairs(far) do
+local pp = v.Position
+if (pp - tp).Magnitude <= 14 then group[#group + 1] = v; sum += pp end
+end
+local centre, mid, best = sum / #group, top, math.huge
+for _, v in ipairs(group) do
+local d = (v.Position - centre).Magnitude
+if d < best then best, mid = d, v end
+end
+return top, mid
+end
+local scanAt, byName = -1e9, {}
+local function leftovers(name, real) -- models carrying a player's name that are not their current character (one shared workspace scan every 1.5 s)
+local now = os.clock()
+if now - scanAt > 1.5 then
+scanAt, byName = now, {}
+for _, m in ipairs(workspace:GetChildren()) do
+if m:IsA("Model") and Players:FindFirstChild(m.Name) then
+local t = byName[m.Name]
+if not t then t = {}; byName[m.Name] = t end
+t[#t + 1] = m
+end
+end
+end
+local out = {}
+for _, m in ipairs(byName[name] or {}) do
+if m ~= real and m.Parent then out[#out + 1] = m end
+end
+return out
+end
+Env.ActiveBody = function(p)
+if p == Player then
+local c = Env.GetLocalCharacter()
+local head, root = parts(c)
+return c, head, root
+end
+local real = p and p.Character
+local head, root = parts(real)
+if not p then return real, head, root end
+local top, mid = visible((real and real.Parent) and {real} or {}, root)
+if not top then
+local lo = leftovers(p.Name, real)
+if #lo > 0 then top, mid = visible(lo, root) end
+end
+if top then return top:FindFirstAncestorOfClass("Model") or real, top, mid end
+return real, head, root
+end
+end
 Util.ModActions = Env.ModActions -- Live Player Log command channel (Kill / Deanimate / Kick)
 Env.Sign = function(path, body, bind) return body end -- no key, no SHA-256: the backend recognises the owner / co-owner / verified player by userId from roles.json on GitHub
 local EMBED = Cfg.Embedded == false and {} or {
@@ -69049,8 +69135,9 @@ return function(Env)
 		local W = (role and role.tag) and 340 or 268
 		local self = setmetatable({Opts = o, Seed = math.random() * 10, Alive = true, Spark = {}, G = {glow = {}, shine = {}, spark = {}, ring = {}, depth = {}},
 			LastBG = os.clock(), Role = role, RoleColor = role and role.color, W = W, CurA = a, St = st0}, Banner)
-		-- inline action buttons: only ever on plain (unverified) banners; verified / owner / co-owner banners never get them
-		local acts = (not role and type(o.acts) == "table" and #o.acts > 0) and o.acts or nil
+		-- inline action buttons: drawn for whatever the receiver granted for THIS userId (o.acts is already permission-checked per target: plain banners, and verified
+		-- banners when the viewer is the OWNER). Width / positions below are derived from this banner's own W, so plain (268) and rank (340) cards both work.
+		local acts = (type(o.acts) == "table" and #o.acts > 0) and o.acts or nil
 		local extra = acts and 2 * (AX + math.min(#acts, ACOLS) * (AW + AG) + 4) or 0 -- the gui is centred on the card, so reserve the room on both sides
 		local gui = new("BillboardGui", {Name = "UhBanner_" .. tostring(o.userId), AlwaysOnTop = true, Size = UDim2.fromOffset(W + 10 + extra, 150),
 			StudsOffset = Vector3.new(0, 1.7, 0), MaxDistance = 150, LightInfluence = 0, ResetOnSpawn = false,
@@ -69209,30 +69296,50 @@ return function(Env)
 		end
 	end
 
-	function Banner:Contains(p) -- p = point in viewport coordinates
-		local cam, part = workspace.CurrentCamera, self.Gui.Adornee
-		if not (self.Alive and self.Shown and cam and part and self.Gui.Enabled) then return false end
-		if (cam.CFrame.Position - part.Position).Magnitude > self.Gui.MaxDistance then return false end
-		local v, on = cam:WorldToViewportPoint(part.Position + cam.CFrame.UpVector * self.Gui.StudsOffset.Y)
-		if not on then return false end
-		local s = self.Scale.Scale
-		return math.abs(p.X - v.X) <= self.W / 2 * s and p.Y >= v.Y - 78 * s and p.Y <= v.Y - 14 * s
-	end
-
-	function Banner:HitAction(p) -- p = point in viewport coordinates; returns the key of the inline button under p (or nil)
-		if not self.ActBtn then return nil end
+	function Banner:_screen() -- viewport position of THIS banner's gui centre + its UIScale (nil while it can't be hit: hidden / not on screen / too far)
 		local cam, part = workspace.CurrentCamera, self.Gui.Adornee
 		if not (self.Alive and self.Shown and cam and part and self.Gui.Enabled) then return nil end
 		if (cam.CFrame.Position - part.Position).Magnitude > self.Gui.MaxDistance then return nil end
 		local v, on = cam:WorldToViewportPoint(part.Position + cam.CFrame.UpVector * self.Gui.StudsOffset.Y)
 		if not on then return nil end
-		local s = self.Scale.Scale
+		return v, self.Scale.Scale
+	end
+
+	local function inCard(self, p, v, s)
+		return math.abs(p.X - v.X) <= self.W / 2 * s and p.Y >= v.Y - 78 * s and p.Y <= v.Y - 14 * s
+	end
+
+	local function inAction(self, b, p, v, s)
+		-- holder is anchored bottom-centre on the gui centre (v) and is 78 tall: its right edge is v.X + W/2, its top is v.Y - 78
+		local x0 = v.X + (self.W / 2 + AX + b.Col * (AW + AG)) * s
+		local y0 = v.Y + (AY + b.Row * (AH + AG) - 78) * s
+		return p.X >= x0 - 3 and p.X <= x0 + (AW + 3) * s and p.Y >= y0 - 3 and p.Y <= y0 + (AH + 3) * s
+	end
+
+	function Banner:Contains(p) -- p = point in viewport coordinates
+		local v, s = self:_screen()
+		return v ~= nil and inCard(self, p, v, s)
+	end
+
+	function Banner:HitAction(p) -- p = point in viewport coordinates; returns the key of the inline button under p (or nil)
+		if not self.ActBtn then return nil end
+		local v, s = self:_screen()
+		if not v then return nil end
 		for key, b in pairs(self.ActBtn) do
-			-- holder is anchored bottom-centre on the gui centre (v) and is 78 tall: its right edge is v.X + W/2, its top is v.Y - 78
-			local x0 = v.X + (self.W / 2 + AX + b.Col * (AW + AG)) * s
-			local y0 = v.Y + (AY + b.Row * (AH + AG) - 78) * s
-			if p.X >= x0 - 3 and p.X <= x0 + (AW + 3) * s and p.Y >= y0 - 3 and p.Y <= y0 + (AH + 3) * s then return key end
+			if inAction(self, b, p, v, s) then return key end
 		end
+		return nil
+	end
+
+	function Banner:HitTest(p) -- one call for the receiver: ("act", key, depth) / ("card", nil, depth) / nil. depth = distance from the camera: when banners overlap, the NEAREST one is drawn on top and alone gets the tap
+		local v, s = self:_screen()
+		if not v then return nil end
+		if self.ActBtn then
+			for key, b in pairs(self.ActBtn) do
+				if inAction(self, b, p, v, s) then return "act", key, v.Z end
+			end
+		end
+		if inCard(self, p, v, s) then return "card", nil, v.Z end
 		return nil
 	end
 
@@ -69639,6 +69746,26 @@ return function(Env, UI)
 	end
 	function R.IsWhitelisted(uid) return rawRole(uid) ~= nil end
 
+	-- OWNER-only override of verified immunity. OWNER = the "owner" rank of roles.json (only roles.json styles carry tag "OWNER": whitelist.json can never grant a tag).
+	-- Plain verified moderators can be moderated by the OWNER and nobody else; OWNER / CO-OWNER targets and self-targeting stay blocked for everyone.
+	local function isOwner(uid) local r = uid and roleOf(uid); return r ~= nil and r.tag == "OWNER" end
+	function R.IsOwner(uid) return isOwner(tonumber(uid)) end
+	function R.CanTarget(uid) -- may THIS viewer moderate that player at all? (rights per action are checked separately)
+		uid = tonumber(uid)
+		if not uid or uid == Env.Player.UserId then return false end
+		local r = rawRole(uid)
+		if not r then return true end -- ordinary user
+		return r.tag == nil and isOwner(Env.Player.UserId) -- plain verified moderator: OWNER only; OWNER / CO-OWNER: immune
+	end
+	function R.CanBeModeratedBy(by) -- recipient side: may a command from `by` act on THIS account?
+		by = tonumber(by)
+		if not by or by == Env.Player.UserId or not roleOf(by) then return false end -- sender must be OWNER / CO-OWNER / verified
+		local me = rawRole(Env.Player.UserId)
+		if not me then return true end -- ordinary user: existing rule
+		if me.tag then return false end -- OWNER / CO-OWNER recipients are immune
+		return isOwner(by) and Players:GetPlayerByUserId(by) ~= nil -- plain verified recipient: only an OWNER (roles.json) who is in this server
+	end
+
 	R.RoleOf = roleOf
 	local function clean(s, n) return (tostring(s or ""):gsub("%c", "")):sub(1, n) end
 	-- per-user banner style: only well-formed hex colours + clamped numbers ever reach the UI (never raw payload data)
@@ -69665,8 +69792,8 @@ return function(Env, UI)
 		{key = "kick", label = "Kick", color = Color3.fromRGB(196, 146, 38), mod = true},
 		{key = "ban", label = "Ban", color = Color3.fromRGB(190, 50, 60), ban = true},
 	}
-	local function actionsFor(uid) -- the buttons THIS viewer may use on that player's banner; nothing on yourself, and nothing on verified / owner / co-owner (they are immune)
-		if uid == Env.Player.UserId or rawRole(uid) then return nil end
+	local function actionsFor(uid) -- the buttons THIS viewer may use on that player's banner; nothing on yourself or on OWNER / CO-OWNER; verified moderators only for the OWNER (R.CanTarget)
+		if not R.CanTarget(uid) then return nil end
 		local me = roleOf(Env.Player.UserId)
 		if not me then return nil end
 		local owner = me.tag == "OWNER" or me.tag == "CO-OWNER" -- owner / co-owner always SEE every button; a tap reports what is missing (module) via R.Block
@@ -69694,15 +69821,21 @@ return function(Env, UI)
 	local function sig(o) return o.title .. "|" .. o.subtitle .. "|" .. o.image .. "|" .. (o.role and (o.role.tag or "v") or "") .. "|" .. o.actKey end
 
 	local function targetPart(uid)
-		local char
+		local char, part
 		if uid == Env.Player.UserId then
 			char = Env.GetLocalCharacter() -- reanimated character when active, real one otherwise
 		else
 			local p = Players:GetPlayerByUserId(uid)
-			char = p and p.Character
+			if p and Env.ActiveBody then
+				local head, root
+				char, head, root = Env.ActiveBody(p) -- the visible reanimated body, not the reset real character
+				part = head or root
+			else
+				char = p and p.Character
+			end
 		end
 		if not char or not char.Parent then return nil end
-		local part = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
+		part = part or char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart") or char.PrimaryPart
 		if part and part:IsA("BasePart") and part.Parent then return part end
 	end
 	local function remove(uid)
@@ -69770,7 +69903,13 @@ end
 	function R.Teleport(uid) -- stand 4 studs in front of the player, facing them
 		if os.clock() - (R.LastTP or 0) < 0.6 then return end
 		local p = Players:GetPlayerByUserId(uid)
-		local tr = p and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+		local tr
+		if p and Env.ActiveBody then
+			local _, head, root = Env.ActiveBody(p) -- visible reanimated body: the real HumanoidRootPart is parked in the void while they reanimate
+			tr = root or head
+		else
+			tr = p and p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+		end
 		local me = Env.GetLocalCharacter() -- reanimated character when active
 		if not (tr and me and me.Parent) then return end
 		R.LastTP = os.clock()
@@ -69798,13 +69937,13 @@ end
 	function R.CanModerate() return Env.Mod ~= nil and Env.Mod.CanModerate() end -- verified moderators + owner / co-owner
 	function R.OnBannerClick(uid, pt)
 		local mod, bl = R.CanModerate(), R.CanBlacklist()
-		if not (mod or bl) or rawRole(uid) then return R.Teleport(uid) end -- whitelisted / verified / owner banners (and everyone without rights) just teleport
+		if not (mod or bl) or not R.CanTarget(uid) then return R.Teleport(uid) end -- owner / co-owner banners, verified banners (unless you are the OWNER) and everyone without rights just teleport
 		local p = Players:GetPlayerByUserId(uid)
 		if not p then return end
 		R.CloseMenu()
 		local items = {{"Teleport", Color3.fromRGB(60, 110, 200), function() R.Teleport(uid) end}}
 		if mod then table.insert(items, {"Users...", Color3.fromRGB(60, 140, 120), function() R.OpenUsers() end}) end
-		if mod then -- moderators: kick / kill / deanimate only (relayed to script users, never to verified players)
+		if mod then -- moderators: relayed to script users (verified players only when the sender is the OWNER; never owner / co-owner)
 			for _, a in ipairs({{"Kill", "kill"}, {"Deanimate", "deanimate"}, {"Kick", "kick"}, {"Bring", "bring"}, {"Hallucinate", "hallucinate"}, {"Dizzy", "dizzy"}, {"Silent Hell", "silenthell"}}) do
 				table.insert(items, {a[1], Color3.fromRGB(205, 125, 40), function()
 					task.spawn(function()
@@ -69841,7 +69980,7 @@ end
 		end
 	end
 
-	-- active script users: everyone with a live banner who isn't you and isn't verified / owner / co-owner. One tap = Bring / Hallucinate / Dizzy on that user.
+	-- active script users: everyone with a live banner you may moderate (not you, not owner / co-owner; verified moderators only for the OWNER). One tap = Bring / Hallucinate / Dizzy / Silent Hell on that user.
 	-- Same single permission check as the tap-a-banner menu (R.CanModerate = owner / co-owner / verified); the backend checks the sender again.
 	local picker
 	function R.CloseUsers() if picker then picker:Destroy(); picker = nil end end
@@ -69870,7 +70009,7 @@ end
 		local n = 0
 		for uid in pairs(R.Banners) do
 			local p = Players:GetPlayerByUserId(uid)
-			if p and uid ~= Env.Player.UserId and not rawRole(uid) then
+			if p and R.CanTarget(uid) then
 				n += 1
 				local row = Instance.new("Frame", list)
 				row.Size, row.BackgroundTransparency = UDim2.new(1, -6, 0, 30), 1
@@ -69962,12 +70101,13 @@ end
 			end
 		end)
 		table.insert(conns, RS.Heartbeat:Connect(function() -- re-anchor: a cached part is revalidated with Name + IsDescendantOf; the full lookup only runs for the local player (reanim start/stop) or a stale / unresolved part (respawn)
-			local hidden, me = R.Hidden, Env.Player.UserId
+			local hidden, me, now = R.Hidden, Env.Player.UserId, os.clock()
 			for uid, e in pairs(R.Banners) do
 				local part = e.Part
 				if hidden then
 					part = nil
-				elseif uid == me or not part or part.Name ~= "Head" or not part:IsDescendantOf(workspace) then
+				elseif uid == me or not part or part.Name ~= "Head" or not part:IsDescendantOf(workspace) or now - (e.Chk or 0) > 0.5 then -- remote banners are re-resolved twice a second: a player may start / stop reanimating
+					e.Chk = now
 					part = targetPart(uid)
 				end
 				if part ~= e.Part then e.Part = part; e.UI:SetAdornee(part) end
@@ -69980,13 +70120,16 @@ end
 				if gp or R.Hidden or (t ~= Enum.UserInputType.MouseButton1 and t ~= Enum.UserInputType.Touch) then return end
 				R.CloseMenu()
 				local pt = Vector2.new(i.Position.X, i.Position.Y) + Env.GuiService:GetGuiInset()
+				-- every banner under the tap competes; the NEAREST one is drawn on top and alone gets the tap, so a button / card can never be credited to another player's banner.
+				-- The winner's own userId (the R.Banners key) travels with its button key into R.OnAction.
+				local bestUid, bestKey, bestZ
 				for uid, e in pairs(R.Banners) do
-					if uid ~= Env.Player.UserId then
-						local key = e.ActKey ~= "" and e.UI:HitAction(pt) -- inline moderation buttons beside the banner
-						if key then return R.OnAction(uid, key) end
-						if e.UI:Contains(pt) then return R.OnBannerClick(uid, pt) end
-					end
+					local kind, key, z = e.UI:HitTest(pt)
+					if kind and (not bestZ or z < bestZ) then bestUid, bestKey, bestZ = uid, (kind == "act" and key or nil), z end
 				end
+				if not bestUid or bestUid == Env.Player.UserId then return end -- nothing hit, or your own (nearer) banner covers the spot
+				if bestKey then return R.OnAction(bestUid, bestKey) end
+				return R.OnBannerClick(bestUid, pt)
 			end))
 		end
 		if localOnly then return end
@@ -70082,7 +70225,7 @@ end
 ModTools = [==[
 -- ModTools.lua | moderator actions (kill / deanimate / kick / bring / hallucinate / dizzy) relayed to OTHER SCRIPT USERS.
 -- Who may send: verified moderators (whitelist.json) + owner / co-owner, recognised by userId from roles.json on GitHub (no key).
--- Who can be hit: only players running this script, and never verified players / owner / co-owner. The target is always notified.
+-- Who can be hit: only players running this script, never owner / co-owner; verified players only by the OWNER (roles.json "owner", R.CanTarget). The target is always notified.
 -- bring / hallucinate / dizzy: implemented in VerifiedPlayerFeatures.lua (Env.Fx): recipient is notified, no prompt, no cooldown, the temporary effects (hallucinate 60 s, dizzy 20 s) clean themselves up.
 -- Env needs: Player, Players, RunService, HttpService, Request, Backend, Room, Token, ModActions {Kill, Deanimate, Kick(msg)}, Fx (VerifiedPlayerFeatures.lua)
 return function(Env, R)
@@ -70102,7 +70245,7 @@ return function(Env, R)
 		end
 		if not ACTIONS[action] then return false, "bad action" end
 		if not M.CanModerate() then return false, "moderators only" end
-		if R.IsWhitelisted(target) then return false, "verified players are immune" end
+		if not R.CanTarget(target) then return false, R.IsWhitelisted(target) and "verified players are immune" or "bad target" end
 		local ok, res = pcall(Env.Request, {Url = Env.Backend .. "/mod", Method = "POST", Headers = {["Content-Type"] = "application/json"},
 			Body = HS:JSONEncode(Env.Sign("/mod", {room = Env.Room, userId = Env.Player.UserId, token = Env.Token, target = target, action = action}, tostring(target) .. ":" .. action))})
 		if not ok then return false, tostring(res) end
@@ -70118,8 +70261,7 @@ return function(Env, R)
 		if Env.Fx and Env.Fx.Receive(c) then return end -- bring / hallucinate / dizzy
 		if type(c) ~= "table" or not ACTIONS[c.action] then return end
 		local by = tonumber(c.by)
-		if not by or by == Env.Player.UserId or not R.RoleOf(by) then return end -- sender must be a verified moderator / owner / co-owner
-		if R.IsWhitelisted(Env.Player.UserId) then return end -- whitelisted / verified players, owner and co-owner are immune
+		if not R.CanBeModeratedBy(by) then return end -- sender must be a verified moderator / owner / co-owner; verified recipients accept ONLY an OWNER in this server, owner / co-owner recipients nobody
 		local p = Players:GetPlayerByUserId(by)
 		local name = p and p.Name or "a moderator"
 		local A = Env.ModActions or {}
@@ -70171,7 +70313,7 @@ VerifiedPlayerFeatures = [==[
 -- VerifiedPlayerFeatures.lua | Bring Users / Hallucinate Users / Dizzy / Silent Hell (10 s, recipient-side, ends with the existing Kill)
 -- ONE permission gate for all three features: OWNER, CO-OWNER and VERIFIED players have identical access. Roles come from roles.json + whitelist.json through
 -- BannerReceiver.RoleOf (nothing hardcoded); anyone else gets no controls and cannot send.
--- Targets: only OTHER script users with a live banner (R.Banners), never owner / co-owner / verified. The target is always notified (toast), no prompt.
+-- Targets: only OTHER script users with a live banner (R.Banners), never owner / co-owner; verified players only when the sender is the OWNER (R.CanTarget). The target is always notified (toast), no prompt.
 -- Env.Fx.SetEnabled(false) turns the effects off for a user entirely.
 -- Transport: ModTools relays the request through the backend's /mod (the backend re-checks the sender); the recipient's ModTools hands every queued command to F.Receive.
 -- Durations are effect lengths, NOT cooldowns (hallucinate 60 s, dizzy 20 s). Every effect registers a stop function: expiry, re-trigger, respawn and unload all clean up.
@@ -70197,7 +70339,7 @@ return function(Env, R)
 		if not F.CanUse() then return false, "verified players, owner and co-owner only" end
 		target = tonumber(target)
 		if not target or target == Env.Player.UserId then return false, "bad target" end
-		if R.IsWhitelisted(target) then return false, "verified players are immune" end
+		if not R.CanTarget(target) then return false, "verified players are immune" end
 		if not (R.Banners and R.Banners[target] and Players:GetPlayerByUserId(target)) then return false, "not an active script user" end
 		local body = {room = Env.Room, userId = Env.Player.UserId, token = Env.Token, key = Env.ModKey, target = target, action = action}
 		if Env.Sign then body = Env.Sign("/mod", body, tostring(target) .. ":" .. action) end
@@ -70280,8 +70422,15 @@ return function(Env, R)
 	end
 
 	local function bring(sp)
-		local sch = sp.Character
-		local sr = sch and sch:FindFirstChild("HumanoidRootPart")
+		local sch, sr
+		if Env.ActiveBody then
+			local sh
+			sch, sh, sr = Env.ActiveBody(sp) -- the moderator's visible reanimated body, never their reset real character
+			sr = sr or sh
+		else
+			sch = sp.Character
+			sr = sch and sch:FindFirstChild("HumanoidRootPart")
+		end
 		local me = myChar()
 		if not (sr and me and me.Parent) then return toast("Bring failed: " .. sp.Name .. " is not loaded for you") end
 		local root = me:FindFirstChild("HumanoidRootPart")
@@ -70720,7 +70869,7 @@ return function(Env, R)
 		if type(c) ~= "table" or not ACT[c.action] then return false end
 		local by, action = tonumber(c.by), c.action
 		if not by or by == Env.Player.UserId or not F.Can(by) then return true end -- sender must be owner / co-owner / verified
-		if not F.Enabled or R.IsWhitelisted(Env.Player.UserId) then return true end -- switched off, or an immune role
+		if not F.Enabled or not R.CanBeModeratedBy(by) then return true end -- switched off, or an immune recipient (verified recipients accept only an OWNER in this server)
 		local sp = Players:GetPlayerByUserId(by)
 		if not sp then return true end -- the sender must actually be in this server
 		if action == "bring" then
@@ -70845,7 +70994,7 @@ return function(Env)
 		if not (Env.IsOwner and Env.IsOwner()) then return false, "owner / co-owner only" end
 		local body = {room = Env.Room, by = Env.Player.Name, byId = Env.Player.UserId}
 		for k, v in pairs(extra) do body[k] = v end
-		if body.banDevice or path:sub(1, 8) == "/device/" then -- permanent device bans also need the owner secret set on the backend (read from UhBannerConfig.OwnerKey, never stored in this script)
+		if body.banDevice or path == "/blacklist" or path:sub(1, 8) == "/device/" then -- permanent device bans (and an OWNER blacklisting a verified moderator) also use the owner secret set on the backend (read from UhBannerConfig.OwnerKey, never stored in this script)
 			local okC, c = pcall(function() return (getgenv and getgenv().UhBannerConfig or {}).OwnerKey end)
 			if okC and type(c) == "string" and c ~= "" then body.key = c end
 		end
