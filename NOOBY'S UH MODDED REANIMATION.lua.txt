@@ -99099,11 +99099,20 @@ function startSession()
 end
 function stopSession(reason)
 	local s = S
-	if not s then return end
+	if not s then
+		-- already stopped: if the editor window is somehow still on screen (an earlier close was cut short), take it down now
+		pcall(function() if U.root and U.root.Visible and U.onClose then U.onClose() end end)
+		pcall(FC.unlockMouse)
+		return
+	end
 	S, Drag, PD = nil, nil, nil -- first: the regular moveset / dance loop takes over again on the next frame
-	FC.disable(); FC.unlock() -- Freecam off + camera restored + character controls restored (Back / close / page hidden all land here)
+	pcall(function() if U.root then U.root.Visible = false end end) -- the window goes away FIRST: a failing cleanup step below can no longer leave a stuck / frozen editor on screen
+	pcall(FC.disable) -- Freecam off + camera restored
+	pcall(FC.unlock) -- character controls restored (Back / close / page hidden all land here)
+	pcall(FC.unlockMouse)
+	pcall(lockScroll, false)
 	for _, c in s.conns do pcall(c.Disconnect, c) end
-	table.clear(s.conns)
+	pcall(table.clear, s.conns)
 	if s.live then pcall(s.live.Destroy, s.char); s.live = nil end
 	pcall(function() s.page.ScrollingEnabled = true end)
 	pcall(Scene.teardown)
@@ -99115,7 +99124,7 @@ function stopSession(reason)
 		end)
 	end
 	s.track, s.animator, s.char = nil, nil, nil
-	if U.nameBox then Work.names[Work.mode] = U.nameBox.Text end
+	pcall(function() if U.nameBox then Work.names[Work.mode] = U.nameBox.Text end end)
 	pcall(refreshStatus)
 	pcall(refreshTransport)
 	if U.onClose then pcall(U.onClose) end
@@ -99677,10 +99686,7 @@ local function buildEditor()
 		refreshTransport()
 		if U.gzForce then U.gzForce() end
 	end
-	local function closeSlot()
-		Studio.Leave()
-		if U.closeFn then U.closeFn() end
-	end
+	local function closeSlot() Studio.Close() end
 	local function onSave()
 		if cleanName(U.nameBox.Text) == "" then
 			openPopup("settings")
@@ -101151,11 +101157,13 @@ local function buildEditor()
 	root:GetPropertyChangedSignal("AbsoluteSize"):Connect(layout)
 	U.trk:GetPropertyChangedSignal("AbsoluteSize"):Connect(function() if U.built and not U.min then drawTimeline() end end)
 	U.onClose = function()
-		closePopups()
-		setPick(false)
-		root.Visible = false
+		pcall(function() root.Visible = false end)
+		pcall(function() local tb = UserInputService:GetFocusedTextBox() if tb and tb:IsDescendantOf(root) then tb:ReleaseFocus() end end)
+		pcall(closePopups)
+		pcall(setPick, false)
+		pcall(function() if U.hitCap then U.hitCap.Visible = false end end)
 		if U.selBox then pcall(function() U.selBox.Adornee = nil end) end
-		gzHide()
+		pcall(gzHide)
 	end
 	applyRows()
 	layout()
@@ -101194,15 +101202,24 @@ function Studio.Enter()
 	end)
 end
 function Studio.Leave() stopSession() end
+function Studio.Close() -- Back / Close Slot: the editor always comes down, then the page is left (closePage ignores a call while a transition is running, so it is retried until it takes it)
+	pcall(stopSession)
+	local fn = U.closeFn
+	if not fn then return end
+	task.spawn(function()
+		for _ = 1, 30 do
+			local ok, started = pcall(fn)
+			if not ok or started ~= false then return end
+			task.wait(0.1)
+		end
+	end)
+end
 function Studio.Holding(char) local s = S return s ~= nil and char ~= nil and s.char == char end
 function Studio.Touch() touch() end
 function Studio.CanUse() return authorized(false) end
 function Studio.Attach(page, closeFn)
 	U.page, U.closeFn = page, closeFn
-	UI.CreateButton(page, "&lt; Back", 20).Activated:Connect(function()
-		Studio.Leave()
-		closeFn()
-	end)
+	UI.CreateButton(page, "&lt; Back", 20).Activated:Connect(function() Studio.Close() end)
 	U.pageTitle = UI.CreateText(page, "<b>ANIMATION STUDIO</b>", 15, Enum.TextXAlignment.Center)
 	UI.CreateText(page, '<font color="#AAAAAA">Create custom dances and movesets frame by frame using your reanimated character.\nOpen to everyone. The Animation Editor opens full-screen.</font>', 10, Enum.TextXAlignment.Center)
 	U.gate = UI.CreateText(page, "Checking access...", 12, Enum.TextXAlignment.Left)
@@ -112039,9 +112056,9 @@ busy = false
 end)
 end
 local function closePage()
-if busy then return end
+if busy then return false end
 local p = Stack[#Stack]
-if not p then return end
+if not p then return false end
 busy = true
 local below = Stack[#Stack - 1]
 p.Interactable = false
@@ -112057,6 +112074,7 @@ p.Visible = false
 if below then below.Interactable = true else MainPage.Interactable = true end
 busy = false
 end)
+return true
 end
 local Hub = newPage()
 UI.CreateButton(Hub, "&lt; Back", 20).Activated:Connect(closePage)
