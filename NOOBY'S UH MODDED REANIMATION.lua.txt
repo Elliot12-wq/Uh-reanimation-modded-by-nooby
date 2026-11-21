@@ -228,11 +228,10 @@ busy[key] = true
 local prev = store[key]
 local body, status
 pcall(function()
-local rq = request or http_request or (syn and syn.request)
-if type(rq) == "function" then
+if type(request or http_request or (syn and syn.request)) == "function" then
 local hdr = {}
 if prev and prev.etag then hdr["If-None-Match"] = prev.etag end
-local res = rq({Url = url, Method = "GET", Headers = hdr})
+local res = Util.Net.Request({Url = url, Method = "GET", Headers = hdr}, 15, 1) -- bounded: a hung fetch can no longer leave busy[key] set for the whole session
 local code = type(res) == "table" and tonumber(res.StatusCode) or 0
 if code == 304 and prev then
 body, status = prev.body, 304
@@ -249,6 +248,42 @@ busy[key] = nil
 return body, status
 end
 return H
+end)()
+-- Util.Net: the ONE request lifecycle shared by the banner, announcement and live-registry backends. Every request has a hard timeout (a request that never answers can no longer freeze its caller or keep a busy flag set forever),
+-- the real executor error is kept (callers used to see a bare "no response"), at most 3 requests are in flight (extra ones queue instead of piling up on the executor) and a request that got no answer is retried `retries` times (idempotent calls only).
+-- Util.Net.Request(opts, timeout, retries) -> response table | nil, errText. Never throws.
+Util.Net = (function()
+local N, active, MAX = {}, 0, 3
+function N.Request(opts, timeout, retries)
+local rq = request or http_request or (syn and syn.request) or (http and http.request)
+if type(rq) ~= "function" then return nil, "this executor has no request()" end
+if type(opts) ~= "table" then return nil, "bad request" end
+timeout = tonumber(timeout) or 15
+local lastErr = "no response"
+for attempt = 0, math.max(0, tonumber(retries) or 0) do
+if attempt > 0 then task.wait(1.5 * attempt) end
+local o = {}
+for k, v in pairs(opts) do o[k] = v end -- fresh options per attempt: the executor never sees a reused / mutated table
+local w0 = os.clock()
+while active >= MAX and os.clock() - w0 < timeout do task.wait(0.05) end
+active += 1
+local held, done, res, err = true, false, nil, nil
+local function free() if held then held = false; active = math.max(0, active - 1) end end
+task.spawn(function()
+local ok, r = pcall(rq, o)
+if ok then res = r else err = tostring(r) end
+done = true
+free()
+end)
+local t0 = os.clock()
+while not done and os.clock() - t0 < timeout do task.wait(0.05) end
+free() -- a request that never answered gives its slot back; its thread is simply ignored
+if done and type(res) == "table" then return res end
+lastErr = done and (err and err:sub(1, 80) or "no response") or ("timed out after " .. timeout .. "s")
+end
+return nil, lastErr
+end
+return N
 end)()
 Util.Roles = {Entries = {}, ByName = {}, ById = {}, VById = {}, VByName = {}, LoadedAt = 0, Base = nil}
 Util.Roles.Fetch = function(base, force)
@@ -65775,9 +65810,10 @@ pcall(Util.Roles.Fetch)
 local BROADCAST_URL = "https://backend-announcement.elliptmal.workers.dev"
 local BASE = tostring((type(getgenv) == "function" and getgenv().UH_BROADCAST_URL) or BROADCAST_URL):gsub("/+$", "")
 local function call(method, path, body)
-local fn = request or http_request or (syn and syn.request) or (http and http.request)
-if type(fn) ~= "function" then return false, "no request()" end
-return pcall(fn, {Url = BASE .. path, Method = method, Headers = {["Content-Type"] = "application/json"}, Body = body and HttpService:JSONEncode(body) or nil})
+if type(request or http_request or (syn and syn.request) or (http and http.request)) ~= "function" then return false, "no request()" end
+local res, err = Util.Net.Request({Url = BASE .. path, Method = method, Headers = {["Content-Type"] = "application/json"}, Body = body and HttpService:JSONEncode(body) or nil}, 15, method == "GET" and 1 or 0) -- /send is never retried (it could post twice)
+if res then return true, res end
+return false, err
 end
 local function clean(s)
 return (tostring(s):gsub("[%c<>]", " "):sub(1, 200))
@@ -65852,6 +65888,7 @@ task.spawn(function()
 local last, fails = nil, 0
 while true do
 local wait = 8
+local okLoop = pcall(function()
 local ok, res = call("GET", "/poll?t=" .. string.format("%.0f", os.clock() * 1000) .. (last and ("&after=" .. string.format("%.0f", last)) or ""))
 if ok and type(res) == "table" and res.StatusCode == 200 then
 fails = 0
@@ -65876,6 +65913,8 @@ else
 fails = fails + 1
 wait = math.min(60, 8 + fails * 6)
 end
+end)
+if not okLoop then fails = fails + 1; wait = math.min(60, 8 + fails * 6) end -- an error while handling one answer must never end the poll loop
 task.wait(wait)
 end
 end)
@@ -68802,9 +68841,15 @@ if LocalOnly then warn("[UhBanner] no backend set: LOCAL-ONLY mode (only you see
 if genv.UhBanner and genv.UhBanner.Stop then pcall(genv.UhBanner.Stop) end
 local ok, err = pcall(function()
 local function FXcall(n) local f = Util.FX and Util.FX[n]; if f then return f() end end
+local netRequest = (request or http_request or (syn and syn.request)) and function(o) -- same contract as the raw executor request (throws on failure) but bounded, queued and retried once for GETs
+local m = type(o) == "table" and tostring(o.Method or "GET"):upper() or "GET"
+local r, e = Util.Net.Request(o, 15, m == "GET" and 1 or 0)
+if not r then error(e or "no response", 0) end
+return r
+end or nil
 local Env = {
 Player = Player, Players = Players, RunService = RunService, HttpService = HttpService,
-TweenService = cloneref(game:GetService("TweenService")), UserInputService = cloneref(game:GetService("UserInputService")), GuiService = cloneref(game:GetService("GuiService")), Request = request or http_request or (syn and syn.request), Backend = Backend, Base = Base, Roles = Util.Roles, Http = Util.Http, BlacklistBackend = Cfg.BlacklistBackend,
+TweenService = cloneref(game:GetService("TweenService")), UserInputService = cloneref(game:GetService("UserInputService")), GuiService = cloneref(game:GetService("GuiService")), Request = netRequest, Backend = Backend, Base = Base, Roles = Util.Roles, Http = Util.Http, BlacklistBackend = Cfg.BlacklistBackend,
 Room = tostring(game.PlaceId) .. "-" .. tostring(game.JobId), Token = HttpService:GenerateGUID(false),
 GetColor = function() return FXcall("GetColor") end, GetBG = function() return FXcall("GetBG") end,
 IsLowEnd = function() return FXcall("IsLowEnd") == true end,
@@ -69951,7 +69996,8 @@ if R.Hidden and not R.Kicked then
 task.wait(0.5) -- banners hidden locally: no polling until re-enabled (SetHidden pokes)
 else
 R.Kicked = false
-local ok, list, same, st = R.Fetch()
+local okF, ok, list, same, st = pcall(R.Fetch)
+if not okF then ok = false end
 local wait
 if ok then
 fails = 0
@@ -110519,15 +110565,8 @@ local function call(method, path, body, withAuth)
 		if not okE then return false, 0, nil, "encode failed" end
 		payload = enc
 	end
-	local done, res
-	task.spawn(function()
-		local ok, r = pcall(rq, {Url = backend() .. path, Method = method, Headers = headers, Body = payload})
-		res = ok and r or false
-		done = true
-	end)
-	local t0 = os.clock()
-	while not done and os.clock() - t0 < 15 do task.wait(0.1) end
-	if type(res) ~= "table" then return false, 0, nil, "no response" end
+	local res, rerr = Util.Net.Request({Url = backend() .. path, Method = method, Headers = headers, Body = payload}, 15, (method == "GET" or path == "/live/presence") and 1 or 0)
+	if type(res) ~= "table" then return false, 0, nil, rerr or "no response" end
 	local code = tonumber(res.StatusCode) or 0
 	local data
 	if type(res.Body) == "string" and res.Body ~= "" then
@@ -110680,8 +110719,9 @@ local function beat(gen)
 		for i = 1, sent do body.ack[i] = Pub.Acks[i] end
 	end
 	Pub.InFlight = true
-	local ok, code, d, err = call("POST", "/live/presence", body, true)
+	local okC, ok, code, d, err = pcall(call, "POST", "/live/presence", body, true)
 	Pub.InFlight = false
+	if not okC then ok, code, d, err = false, 0, nil, tostring(ok):sub(1, 80) end
 	if Pub.Gen ~= gen then return "stop" end
 	if isBanned(ok, code, d) then LPL.OnBanned() return "stop" end
 	if ok and code == 200 and type(d) == "table" and d.ok == true then
@@ -110695,6 +110735,11 @@ local function beat(gen)
 	if ok and code == 401 then Auth.Forget(); setPubStatus("expired") return "stop" end
 	if ok and code == 429 then return "slow" end
 	return "fail", describe(ok, code, d, err)
+end
+local function safeBeat(gen) -- an error inside one heartbeat is a failed heartbeat, never a dead loop with Pub.Running stuck on true
+	local okB, r, m = pcall(beat, gen)
+	if okB then return r, m end
+	return "fail", "internal error: " .. tostring(r):sub(1, 80)
 end
 function Pub.Start()
 	if Pub.Running or Pub.Banned or Pub.Departed or not Auth.Token then return end
@@ -110711,14 +110756,14 @@ function Pub.Start()
 				setPubStatus("paused")
 				wait_ = 30
 			else
-				local r, msg = beat(gen)
-				if r == "resync" then r, msg = beat(gen) end
+				local r, msg = safeBeat(gen)
+				if r == "resync" then r, msg = safeBeat(gen) end
 				if r == "stop" then break end
 				if r == "ok" then fails = 0; wait_ = HB_BASE + math.random(-HB_JITTER, HB_JITTER)
 				elseif r == "slow" then wait_ = HB_BASE
 				else
 					fails += 1
-					wait_ = math.min(600, 60 * 2 ^ math.min(fails, 4)) -- exponential backoff, capped at 10 minutes
+					wait_ = math.min(120, 15 * 2 ^ math.min(fails, 4)) -- exponential backoff (30s, 60s, 120s ...) capped at 2 minutes: the Worker drops a session silent for 4 minutes, so the old 2 / 4 / 8 / 10 minute gaps turned one hiccup into a long OFFLINE
 					Pub.ErrText = msg
 					setPubStatus("error")
 				end
@@ -111296,8 +111341,9 @@ function V.Poll()
 	if not guardOk() then V.ErrText = "Security connection unavailable - paused."; V.NextAt = os.clock() + 30 return end
 	if not Auth.Token and not Auth.Load() then V.Wipe(); V.Halt = "auth"; Auth.Login(); Auth.Notify() return end
 	V.Busy = true
-	local ok, code, d, err = call("GET", "/live/list" .. (V.Cursor and ("?c=" .. V.Cursor) or ""), nil, true)
+	local okC, ok, code, d, err = pcall(call, "GET", "/live/list" .. (V.Cursor and ("?c=" .. V.Cursor) or ""), nil, true)
 	V.Busy = false
+	if not okC then ok, code, d, err = false, 0, nil, tostring(ok):sub(1, 80) end
 	if not V.IsOpen then return end -- page closed while waiting: discard
 	local now = os.clock()
 	if ok and code == 200 and type(d) == "table" and d.ok == true and type(d.e) == "string" and tonumber(d.s) then
@@ -111324,7 +111370,7 @@ function V.Poll()
 	if ok and code == 401 then V.Wipe(); V.Halt = "auth"; Auth.Forget() return end -- token expired / revoked (Forget signs in again automatically)
 	if ok and code == 403 then V.Wipe(); V.Halt = "denied" return end -- the server says no: nothing stays cached
 	V.Fails += 1
-	local wait_ = math.min(300, 30 * 2 ^ math.min(V.Fails, 4))
+	local wait_ = math.min(120, 15 * 2 ^ math.min(V.Fails, 4))
 	V.NextAt = now + wait_
 	V.ErrText = describe(ok, code, d, err) .. " Retrying in " .. math.floor(wait_) .. "s."
 	if not V.ErrShown then V.ErrShown = true; notify("Live Player Log: connection problem. Retrying quietly in the background.") end
@@ -111336,7 +111382,7 @@ function V.Kick()
 	local gen = V.Gen
 	task.spawn(function()
 		while V.Gen == gen and V.IsOpen do
-			if not V.Halt and os.clock() >= V.NextAt then V.Poll() end
+			if not V.Halt and os.clock() >= V.NextAt then pcall(V.Poll) end -- a thrown error must not end the refresh loop (V.Looping would stay true and "Refresh now" would do nothing)
 			if V.Gen ~= gen then break end
 			V.Render()
 			if V.Halt then break end -- no session yet / authorization problem: stop polling until the session is ready or the user retries
