@@ -137,6 +137,9 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 the page cascade keeps its sorted row order per page, ripple dots are pooled instead of created / destroyed on every press; follows the Main page > Performance > "UI Cache" switch)
        Custom mod (v300: UI-ONLY CACHE - ambient sparkles + cursor trail use a cached VFX dot texture (1 ImageLabel instead of Frame + UICorner), and the whole UI customization is snapshotted
                 into UhhhhhhReanim/Assets/UI ANIMATION CACHE/UI/customization.json (debounced; restored only when the save has no customization at all); reanimation / movesets / every other feature untouched)
+       Custom mod (v533 PERF PASS: Util.Loop tolerates transient errors and gains Throttle / Link / Count; Admin theme applier moved to a 10 Hz Util.Loop timer; embedded anti-fling runs 2 passes per frame instead of 3 with O(1)
+                bookkeeping; hitbox / tp-parts / SimulationRadius loops are single managed connections that release themselves; idle legacy fly + hidden-fling loops sleep while off; two dead per-frame Stepped
+                listeners removed; noclip loops use the cached part list; hero-frame visibility walk 10 Hz; Players page keeps its cards when nothing visible changed; slower polling for settled labels. No feature removed)
        Custom mod (FAST EXECUTION MODE: Main page > Performance > "Fast Execution Mode" (default ON, SaveData.Custom.FastExec). A small self-validating
                 startup cache, UhhhhhhReanim/FastExecution.cache, remembers which bundled songs / UI graphics were already verified so the next launch
                 skips re-reading them; rebuilt automatically when missing / corrupt / outdated, never stores code or player data, OFF = normal startup)
@@ -24046,6 +24049,7 @@ end,
 })
 local stuck = 0
 local lastBracketAcc
+local visAcc, visOK = 1, false
 RunService.RenderStepped:Connect(function(dt)
 if not frame.Parent then return end
 if frame.Visible and not frame.Interactable and frame.Position == UDim2.new(0.5, 0, 0.5, 0) then
@@ -24057,7 +24061,9 @@ end
 else
 stuck = 0
 end
-if not Util.IsGuiVisible(frame) then return end
+visAcc = visAcc + dt
+if visAcc >= 0.1 then visAcc = 0 visOK = Util.IsGuiVisible(frame) end -- [PERF] ancestor walk 10x/s, not per frame
+if not visOK then return end
 fps = fps + (1 / math.max(dt, 1e-3) - fps) * 0.08
 fpsT = fpsT + dt
 if fpsT > 0.25 then
@@ -26083,6 +26089,109 @@ Util.LinkDestroyI2C(b, a.Destroying:Once(function()
 task.defer(b.Destroy, b)
 end))
 end
+-- [PERF] Util.Loop: central named update registry (one place that owns every managed connection / timer).
+--   Bind(name, kind, fn, owner)  kind = "Heartbeat" | "RenderStepped" | "Stepped"; ONE connection per name (a duplicate Bind returns the live handle). fn(dt)
+--   Every(name, seconds, fn, owner)  slow / informational work on a task.wait timer - no per-frame Lua, no connection
+--   Unbind(name) / IsBound(name) / UnbindAll(owner) / Cleanup([owner])   disconnect + forget; handles also expose :Disconnect()
+-- Frame-critical systems (reanimation, camera, movement interpolation) keep their own RenderStepped / Stepped binds untouched.
+Util.Loop = (function()
+local RS = game:GetService("RunService")
+local L, reg, uid = {}, {}, 0
+local function drop(name, e)
+if reg[name] == e then reg[name] = nil end
+e.dead = true
+local c = e.conn
+e.conn = nil
+if c then pcall(c.Disconnect, c) end
+local th = e.thread
+e.thread = nil
+if th and th ~= coroutine.running() then pcall(task.cancel, th) end
+end
+local function newEntry(name, owner)
+local e = {owner = owner}
+local h = {}
+function h:Disconnect() drop(name, e) end
+h.Destroy = h.Disconnect
+e.handle = h
+reg[name] = e
+return e
+end
+function L.Uid(prefix) uid = uid + 1 return (prefix or "loop") .. "#" .. uid end
+function L.IsBound(name) return reg[name] ~= nil end
+function L.Bind(name, kind, fn, owner)
+local e = reg[name]
+if e then return e.handle end
+local sig = RS[kind]
+if not sig then return nil end
+e = newEntry(name, owner)
+if kind == "Stepped" then
+e.conn = sig:Connect(function(_, dt) fn(dt) end)
+else
+e.conn = sig:Connect(fn)
+end
+return e.handle
+end
+function L.Every(name, seconds, fn, owner)
+local e = reg[name]
+if e then return e.handle end
+e = newEntry(name, owner)
+e.thread = task.spawn(function()
+local fails = 0
+while not e.dead do
+task.wait(seconds)
+if e.dead then break end
+local ok, err = pcall(fn)
+if ok then
+fails = 0
+else
+-- one transient error (destroyed instance, missing part) no longer kills the timer; 5 failures in a row do
+fails += 1
+if fails == 1 then warn("[UH Loop] " .. tostring(name) .. ": " .. tostring(err)) end
+if fails >= 5 then drop(name, e) break end
+end
+end
+end)
+return e.handle
+end
+-- Throttle(name, kind, interval, fn, owner): a frame signal that only runs fn(accumulatedDt) every `interval` seconds
+function L.Throttle(name, kind, interval, fn, owner)
+local acc = 0
+return L.Bind(name, kind, function(dt)
+acc += dt
+if acc < interval then return end
+local d = acc
+acc = 0
+fn(d)
+end, owner)
+end
+-- Link(owner, instance): every update owned by `owner` is released when `instance` is destroyed
+function L.Link(owner, inst)
+if typeof(inst) == "Instance" then inst.Destroying:Once(function() L.UnbindAll(owner) end) end
+end
+function L.Count()
+local n = 0
+for _ in pairs(reg) do n += 1 end
+return n
+end
+function L.Unbind(name)
+local e = reg[name]
+if not e then return false end
+drop(name, e)
+return true
+end
+function L.UnbindAll(owner)
+local list = {}
+for name, e in pairs(reg) do
+if owner == nil or e.owner == owner then list[#list + 1] = name end
+end
+for k = 1, #list do
+local e = reg[list[k]]
+if e then drop(list[k], e) end
+end
+end
+function L.Cleanup(owner) L.UnbindAll(owner) end
+return L
+end)()
 Util.ClearAllChildrenGui = function(a)
 for _,v in a:GetChildren() do
 if v:IsA("GuiObject") then
@@ -26859,7 +26968,7 @@ end
 repeat
 Downloading.Text = `Downloading assets {downloaded}/{assetsdownload}... ({skipped} skipped)`
 Downloading.BackgroundColor3 = Color3.new(0, 0, 0)
-task.wait()
+task.wait(0.1)
 until downloaded == assetsdownload
 Downloading.Text = "Download complete! \\(^o^)/"
 Downloading.BackgroundColor3 = Color3.new(0, 1, 0)
@@ -28552,9 +28661,9 @@ end)
 for _, o in ipairs(UhCollectionService:GetTagged(tag)) do add(o) end
 return c
 end
-game:GetService("RunService").Heartbeat:Connect(function()
+local function uhThemeStep()
 local now = os.clock()
-if now - uhThemeLast < 0.1 then return end
+if now - uhThemeLast < 0.09 then return end
 uhThemeLast = now
 local cfg = Util.FX and Util.FX.Cfg
 local accent, bg, textCol = Util.UhAdmin.Theme(now)
@@ -28582,7 +28691,13 @@ local c = uhTagList(UH_TAG_TEXT, uhQualText)
 local arr = c.arr
 for n = 1, c.n do arr[n].TextColor3 = textCol end
 end
-end)
+end
+-- [PERF] timer owned by the central Util.Loop (10 Hz, no per-frame callback, duplicate-safe, survives one-off errors)
+if Util.Loop then
+Util.Loop.Every("UhAdmin.ThemeApply", 0.1, uhThemeStep, "UhAdmin")
+else
+game:GetService("RunService").Heartbeat:Connect(uhThemeStep)
+end
 end
 local function uhNew(class, props, parent)
 local o = Instance.new(class)
@@ -29742,34 +29857,11 @@ wait()
 game.Players.LocalPlayer.Character.Humanoid.DisplayDistanceType = "None"
 tool.Parent = getChar()
 end
+-- [PERF] the two permanent Stepped listeners that used to live here (never-enabled `nc` noclip flag, never-filled netsleep list) did nothing every frame and were removed
 local nc = false
 local ncLoop
-ncLoop = game:GetService("RunService").Stepped:Connect(function()
-if nc and getChar() ~= nil then
-for _, v in pairs(getChar():GetDescendants()) do
-if v:IsA("BasePart") and v.CanCollide == true then
-v.CanCollide = false
-end
-end
-end
-end)
 local netsleepTargets = {}
 local nsLoop
-nsLoop = game:GetService("RunService").Stepped:Connect(function()
-if #netsleepTargets == 0 then return end
-for i,v in pairs(netsleepTargets) do
-if v.Character then
-for i,v in pairs(v.Character:GetChildren()) do
-if v:IsA("BasePart") == false and v:IsA("Accessory") == false then continue end
-if v:IsA("BasePart") then
-sethiddenproperty(v,"NetworkIsSleeping",true)
-elseif v:IsA("Accessory") and v:FindFirstChild("Handle") then
-sethiddenproperty(v.Handle,"NetworkIsSleeping",true)
-end
-end
-end
-end
-end)
 function getTorso(x)
 x = x or game.Players.LocalPlayer.Character
 return x:FindFirstChild("Torso") or x:FindFirstChild("UpperTorso") or x:FindFirstChild("LowerTorso") or x:FindFirstChild("HumanoidRootPart")
@@ -31090,11 +31182,8 @@ if pingConn then pingConn:Disconnect() pingConn = nil end
 if destroyConn then destroyConn:Disconnect() destroyConn = nil end
 if pingState.Gui == Ping then pingState.Conn, pingState.DestroyConn, pingState.Gui = nil, nil, nil end
 end
-local pingAcc = 0.25
-pingConn = RunService.Heartbeat:Connect(function(dt)
-pingAcc = pingAcc + dt
-if pingAcc < 0.25 then return end
-pingAcc = 0
+-- [PERF] 0.5s timer (ping moves slowly) instead of a per-frame Heartbeat accumulator
+pingConn = Util.Loop.Every(Util.Loop.Uid("UH.ping"), 0.5, function()
 if not Pingtext.Parent or not Pingtext:IsDescendantOf(game) then stopPing() return end
 local ok, v = pcall(function()
 pingItem = pingItem or Stats.Network.ServerStatsItem["Data Ping"]
@@ -31104,7 +31193,7 @@ if ok and type(v) == "number" then
 local txt = "Ping: " .. math.floor(v + 0.5) .. " ms"
 if Pingtext.Text ~= txt then Pingtext.Text = txt end
 end
-end)
+end, "UH")
 destroyConn = Ping.Destroying:Connect(stopPing)
 pingState.Conn, pingState.DestroyConn, pingState.Gui = pingConn, destroyConn, Ping
 end)
@@ -31136,16 +31225,14 @@ UIAspectRatioConstraint.AspectRatio = 5.743
 local script = Instance.new('LocalScript', Fpstext)
 local RunService = game:GetService("RunService")
 local fpsConn
-local fpsAcc = 0
-fpsConn = RunService.RenderStepped:Connect(function(frame)
-fpsAcc = fpsAcc + frame
-if fpsAcc < 0.25 then return end
-fpsAcc = 0
+-- [PERF] samples one frame every 0.25s on a timer instead of waking a RenderStepped handler every frame (same reading: 1 / frame time)
+fpsConn = Util.Loop.Every(Util.Loop.Uid("UH.fps"), 0.25, function()
 local lbl = script.Parent
 if not lbl or not lbl:IsDescendantOf(game) then fpsConn:Disconnect() return end
+local frame = RunService.RenderStepped:Wait()
 local txt = ("FPS: "..math.round(1/frame))
 if lbl.Text ~= txt then lbl.Text = txt end
-end)
+end, "UH")
 end)
 cmd.add({"commands", "cmds"}, {"commands (cmds)", "Open the command list"}, function()
 gui.commands()
@@ -31250,6 +31337,8 @@ hrp.Velocity = vel + Vector3.new(0, movel, 0)
 movel = movel * -1
 end
 end
+else
+task.wait(0.15) -- [PERF] hidden fling off: poll the flag a few times a second instead of every frame
 end
 end
 end
@@ -32246,8 +32335,11 @@ local Clip = false
 wait(0.1)
 local function NoclipLoop()
 if Clip == false and char ~= nil then
-for _, child in pairs(char:GetDescendants()) do
-if child:IsA("BasePart") and child.CanCollide == true then
+-- [PERF] cached part list (lib.parts) instead of GetDescendants() on every Stepped
+local parts, n = lib.parts(char)
+for i = 1, n do
+local child = parts[i]
+if child.CanCollide == true then
 child.CanCollide = false
 end
 end
@@ -32911,7 +33003,7 @@ end
 end)
 spawn(function()
 while true do
-wait()
+if IsFlying or IsRunning then wait() else wait(0.2) end -- [PERF] idle = 5 wakeups/s instead of one per frame
 if IsFlying then
 flyg.CFrame = workspace.CurrentCamera.CoordinateFrame * CFrame.Angles(-math.rad((f+0)*50*Speed/maxspeed),0,0)
 flyv.Velocity = workspace.CurrentCamera.CoordinateFrame.LookVector * Speed
@@ -33310,6 +33402,7 @@ end)
 local PreMode = FindTeams()
 local O = false
 game:GetService("RunService").Stepped:Connect(function()
+if Toggled ~= true then return end -- [PERF] no team scan / print while the trigger bot is off
 local Mode = FindTeams()
 if O == false then
 O = true
@@ -33770,12 +33863,16 @@ local A0 = Instance.new("Attachment")
 local AP = Instance.new("AlignPosition")
 local AO = Instance.new("AlignOrientation")
 local A1 = Instance.new("Attachment")
+local npcParts = {}  -- [PERF] one Stepped connection for the whole model (was one per part, never disconnected)
 for _, v in pairs(npc:GetDescendants()) do
-if v:IsA("BasePart") then
-game:GetService("RunService").Stepped:Connect(function()
-v.CanCollide = false
-end)
+if v:IsA("BasePart") then npcParts[#npcParts + 1] = v end
 end
+if #npcParts > 0 then
+local npcNC
+npcNC = game:GetService("RunService").Stepped:Connect(function()
+if npc.Parent == nil then npcNC:Disconnect() return end
+for k = 1, #npcParts do npcParts[k].CanCollide = false end
+end)
 end
 PlayerRootPart:BreakJoints()
 for _, v in pairs(PlayerCharacter:GetDescendants()) do
@@ -36334,9 +36431,13 @@ local Noclipping = nil
 Clip = false
 wait(0.1)
 local function NoclipLoop()
-if Clip == false and game.Players.LocalPlayer.Character ~= nil then
-for _, child in pairs(game.Players.LocalPlayer.Character:GetDescendants()) do
-if child:IsA("BasePart") and child.CanCollide == true and child.Name ~= floatName then
+local lpChar = game.Players.LocalPlayer.Character
+if Clip == false and lpChar ~= nil then
+-- [PERF] cached part list (lib.parts) instead of GetDescendants() on every Stepped
+local parts, n = lib.parts(lpChar)
+for i = 1, n do
+local child = parts[i]
+if child.CanCollide == true and child.Name ~= floatName then
 child.CanCollide = false
 end
 end
@@ -38602,28 +38703,27 @@ LocalPlayer.CharacterAdded:Connect(onCharacter)
 end)
 TPWalk = false
 cmd.add({"tpwalk", "tpwalk"}, {"tpwalk <speed>", "More undetectable walkspeed script"}, function(...)
-if TPWalk == true then
-TPWalk = false
-TPWalking = TPWalking:Disconnect()
-end
-TPWalk = true
 Speed = (...)
+TPWalk = true
 TPWalking = game:GetService("RunService").Heartbeat:Wait()
-game:GetService("RunService").Stepped:Connect(function()
-if TPWalk == true then
-if game.Players.LocalPlayer.Character:FindFirstChildWhichIsA("Humanoid").MoveDirection.Magnitude > 0 then
+-- [PERF] one named Stepped bind (re-running tpwalk only updates Speed; the old code stacked a new permanent connection per call)
+Util.Loop.Bind("NA.tpwalk", "Stepped", function()
+if TPWalk ~= true then return end
+local char = game.Players.LocalPlayer.Character
+local hum = char and char:FindFirstChildWhichIsA("Humanoid")
+if hum and hum.MoveDirection.Magnitude > 0 then
 if Speed then
-game.Players.LocalPlayer.Character:TranslateBy(game.Players.LocalPlayer.Character:FindFirstChildWhichIsA("Humanoid").MoveDirection * Speed * TPWalking * 10)
+char:TranslateBy(hum.MoveDirection * Speed * TPWalking * 10)
 else
-game.Players.LocalPlayer.Character:TranslateBy(game.Players.LocalPlayer.Character:FindFirstChildWhichIsA("Humanoid").MoveDirection * TPWalking * 10)
+char:TranslateBy(hum.MoveDirection * TPWalking * 10)
 end
 end
-end
-end)
+end, "NA")
 end)
 cmd.add({"untpwalk"}, {"untpwalk", "Stops the tpwalk command"}, function()
 TPWalk = false
 TPWalking = false
+Util.Loop.Unbind("NA.tpwalk")
 end)
 cmd.add({"loopmute", "loopmuteboombox"}, {"loopmute <player> (loopmuteboombox)", "Loop mutes the players boombox"}, function(...)
 Username = (...)
@@ -39930,12 +40030,16 @@ local A0 = Instance.new("Attachment")
 local AP = Instance.new("AlignPosition")
 local AO = Instance.new("AlignOrientation")
 local A1 = Instance.new("Attachment")
+local npcParts = {}  -- [PERF] one Stepped connection for the whole model (was one per part, never disconnected)
 for _, v in pairs(npc:GetDescendants()) do
-if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then
-game:GetService("RunService").Stepped:Connect(function()
-v.CanCollide = false
-end)
+if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then npcParts[#npcParts + 1] = v end
 end
+if #npcParts > 0 then
+local npcNC
+npcNC = game:GetService("RunService").Stepped:Connect(function()
+if npc.Parent == nil then npcNC:Disconnect() return end
+for k = 1, #npcParts do npcParts[k].CanCollide = false end
+end)
 end
 for _, v in pairs(PlayerCharacter:GetDescendants()) do
 if v:IsA("BasePart") then
@@ -39970,12 +40074,16 @@ local A0 = Instance.new("Attachment")
 local AP = Instance.new("AlignPosition")
 local AO = Instance.new("AlignOrientation")
 local A1 = Instance.new("Attachment")
+local npcParts = {}  -- [PERF] one Stepped connection for the whole model (was one per part, never disconnected)
 for _, v in pairs(npc:GetDescendants()) do
-if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then
-game:GetService("RunService").Stepped:Connect(function()
-v.CanCollide = false
-end)
+if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then npcParts[#npcParts + 1] = v end
 end
+if #npcParts > 0 then
+local npcNC
+npcNC = game:GetService("RunService").Stepped:Connect(function()
+if npc.Parent == nil then npcNC:Disconnect() return end
+for k = 1, #npcParts do npcParts[k].CanCollide = false end
+end)
 end
 for _, v in pairs(PlayerCharacter:GetDescendants()) do
 if v:IsA("BasePart") then
@@ -40108,13 +40216,20 @@ Description = "Made unanchored parts have no gravity";
 Title = "Nameless Admin";
 Duration = 5;
 });
-spawn(function()
+if not _G.__UH_SIMRAD_A then
+_G.__UH_SIMRAD_A = true -- [PERF] one 10 Hz loop however many times the command runs
+task.spawn(function()
+local lp = game.Players.LocalPlayer
+local inf = math.pow(math.huge, math.huge) * math.huge
 while true do
-game.Players.LocalPlayer.MaximumSimulationRadius = math.pow(math.huge,math.huge)*math.huge
-game.Players.LocalPlayer.SimulationRadius = math.pow(math.huge,math.huge)*math.huge
-game:GetService("RunService").Stepped:wait()
+pcall(function()
+lp.MaximumSimulationRadius = inf
+lp.SimulationRadius = inf
+end)
+task.wait(0.1)
 end
 end)
+end
 local function zeroGrav(part)
 if part:FindFirstChild("BodyForce") then return end
 local temp = Instance.new("BodyForce")
@@ -40182,11 +40297,14 @@ table.insert(targetParts, child)
 end
 end
 local index = 1
-game:GetService("RunService").Stepped:Connect(function()
-if targetParts[index] then
-game.Players.LocalPlayer.Character:MoveTo(targetParts[index].Position)
+local tpPartsConn
+tpPartsConn = game:GetService("RunService").Stepped:Connect(function()
+local part = targetParts[index]
+if part then
+game.Players.LocalPlayer.Character:MoveTo(part.Position)
 index = index + 1
-wait(0.4)
+else
+tpPartsConn:Disconnect() -- [PERF] finished: the old connection stayed alive (and idle-ticked every frame) forever
 end
 end)
 end)
@@ -40319,31 +40437,43 @@ if _G.HeadSize == nil then
 _G.HeadSize = 10
 end
 loophitbox = true
-if Username == "all" or Username == "others" then
-game:GetService("RunService").Stepped:Connect(function()
-if loophitbox then
-for i,v in next, game:GetService('Players'):GetPlayers() do
-if v.Name ~= game:GetService('Players').LocalPlayer.Name then
-v.Character.HumanoidRootPart.Size = Vector3.new(_G.HeadSize,_G.HeadSize,_G.HeadSize)
-v.Character.HumanoidRootPart.Transparency = 0.9
-v.Character.HumanoidRootPart.BrickColor = BrickColor.new("Really black")
-v.Character.HumanoidRootPart.Material = "Neon"
-v.Character.HumanoidRootPart.CanCollide = false
+-- [PERF] ONE managed connection (re-running the command replaces it instead of stacking another), released as soon as unhitbox runs;
+-- missing characters are skipped and properties are only written when they differ
+if _G.__UH_HITBOX_CONN then pcall(function() _G.__UH_HITBOX_CONN:Disconnect() end) _G.__UH_HITBOX_CONN = nil end
+local hbAll = Username == "all" or Username == "others"
+local hbTarget = Plr
+local hbPlayers, hbLP = game:GetService("Players"), game:GetService("Players").LocalPlayer
+local hbBrick = BrickColor.new("Really black")
+local function hbApply(r, size, tr)
+if r.Size ~= size then r.Size = size end
+if r.Transparency ~= tr then r.Transparency = tr end
+if r.BrickColor ~= hbBrick then r.BrickColor = hbBrick end
+if r.Material ~= Enum.Material.Neon then r.Material = Enum.Material.Neon end
+if r.CanCollide then r.CanCollide = false end
+end
+_G.__UH_HITBOX_CONN = game:GetService("RunService").Stepped:Connect(function()
+if not loophitbox then
+local c = _G.__UH_HITBOX_CONN
+_G.__UH_HITBOX_CONN = nil
+if c then c:Disconnect() end
+return
+end
+local hs = _G.HeadSize or 10
+local size = Vector3.new(hs, hs, hs)
+if hbAll then
+for _, v in ipairs(hbPlayers:GetPlayers()) do
+if v ~= hbLP then
+local ch = v.Character
+local r = ch and ch:FindFirstChild("HumanoidRootPart")
+if r then hbApply(r, size, 0.9) end
 end
 end
-end
-end)
 else
-game:GetService("RunService").Stepped:Connect(function()
-if loophitbox then
-Plr.Character.HumanoidRootPart.Size = Vector3.new(_G.HeadSize,_G.HeadSize,_G.HeadSize)
-Plr.Character.HumanoidRootPart.Transparency = 0.7
-Plr.Character.HumanoidRootPart.BrickColor = BrickColor.new("Really black")
-Plr.Character.HumanoidRootPart.Material = "Neon"
-Plr.Character.HumanoidRootPart.CanCollide = false
+local ch = hbTarget and hbTarget.Character
+local r = ch and ch:FindFirstChild("HumanoidRootPart")
+if r then hbApply(r, size, 0.7) end
 end
 end)
-end
 end)
 cmd.add({"unhitbox", "unhbox"}, {"unhitbox", "Disables hitbox"}, function(h)
 Username = h
@@ -41888,13 +42018,20 @@ end
 end)
 cmd.add({"tpua", "bringua"}, {"tpua <player> (bringua)", "brings every unanchored part on the map"}, function(...)
 local heartbeat = game:GetService("RunService").Heartbeat
-spawn(function()
-while true do heartbeat:Wait()
-game.Players.LocalPlayer.MaximumSimulationRadius = math.pow(math.huge,math.huge)*math.huge
-sethiddenproperty(game.Players.LocalPlayer,"SimulationRadius",math.pow(math.huge,math.huge)*math.huge)
-game:GetService("RunService").Stepped:wait()
+if not _G.__UH_SIMRAD_B then
+_G.__UH_SIMRAD_B = true -- [PERF] one 10 Hz loop however many times the command runs
+task.spawn(function()
+local lp = game.Players.LocalPlayer
+local inf = math.pow(math.huge, math.huge) * math.huge
+while true do
+pcall(function()
+lp.MaximumSimulationRadius = inf
+sethiddenproperty(lp, "SimulationRadius", inf)
+end)
+task.wait(0.1)
 end
 end)
+end
 execute = function(name)
 for index, part in pairs(game:GetDescendants()) do
 if (part:IsA("BasePart") or part:IsA("UnionOperation") or part:IsA("Model")) and part.Anchored == false and part:IsDescendantOf(game.Players.LocalPlayer.Character) == false and part.Name ~= "Torso" and part.Name ~= "Head" and part.Name == "Right Arm" == false and part.Name == "Left Arm" == false and part.Name == "Right Leg" == false and part.Name == "Left Leg" == false and part.Name ~= "HumanoidRootPart" then
@@ -42559,10 +42696,26 @@ description.Position = UDim2.new(0, mouse.X, 0, mouse.Y)
 local size = gui.txtSize(description, 200, 100)
 description.Size = UDim2.new(0, size.X, 0, size.Y)
 end)
-RunService.Stepped:Connect(function()
-chatLogs.CanvasSize = UDim2.new(0, 0, 0, chatLogs.UIListLayout.AbsoluteContentSize.Y)
-commandsList.CanvasSize = UDim2.new(0, 0, 0, commandsList.UIListLayout.AbsoluteContentSize.Y)
-end)
+-- [PERF] canvas sizes follow their list layout through AbsoluteContentSize events (was a permanent per-physics-step Stepped writer)
+do
+local function hookCanvas(sf)
+local lay
+local function sync() if lay and lay.Parent == sf then sf.CanvasSize = UDim2.new(0, 0, 0, lay.AbsoluteContentSize.Y) end end
+local function attach(l)
+if lay or not l or not l:IsA("UIListLayout") then return end
+lay = l
+l:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(sync)
+sync()
+end
+attach(sf:FindFirstChild("UIListLayout"))
+if not lay then
+local c
+c = sf.ChildAdded:Connect(function(ch) attach(ch) if lay then c:Disconnect() end end)
+end
+end
+hookCanvas(chatLogs)
+hookCanvas(commandsList)
+end
 function Destroy(guiObject)
 if not pcall(function()guiObject.Parent = game:GetService("CoreGui")end) then
 guiObject.Parent = nil
@@ -63617,8 +63770,57 @@ UIList.HorizontalAlignment = Enum.HorizontalAlignment.Center
 UIList.VerticalAlignment = Enum.VerticalAlignment.Top
 UIList.Padding = UDim.new(0, 0)
 UIList.SortOrder = Enum.SortOrder.LayoutOrder
-pcall(function() Util.AllPages = Util.AllPages or {}; table.insert(Util.AllPages, Frame) end)
+pcall(function()
+Util.AllPages = Util.AllPages or {}
+table.insert(Util.AllPages, Frame)
+-- [DANCEFIX2] detail pages are created and destroyed on every open; drop the destroyed page so the registry no longer keeps its whole GUI tree alive
+Frame.Destroying:Once(function()
+local list = Util.AllPages
+local i = list and table.find(list, Frame)
+if i then table.remove(list, i) end
+end)
+end)
 return Frame
+end
+-- [DANCEFIX2] shared helpers for UI.CreateText: properties that can never change a label's layout, and a settle queue (one Heartbeat
+-- connection that only exists while something is pending) so width changes during a page transition are measured once, not every frame.
+do
+local pend, due, count, conn = {}, {}, 0, nil
+local HOLD = 0.12
+Util.TextSkipProps = {
+TextColor3 = true, TextTransparency = true, TextBounds = true, TextFits = true, AbsolutePosition = true, AbsoluteRotation = true,
+Position = true, Rotation = true, ZIndex = true, Visible = true, BackgroundTransparency = true, BackgroundColor3 = true,
+TextStrokeTransparency = true, TextStrokeColor3 = true, Active = true, Interactable = true,
+}
+Util.TextSettle = function(fn)
+if pend[fn] == nil then count += 1 end
+pend[fn] = os.clock()
+if conn then return end
+conn = RunService.Heartbeat:Connect(function()
+local now = os.clock()
+local nd = 0
+for f, at in pend do
+if now - at >= HOLD then
+nd += 1
+due[nd] = f
+end
+end
+for i = 1, nd do
+local f = due[i]
+due[i] = nil
+if pend[f] ~= nil then
+pend[f] = nil
+count -= 1
+pcall(f)
+end
+end
+if count <= 0 then
+count = 0
+conn:Disconnect()
+conn = nil
+end
+end)
+end
 end
 function UI.CreateText(parent, text, size, alignment)
 local margin = 5
@@ -63655,8 +63857,16 @@ Container.Size = UDim2.new(1, 0, 0, size.Y + margin)
 end
 Text.Text = text
 update()
+-- [DANCEFIX2] page transitions spring a UIScale on the whole page, so AbsoluteSize changes on EVERY label EVERY frame. This handler used to run
+-- ContentText parsing + a TextService measurement (cache miss: the width is new each frame) + a Container resize for every row label, every frame,
+-- when opening Dances and again on Back. Width changes are now coalesced and measured once after the size settles (normally a no-op, because the
+-- settled width equals the last measured width); properties that cannot change the layout never reach update().
 Text.Changed:Connect(function(prop)
-if prop == "TextColor3" or prop == "TextTransparency" or prop == "TextBounds" or prop == "TextFits" or prop == "AbsolutePosition" or prop == "AbsoluteRotation" then return end
+if Util.TextSkipProps[prop] then return end
+if prop == "AbsoluteSize" and lastX and lastX >= 40 then
+if parent.AbsoluteSize.X ~= lastX then Util.TextSettle(update) end
+return
+end
 update()
 end)
 return Text
@@ -64382,7 +64592,8 @@ local G = {}
 local gates = setmetatable({}, {__mode = "k"})
 local keyName = setmetatable({}, {__mode = "k"})
 local keyLow = setmetatable({}, {__mode = "k"})
-local FIRST, STEP = 12, 8
+local COMPACT = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local FIRST, STEP = COMPACT and 8 or 12, COMPACT and 4 or 8
 local function keyOf(row)
 local n = row.Name
 if keyName[row] ~= n then
@@ -64796,7 +65007,7 @@ if show then
 local ok, st = pcall(Util.GetModuleStatus)
 pill.Text = "OPEN UI NOW  >>  " .. ((ok and st) or "loading modules...")
 end
-task.wait(0.15)
+task.wait(IsUhhhhhhFullyLoaded and 1 or 0.15) -- [PERF] fully loaded: the pill can no longer appear, poll slowly
 end
 end)
 end
@@ -72041,40 +72252,53 @@ end)
 if not ok then warn("[UhBanner] " .. tostring(err)) end
 end)
 do
-local AntiflingHumanoids = {}
-local AntiflingBaseParts = {}
+-- [PERF] anti-fling: Stepped fires at the same point as PreSimulation, so the third identical pass is gone; O(1) set bookkeeping,
+-- swap-remove (the old table.remove inside the loop skipped entries) and a Parent check instead of IsDescendantOf per part per pass.
+local AFParts, AFPartN, AFHums, AFHumN, AFSeen = {}, 0, {}, 0, {}
+local AFZero = Vector3.zero
 local OnStepped = function()
-for i,v in AntiflingBaseParts do
-if v:IsDescendantOf(workspace) then
+local i = 1
+while i <= AFPartN do
+local v = AFParts[i]
+if v.Parent then
 if v.CanCollide then v.CanCollide = false end
-v.AssemblyLinearVelocity, v.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
+v.AssemblyLinearVelocity, v.AssemblyAngularVelocity = AFZero, AFZero
+i += 1
 else
-table.remove(AntiflingBaseParts, i)
+AFSeen[v] = nil
+AFParts[i] = AFParts[AFPartN]
+AFParts[AFPartN] = nil
+AFPartN -= 1
 end
 end
-for i,v in AntiflingHumanoids do
-if v:IsDescendantOf(workspace) then
+i = 1
+while i <= AFHumN do
+local v = AFHums[i]
+if v.Parent then
 if v.EvaluateStateMachine then v.EvaluateStateMachine = false end
+i += 1
 else
-table.remove(AntiflingHumanoids, i)
+AFSeen[v] = nil
+AFHums[i] = AFHums[AFHumN]
+AFHums[AFHumN] = nil
+AFHumN -= 1
 end
 end
 end
 RunService.PreAnimation:Connect(OnStepped)
 RunService.PreSimulation:Connect(OnStepped)
-RunService.Stepped:Connect(OnStepped)
 local OnBasePart = function(v)
+if AFSeen[v] then return end
 if v:IsA("BasePart") then
 v.CanCollide = false
-if not table.find(AntiflingBaseParts, v) then
-table.insert(AntiflingBaseParts, v)
-end
-end
-if v:IsA("Humanoid") then
+AFSeen[v] = true
+AFPartN += 1
+AFParts[AFPartN] = v
+elseif v:IsA("Humanoid") then
 v.EvaluateStateMachine = false
-if not table.find(AntiflingHumanoids, v) then
-table.insert(AntiflingHumanoids, v)
-end
+AFSeen[v] = true
+AFHumN += 1
+AFHums[AFHumN] = v
 end
 end
 local OnCharacter = function(character)
@@ -74160,7 +74384,7 @@ pcall(setclipboard, report)
 pcall(Util.Notify, "Limb state dumped to the console (and clipboard if supported).")
 end)
 local lastDM, lastDV, lastDI
-Util.LinkDestroyI2C(dmode, RunService.Heartbeat:Connect(function()
+Util.LinkDestroyI2C(dmode, Util.Loop.Every(Util.Loop.Uid("LimbReanimator.dbg"), 0.2, function()
 local m, v, i = math.min(LimbReanimator.Mode + 1, #modenames), LimbReanimator.Velocity + 1, LimbReanimator.InitMode + 1
 if m ~= lastDM then lastDM = m dmode.Value = m end
 if v ~= lastDV then lastDV = v dvel.Value = v end
@@ -113549,9 +113773,8 @@ end
 local listFrame = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 0), LayoutOrder = #pp:GetChildren()}, pp)
 new("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), HorizontalAlignment = Enum.HorizontalAlignment.Center}, listFrame)
 new("UIPadding", {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8)}, listFrame)
+local lastRowsSig
 local function rebuild()
-for _, r in ipairs(rows) do r:Destroy() end
-rows = {}
 local q = string.lower(search.Text or "")
 local list = Players:GetPlayers()
 table.sort(list, function(a, b)
@@ -113559,6 +113782,34 @@ if a == Player then return true end
 if b == Player then return false end
 return a.Name:lower() < b.Name:lower()
 end)
+do
+-- [PERF] signature of what would be drawn (filter, search, selection, visible players + friend flags); unchanged = keep the existing cards
+local myRoot0 = rootOf(Player)
+local sigT, sn = {filter, q, selected and selected.UserId or 0}, 3
+for _, plr in ipairs(list) do
+queueFriend(plr, function() refresh() end)
+local okQ0 = q == "" or plr.Name:lower():find(q, 1, true) ~= nil or plr.DisplayName:lower():find(q, 1, true) ~= nil
+local okF0 = true
+if filter == "Friends" then
+okF0 = friends[plr.UserId] == true
+elseif filter == "Nearby" then
+local r0 = rootOf(plr)
+okF0 = plr ~= Player and r0 ~= nil and myRoot0 ~= nil and (r0.Position - myRoot0.Position).Magnitude <= 150
+end
+if okQ0 and okF0 then
+sn += 1
+sigT[sn] = plr.UserId .. (friends[plr.UserId] and "f" or "") .. plr.DisplayName
+end
+end
+local sig = table.concat(sigT, "|")
+if sig == lastRowsSig then
+countL.Text = (sn - 3) .. " of " .. #list
+return
+end
+lastRowsSig = sig
+end
+for _, r in ipairs(rows) do r:Destroy() end
+rows = {}
 local shown = 0
 local myRoot = rootOf(Player)
 for _, plr in ipairs(list) do
