@@ -34300,7 +34300,290 @@ Duration = 15;
 end
 end)
 cmd.add({"2016"}, {"2016", "2016 CORE GUI"}, function()
-loadstring(game:HttpGet("https://raw.githubusercontent.com/FilteringEnabled/FE/main/2016MODE"))()
+	local function say(msg)
+		Notify({
+			Description = msg;
+			Title = "Nameless Admin";
+			Duration = 6;
+		})
+	end
+	local env = (getgenv and getgenv()) or _G
+	if type(env.NA_2016) == "table" and type(env.NA_2016.Destroy) == "function" then
+		pcall(env.NA_2016.Destroy)
+	end
+	local state = {Conns = {}, Alive = true}
+	env.NA_2016 = state
+	function state.Destroy()
+		state.Alive = false
+		for _, c in ipairs(state.Conns) do
+			pcall(function() c:Disconnect() end)
+		end
+		state.Conns = {}
+		if state.Gui then pcall(function() state.Gui:Destroy() end) end
+		local sg = game:GetService("StarterGui")
+		pcall(function() sg:SetCore("TopbarEnabled", true) end)
+		pcall(function() sg:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, true) end)
+		pcall(function() sg:SetCoreGuiEnabled(Enum.CoreGuiType.Health, true) end)
+		if env.NA_2016 == state then env.NA_2016 = nil end
+	end
+	local ok, res = pcall(function()
+		local Players = game:GetService("Players")
+		local RunService = game:GetService("RunService")
+		local UIS = game:GetService("UserInputService")
+		local StarterGui = game:GetService("StarterGui")
+		local GuiService = game:GetService("GuiService")
+		local CoreGui = game:GetService("CoreGui")
+		local lp = Players.LocalPlayer
+		if not lp then error("LocalPlayer is unavailable") end
+		local WHITE = Color3.fromRGB(255, 255, 255)
+		local DARK = Color3.fromRGB(31, 31, 31)
+		local function track(c) state.Conns[#state.Conns + 1] = c return c end
+
+		-- container (gethui -> CoreGui -> PlayerGui, all optional fallbacks)
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "NA_2016_GUI"
+		gui.ResetOnSpawn = false
+		gui.IgnoreGuiInset = true
+		gui.DisplayOrder = 100
+		gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		pcall(function()
+			if protect_gui then protect_gui(gui) elseif syn and syn.protect_gui then syn.protect_gui(gui) end
+		end)
+		local parented = false
+		if gethui then
+			parented = pcall(function() gui.Parent = gethui() end) and gui.Parent ~= nil
+		end
+		if not parented then
+			parented = pcall(function() gui.Parent = CoreGui end) and gui.Parent ~= nil
+		end
+		if not parented then
+			parented = pcall(function() gui.Parent = lp:WaitForChild("PlayerGui", 5) end) and gui.Parent ~= nil
+		end
+		if not parented then error("no GUI container could be found (gethui, CoreGui and PlayerGui all failed)") end
+		state.Gui = gui
+
+		local function box(parent, x, y, w, h, color, radius, rot)
+			local f = Instance.new("Frame")
+			f.Position = UDim2.new(0, x, 0, y)
+			f.Size = UDim2.new(0, w, 0, h)
+			f.BackgroundColor3 = color or WHITE
+			f.BorderSizePixel = 0
+			if rot then f.Rotation = rot end
+			if radius and radius > 0 then
+				local c = Instance.new("UICorner")
+				c.CornerRadius = UDim.new(0, radius)
+				c.Parent = f
+			end
+			f.Parent = parent
+			return f
+		end
+
+		-- 2016 top bar: 36px, dark, 50% transparent
+		local bar = Instance.new("Frame")
+		bar.Name = "TopBar"
+		bar.Size = UDim2.new(1, 0, 0, 36)
+		bar.BackgroundColor3 = DARK
+		bar.BackgroundTransparency = 0.5
+		bar.BorderSizePixel = 0
+		bar.Parent = gui
+
+		local function iconButton(name, x)
+			local b = Instance.new("TextButton")
+			b.Name = name
+			b.Position = UDim2.new(0, x, 0, 0)
+			b.Size = UDim2.new(0, 50, 0, 36)
+			b.BackgroundColor3 = WHITE
+			b.BackgroundTransparency = 1
+			b.BorderSizePixel = 0
+			b.AutoButtonColor = false
+			b.Text = ""
+			b.Parent = bar
+			track(b.MouseEnter:Connect(function() b.BackgroundTransparency = 0.85 end))
+			track(b.MouseLeave:Connect(function() b.BackgroundTransparency = 1 end))
+			return b
+		end
+
+		-- icons are drawn with frames, so no texture/asset/writefile/getcustomasset dependency
+		local menuBtn = iconButton("MenuIcon", 0)
+		for i = 0, 2 do box(menuBtn, 13, 10 + i * 6, 24, 3, WHITE) end
+		local chatBtn = iconButton("ChatIcon", 50)
+		box(chatBtn, 13, 9, 24, 16, WHITE, 3)
+		box(chatBtn, 16, 21, 8, 8, WHITE, 0, 45)
+		for i = 0, 2 do box(chatBtn, 19 + i * 5, 15, 3, 3, DARK, 2) end
+		local packBtn = iconButton("BackpackIcon", 100)
+		box(packBtn, 19, 6, 12, 6, WHITE, 3)
+		box(packBtn, 15, 9, 20, 21, WHITE, 5)
+		box(packBtn, 19, 21, 12, 6, DARK, 2)
+
+		local function tapKey(key)
+			return pcall(function()
+				local vim = game:GetService("VirtualInputManager")
+				vim:SendKeyEvent(true, key, false, game)
+				task.wait(0.05)
+				vim:SendKeyEvent(false, key, false, game)
+			end)
+		end
+
+		track(menuBtn.MouseButton1Click:Connect(function()
+			if not tapKey(Enum.KeyCode.Escape) then
+				if not pcall(function() GuiService:SetMenuIsOpen(true) end) then
+					say("2016 GUI: unable to open the Roblox menu on this client")
+				end
+			end
+		end))
+
+		local chatOn = true
+		track(chatBtn.MouseButton1Click:Connect(function()
+			chatOn = not chatOn
+			local handled = pcall(function()
+				local tcs = game:GetService("TextChatService")
+				if tcs.ChatVersion ~= Enum.ChatVersion.TextChatService then error("legacy chat") end
+				tcs.ChatWindowConfiguration.Enabled = chatOn
+				tcs.ChatInputBarConfiguration.Enabled = chatOn
+			end)
+			if not handled and not pcall(function() StarterGui:SetCore("ChatActive", chatOn) end) then
+				say("2016 GUI: chat toggle is unavailable in this game")
+			end
+		end))
+
+		track(packBtn.MouseButton1Click:Connect(function()
+			if not tapKey(Enum.KeyCode.Backquote) then
+				say("2016 GUI: unable to toggle the backpack on this client")
+			end
+		end))
+
+		-- username + health bar (top right)
+		local right = Instance.new("TextButton")
+		right.Name = "NameHealthContainer"
+		right.Position = UDim2.new(1, -170, 0, 0)
+		right.Size = UDim2.new(0, 170, 1, 0)
+		right.BackgroundTransparency = 1
+		right.AutoButtonColor = false
+		right.Text = ""
+		right.Parent = bar
+
+		local nameLabel = Instance.new("TextLabel")
+		nameLabel.BackgroundTransparency = 1
+		nameLabel.Position = UDim2.new(0, 19, 0, 0)
+		nameLabel.Size = UDim2.new(1, -24, 0, 27)
+		nameLabel.Font = Enum.Font.SourceSansBold
+		nameLabel.TextSize = 14
+		nameLabel.TextColor3 = WHITE
+		nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+		nameLabel.TextYAlignment = Enum.TextYAlignment.Bottom
+		nameLabel.Text = lp.Name
+		nameLabel.Parent = right
+
+		local hpBack = Instance.new("Frame")
+		hpBack.Position = UDim2.new(0, 19, 1, -9)
+		hpBack.Size = UDim2.new(1, -24, 0, 3)
+		hpBack.BackgroundColor3 = Color3.fromRGB(228, 236, 246)
+		hpBack.BorderSizePixel = 0
+		hpBack.Parent = right
+
+		local hpFill = Instance.new("Frame")
+		hpFill.Size = UDim2.new(1, 0, 1, 0)
+		hpFill.BackgroundColor3 = Color3.fromRGB(27, 252, 107)
+		hpFill.BorderSizePixel = 0
+		hpFill.Parent = hpBack
+
+		track(RunService.Heartbeat:Connect(function()
+			local ch = lp.Character
+			local h = ch and ch:FindFirstChildOfClass("Humanoid")
+			local r = 1
+			if h and h.MaxHealth > 0 then r = math.clamp(h.Health / h.MaxHealth, 0, 1) end
+			hpFill.Size = UDim2.new(r, 0, 1, 0)
+			if r >= 1 then
+				hpFill.BackgroundColor3 = Color3.fromRGB(27, 252, 107)
+			elseif r > 0.5 then
+				hpFill.BackgroundColor3 = Color3.new((1 - r) * 2, 1, 0)
+			else
+				hpFill.BackgroundColor3 = Color3.new(1, r * 2, 0)
+			end
+		end))
+
+		-- 2016 player list (Tab, or tap your name, toggles it)
+		local listFrame = Instance.new("ScrollingFrame")
+		listFrame.Name = "PlayerList"
+		listFrame.Position = UDim2.new(1, -170, 0, 40)
+		listFrame.Size = UDim2.new(0, 170, 0, 360)
+		listFrame.BackgroundTransparency = 1
+		listFrame.BorderSizePixel = 0
+		listFrame.ScrollBarThickness = 0
+		listFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+		listFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		listFrame.Parent = gui
+		local layout = Instance.new("UIListLayout")
+		layout.SortOrder = Enum.SortOrder.LayoutOrder
+		layout.Padding = UDim.new(0, 2)
+		layout.Parent = listFrame
+
+		local rows, order = {}, 0
+		local function addRow(p)
+			if rows[p] then return end
+			order = order + 1
+			local row = Instance.new("TextButton")
+			row.Name = p.Name
+			row.LayoutOrder = order
+			row.Size = UDim2.new(0, 170, 0, 24)
+			row.BackgroundColor3 = DARK
+			row.BackgroundTransparency = 0.5
+			row.BorderSizePixel = 0
+			row.AutoButtonColor = false
+			row.Font = Enum.Font.SourceSans
+			row.TextSize = 14
+			row.TextColor3 = WHITE
+			row.TextXAlignment = Enum.TextXAlignment.Left
+			row.Text = p.Name
+			local pad = Instance.new("UIPadding")
+			pad.PaddingLeft = UDim.new(0, 8)
+			pad.Parent = row
+			row.Parent = listFrame
+			rows[p] = row
+		end
+		for _, p in ipairs(Players:GetPlayers()) do addRow(p) end
+		track(Players.PlayerAdded:Connect(addRow))
+		track(Players.PlayerRemoving:Connect(function(p)
+			local r = rows[p]
+			if r then r:Destroy() rows[p] = nil end
+		end))
+
+		local function toggleList() listFrame.Visible = not listFrame.Visible end
+		track(right.MouseButton1Click:Connect(toggleList))
+		track(UIS.InputBegan:Connect(function(input, gp)
+			if not gp and input.KeyCode == Enum.KeyCode.Tab then toggleList() end
+		end))
+
+		-- hide Roblox's own top bar / player list / health (retried, never waits forever)
+		local function hideDefault()
+			local done = pcall(function() StarterGui:SetCore("TopbarEnabled", false) end)
+			pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false) end)
+			pcall(function() StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Health, false) end)
+			return done
+		end
+		local hidden = false
+		for _ = 1, 6 do
+			if hideDefault() then hidden = true break end
+			task.wait(0.4)
+		end
+		task.spawn(function()
+			while state.Alive and gui.Parent do
+				task.wait(2)
+				if state.Alive then hideDefault() end
+			end
+		end)
+		return hidden
+	end)
+	if not ok then
+		pcall(state.Destroy)
+		say("2016 GUI failed: " .. tostring(res))
+		return
+	end
+	if res then
+		say("2016 GUI applied")
+	else
+		say("2016 GUI applied, but Roblox's default top bar could not be hidden")
+	end
 end)
 cmd.add({"removedn", "nodn", "nodpn"}, {"removedn (nodn, nodpn)", "Removes all display names"}, function()
 wait();
@@ -76880,11 +77163,12 @@ end
 HatReanimator.DontFireCharAddOnThisChar = nil
 function HatReanimator.Config(parent)
 pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement
-UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.", 10, Enum.TextXAlignment.Center)
 UI.CreateSwitch(parent, "dolteddown's permadeath", HatReanimator.Permadeath).Changed:Connect(function(val)
 HatReanimator.Permadeath = val
 SaveData.Reanimator.HatsPatchmahub = not val
 end)
+UI.CreateText(parent, "The game must have ragdoll first.", 10, Enum.TextXAlignment.Center)
 UI.CreateSwitch(parent, "Auto Force Respawn when stuck", HatReanimator.AutoForceRespawn).Changed:Connect(function(val)
 HatReanimator.AutoForceRespawn = val
 SaveData.Reanimator.HatsAutoForceRespawn = val
@@ -77006,7 +77290,750 @@ UI.CreateSeparator(parent)
 pcall(Reanimate.ToolExtras.BuildConfig, parent, "Hat")
 end
 HatReanimator.LastForceRespawn = 0
+HatReanimator.PDBusyUntil = 0
+HatReanimator.PDActive = nil
+do
+-- dolteddown's pd v3: ONE managed detector per character.
+-- PDBegin (baseline + background monitor, BEFORE any script-driven state change) -> PDRequest/PDDetect (trigger, then confirm a real game ragdoll) -> PDExecute (signal + observed joint break).
+-- Shared by the Hat/Hair/HatHair/Accessories/Tool reanimators.
+local pdSt = Enum.HumanoidStateType
+local pdCS = game:GetService("CollectionService")
+local pdSG = game:GetService("StarterGui")
+-- Force/align constraints are never body joints.
+local pdForce = {AlignPosition = true, AlignOrientation = true, Torque = true, LineForce = true, VectorForce = true, LinearVelocity = true, AngularVelocity = true, PlaneConstraint = true}
+-- neg: words that turn a "ragdoll" name into a negative / permission marker (NoRagdoll, CanRagdoll, RagdollOff, UnRagdolled ...). off: string values that mean "inactive".
+local pdW = {}
+do
+local function set(s)
+local t = {}
+for w in string.gmatch(s, "%S+") do
+t[w] = true
+end
+return t
+end
+pdW.neg = set("no non not un anti cant cannot can allow allows allowed disable disabled disables off stop stopped end ended finish finished recover recovered recovering getup remove removed clear cleared immune immunity block blocked prevent prevented ignore ignored cooldown resist resistance protect protected protection")
+pdW.off = set("false off no none null nil disabled disable inactive stopped ended idle normal standing recovered")
+end
+-- Legacy substring match (any name containing "ragdoll"; case, spaces, underscores ignored). The reanimators use it to leave the game's own ragdoll scripts alone.
+local function pdRag(s)
+return string.find(string.lower((string.gsub(tostring(s), "[^%w]", ""))), "ragdoll", 1, true) ~= nil
+end
+HatReanimator.PDRagName = pdRag
+-- "pos": affirmative ragdoll name (Ragdoll, Ragdolled, IsRagdoll, Ragdoll_State). "neg": negated / permission / cooldown name (NoRagdoll, CanRagdoll, RagdollDisabled, UnRagdolled). nil: not ragdoll related.
+local function pdKind(s)
+s = tostring(s)
+if not pdRag(s) then return nil end
+local spaced = string.lower((string.gsub(s, "(%l)(%u)", "%1 %2")))
+for w in string.gmatch(spaced, "%w+") do
+local i, j = string.find(w, "ragdoll", 1, true)
+if i then
+if pdW.neg[string.sub(w, 1, i - 1)] or pdW.neg[string.sub(w, j + 1)] then return "neg" end
+elseif pdW.neg[w] then
+return "neg"
+end
+end
+return "pos"
+end
+-- Is a marker VALUE active? "false" / "disabled" / "inactive" / "0" / negated ragdoll strings are not.
+local function pdTruthy(v)
+local t = type(v)
+if t == "boolean" then return v end
+if t == "number" then return v > 0 end
+if t == "string" then
+local s = string.lower((string.gsub(v, "^%s*(.-)%s*$", "%1")))
+if s == "" or pdW.off[s] or pdKind(s) == "neg" then return false end
+local n = tonumber(s)
+if n then return n > 0 end
+return true
+end
+return false
+end
+-- true when inst is not part of the character body (outside it, or inside an accessory/tool)
+local function pdOff(inst, character)
+local p = inst.Parent
+while p and p ~= character do
+if p:IsA("Accoutrement") or p:IsA("BackpackItem") then return true end
+p = p.Parent
+end
+return p ~= character
+end
+-- p0, p1 when constraint c physically links two different body parts, else nil
+local function pdLink(c, body)
+if pdForce[c.ClassName] then return nil end
+local a0, a1 = c.Attachment0, c.Attachment1
+local p0, p1 = a0 and a0.Parent, a1 and a1.Parent
+if p0 and p1 and p0 ~= p1 and body[p0] and body[p1] then return p0, p1 end
+return nil
+end
+-- body parts grouped by their physics assembly root
+local function pdGroups(parts)
+local g = {}
+for _, p in parts do
+if p.Parent then
+local r = p.AssemblyRootPart
+if r then
+local t = g[r]
+if not t then
+t = {}
+g[r] = t
+end
+t[#t + 1] = p
+end
+end
+end
+return g
+end
+-- number of NEW splits inside the baseline assembly groups (already separated groups never count)
+local function pdSplits(groups)
+local n = 0
+for _, members in groups do
+local seen, c = {}, 0
+for _, p in members do
+if p.Parent then
+local r = p.AssemblyRootPart
+if r and not seen[r] then
+seen[r] = true
+c += 1
+end
+end
+end
+if c > 1 then n += c - 1 end
+end
+return n
+end
+-- is there still an ACTIVE joint (any JointInstance class) between p0 and p1
+local function pdConnected(D, p0, p1)
+local character = D.char
+for _, j in D.joints do
+if j.Parent and j.Enabled and j:IsDescendantOf(character) then
+local a, b = j.Part0, j.Part1
+if (a == p0 and b == p1) or (a == p1 and b == p0) then return true end
+end
+end
+for j in D.addedJoints do
+if j.Parent and j.Enabled and j:IsDescendantOf(character) then
+local a, b = j.Part0, j.Part1
+if (a == p0 and b == p1) or (a == p1 and b == p0) then return true end
+end
+end
+return false
+end
+local function pdKill(D)
+if D.done then return end
+D.done = true
+for _, c in D.conns do
+pcall(function() c:Disconnect() end)
+end
+if HatReanimator.PDActive == D then HatReanimator.PDActive = nil end
+end
+-- every ACTIVE ragdoll attribute / tag / ValueObject inside the character (nested folders, models, controller objects included): {inst, key, kind}
+local function pdHits(D)
+local hits, char = {}, D.char
+-- a value without a ragdoll name of its own inherits the meaning of the nearest ragdoll-named container (nested ragdoll controller objects)
+local function nested(inst)
+local p = inst.Parent
+while p and p ~= char do
+if pdRag(p.Name) then return pdKind(p.Name) end
+p = p.Parent
+end
+return nil
+end
+for inst in D.srcs do
+if inst ~= char and inst.Parent == nil then
+D.srcs[inst] = nil
+else
+local scope
+for k, v in inst:GetAttributes() do
+local kk = pdKind(k)
+if (kk == "pos" and pdTruthy(v)) or (type(v) == "string" and pdKind(v) == "pos") then
+hits[#hits + 1] = {inst, "a:" .. k, "attr"}
+elseif kk == nil and v == true and inst ~= Player and inst ~= char then
+if scope == nil then scope = nested(inst) or false end
+if scope == "pos" then hits[#hits + 1] = {inst, "a:" .. k, "attr"} end
+end
+end
+if inst ~= Player then
+for _, tag in pdCS:GetTags(inst) do
+if pdKind(tag) == "pos" then hits[#hits + 1] = {inst, "t:" .. tag, "tag"} end
+end
+end
+end
+end
+for v in D.vals do
+if v.Parent then
+local val = v.Value
+if (pdKind(v.Name) == "pos" and pdTruthy(val)) or (type(val) == "string" and pdKind(val) == "pos") or (val == true and nested(v) == "pos") then
+hits[#hits + 1] = {v, "v", "val"}
+end
+else
+D.vals[v] = nil
+end
+end
+return hits
+end
+-- Live comparison of the character against the baseline. Independent signals only; signals describing the same underlying change are not added twice.
+local function pdEval(D)
+local hum, character = D.hum, D.char
+local now, st = os.clock(), hum:GetState()
+local why = {}
+-- Was the CURRENT state entered by the game? A transition this script requested (PDRequest) is matched to its own state change and never counts. If the change event has not arrived yet, the pending requests decide.
+local gst
+if D.curState == st then
+gst = not D.curSelf
+elseif st == D.state then
+gst = false
+else
+gst = true
+for _, r in D.requests do
+if r[1] == st and now - r[2] <= 0.75 then
+gst = false
+break
+end
+end
+end
+-- A. Humanoid group (one underlying ragdoll flag set, so the strongest member counts once). Physics / FallingDown belong to this group too (never added a second time as "support").
+local human = 0
+if gst and st == pdSt.Ragdoll then
+human = 2
+why[#why + 1] = "state"
+elseif (hum.PlatformStand and not D.platform) or (gst and st == pdSt.PlatformStanding) then
+human = 1.5
+why[#why + 1] = "platform"
+elseif D.neck and not hum.RequiresNeck then
+human = 1
+why[#why + 1] = "neck"
+elseif (gst and st == pdSt.Physics) or now - D.physAt <= 1.5 then
+human = 1
+why[#why + 1] = "physics"
+elseif (gst and st == pdSt.FallingDown) or now - D.fallAt <= 1.5 then
+human = 0.5
+why[#why + 1] = "falling"
+end
+-- B. Constraints: new, newly enabled, or re-linked body-to-body constraints (existing enabled ones and accessory/force constraints never count).
+local links, K, conOff = {}, 0, false
+for c, r in D.cons do
+if c.Parent then
+local p0, p1 = pdLink(c, D.body)
+if p0 and c.Enabled then
+links[#links + 1] = {p0, p1}
+if (not r.en) or r.p0 ~= p0 or r.p1 ~= p1 or r.a0 ~= c.Attachment0 or r.a1 ~= c.Attachment1 then K += 1 end
+elseif r.p0 and r.en and not c.Enabled then
+conOff = true
+end
+end
+end
+for c in D.addedCons do
+if c.Parent and c:IsDescendantOf(character) and c.Enabled then
+local p0, p1 = pdLink(c, D.body)
+if p0 then
+links[#links + 1] = {p0, p1}
+K += 1
+end
+end
+end
+-- C. Joints: a baseline-active body joint pair that is no longer connected by ANY active joint (disabled, destroyed, re-pointed). A pair now bridged by a constraint is a joint->constraint swap.
+local J, B = 0, 0
+for _, r in D.motors do
+if r.act then
+local m = r.m
+local a, b = m.Part0, m.Part1
+local live = m.Parent ~= nil and m.Enabled and m:IsDescendantOf(character) and ((a == r.p0 and b == r.p1) or (a == r.p1 and b == r.p0))
+if not live and not pdConnected(D, r.p0, r.p1) then
+local bridged = false
+for _, l in links do
+if (l[1] == r.p0 and l[2] == r.p1) or (l[1] == r.p1 and l[2] == r.p0) then
+bridged = true
+break
+end
+end
+if bridged then B += 1 else J += 1 end
+end
+end
+end
+local struct = 0
+if B > 0 then
+struct += 2
+why[#why + 1] = "swap"
+end
+if J > 0 then
+struct += J >= 2 and 2 or 1
+why[#why + 1] = "joints"
+end
+if K - B > 0 then
+struct += (K - B) >= 2 and 2 or 1
+why[#why + 1] = "constraints"
+end
+-- D. Assembly split: only when no tracked joint explains it (a disabled Motor6D already implies a split).
+if J == 0 and B == 0 then
+local sp = pdSplits(D.groups)
+if sp > 0 then
+struct += sp >= 3 and 2 or 1
+why[#why + 1] = "assembly"
+end
+end
+local pri = human + struct
+-- E. Supporting evidence: ragdoll markers that are active NOW but were not at the baseline (attributes / ValueObjects / tags / new ragdoll-named instances). Can never confirm on its own. Scanned at 10Hz.
+if now - D.scanAt >= 0.1 then
+D.scanAt = now
+local cur, flag, tag = {}, false, false
+for _, h in pdHits(D) do
+local inst, key = h[1], h[2]
+local c = cur[inst]
+if not c then
+c = {}
+cur[inst] = c
+end
+c[key] = true
+local b = D.hitBase[inst]
+if not (b and b[key]) then
+if h[3] == "tag" then tag = true else flag = true end
+end
+end
+-- a baseline marker that is inactive now is forgotten, so a later re-activation counts as new
+for inst, keys in D.hitBase do
+local c = cur[inst]
+for key in keys do
+if not (c and c[key]) then keys[key] = nil end
+end
+end
+D.flag, D.tag = flag, tag
+end
+local named = false
+for v in D.addedNamed do
+if v.Parent then
+named = true
+break
+end
+end
+local sup = 0
+if D.flag then
+sup += 1
+why[#why + 1] = "flag"
+end
+if D.tag then
+sup += 0.5
+why[#why + 1] = "tag"
+end
+if named then
+sup += 0.5
+why[#why + 1] = "marker"
+end
+if conOff and pri > 0 then sup += 0.5 end
+if sup > 1.5 then sup = 1.5 end
+local score = pri + sup
+local w = table.concat(why, "+")
+if score > D.peak then
+D.peak, D.peakWhy = score, w
+end
+return {score = score, pri = pri, sup = sup, why = w, confirmed = pri >= 2 or (pri >= 1 and score >= 2)}
+end
+-- One evaluation per frame, shared by the background monitor and the detection loop. Tracks how long the evidence has been CONTINUOUSLY confirmed (a flicker of <= 0.25s does not reset the settle timer).
+local function pdStep(D)
+local now = os.clock()
+if D.ev and now - D.evAt < 0.004 then return D.ev end
+local ev = pdEval(D)
+D.ev, D.evAt = ev, now
+if ev.confirmed then
+if not D.confSince then D.confSince, D.confWhy = now, ev.why end
+D.lastConf = now
+elseif D.confSince and now - D.lastConf > 0.25 then
+D.confSince = nil
+end
+return ev
+end
+local function pdNew(status, character, hum)
+local D = {status = status, char = character, hum = hum, conns = {}, requests = {}, body = {}, parts = {}, motors = {}, joints = {}, cons = {}, vals = {}, srcs = {}, addedCons = {}, addedJoints = {}, addedNamed = {}, hitBase = {}, peak = 0, peakWhy = "", scanAt = 0, physAt = -1e9, fallAt = -1e9, lastReq = 0, flag = false, tag = false, died = false, done = false}
+-- Baseline of the ORIGINAL character (taken before any script-driven state change).
+D.state, D.platform, D.neck, D.deadOn = hum:GetState(), hum.PlatformStand, hum.RequiresNeck, hum:GetStateEnabled(pdSt.Dead)
+-- instances that can carry a ragdoll marker (attribute / tag / value)
+local function src(v)
+return v:IsA("BasePart") or v:IsA("Model") or v:IsA("Folder") or v:IsA("Configuration") or v:IsA("ValueBase") or v:IsA("Constraint") or v:IsA("JointInstance") or v:IsA("Humanoid") or v:IsA("LuaSourceContainer")
+end
+local all = character:GetDescendants()
+for _, v in all do
+if v:IsA("BasePart") and not pdOff(v, character) then
+D.body[v] = true
+D.parts[#D.parts + 1] = v
+end
+end
+D.srcs[character], D.srcs[hum], D.srcs[Player] = true, true, true
+for _, v in all do
+if not pdOff(v, character) then
+if src(v) then D.srcs[v] = true end
+if v:IsA("JointInstance") then
+D.joints[#D.joints + 1] = v
+if v:IsA("Motor6D") then
+local p0, p1 = v.Part0, v.Part1
+if p0 and p1 and D.body[p0] and D.body[p1] then
+D.motors[#D.motors + 1] = {m = v, p0 = p0, p1 = p1, act = v.Enabled}
+end
+end
+elseif v:IsA("Constraint") then
+local p0, p1 = pdLink(v, D.body)
+D.cons[v] = {en = v.Enabled, a0 = v.Attachment0, a1 = v.Attachment1, p0 = p0, p1 = p1}
+elseif v:IsA("ValueBase") then
+D.vals[v] = true
+end
+end
+end
+D.groups = pdGroups(D.parts)
+for _, h in pdHits(D) do
+local b = D.hitBase[h[1]]
+if not b then
+b = {}
+D.hitBase[h[1]] = b
+end
+b[h[2]] = true
+end
+-- Event monitoring + a background evaluation, so a ragdoll that starts between PDBegin and PDDetect is still seen.
+-- Every script request (PDRequest) is matched to exactly one state transition (same state, within 0.75s, oldest first); stale requests are dropped.
+D.conns[#D.conns + 1] = hum.StateChanged:Connect(function(_, new)
+local now, selfreq, rq = os.clock(), false, D.requests
+for i = #rq, 1, -1 do
+if now - rq[i][2] > 2 then table.remove(rq, i) end
+end
+for i = 1, #rq do
+if rq[i][1] == new and now - rq[i][2] <= 0.75 then
+table.remove(rq, i)
+selfreq = true
+break
+end
+end
+D.curState, D.curSelf = new, selfreq
+if not selfreq then
+if new == pdSt.Physics then
+D.physAt = now
+elseif new == pdSt.FallingDown then
+D.fallAt = now
+end
+end
+end)
+D.conns[#D.conns + 1] = hum.Died:Connect(function()
+D.died = true
+end)
+D.conns[#D.conns + 1] = character.DescendantAdded:Connect(function(v)
+if pdOff(v, character) then return end
+if src(v) then D.srcs[v] = true end
+if v:IsA("Constraint") then
+D.addedCons[v] = true
+elseif v:IsA("JointInstance") then
+D.addedJoints[v] = true
+elseif v:IsA("ValueBase") then
+D.vals[v] = true
+elseif pdKind(v.Name) == "pos" then
+D.addedNamed[v] = true
+end
+end)
+D.conns[#D.conns + 1] = RunService.Heartbeat:Connect(function()
+if not D.done then pcall(pdStep, D) end
+end)
+task.delay(45, function() pdKill(D) end)
+return D
+end
+-- Records a script-requested state so it is matched to its own transition and never mistaken for a game-driven one, then requests it.
+function HatReanimator.PDRequest(hum, state)
+local D = HatReanimator.PDActive
+if D and D.hum == hum and not D.done then
+local now = os.clock()
+for i = #D.requests, 1, -1 do
+if now - D.requests[i][2] > 2 then table.remove(D.requests, i) end
+end
+-- already in that state: no transition will follow, so there is nothing to match
+if hum:GetState() ~= state then
+D.requests[#D.requests + 1] = {state, now}
+end
+D.lastReq = now
+end
+hum:ChangeState(state)
+end
+function HatReanimator.PDBegin(status, character, hum)
+local old = HatReanimator.PDActive
+if old then pdKill(old) end
+local ok, D = pcall(pdNew, status, character, hum)
+HatReanimator.PDActive = ok and D or nil
+return ok
+end
+local function pdDetect(status, character, hum, settle, D)
+local t0 = os.clock()
+local lastProg, best, stage, stageT, why, res, fired = t0, 0, 0, t0, "", "timeout", false
+while true do
+local now = os.clock()
+HatReanimator.PDBusyUntil = now + 4
+if not character:IsDescendantOf(workspace) or hum.Parent ~= character then
+res = "removed"
+break
+end
+if D.died or hum.Health <= 0 or hum:GetState() == pdSt.Dead then
+res = "died"
+break
+end
+local ev = pdStep(D)
+if ev.score > best + 0.01 then
+best = ev.score
+lastProg = now
+end
+if D.confSince then
+-- confirmed (evidence building since PDBegin already counts): it must hold for `settle` seconds
+lastProg = now
+if now - D.confSince >= settle then
+res, why = "ok", ev.confirmed and ev.why or D.confWhy
+break
+end
+else
+-- Never interrupt a ragdoll that is already progressing. Escalate only when the game shows nothing, a weak signal that stopped growing, or partial evidence that has stalled.
+local idle = now - lastProg
+local weak = ev.score < 1 and (ev.score <= 0 or idle >= 0.8)
+if stage == 0 and (weak or idle >= 1.2) and now - D.lastReq >= 0.5 then
+stage, stageT = 1, now
+status.Permadeath = "Requested FallingDown, watching for the game's ragdoll..."
+HatReanimator.PDRequest(hum, pdSt.FallingDown)
+elseif stage == 1 and weak and now - stageT >= 1.2 then
+stage, stageT = 2, now
+-- The engine's own reset hook (not a game-specific remote): only used if the game registered a reset callback, only while the game shows nothing, and never counted as evidence (the callback may just trigger a normal reset).
+local ok, cb = pcall(pdSG.GetCore, pdSG, "ResetButtonCallback")
+if ok and typeof(cb) == "Instance" and cb:IsA("BindableEvent") then
+fired = true
+status.Permadeath = "Fired the game's reset callback, watching for ragdoll..."
+pcall(function() cb:Fire() end)
+end
+end
+end
+-- bounded: 5s, extended (max 8s) only while the evidence is still growing or a confirmation is settling
+if (now - t0 >= 5 and now - lastProg >= 1) or now - t0 >= 8 then break end
+task.wait()
+end
+return res, why, fired
+end
+-- true only when a real game ragdoll transition was observed live for `settle` seconds. Dead stays enabled until then so the game's own reset/ragdoll handling is never blocked.
+function HatReanimator.PDDetect(status, character, hum, settle)
+HatReanimator.PDBusyUntil = os.clock() + 12
+settle = math.clamp(tonumber(settle) or 0.15, 0.1, 1.5)
+local D = HatReanimator.PDActive
+if not D or D.char ~= character or D.hum ~= hum or D.done then
+HatReanimator.PDBegin(status, character, hum)
+D = HatReanimator.PDActive
+end
+if not D then
+HatReanimator.PDBusyUntil = 0
+status.Permadeath = "Ragdoll detector failed to start, normal death used."
+return false, "error"
+end
+local ok, res, why, fired = pcall(pdDetect, status, character, hum, settle, D)
+if not ok then
+pdKill(D)
+HatReanimator.PDBusyUntil = 0
+status.Permadeath = "Ragdoll detection errored, normal death used."
+return false, "error"
+end
+if res == "ok" then
+status.Permadeath = "Ragdoll detected (" .. why .. "), running pd."
+return true, why
+end
+local peak, pwhy = D.peak, D.peakWhy
+pdKill(D)
+HatReanimator.PDBusyUntil = 0
+if res == "removed" then
+status.Permadeath = "Character removed before ragdoll."
+elseif res == "died" then
+status.Permadeath = fired and "Character died after the game's reset callback, normal death used." or "Character died before pd, normal death used."
+elseif peak >= 0.5 then
+status.Permadeath = "Ragdoll evidence incomplete (" .. pwhy .. "), normal death used."
+else
+status.Permadeath = "No game ragdoll detected" .. (fired and " (FallingDown + reset callback tried)" or " (FallingDown tried)") .. ", normal death used."
+end
+return false, res
+end
+-- Pre-signal state of EVERY body joint (enabled or not) + assembly groups. Taken as late as possible (after the game's ragdoll settled), so what the game already broke is part of the snapshot and only the signal's own effect is measured.
+local function pdSnap(D)
+local character = D.char
+local s = {joints = {}, n = 0, groups = pdGroups(D.parts)}
+for _, v in character:GetDescendants() do
+if v:IsA("JointInstance") and not pdOff(v, character) then
+s.n += 1
+s.joints[s.n] = {v, v.Enabled, v.Part0, v.Part1}
+end
+end
+return s
+end
+-- Changes since the snapshot: joints destroyed / disabled / re-pointed, newly split assemblies.
+local function pdBroke(D, s)
+local character, n = D.char, 0
+for _, r in s.joints do
+local j = r[1]
+if not j:IsDescendantOf(character) or (r[2] and not j.Enabled) or j.Part0 ~= r[3] or j.Part1 ~= r[4] then n += 1 end
+end
+return n, pdSplits(s.groups)
+end
+local function pdExecute(status, character, hum, bringconns, D)
+-- Dead goes back to what the game had before this script touched it (never blindly re-enabled).
+local function undead()
+pcall(function() hum:SetStateEnabled(pdSt.Dead, D.deadOn ~= false) end)
+end
+local function gone()
+return not character:IsDescendantOf(workspace) or hum.Parent ~= character
+end
+local function dead()
+return D.died or hum.Health <= 0 or hum:GetState() == pdSt.Dead
+end
+if type(replicatesignal) ~= "function" then
+status.Permadeath = "Unsupported: no replicatesignal, normal death used."
+return "nosignal"
+end
+if gone() then
+status.Permadeath = "Character removed before pd."
+return "removed"
+end
+if dead() then
+status.Permadeath = "Character died before pd, normal death used."
+return "died"
+end
+local t0 = os.clock()
+-- 1. The ragdoll must still be live right before the signal: a ragdoll that already recovered would turn the signal into a normal death. A confirmation seen within the last second counts (flicker); otherwise wait briefly for it to return.
+if not D.fresh then
+while true do
+local now = os.clock()
+HatReanimator.PDBusyUntil = now + 4
+if gone() then
+status.Permadeath = "Character removed before pd."
+return "removed"
+end
+if dead() then
+status.Permadeath = "Character died before pd, normal death used."
+return "died"
+end
+pdStep(D)
+if D.confSince or now - (D.lastConf or -1e9) <= 1 then break end
+if now - t0 >= 0.4 then
+status.Permadeath = "Ragdoll ended before pd, normal death used."
+return "unconfirmed"
+end
+task.wait()
+end
+end
+-- 2. Let a game ragdoll that is still rebuilding the character finish (bounded), so its own joint changes are never mistaken for the signal's.
+local function sig()
+local j, c = 0, 0
+for _, v in character:GetDescendants() do
+if v:IsA("JointInstance") then
+if v.Enabled and not pdOff(v, character) then j += 1 end
+elseif v:IsA("Constraint") then
+if v.Enabled and not pdOff(v, character) then c += 1 end
+end
+end
+return j * 4096 + c
+end
+local s0, sigv = os.clock(), sig()
+local sigT = s0
+while os.clock() - sigT < 0.12 and os.clock() - s0 < 0.4 do
+task.wait()
+HatReanimator.PDBusyUntil = os.clock() + 4
+if gone() then
+status.Permadeath = "Character removed before pd."
+return "removed"
+end
+if dead() then
+status.Permadeath = "Character died before pd, normal death used."
+return "died"
+end
+local n = sig()
+if n ~= sigv then
+sigv, sigT = n, os.clock()
+end
+end
+-- 3. Snapshot, then (only now) stop the client from entering Dead and fire the signal exactly once.
+local pre = pdSnap(D)
+hum:SetStateEnabled(pdSt.Dead, false)
+status.Permadeath = "Ragdoll confirmed, sending ServerBreakJoints."
+local ok, err = pcall(function() replicatesignal(hum.ServerBreakJoints) end)
+if not ok then
+undead()
+status.Permadeath = "replicatesignal failed (" .. tostring(err) .. "), normal death used."
+return "signalfail"
+end
+local fireAt = os.clock()
+status.Permadeath = "ServerBreakJoints sent, watching for the joint break..."
+-- 4. Observe. The signal cannot take effect before one network round trip, so changes inside that first moment belong to the game (the snapshot is simply refreshed). The window scales with ping.
+local okp, ping = pcall(function() return Player:GetNetworkPing() end)
+if not okp or type(ping) ~= "number" then ping = 0.1 end
+local absorb = fireAt + math.clamp(ping * 0.5, 0.03, 0.25)
+local window = math.clamp(2.5 + ping * 3, 2.5, 5)
+local seenAt, calm = nil, false
+while true do
+local now = os.clock()
+HatReanimator.PDBusyUntil = now + 4
+if gone() then
+status.Permadeath = "Character removed during pd."
+return "removed"
+end
+if dead() then break end
+if now < absorb then
+pre = pdSnap(D)
+else
+local n, split = pdBroke(D, pre)
+if n > 0 or split > 0 then seenAt = seenAt or now end
+if seenAt and now - seenAt >= 0.25 then break end
+-- Nothing left to break: the game's ragdoll already removed every body joint, so no joint break can be observed. The character simply has to stay alive.
+if pre.n == 0 and now - absorb >= 0.8 then
+calm = true
+break
+end
+end
+if now - fireAt >= window then break end
+task.wait()
+end
+if dead() then
+undead()
+status.Permadeath = "Character died after ServerBreakJoints, normal death used."
+return "died"
+end
+if not seenAt and not calm then
+-- invoked, but nothing changed although there was something to break: NOT a success. Fall back instead of leaving the character in limbo.
+undead()
+status.Permadeath = "pd unconfirmed: signal sent, no joint break observed, normal death used."
+return "unconfirmed"
+end
+-- Break observed (or nothing was left to break) and the character is alive: now Climbing + client BreakJoints (never earlier, so the game's ragdoll is not interrupted).
+hum.EvaluateStateMachine = true
+hum.BreakJointsOnDeath = true
+hum:SetStateEnabled(pdSt.Climbing, true)
+hum:SetStateEnabled(pdSt.Dead, false)
+pcall(function() character:BreakJoints() end)
+hum:ChangeState(pdSt.Climbing)
+table.insert(bringconns, RunService.Heartbeat:Connect(function()
+if hum.Parent and hum:GetStateEnabled(pdSt.Dead) then
+hum:SetStateEnabled(pdSt.Dead, false)
+end
+end))
+status.Permadeath = seenAt and "Executed dolteddown's pd." or "Executed dolteddown's pd (the game's ragdoll had already broken the body)."
+return "executed"
+end
+-- Returns "executed" (break observed or already in place, character alive) | "unconfirmed" | "nosignal" | "signalfail" | "died" | "removed" | "error". Only "executed" keeps PD active.
+function HatReanimator.PDExecute(status, character, hum, bringconns)
+HatReanimator.PDBusyUntil = os.clock() + 8
+local D = HatReanimator.PDActive
+if not D or D.char ~= character or D.hum ~= hum or D.done then
+HatReanimator.PDBegin(status, character, hum)
+D = HatReanimator.PDActive
+if D then D.fresh = true end
+end
+if not D then
+HatReanimator.PDBusyUntil = 0
+status.Permadeath = "pd errored, normal death used."
+return "error"
+end
+local ok, res = pcall(pdExecute, status, character, hum, bringconns, D)
+HatReanimator.PDBusyUntil = 0
+pdKill(D)
+if not ok then
+pcall(function() hum:SetStateEnabled(pdSt.Dead, D.deadOn ~= false) end)
+status.Permadeath = "pd errored, normal death used."
+return "error"
+end
+return res
+end
+end
 function HatReanimator.ForceRespawn(reason, force)
+if os.clock() < HatReanimator.PDBusyUntil and not force then return false end
 local char = Player.Character
 local hum = char and char:FindFirstChildOfClass("Humanoid")
 HatReanimator.LastForceRespawn = os.clock()
@@ -77756,7 +78783,7 @@ elseif v:IsA("Animator") then
 task.defer(function()
 v:Destroy()
 end)
-elseif v:IsA("LocalScript") and v.Parent == Player.Character then
+elseif v:IsA("LocalScript") and v.Parent == Player.Character and not (HatReanimator.Permadeath and HatReanimator.PDRagName(v.Name)) then
 v.Enabled = false
 v:GetPropertyChangedSignal("Enabled"):Connect(function()
 if v.Enabled then v.Enabled = false end
@@ -78338,9 +79365,10 @@ HatReanimator.Status.HatCollide = "Respawn detected."
 HatReanimator.Status.RespawnFling = "Respawn detected."
 local hatcols = HatReanimator.HatCollide
 local perma = HatReanimator.Permadeath
-HatReanimator.HasPermadeath, HatReanimator.HasHatCollide = perma, hatcols
 local hatcolmeth = HatReanimator.HatCollideMethod
 if not replicatesignal then perma = false end
+HatReanimator.HasPermadeath, HatReanimator.HasHatCollide = perma, hatcols
+local pdfired = false
 if not hatcols then hatcolmeth = -1 end
 if hatcols and RejectCharacterDeletionsDisabled then
 hatcolmeth = -2
@@ -78349,6 +79377,7 @@ local selhatcol = HatCollideMethods[hatcolmeth]
 CurrentCharacter = nil
 local Humanoid = character:WaitForChild("Humanoid", 10)
 if not Humanoid then return end
+if perma then HatReanimator.PDBegin(HatReanimator.Status, character, Humanoid) end
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
 selhatcol = HatCollideMethods[hatcolmeth]
@@ -78511,7 +79540,7 @@ HatReanimator.Status.ReanimState = "Loading Permadeath."
 if perma then
 HatReanimator.Status.Permadeath = "no."
 else
-HatReanimator.Status.Permadeath = "Disabled, nothing to do."
+HatReanimator.Status.Permadeath = HatReanimator.Permadeath and "Unsupported: no replicatesignal, normal death used." or "Disabled, nothing to do."
 end
 if not character:IsDescendantOf(workspace) then
 lgloop:Disconnect()
@@ -78520,7 +79549,7 @@ end
 readystate = 1
 HatReanimator.Status.ReanimState = "Reanimate State: 1"
 if not selhatcol.ColLimb then
-Humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Physics)
 end
 NumHats = #CharHats
 selhatcol.State1(character, Humanoid, CharHats)
@@ -78556,8 +79585,16 @@ end
 handle:SetAttribute("_Uhhhhhh_HasCollide", false)
 end
 end
+if perma then
+local pdok = HatReanimator.PDDetect(HatReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15)
+if not pdok then
+perma = false
+HatReanimator.HasPermadeath = false
+end
+else
 Humanoid:ChangeState(Enum.HumanoidStateType.FallingDown)
 task.wait(selhatcol.Wait2 or 0.15)
+end
 if not character:IsDescendantOf(workspace) then
 lgloop:Disconnect()
 for _,c in bringconns do
@@ -78566,16 +79603,28 @@ end
 return
 end
 AvatarEditorService:BustAvatarFetchCache()
-pcall(replicatesignal, Humanoid.ServerBreakJoints)
+local pdres
+if perma and not pdfired then
+pdfired = true
+pdres = HatReanimator.PDExecute(HatReanimator.Status, character, Humanoid, bringconns)
+if pdres ~= "executed" then
+perma = false
+HatReanimator.HasPermadeath = false
+end
+if pdres == "removed" then
+lgloop:Disconnect()
+for _,c in bringconns do
+c:Disconnect()
+end
+return
+end
+end
+if not perma and not pdres then
+pcall(function() replicatesignal(Humanoid.ServerBreakJoints) end)
+end
 Humanoid.EvaluateStateMachine = true
 Humanoid.BreakJointsOnDeath = true
-if perma then
-pcall(function() character:BreakJoints() end)
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-Humanoid:ChangeState(Enum.HumanoidStateType.Climbing)
-HatReanimator.Status.Permadeath = "Executed dolteddown's pd."
-else
+if not perma then
 Humanoid.Health = 0
 Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
@@ -78738,7 +79787,7 @@ debug.profileend()
 if HatReanimator.AutoForceRespawn and HatReanimator.HasPermadeath then
 local now = os.clock()
 if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
-stuckSince = stuckSince or now
+stuckSince = os.clock() < HatReanimator.PDBusyUntil and now or stuckSince or now
 if now - stuckSince > HatReanimator.StuckTimeout and now - HatReanimator.LastForceRespawn > 5 then
 stuckSince = nil
 HatReanimator.ForceRespawn("Stuck for " .. HatReanimator.StuckTimeout .. "s. Force respawning!")
@@ -79513,12 +80562,13 @@ end
 HairReanimator.DontFireCharAddOnThisChar = nil
 function HairReanimator.Config(parent)
 pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement
-UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.", 10, Enum.TextXAlignment.Center)
 Reanimate.LimbHider.Switches(parent, "Hair")
 UI.CreateSwitch(parent, "dolteddown's permadeath", HairReanimator.Permadeath).Changed:Connect(function(val)
 HairReanimator.Permadeath = val
 HairReanimator.Save.HatsPatchmahub = not val
 end)
+UI.CreateText(parent, "The game must have ragdoll first.", 10, Enum.TextXAlignment.Center)
 UI.CreateSwitch(parent, "Auto Force Respawn when stuck", HairReanimator.AutoForceRespawn).Changed:Connect(function(val)
 HairReanimator.AutoForceRespawn = val
 HairReanimator.Save.HatsAutoForceRespawn = val
@@ -80391,7 +81441,7 @@ elseif v:IsA("Animator") then
 task.defer(function()
 v:Destroy()
 end)
-elseif v:IsA("LocalScript") and v.Parent == Player.Character then
+elseif v:IsA("LocalScript") and v.Parent == Player.Character and not (HairReanimator.Permadeath and HatReanimator.PDRagName(v.Name)) then
 v.Enabled = false
 v:GetPropertyChangedSignal("Enabled"):Connect(function()
 if v.Enabled then v.Enabled = false end
@@ -80973,9 +82023,10 @@ HairReanimator.Status.HairCollide = "Respawn detected."
 HairReanimator.Status.RespawnFling = "Respawn detected."
 local hatcols = HairReanimator.HatCollide
 local perma = HairReanimator.Permadeath
-HairReanimator.HasPermadeath, HairReanimator.HasHatCollide = perma, hatcols
 local hatcolmeth = HairReanimator.HatCollideMethod
 if not replicatesignal then perma = false end
+HairReanimator.HasPermadeath, HairReanimator.HasHatCollide = perma, hatcols
+local pdfired = false
 if not hatcols then hatcolmeth = -1 end
 if hatcols and RejectCharacterDeletionsDisabled then
 hatcolmeth = -2
@@ -80984,6 +82035,7 @@ local selhatcol = HatCollideMethods[hatcolmeth]
 CurrentCharacter = nil
 local Humanoid = character:WaitForChild("Humanoid", 10)
 if not Humanoid then return end
+if perma then HatReanimator.PDBegin(HairReanimator.Status, character, Humanoid) end
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
 selhatcol = HatCollideMethods[hatcolmeth]
@@ -81146,7 +82198,7 @@ HairReanimator.Status.ReanimState = "Loading Permadeath."
 if perma then
 HairReanimator.Status.Permadeath = "no."
 else
-HairReanimator.Status.Permadeath = "Disabled, nothing to do."
+HairReanimator.Status.Permadeath = HairReanimator.Permadeath and "Unsupported: no replicatesignal, normal death used." or "Disabled, nothing to do."
 end
 if not character:IsDescendantOf(workspace) then
 lgloop:Disconnect()
@@ -81155,7 +82207,7 @@ end
 readystate = 1
 HairReanimator.Status.ReanimState = "Reanimate State: 1"
 if not selhatcol.ColLimb then
-Humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Physics)
 end
 NumHats = #CharHats
 selhatcol.State1(character, Humanoid, CharHats)
@@ -81191,8 +82243,16 @@ end
 handle:SetAttribute("_Uhhhhhh_HasCollide", false)
 end
 end
+if perma then
+local pdok = HatReanimator.PDDetect(HairReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15)
+if not pdok then
+perma = false
+HairReanimator.HasPermadeath = false
+end
+else
 Humanoid:ChangeState(Enum.HumanoidStateType.FallingDown)
 task.wait(selhatcol.Wait2 or 0.15)
+end
 if not character:IsDescendantOf(workspace) then
 lgloop:Disconnect()
 for _,c in bringconns do
@@ -81201,16 +82261,28 @@ end
 return
 end
 AvatarEditorService:BustAvatarFetchCache()
-pcall(replicatesignal, Humanoid.ServerBreakJoints)
+local pdres
+if perma and not pdfired then
+pdfired = true
+pdres = HatReanimator.PDExecute(HairReanimator.Status, character, Humanoid, bringconns)
+if pdres ~= "executed" then
+perma = false
+HairReanimator.HasPermadeath = false
+end
+if pdres == "removed" then
+lgloop:Disconnect()
+for _,c in bringconns do
+c:Disconnect()
+end
+return
+end
+end
+if not perma and not pdres then
+pcall(function() replicatesignal(Humanoid.ServerBreakJoints) end)
+end
 Humanoid.EvaluateStateMachine = true
 Humanoid.BreakJointsOnDeath = true
-if perma then
-pcall(function() character:BreakJoints() end)
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-Humanoid:ChangeState(Enum.HumanoidStateType.Climbing)
-HairReanimator.Status.Permadeath = "Executed dolteddown's pd."
-else
+if not perma then
 Humanoid.Health = 0
 Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
@@ -81373,7 +82445,7 @@ debug.profileend()
 if HairReanimator.AutoForceRespawn and HairReanimator.HasPermadeath then
 local now = os.clock()
 if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
-stuckSince = stuckSince or now
+stuckSince = os.clock() < HatReanimator.PDBusyUntil and now or stuckSince or now
 if now - stuckSince > HairReanimator.StuckTimeout and now - HairReanimator.LastForceRespawn > 5 then
 stuckSince = nil
 HairReanimator.ForceRespawn("Stuck for " .. HairReanimator.StuckTimeout .. "s. Force respawning!")
@@ -81875,12 +82947,13 @@ end
 HatHairReanimator.DontFireCharAddOnThisChar = nil
 function HatHairReanimator.Config(parent)
 pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement
-UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.", 10, Enum.TextXAlignment.Center)
 Reanimate.LimbHider.Switches(parent, "HatHair")
 UI.CreateSwitch(parent, "dolteddown's permadeath", HatHairReanimator.Permadeath).Changed:Connect(function(val)
 HatHairReanimator.Permadeath = val
 HatHairReanimator.Save.HatsPatchmahub = not val
 end)
+UI.CreateText(parent, "The game must have ragdoll first.", 10, Enum.TextXAlignment.Center)
 UI.CreateSwitch(parent, "Auto Force Respawn when stuck", HatHairReanimator.AutoForceRespawn).Changed:Connect(function(val)
 HatHairReanimator.AutoForceRespawn = val
 HatHairReanimator.Save.HatsAutoForceRespawn = val
@@ -82786,7 +83859,7 @@ elseif v:IsA("Animator") then
 task.defer(function()
 v:Destroy()
 end)
-elseif v:IsA("LocalScript") and v.Parent == Player.Character then
+elseif v:IsA("LocalScript") and v.Parent == Player.Character and not (HatHairReanimator.Permadeath and HatReanimator.PDRagName(v.Name)) then
 v.Enabled = false
 v:GetPropertyChangedSignal("Enabled"):Connect(function()
 if v.Enabled then v.Enabled = false end
@@ -83368,9 +84441,10 @@ HatHairReanimator.Status.AccessoryCollide = "Respawn detected."
 HatHairReanimator.Status.RespawnFling = "Respawn detected."
 local hatcols = HatHairReanimator.HatCollide
 local perma = HatHairReanimator.Permadeath
-HatHairReanimator.HasPermadeath, HatHairReanimator.HasHatCollide = perma, hatcols
 local hatcolmeth = HatHairReanimator.HatCollideMethod
 if not replicatesignal then perma = false end
+HatHairReanimator.HasPermadeath, HatHairReanimator.HasHatCollide = perma, hatcols
+local pdfired = false
 if not hatcols then hatcolmeth = -1 end
 if hatcols and RejectCharacterDeletionsDisabled then
 hatcolmeth = -2
@@ -83379,6 +84453,7 @@ local selhatcol = HatCollideMethods[hatcolmeth]
 CurrentCharacter = nil
 local Humanoid = character:WaitForChild("Humanoid", 10)
 if not Humanoid then return end
+if perma then HatReanimator.PDBegin(HatHairReanimator.Status, character, Humanoid) end
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
 selhatcol = HatCollideMethods[hatcolmeth]
@@ -83541,7 +84616,7 @@ HatHairReanimator.Status.ReanimState = "Loading Permadeath."
 if perma then
 HatHairReanimator.Status.Permadeath = "no."
 else
-HatHairReanimator.Status.Permadeath = "Disabled, nothing to do."
+HatHairReanimator.Status.Permadeath = HatHairReanimator.Permadeath and "Unsupported: no replicatesignal, normal death used." or "Disabled, nothing to do."
 end
 if not character:IsDescendantOf(workspace) then
 lgloop:Disconnect()
@@ -83550,7 +84625,7 @@ end
 readystate = 1
 HatHairReanimator.Status.ReanimState = "Reanimate State: 1"
 if not selhatcol.ColLimb then
-Humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Physics)
 end
 NumHats = #CharHats
 selhatcol.State1(character, Humanoid, CharHats)
@@ -83586,8 +84661,16 @@ end
 handle:SetAttribute("_Uhhhhhh_HasCollide", false)
 end
 end
+if perma then
+local pdok = HatReanimator.PDDetect(HatHairReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15)
+if not pdok then
+perma = false
+HatHairReanimator.HasPermadeath = false
+end
+else
 Humanoid:ChangeState(Enum.HumanoidStateType.FallingDown)
 task.wait(selhatcol.Wait2 or 0.15)
+end
 if not character:IsDescendantOf(workspace) then
 lgloop:Disconnect()
 for _,c in bringconns do
@@ -83596,16 +84679,28 @@ end
 return
 end
 AvatarEditorService:BustAvatarFetchCache()
-pcall(replicatesignal, Humanoid.ServerBreakJoints)
+local pdres
+if perma and not pdfired then
+pdfired = true
+pdres = HatReanimator.PDExecute(HatHairReanimator.Status, character, Humanoid, bringconns)
+if pdres ~= "executed" then
+perma = false
+HatHairReanimator.HasPermadeath = false
+end
+if pdres == "removed" then
+lgloop:Disconnect()
+for _,c in bringconns do
+c:Disconnect()
+end
+return
+end
+end
+if not perma and not pdres then
+pcall(function() replicatesignal(Humanoid.ServerBreakJoints) end)
+end
 Humanoid.EvaluateStateMachine = true
 Humanoid.BreakJointsOnDeath = true
-if perma then
-pcall(function() character:BreakJoints() end)
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-Humanoid:ChangeState(Enum.HumanoidStateType.Climbing)
-HatHairReanimator.Status.Permadeath = "Executed dolteddown's pd."
-else
+if not perma then
 Humanoid.Health = 0
 Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
@@ -83768,7 +84863,7 @@ debug.profileend()
 if HatHairReanimator.AutoForceRespawn and HatHairReanimator.HasPermadeath then
 local now = os.clock()
 if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
-stuckSince = stuckSince or now
+stuckSince = os.clock() < HatReanimator.PDBusyUntil and now or stuckSince or now
 if now - stuckSince > HatHairReanimator.StuckTimeout and now - HatHairReanimator.LastForceRespawn > 5 then
 stuckSince = nil
 HatHairReanimator.ForceRespawn("Stuck for " .. HatHairReanimator.StuckTimeout .. "s. Force respawning!")
@@ -84281,12 +85376,13 @@ end
 AccessoriesReanimator.DontFireCharAddOnThisChar = nil
 function AccessoriesReanimator.Config(parent)
 pcall(function() Reanimate.HeadMotion.ConfigSwitch(parent) end) -- Dynamic Head Movement
-UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive while the reanimate runs.\nNeeds replicatesignal support from your executor.", 10, Enum.TextXAlignment.Center)
 Reanimate.LimbHider.Switches(parent, "Accessories")
 UI.CreateSwitch(parent, "dolteddown's permadeath", AccessoriesReanimator.Permadeath).Changed:Connect(function(val)
 AccessoriesReanimator.Permadeath = val
 AccessoriesReanimator.Save.HatsPatchmahub = not val
 end)
+UI.CreateText(parent, "The game must have ragdoll first.", 10, Enum.TextXAlignment.Center)
 UI.CreateSwitch(parent, "Auto Force Respawn when stuck", AccessoriesReanimator.AutoForceRespawn).Changed:Connect(function(val)
 AccessoriesReanimator.AutoForceRespawn = val
 AccessoriesReanimator.Save.HatsAutoForceRespawn = val
@@ -85134,7 +86230,7 @@ elseif v:IsA("Animator") then
 task.defer(function()
 v:Destroy()
 end)
-elseif v:IsA("LocalScript") and v.Parent == Player.Character then
+elseif v:IsA("LocalScript") and v.Parent == Player.Character and not (AccessoriesReanimator.Permadeath and HatReanimator.PDRagName(v.Name)) then
 v.Enabled = false
 v:GetPropertyChangedSignal("Enabled"):Connect(function()
 if v.Enabled then v.Enabled = false end
@@ -85716,9 +86812,10 @@ AccessoriesReanimator.Status.AccessoryCollide = "Respawn detected."
 AccessoriesReanimator.Status.RespawnFling = "Respawn detected."
 local hatcols = AccessoriesReanimator.HatCollide
 local perma = AccessoriesReanimator.Permadeath
-AccessoriesReanimator.HasPermadeath, AccessoriesReanimator.HasHatCollide = perma, hatcols
 local hatcolmeth = AccessoriesReanimator.HatCollideMethod
 if not replicatesignal then perma = false end
+AccessoriesReanimator.HasPermadeath, AccessoriesReanimator.HasHatCollide = perma, hatcols
+local pdfired = false
 if not hatcols then hatcolmeth = -1 end
 if hatcols and RejectCharacterDeletionsDisabled then
 hatcolmeth = -2
@@ -85727,6 +86824,7 @@ local selhatcol = HatCollideMethods[hatcolmeth]
 CurrentCharacter = nil
 local Humanoid = character:WaitForChild("Humanoid", 10)
 if not Humanoid then return end
+if perma then HatReanimator.PDBegin(AccessoriesReanimator.Status, character, Humanoid) end
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
 selhatcol = HatCollideMethods[hatcolmeth]
@@ -85889,7 +86987,7 @@ AccessoriesReanimator.Status.ReanimState = "Loading Permadeath."
 if perma then
 AccessoriesReanimator.Status.Permadeath = "no."
 else
-AccessoriesReanimator.Status.Permadeath = "Disabled, nothing to do."
+AccessoriesReanimator.Status.Permadeath = AccessoriesReanimator.Permadeath and "Unsupported: no replicatesignal, normal death used." or "Disabled, nothing to do."
 end
 if not character:IsDescendantOf(workspace) then
 lgloop:Disconnect()
@@ -85898,7 +86996,7 @@ end
 readystate = 1
 AccessoriesReanimator.Status.ReanimState = "Reanimate State: 1"
 if not selhatcol.ColLimb then
-Humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Physics)
 end
 NumHats = #CharHats
 selhatcol.State1(character, Humanoid, CharHats)
@@ -85934,8 +87032,16 @@ end
 handle:SetAttribute("_Uhhhhhh_HasCollide", false)
 end
 end
+if perma then
+local pdok = HatReanimator.PDDetect(AccessoriesReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15)
+if not pdok then
+perma = false
+AccessoriesReanimator.HasPermadeath = false
+end
+else
 Humanoid:ChangeState(Enum.HumanoidStateType.FallingDown)
 task.wait(selhatcol.Wait2 or 0.15)
+end
 if not character:IsDescendantOf(workspace) then
 lgloop:Disconnect()
 for _,c in bringconns do
@@ -85944,16 +87050,28 @@ end
 return
 end
 AvatarEditorService:BustAvatarFetchCache()
-pcall(replicatesignal, Humanoid.ServerBreakJoints)
+local pdres
+if perma and not pdfired then
+pdfired = true
+pdres = HatReanimator.PDExecute(AccessoriesReanimator.Status, character, Humanoid, bringconns)
+if pdres ~= "executed" then
+perma = false
+AccessoriesReanimator.HasPermadeath = false
+end
+if pdres == "removed" then
+lgloop:Disconnect()
+for _,c in bringconns do
+c:Disconnect()
+end
+return
+end
+end
+if not perma and not pdres then
+pcall(function() replicatesignal(Humanoid.ServerBreakJoints) end)
+end
 Humanoid.EvaluateStateMachine = true
 Humanoid.BreakJointsOnDeath = true
-if perma then
-pcall(function() character:BreakJoints() end)
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
-Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-Humanoid:ChangeState(Enum.HumanoidStateType.Climbing)
-AccessoriesReanimator.Status.Permadeath = "Executed dolteddown's pd."
-else
+if not perma then
 Humanoid.Health = 0
 Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
@@ -86116,7 +87234,7 @@ debug.profileend()
 if AccessoriesReanimator.AutoForceRespawn and AccessoriesReanimator.HasPermadeath then
 local now = os.clock()
 if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
-stuckSince = stuckSince or now
+stuckSince = os.clock() < HatReanimator.PDBusyUntil and now or stuckSince or now
 if now - stuckSince > AccessoriesReanimator.StuckTimeout and now - AccessoriesReanimator.LastForceRespawn > 5 then
 stuckSince = nil
 AccessoriesReanimator.ForceRespawn("Stuck for " .. AccessoriesReanimator.StuckTimeout .. "s. Force respawning!")
@@ -86538,9 +87656,10 @@ UI.CreateSwitch(parent, "dolteddown's permadeath", ToolReanimator.Permadeath).Ch
 ToolReanimator.Permadeath = val
 SaveData.Reanimator.ToolsPermadeath = val
 end)
+UI.CreateText(parent, "The game must have ragdoll first.", 10, Enum.TextXAlignment.Center)
 end
 if ToolReanimator.Method == 1 then
-UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive so the tools stay yours. Off = tools are lost when the game respawns you.\nThe game must have ragdoll for it to work.", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "dolteddown's permadeath keeps your real character alive so the tools stay yours. Off = tools are lost when the game respawns you.", 10, Enum.TextXAlignment.Center)
 else
 UI.CreateText(parent, "Corpse Claim always keeps the body alive on the server when replicatesignal exists.", 10, Enum.TextXAlignment.Center)
 end
@@ -87562,8 +88681,10 @@ Status.Permadeath = "Respawn detected."
 local perma = ToolReanimator.Permadeath
 if not replicatesignal then perma = false end
 ToolReanimator.HasPermadeath = perma
+local pdfired = false
 local hum = character:WaitForChild("Humanoid", 10)
 if not hum then return end
+if perma then HatReanimator.PDBegin(Status, character, hum) end
 Humanoid = hum
 if not Reanimate.UseLoadAnimationHook then
 local stupid = character:FindFirstChild("Animate")
@@ -87633,7 +88754,7 @@ list = ClaimTools(character)
 if #list == 0 then task.wait(0.25) end
 until #list > 0
 Status.ReanimState = "Reanimate State: 1"
-hum:ChangeState(Enum.HumanoidStateType.Physics)
+HatReanimator.PDRequest(hum, Enum.HumanoidStateType.Physics)
 task.wait(0.25)
 if not alive() then return end
 Status.ReanimState = "Reanimate State: 2"
@@ -87651,19 +88772,33 @@ h.AssemblyAngularVelocity = Vector3.zero
 end
 end))
 end
+if perma then
+local pdok = HatReanimator.PDDetect(Status, character, hum, 0.15)
+if not pdok then
+perma = false
+ToolReanimator.HasPermadeath = false
+end
+else
 hum:ChangeState(Enum.HumanoidStateType.FallingDown)
 task.wait()
+end
 if not alive() then return end
-pcall(replicatesignal, hum.ServerBreakJoints)
+local pdres
+if perma and not pdfired then
+pdfired = true
+pdres = HatReanimator.PDExecute(Status, character, hum, bringconns)
+if pdres ~= "executed" then
+perma = false
+ToolReanimator.HasPermadeath = false
+end
+if pdres == "removed" or not alive() then return end
+end
+if not perma and not pdres then
+pcall(function() replicatesignal(hum.ServerBreakJoints) end)
+end
 hum.EvaluateStateMachine = true
 hum.BreakJointsOnDeath = true
-if perma then
-pcall(function() character:BreakJoints() end)
-hum:SetStateEnabled(Enum.HumanoidStateType.Climbing, true)
-hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
-hum:ChangeState(Enum.HumanoidStateType.Climbing)
-Status.Permadeath = "Executed dolteddown's pd."
-else
+if not perma then
 hum.Health = 0
 hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 hum:ChangeState(Enum.HumanoidStateType.Dead)
@@ -87760,7 +88895,7 @@ end
 if ToolReanimator.AutoForceRespawn and ToolReanimator.HasPermadeath then
 local now = os.clock()
 if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
-stuckSince = stuckSince or now
+stuckSince = os.clock() < HatReanimator.PDBusyUntil and now or stuckSince or now
 if now - stuckSince > ToolReanimator.StuckTimeout and now - HatReanimator.LastForceRespawn > 5 then
 stuckSince = nil
 ToolReanimator.ForceRespawn("Stuck for " .. ToolReanimator.StuckTimeout .. "s. Force respawning!")
@@ -109534,6 +110669,7 @@ local function caps()
 	return t
 end
 local function beat(gen)
+	if Pub.Departed then return "stop" end -- this session is leaving the experience: it never registers or refreshes itself again
 	local pub = game.PrivateServerId == "" and game.JobId ~= ""
 	local snap = {pid = game.PlaceId, g = placeName():sub(1, 64), j = pub and game.JobId or "", pub = pub, sid = SID, dn = tostring(Player.DisplayName or ""):sub(1, 32), cap = caps()}
 	local fp = snap.pid .. "|" .. snap.g .. "|" .. snap.j .. "|" .. snap.dn
@@ -109561,7 +110697,8 @@ local function beat(gen)
 	return "fail", describe(ok, code, d, err)
 end
 function Pub.Start()
-	if Pub.Running or Pub.Banned or not Auth.Token then return end
+	if Pub.Running or Pub.Banned or Pub.Departed or not Auth.Token then return end
+	if Pub.Left ~= nil then SID, Pub.Left = newId(), nil end -- the previous session id already left the registry: a (re)join is a brand-new session
 	Pub.Running = true
 	Pub.Gen += 1
 	local gen = Pub.Gen
@@ -109591,25 +110728,37 @@ function Pub.Start()
 		if Pub.Gen == gen then Pub.Running = false end
 	end)
 end
--- stop sending immediately; when `remove`, also delete this session's entry (after any request already in flight has finished)
-function Pub.Stop(remove)
+-- stop sending immediately; when `remove`, also delete this session's entry (after any request already in flight has finished).
+-- `leaving` = the local player is leaving the experience: no waiting for a request in flight (the Worker refuses a late request of a session that already left) and a quick retry
+function Pub.Stop(remove, leaving)
 	Pub.Gen += 1
 	Pub.Running, Pub.LastFP = false, nil
-	if not remove or not Auth.Token or Pub.Leaving then setPubStatus("off") return end
+	if not remove or not Auth.Token or Pub.Leaving or Pub.Left == true then setPubStatus("off") return end
 	Pub.Leaving = true
 	task.spawn(function()
-		local t0 = os.clock()
-		while Pub.InFlight and os.clock() - t0 < 16 do task.wait(0.1) end
+		if not leaving then
+			local t0 = os.clock()
+			while Pub.InFlight and os.clock() - t0 < 16 do task.wait(0.1) end
+		end
 		local removed = false
 		for attempt = 1, 2 do
 			local ok, code = call("POST", "/live/presence/leave", {sid = SID}, true)
 			if ok and (code == 200 or code == 401 or code == 404) then removed = true break end
-			if attempt == 1 then task.wait(3) end
+			if attempt == 1 then task.wait(leaving and 0.5 or 3) end
 		end
+		Pub.Left = removed -- true: the Worker confirmed this session id is gone (never sent twice); false: the entry expires on its own
 		Pub.Leaving = false
 		Pub.Note = removed and "Your entry was removed." or "The backend could not be reached; your entry expires on its own within 4 minutes."
 		setPubStatus("off")
 	end)
+end
+-- departure of THIS client (left the game / teleporting away): one idempotent handler. Heartbeats stop, this session can never register again and ONLY this session id
+-- is removed from the registry (other sessions of the account and the login stay untouched). A forced close, crash or dead network cannot send a final request:
+-- the 4 minute presence expiry on the Worker stays the fallback.
+function Pub.Depart(byTeleport)
+	if Pub.Departed then return end
+	Pub.Departed, Pub.ByTeleport = true, byTeleport == true
+	Pub.Stop(true, true)
 end
 -- send queued acknowledgements right now (one extra request, only after a moderation command); blocks until it is sent
 function Pub.FlushNow()
@@ -109833,6 +110982,17 @@ function V.SendCommand(e, act)
 			V.Interval, V.NextAt = 20, os.clock() + 20
 		elseif isBanned(ok, code, d) then LPL.OnBanned()
 		elseif ok and code == 401 then Auth.Forget(); V.Halt = "auth"
+		elseif ok and type(d) == "table" and (d.err == "target_offline" or d.st == "TARGET_OFFLINE") then
+			-- the Worker has no valid live session for this account (it left, or its session is still being re-established): not executed, nothing was delivered, nobody else is targeted
+			if type(d.id) == "string" then V.Cmds[d.id] = {st = "TARGET_OFFLINE", a = act, tn = e.n, note = "target not connected", t = os.clock(), noted = true} end
+			notify(label .. ": " .. e.n .. " is no longer connected (it left the game, or its session is being re-established). Nothing was sent. Refreshing the list.")
+			V.Entries[e.id] = nil -- never keep an actionable card for an account without a valid session; a fresh snapshot brings it back only if the Worker lists it
+			local oc = V.Cards[e.id]
+			if oc then pcall(function() oc.frame:Destroy() end); V.Cards[e.id] = nil end
+			local t0 = os.clock()
+			while V.Busy and os.clock() - t0 < 10 do task.wait(0.1) end
+			V.Cursor, V.Halt, V.NextAt = nil, nil, 0 -- the old cursor cannot be trusted: full snapshot now (the poll loop retries if one is still running)
+			V.Poll()
 		elseif ok and type(d) == "table" then
 			if d.msg then notify(label .. ": " .. tostring(d.msg))
 			else notify(label .. ": " .. tostring(d.st or d.err or ("HTTP " .. code))) end
@@ -110325,6 +111485,23 @@ task.spawn(function() V.Role = LPL.LocalRole(true); Auth.Notify() end) -- role r
 -- with a visible notice (LPL.OnSignedIn). The Worker decides the role from roles.json / whitelist.json; ordinary users simply get no roster access.
 task.delay(10, function()
 	if Auth.Load() then LPL.OnSignedIn() else Auth.Login() end
+end)
+
+-- local player departure: only the LOCAL player's removal counts (another player leaving the server never reaches Pub.Depart)
+Players.PlayerRemoving:Connect(function(p) if p == Player then Pub.Depart(false) end end)
+pcall(function()
+	Player.OnTeleport:Connect(function(state)
+		if state == Enum.TeleportState.InProgress then
+			Pub.Depart(true)
+		elseif state == Enum.TeleportState.Failed and Pub.Departed and Pub.ByTeleport then
+			Pub.Departed, Pub.ByTeleport = false, false -- the teleport did not happen: still here, so register again as a brand-new session (Pub.Start rotates the id)
+			task.spawn(function()
+				local t0 = os.clock()
+				while Pub.Leaving and os.clock() - t0 < 20 do task.wait(0.1) end
+				if Auth.Token and not Auth.SignedOut and not Pub.Departed then Pub.Start() end
+			end)
+		end
+	end)
 end)
 
 Util.LivePlayerLog = LPL
