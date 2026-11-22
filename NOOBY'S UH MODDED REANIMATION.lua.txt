@@ -63792,6 +63792,12 @@ TextColor3 = true, TextTransparency = true, TextBounds = true, TextFits = true, 
 Position = true, Rotation = true, ZIndex = true, Visible = true, BackgroundTransparency = true, BackgroundColor3 = true,
 TextStrokeTransparency = true, TextStrokeColor3 = true, Active = true, Interactable = true,
 }
+Util.TextCancel = function(fn)
+if pend[fn] ~= nil then
+pend[fn] = nil
+count -= 1
+end
+end
 Util.TextSettle = function(fn)
 if pend[fn] == nil then count += 1 end
 pend[fn] = os.clock()
@@ -63847,13 +63853,28 @@ Text.TextWrapped = true
 Text.TextSize = size
 RegisterTextLabel(Text)
 local lastCT, lastTS, lastFont, lastX
+-- [DANCEFIX3] Container.Size fires Text.Changed(AbsoluteSize) synchronously, which re-entered update() (nested resize -> "C stack overflow").
+-- update() is now non-reentrant: a nested request is folded into one coalesced follow-up (capped so a width that flips back and forth, e.g. a
+-- scrollbar appearing, cannot loop forever), and destroyed labels are ignored.
+local busy, again, streak = false, false, 0
 local function update()
+if busy then again = true return end
+if not Text.Parent then return end
 local x = parent.AbsoluteSize.X
 local ct, ts, fnt = Text.ContentText, Text.TextSize, Text.Font
 if ct == lastCT and ts == lastTS and fnt == lastFont and x == lastX then return end
 lastCT, lastTS, lastFont, lastX = ct, ts, fnt, x
 local size = Util.TextSize(ct, ts, fnt, Vector2.new(x - margin * 2, math.huge))
+busy = true
 Container.Size = UDim2.new(1, 0, 0, size.Y + margin)
+busy = false
+if again then
+again = false
+streak += 1
+if streak <= 3 then Util.TextSettle(update) end
+else
+streak = 0
+end
 end
 Text.Text = text
 update()
@@ -63863,11 +63884,18 @@ update()
 -- settled width equals the last measured width); properties that cannot change the layout never reach update().
 Text.Changed:Connect(function(prop)
 if Util.TextSkipProps[prop] then return end
-if prop == "AbsoluteSize" and lastX and lastX >= 40 then
-if parent.AbsoluteSize.X ~= lastX then Util.TextSettle(update) end
+if prop == "AbsoluteSize" then
+local px = parent.AbsoluteSize.X
+if px == lastX then return end
+-- first real width after a hidden/zero-width start: measure once now; every later width change is coalesced
+if (lastX or 0) < 40 and px >= 40 then update() return end
+Util.TextSettle(update)
 return
 end
 update()
+end)
+Text.Destroying:Once(function()
+Util.TextCancel(update)
 end)
 return Text
 end
