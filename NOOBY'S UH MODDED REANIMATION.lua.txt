@@ -113137,10 +113137,11 @@ function V.Watch()
 	end)
 end
 
-local SHORT = {kick = "KICK", kill = "KILL", deanimate = "DEAN", dizzy = "DIZZ", hallucinate = "HALL", silenthell = "HELL", dropbomb = "BOMB", ban = "BAN"}
+local SHORT = {kick = "Kick", kill = "Kill", deanimate = "Deanimate", dizzy = "Dizzy", hallucinate = "Hallucinate", silenthell = "Silent Hell", domain = "Domain", cooked = "Cooked", dropbomb = "Drop Bomb", ban = "Ban"}
 local function modButton(c, parent, act, order)
 	local b = newButton(parent, SHORT[act] or act:upper(), order, act == "ban" and Color3.fromRGB(122, 40, 44) or nil)
-	b.Size, b.TextSize = UDim2.new(0, 40, 1, 0), 10
+	b.Size, b.TextSize = UDim2.new(0, 92, 0, 22), 11
+	local label = b.Text
 	local armed = 0
 	b.Activated:Connect(function()
 		local e = c.e
@@ -113149,13 +113150,16 @@ local function modButton(c, parent, act, order)
 			if os.clock() - armed > 4 then
 				armed = os.clock()
 				b.Text = "SURE?"
-				task.delay(4, function() if b.Parent and b.Text == "SURE?" then b.Text = "BAN" end end)
+				task.delay(4, function() if b.Parent and b.Text == "SURE?" then b.Text = label end end)
 				return
 			end
 			armed = 0
-			b.Text = "BAN"
+			b.Text = label
 		end
 		V.SendCommand(e, act)
+		c.menuOpen = false -- the dropdown closes once an action is sent
+		c.sig = nil
+		V.Render()
 	end)
 	return b
 end
@@ -113214,7 +113218,24 @@ local function makeCard(list)
 	sl.Padding = UDim.new(0, 3)
 	sl.SortOrder = Enum.SortOrder.LayoutOrder
 	c.acts = {}
-	for i, a in ipairs(ACTS) do c.acts[a] = modButton(c, c.strip, a, i) end
+	c.modBtn = newButton(c.strip, "MOD +", 1, Color3.fromRGB(60, 70, 110)) -- ONE button per row; every mod action lives in its dropdown
+	c.modBtn.Size, c.modBtn.TextSize = UDim2.new(0, 56, 1, 0), 11
+	c.modBtn.Activated:Connect(function()
+		c.menuOpen = not c.menuOpen
+		c.sig = nil
+		V.Render()
+	end)
+	c.menu = Util.Instance("Frame", f)
+	c.menu.BackgroundTransparency = 1
+	c.menu.Size = UDim2.new(1, 0, 0, 0)
+	c.menu.AutomaticSize = Enum.AutomaticSize.Y
+	c.menu.LayoutOrder = 2
+	c.menu.Visible = false
+	local gl = Util.Instance("UIGridLayout", c.menu)
+	gl.CellSize = UDim2.new(0, 92, 0, 22)
+	gl.CellPadding = UDim2.new(0, 4, 0, 4)
+	gl.SortOrder = Enum.SortOrder.LayoutOrder
+	for i, a in ipairs(ACTS) do c.acts[a] = modButton(c, c.menu, a, i) end
 	c.join = newButton(head, "JOIN", 0, Color3.fromRGB(40, 110, 70))
 	c.join.AnchorPoint = Vector2.new(1, 0)
 	c.join.Position = UDim2.new(1, 0, 0, 22)
@@ -113225,7 +113246,7 @@ local function makeCard(list)
 	more.BackgroundTransparency = 1
 	more.Size = UDim2.new(1, 0, 0, 0)
 	more.AutomaticSize = Enum.AutomaticSize.Y
-	more.LayoutOrder = 2
+	more.LayoutOrder = 3
 	more.Visible = false
 	local ml = Util.Instance("UIListLayout", more)
 	ml.Padding = UDim.new(0, 5)
@@ -113252,7 +113273,7 @@ local function paintCard(c, e, now)
 	local stale = age > STALE_AFTER
 	local canJoin = e.j ~= "" and e.p > 0
 	local me = e.id == Player.UserId
-	local sig = table.concat({e.n, e.d, e.g, e.p, e.j, e.ns, stale and 1 or 0, math.floor(age / 10), c.open and 1 or 0, V.ActSig, me and 1 or 0}, "|")
+	local sig = table.concat({e.n, e.d, e.g, e.p, e.j, e.ns, stale and 1 or 0, math.floor(age / 10), c.open and 1 or 0, c.menuOpen and 1 or 0, V.ActSig, me and 1 or 0}, "|")
 	if c.sig == sig then return end
 	c.sig = sig
 	local img = "rbxthumb://type=AvatarHeadShot&id=" .. e.id .. "&w=48&h=48" -- resolved by the Roblox engine and cached by it: no request of ours
@@ -113269,8 +113290,12 @@ local function paintCard(c, e, now)
 		c.acts[a].Visible = on
 		if on then n += 1 end
 	end
-	c.strip.Size = UDim2.new(0, math.max(0, n * 43 - 3), 0, 18)
-	c.title.Size = UDim2.new(1, -(48 + (n > 0 and (n * 43 + 1) or 0)), 0, 20)
+	if n == 0 then c.menuOpen = false end
+	c.modBtn.Visible = n > 0
+	c.modBtn.Text = c.menuOpen and "MOD -" or "MOD +"
+	c.menu.Visible = c.menuOpen == true
+	c.strip.Size = UDim2.new(0, n > 0 and 56 or 0, 0, 18)
+	c.title.Size = UDim2.new(1, -(48 + (n > 0 and 60 or 0)), 0, 20)
 	c.sub.Size = UDim2.new(1, -(48 + (showJoin and 60 or 0)), 0, 20)
 	if not c.open then return end
 	c.info.Text = '<font color="' .. GRAY .. '">Username</font> ' .. esc(e.n)
