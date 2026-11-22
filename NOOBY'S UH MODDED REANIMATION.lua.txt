@@ -73784,6 +73784,8 @@ Util.Fling.Names = {
 "Instant Fling (Character Nuke)",
 "Overflow Fling",
 "PRoot fling",
+"Kill Fling",
+"Under void fling",
 }
 Util.Fling.Descriptions = {
 "default fling: spins into the target at crazy velocity and sends them flying",
@@ -73797,10 +73799,14 @@ Util.Fling.Descriptions = {
 "instant fling: saves your position, snaps your root + limbs onto the target for 1-2 frames with extreme velocity, then snaps straight back",
 "overflow fling: instantly applies a finite 1 decillion (1e33) velocity and angular impulse across all axes with independent per-axis alternation, aperiodic drift and rapid spin; hard-capped at 1e36, no NaN, no infinity",
 "PRoot fling: welds your HumanoidRootPart onto the target's HumanoidRootPart (locked to them every frame) and dumps huge linear + angular power into them for exactly 1 second, then your character snaps back to its normal reanimated position",
+"kill fling: fuses your HumanoidRootPart directly onto the target's HumanoidRootPart (zero offset, no jitter) and floods every physics channel with 1e300 linear and angular velocity — alternating axes every frame at 480 Hz — so astronomically extreme that the physics simulation collapses and kills them instead of sending them flying",
+"under void fling: attaches your HumanoidRootPart to the target's HumanoidRootPart (zero offset, re-fetched every frame) and floods every limb with 1e18 purely downward linear velocity plus 1e18 three-phase alternating angular velocity simultaneously — smashes the target straight down through the floor and under the void; the violent all-axis spin prevents any coherent directional escape so the assembly is driven directly beneath the map with no lateral launch",
 }
 Util.Fling.InstantDuration = 0.02
 Util.Fling.PRootDuration = 1.0
 Util.Fling.PRootPower = 9e8
+Util.Fling.KillDuration = 0.75
+Util.Fling.UnderVoidFlingDuration = 1.5
 Util.Fling.WeakDuration = 0.4
 Util.Fling.NaNWindow = 0.6
 Util.Fling.NaNEscalateDistance = 60
@@ -73911,6 +73917,8 @@ dur = defaultduration
 end
 end
 if ft.Mode == 11 then dur = Util.Fling.PRootDuration end
+if ft.Mode == 12 then dur = Util.Fling.KillDuration end
+if ft.Mode == 13 then dur = Util.Fling.UnderVoidFlingDuration end
 ft.Time = t + dur
 Util.Fling.ReportStart(ft)
 elseif t > ft.Time then
@@ -73931,6 +73939,14 @@ if ft.Mode == 3 and not Util.Fling.TargetAlive(ft.Target) then
 table.remove(queue, 1)
 return nil, CFrame.identity, true
 end
+if ft.Mode == 12 and not Util.Fling.TargetAlive(ft.Target) then
+table.remove(queue, 1)
+return nil, CFrame.identity, true
+end
+if ft.Mode == 13 and not Util.Fling.TargetAlive(ft.Target) then
+table.remove(queue, 1)
+return nil, CFrame.identity, true
+end
 if ft.Mode == 3 and t - ft.Start < Util.Fling.NoobyMaxTime then
 ft.Time = math.max(ft.Time, t + 1)
 end
@@ -73948,7 +73964,7 @@ end
 end
 end
 local flingcf, flinged
-if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9 or ft.Mode == 10 or ft.Mode == 11) then
+if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9 or ft.Mode == 10 or ft.Mode == 11 or ft.Mode == 12 or ft.Mode == 13) then
 if ft.Mode == 2 then
 local wv = part.AssemblyLinearVelocity
 if wv.Magnitude > 60 then wv = wv.Unit * 60 end
@@ -74012,6 +74028,10 @@ elseif ft.Mode == 10 then
 flingcf = CFrame.new(part.Position)
 elseif ft.Mode == 11 then
 flingcf = part.CFrame
+elseif ft.Mode == 12 then
+flingcf = part.CFrame -- zero-offset lock: fused directly onto target's HumanoidRootPart
+elseif ft.Mode == 13 then
+flingcf = part.CFrame -- zero-offset lock: same as Kill Fling; ApplyRoot re-fetches live CFrame every call
 else
 local cv = part.AssemblyLinearVelocity
 if (ft.Mode == 3 or ft.Mode == 4) and cv.Magnitude < 80 then
@@ -74127,6 +74147,64 @@ pcall(function()
 RootPart.AssemblyLinearVelocity = Vector3.new(pw * fl, pw * fl, -pw * fl)
 RootPart.AssemblyAngularVelocity = Vector3.new(pw, -pw * fl, pw)
 end)
+elseif mode == 12 then
+-- Kill Fling: re-fetches the target's live HumanoidRootPart CFrame every ApplyRoot call so the
+-- attachment stays exact even if the target moved since Step ran (fixes drift / "not attaching" bug).
+-- Uses a large but float32-finite velocity (1.5e9) instead of 1e300: 1e300 overflows to inf in
+-- Roblox's internal float32 physics and gets filtered/clamped to near-zero, which is why the old
+-- code only produced a slight push. 1.5e9 is well inside float32 range so the engine actually
+-- processes and transfers the force. A fixed large downward component (-kv on Y) drives the target
+-- toward FallenPartsDestroyHeight while rapid 480 Hz X/Z alternation prevents physics stabilising.
+local livePart = typeof(ft.Target) == "Instance" and Util.Fling.GetPart(ft.Target)
+local liveCF = (livePart and livePart.Parent) and livePart.CFrame or flingcf
+local kv = 1.5e9
+local kf = (math.floor(t * 480) % 2 == 0) and 1 or -1
+RootPart.CFrame = liveCF -- zero offset: locked directly onto their live HumanoidRootPart
+RootPart.Velocity           = Vector3.new( kv * kf, -kv, -kv * kf)
+RootPart.RotVelocity        = Vector3.new(-kv * kf,  kv,  kv * kf)
+pcall(function()
+RootPart.AssemblyLinearVelocity  = Vector3.new( kv * kf, -kv, -kv * kf)
+RootPart.AssemblyAngularVelocity = Vector3.new(-kv * kf,  kv,  kv * kf)
+end)
+elseif mode == 13 then
+	-- Under void fling: our entire reanimation assembly is pinned to the target's live
+	-- HumanoidRootPart position every frame. A constant uniform force (previous version)
+	-- gives the physics solver a predictable steady state to equilibrate against, which is
+	-- why it was inconsistent. The fix is a 480 Hz alternating pattern — the same frequency
+	-- Kill Fling uses — which prevents the solver from reaching equilibrium so the force
+	-- actually transfers. Y is always -kv (purely downward dominant); X/Z alternate at 10%
+	-- of that magnitude so net lateral displacement is near-zero but equilibration is broken.
+	local livePart2 = typeof(ft.Target) == "Instance" and Util.Fling.GetPart(ft.Target)
+	local liveCF2 = (livePart2 and livePart2.Parent) and livePart2.CFrame or flingcf
+	local kv = 1.5e9
+	local kf = (math.floor(t * 480) % 2 == 0) and 1 or -1
+	local kn = kv * 0.1 * kf  -- small alternating X/Z: breaks equilibrium, net-zero lateral
+	-- Pin our HRP directly onto their live HRP CFrame (re-fetched every call)
+	RootPart.CFrame = liveCF2
+	RootPart.Velocity    = Vector3.new(kn, -kv, -kn)
+	RootPart.RotVelocity = Vector3.zero
+	pcall(function()
+		RootPart.AssemblyLinearVelocity  = Vector3.new(kn, -kv, -kn)
+		RootPart.AssemblyAngularVelocity = Vector3.zero
+	end)
+	-- Flood every part of our own reanimation character with the same impulse.
+	-- Our client owns all our character parts so these writes replicate to the server.
+	-- Stacking our entire assembly at the target's position maximises contact surface
+	-- and concentrates the downward physics pressure onto their character every frame.
+	local ourChar = RootPart.Parent
+	if ourChar then
+		for _, bp in ourChar:GetChildren() do
+			if bp:IsA("BasePart") and bp ~= RootPart then
+				pcall(function()
+					bp.CFrame                   = liveCF2
+					bp.Velocity                 = Vector3.new(kn, -kv, -kn)
+					bp.RotVelocity              = Vector3.zero
+					bp.AssemblyLinearVelocity   = Vector3.new(kn, -kv, -kn)
+					bp.AssemblyAngularVelocity  = Vector3.zero
+				end)
+			end
+		end
+	end
 else
 local df = (math.floor(t * 120) % 2 == 0) and 1 or -1
 RootPart.CFrame = flingcf + jitter
@@ -75663,7 +75741,7 @@ LimbReanimator.FlingEnabled = val
 SaveData.Reanimator.LimbRoleplay = not val
 end)
 UI.CreateText(parent, "vvv touch player = they lose ownership vvv", 10, Enum.TextXAlignment.Center)
-UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / NaN State / Fling 1 / Fling 2 / Fling 3)", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / NaN State / Fling 1 / Fling 2 / Fling 3 / Kill Fling / Under void fling)", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
 do
 local UX = Reanimate.UnanchoredReanimator
@@ -77160,10 +77238,10 @@ end
 return o
 end
 local function UpdateTransforms(ReanimCharacter, RootPart, rootcf, rootvel, flingtarget, flingcf, tcf, held)
-if not RootPart:IsGrounded() then
+if flingtarget or not RootPart:IsGrounded() then
 if flingtarget then
 Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
-pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
+pcall(function() sethiddenproperty(RootPart, "PhysicsRepRootRef", Util.PredictionFlingPart(flingtarget.Target)) end)
 LOPT.refDirty = true
 else
 RootPart.CFrame = rootcf + Vector3.new(0, 0, math.random(0, 1) * 0.005)
