@@ -154,6 +154,11 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 length in the shared tween, spring settle after page transitions, spring-open dropdowns, window focus ring, border light sweep on Ultra / High)
        Custom mod (v438: SIMPLE UI REMASTER - calmer defaults for new installs (rounder 8, clearer window background, ambient particles / cursor trail off),
                 flatter button bevel (motion, blur, springs and intros untouched), clean section headers, plain-language labels, Feature Center reordered with short descriptions)
+       Custom mod (BE SOMEONE'S EFFECT - new bottom tab: scans nearby players, you pick one and your own hats (through the existing Hats
+                Reanimator, via HatCFrameOverride) become Tail / Wings / Aromatic / Circle / Wing left / Wing right effects that follow them.
+                Forces the Nothing moveset and blocks movesets / dances / dance keybinds only while it runs; the saved moveset is never overwritten.
+                Never touches the target's character; reanimating players are followed on their visible body (fake character), not their parked real
+                root; other players only see hats the engine reports you as network owner of)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -69906,6 +69911,7 @@ if top then return top:FindFirstAncestorOfClass("Model") or real, top, mid end
 return real, head, root
 end
 end
+Util.ActiveBody = Env.ActiveBody -- [BSE] shared with "Be someone's effect" so reanimating players are followed on their visible body
 Util.ModActions = Env.ModActions -- Live Player Log command channel (Kill / Deanimate / Kick)
 Env.Sign = function(path, body, bind) return body end -- no key, no SHA-256: the backend recognises the owner / co-owner / verified player by userId from roles.json on GitHub
 local EMBED = Cfg.Embedded == false and {} or {
@@ -82118,7 +82124,9 @@ if Humanoid.JumpPower < 1 then
 Humanoid.JumpPower = 50
 end
 if Camera then
-if (ReanimOkay and ReanimCharacter) or not HatReanimator.Permadeath then
+if Util.EffectView and Util.EffectView() then
+if Camera.CameraSubject ~= Util.EffectView() then Camera.CameraSubject = Util.EffectView() end
+elseif (ReanimOkay and ReanimCharacter) or not HatReanimator.Permadeath then
 Camera.CameraSubject = ReanimCharacter:FindFirstChildOfClass("Humanoid")
 else
 Camera.CameraSubject = Humanoid
@@ -94594,6 +94602,52 @@ ReanimateStartButtonText.Text = "Reanimate"
 ReanimateStartButton.Interactable = true
 return true
 end
+-- [BSE] start a specific reanimator through the SAME path as the Reanimate button (used by "Be someone's effect"); returns true once it is running
+Util.ModReanimate = function(reanimator)
+if not reanimator or Reanimate.Current or Reanimate.Starting or Reanimate.Stopping or not ReanimateStartButton.Interactable then return false end
+if reanimator.CanStart then
+local okStart, msgStart = reanimator.CanStart()
+if not okStart then
+pcall(Util.UINotify, msgStart)
+return false
+end
+end
+ReanimateStartButton.Interactable = false
+ReanimateStartButtonText.Text = "Starting..."
+if not Util.MapsPresent() then
+ReanimateStartButtonText.Text = "Waiting for maps..."
+local waitedMaps = 0
+while not Util.MapsPresent() and waitedMaps < 90 do
+task.wait(0.25)
+waitedMaps = waitedMaps + 0.25
+end
+if not Util.MapsPresent() then
+ReanimateStartButtonText.Text = "Reanimate"
+pcall(Util.UINotify, "Maps failed to download. Check your connection / the Init Logs.")
+ReanimateStartButton.Interactable = true
+return false
+end
+ReanimateStartButtonText.Text = "Starting..."
+end
+Reanimate.Starting = true
+pcall(function() Reanimate.HeadMotion.Reset() end)
+Reanimate.Current = reanimator
+HumanoidLASetHookState(Reanimate.UseLoadAnimationHook)
+ReanimateText.Text = "Running: " .. reanimator.Name
+task.spawn(reanimator.Start)
+local t0 = os.clock()
+repeat task.wait() until not Reanimate.Starting or os.clock() - t0 > 120
+if Reanimate.Starting then
+ReanimateStartButtonText.Text = "* Deanimate *"
+ReanimateStartButton.Interactable = true
+return false
+end
+if Reanimate.Current == reanimator then reanimator.Running = true end
+task.wait(1)
+ReanimateStartButtonText.Text = Reanimate.Current and "* Deanimate *" or "Reanimate"
+ReanimateStartButton.Interactable = true
+return Reanimate.Current == reanimator
+end
 UI.CreateButton(MainPage, "Show Reanimate Hitboxes", 15).Activated:Connect(function()
 if not Reanimate.Character then return end
 ReanimateShowHitboxes()
@@ -97818,6 +97872,7 @@ local KeybindPaging = 0
 local RefreshKeybinds = nil
 local function HandleKeybind(key)
 if table.find(KeybindsPerPage, key) then
+if Util.EffectLockBlocked and Util.EffectLockBlocked("dance") then return true end
 if CurrentDance then
 CurrentDance = nil
 return true
@@ -98605,6 +98660,7 @@ Util.Search.Hook(item, {
 Group = "moveset",
 Hint = "tap = use, hold = open",
 Use = function()
+if Util.EffectLockBlocked and Util.EffectLockBlocked("moveset") then return end
 local idx = table.find(MovementStyles, m)
 if idx then
 MovementStyleIndex = idx
@@ -98659,6 +98715,7 @@ if MovementStyleIndex == table.find(MovementStyles, m) then
 equiptext.Text = "* ACTIVE *"
 end
 equip.Activated:Connect(function()
+if Util.EffectLockBlocked and Util.EffectLockBlocked("moveset") then return end
 equiptext.Text = "* ACTIVE *"
 Util.MovesetPickedByUser = true
 MovementStyleIndex = table.find(MovementStyles, m)
@@ -98706,6 +98763,7 @@ Util.Search.Hook(item, {
 Group = "dance",
 Hint = "tap = play / stop, hold = open",
 Use = function()
+if Util.EffectLockBlocked and Util.EffectLockBlocked("dance") then return end
 if CurrentDance == m then
 CurrentDance = nil
 Util.Notify("Dance stopped: " .. m.Name)
@@ -98759,6 +98817,7 @@ if CurrentDance == m then
 equiptext.Text = "Stop Dance"
 end
 equip.Activated:Connect(function()
+if Util.EffectLockBlocked and Util.EffectLockBlocked("dance") then return end
 if CurrentDance == m then
 equiptext.Text = "Play Dance"
 CurrentDance = nil
@@ -98832,6 +98891,719 @@ logging ..= "\n[LOG] Module return value is not a table array of module function
 end
 logging ..= "\n[LOG] Loaded " .. #names .. " modules."
 return names, logging
+end
+-- ===================== BE SOMEONE'S EFFECT (bottom navigation tab "Be someone's effect") =====================
+-- Your own hats (acquired by the EXISTING Hats Reanimator) become visual effect pieces that follow ANOTHER player.
+--  * The hats are positioned through the existing HatReanimator.HatCFrameOverride mechanism (one world-space entry per hat Index), so hat
+--    detection, classification, ownership claiming, alignment and the start / deanimate lifecycle all stay the Hats Reanimator's own.
+--  * The selected player is only a positioning reference: their character, Humanoid, joints and movement are never touched or written to.
+--  * Players who are reanimating have their REAL root parked (void / sky / under the fake) and a reset real character, and other clients never see
+--    their fake rig. For them the reference is the body other clients actually see, taken from the script's own visible-body resolver
+--    (Env.ActiveBody, shared as Util.ActiveBody): a real torso part when their reanimator poses limbs, otherwise the centre of their replicated hats.
+--  * While the effect runs the neutral ("Nothing") moveset is forced, movesets / dances / dance keybinds are blocked (Util.EffectLock). The saved
+--    moveset (SaveData.MovesetIndex / MovesetHash) is never overwritten and the previous moveset is restored when the effect stops.
+--  * Replication is NOT assumed: other players only see a hat while the engine reports you as its network owner. The tab shows the live count.
+do
+local BSE = {}
+Util.BSE = BSE
+local FORMATIONS = {"Tail", "Wings", "Aromatic", "Circle", "Wing left", "Wing right"}
+BSE.Formations = FORMATIONS
+BSE.Range = math.huge -- no radius limit: the scan lists every available player in the server
+local KEYP = "BSE_"
+local PI2 = math.pi * 2
+local V3 = Vector3.new
+local S = {
+	Active = false, Busy = false, Stopping = false, Cancel = nil, Target = nil, Formation = FORMATIONS[1],
+	Status = "Idle - pick a player to begin", Conns = {}, Entries = {}, Keys = {}, MapRef = nil, Count = 0,
+	Cur = {}, Last = {}, From = {}, Blend = 1, Unit = 1.4, Owned = 0, Total = 0, Lost = nil, StartedReanim = false,
+	Low = false, Tick = 0, Frame = 0, StartAt = 0, Warned = false, Token = 0, View = true, Viewing = false,
+	Mode = "real", RefPlr = nil, RefMode = nil, RefPart = nil, RefHum = nil, RefAt = 0, Yaw = nil, PrevPos = nil, PrevT = 0,
+}
+BSE.State = S
+
+local function say(t)
+	pcall(Util.UINotify or Util.Notify, t)
+end
+
+-- Players is a cloneref here (never == to the real service), so "plr.Parent ~= Players" was true for EVERY player and the scan found nobody:
+-- membership is checked by class instead
+local function inServer(plr)
+	if typeof(plr) ~= "Instance" or not plr:IsA("Player") then return false end
+	local par = plr.Parent
+	return par ~= nil and par.ClassName == "Players"
+end
+
+-- the camera views the selected player while the effect runs (their Humanoid, or their visible body part when they are reanimating); the Hats
+-- reanimator's own per-frame camera line defers to Util.EffectView, and the camera goes back to your own character when the effect stops
+local function restoreView()
+	S.ViewSub = nil
+	if not S.Viewing then return end
+	S.Viewing = false
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	local hum
+	local okR, rc = pcall(function() return Reanimate and Reanimate.Character end)
+	if okR and typeof(rc) == "Instance" and rc.Parent then hum = rc:FindFirstChildOfClass("Humanoid") end
+	if not hum and Player.Character then hum = Player.Character:FindFirstChildOfClass("Humanoid") end
+	if hum then cam.CameraSubject = hum end
+end
+Util.EffectView = function()
+	if S.Active and S.View then
+		local sub = S.ViewSub
+		if typeof(sub) == "Instance" and sub.Parent then return sub end
+	end
+	return nil
+end
+function BSE.SetView(on)
+	S.View = on and true or false
+	if not S.View then restoreView() end
+	return S.View
+end
+
+local function finiteCF(cf)
+	local p, l = cf.Position, cf.LookVector
+	local x, y, z, a, b, c = p.X, p.Y, p.Z, l.X, l.Y, l.Z
+	return x == x and y == y and z == z and a == a and b == b and c == c and math.abs(x) < 1e5 and math.abs(y) < 1e5 and math.abs(z) < 1e5
+end
+
+-- reference part of a character (HumanoidRootPart first), plus its Humanoid
+local function rootOfChar(ch)
+	if typeof(ch) ~= "Instance" or not ch.Parent then return nil end
+	local hum = ch:FindFirstChildOfClass("Humanoid")
+	local root = ch:FindFirstChild("HumanoidRootPart") or (hum and hum.RootPart) or ch:FindFirstChild("Torso") or ch:FindFirstChild("UpperTorso")
+	if root and root:IsA("BasePart") then return root, hum end
+	return nil
+end
+
+local function myRoot()
+	local rc = Reanimate and Reanimate.Character
+	if typeof(rc) == "Instance" and rc.Parent then
+		local r = rootOfChar(rc)
+		if r then return r end
+	end
+	return rootOfChar(Player.Character)
+end
+
+-- Reference part of a player. "real" = a normal player (real root); "torso" / "body" = a REANIMATING player (real root parked, real character reset):
+-- the body other clients actually see, from the script's own visible-body resolver. "torso" = a real torso part posed onto their fake rig
+-- (limb reanimators), "body" = the replicated hat / tool group around them (Hats, Hair, Accessories... reanimators).
+local function resolve(plr)
+	local root, hum = rootOfChar(plr.Character)
+	local AB = Util.ActiveBody
+	if AB then
+		local okA, model, _, mid = pcall(AB, plr)
+		if okA and typeof(mid) == "Instance" and mid:IsA("BasePart") and mid.Parent and mid ~= root
+			and (not root or (mid.Position - root.Position).Magnitude > 12) then
+			if typeof(model) == "Instance" then
+				for _, nm in ipairs({"Torso", "UpperTorso", "LowerTorso"}) do
+					local tp = model:FindFirstChild(nm)
+					if tp and tp:IsA("BasePart") and (tp.Position - mid.Position).Magnitude <= 14 and (not root or (tp.Position - root.Position).Magnitude > 12) then
+						return "torso", tp, hum
+					end
+				end
+			end
+			return "body", mid, hum
+		end
+	end
+	if root then return "real", root, hum end
+	return nil
+end
+
+-- a player the effect can follow right now (a reanimating player's reset real humanoid does not count against them)
+local function available(plr)
+	if not inServer(plr) then return nil end
+	local mode, part, hum = resolve(plr)
+	if not part or not finiteCF(part.CFrame) then return nil end
+	if mode == "real" and hum and hum.Health <= 0 then return nil end
+	return mode, part, hum
+end
+
+-- Step 1: ALL players in the server with an available character or visible reanimated body (LocalPlayer excluded, no distance limit), nearest first
+function BSE.Scan()
+	local out, me = {}, myRoot()
+	local origin = me and me.Position
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= Player then
+			local mode, part = available(plr)
+			if part then
+				local d = origin and (part.Position - origin).Magnitude or nil
+				do
+					out[#out + 1] = {Player = plr, Root = part, Distance = d, Display = plr.DisplayName, Name = plr.Name, Mode = mode, Reanimated = mode ~= "real"}
+				end
+			end
+		end
+	end
+	table.sort(out, function(a, b)
+		return (a.Distance or math.huge) < (b.Distance or math.huge)
+	end)
+	return out
+end
+
+-- ---------------------------------------------------------------- moveset / dance lock
+local function findNothing()
+	for i, m in ipairs(MovementStyles) do
+		if type(m) == "table" and not m.BSENeutral then
+			local nm = string.lower(tostring(m.Name or "")):match("^%s*(.-)%s*$")
+			local inn = string.lower(tostring(m.InternalName or ""))
+			if nm == "nothing" or nm == "none" or inn == "nothing" then return i, m end
+		end
+	end
+	return nil
+end
+
+local function makeNeutral()
+	local m = {
+		ModuleType = "MOVESET", Name = "Nothing", Description = "Internal neutral moveset used by Be someone's effect (does nothing).",
+		InternalName = "BSE_Neutral", BSENeutral = true, Assets = {},
+		Config = function() end, Init = function() end, Update = function() end, Destroy = function() end,
+	}
+	GetModuleHash(m)
+	return m
+end
+
+local function lockMoveset()
+	if Util.EffectLock then return end
+	local cur = MovementStyles[MovementStyleIndex]
+	local saved = {Index = MovementStyleIndex, Style = cur, Hash = cur and cur.Hash or SaveData.MovesetHash, Picked = Util.MovesetPickedByUser}
+	local idx, mod = findNothing()
+	local injected = false
+	if not idx then
+		mod = makeNeutral()
+		table.insert(MovementStyles, mod)
+		idx = #MovementStyles
+		injected = true
+	end
+	Util.EffectLock = {Module = mod, Injected = injected, Saved = saved}
+	MovementStyleIndex = idx
+	CurrentDance = nil
+end
+
+local function unlockMoveset()
+	local lk = Util.EffectLock
+	if not lk then return end
+	local sv = lk.Saved
+	-- restore the previous selection BEFORE the lock is released so SaveData.MovesetIndex / MovesetHash never saw the neutral moveset
+	local restore = sv.Style and table.find(MovementStyles, sv.Style) or nil
+	if not restore and sv.Hash then
+		for i, m in ipairs(MovementStyles) do
+			if m ~= lk.Module and m.Hash == sv.Hash then restore = i break end
+		end
+	end
+	if not restore and sv.Index and MovementStyles[sv.Index] and MovementStyles[sv.Index] ~= lk.Module then restore = sv.Index end
+	if lk.Injected then
+		local ix = table.find(MovementStyles, lk.Module)
+		if ix then table.remove(MovementStyles, ix) end
+	end
+	if restore and restore > #MovementStyles then restore = nil end
+	MovementStyleIndex = restore or math.clamp(sv.Index or 1, 1, math.max(1, #MovementStyles))
+	Util.MovesetPickedByUser = sv.Picked
+	Util.EffectLock = nil
+end
+
+-- called every frame by the animation loop while the lock is on: the index of the neutral moveset (re-resolved after a module reload)
+Util.EffectEnforce = function()
+	local lk = Util.EffectLock
+	if not lk then return nil end
+	local mod = lk.Module
+	local idx = table.find(MovementStyles, mod)
+	if not idx then
+		local i2, m2 = findNothing()
+		if i2 then
+			lk.Module, lk.Injected, idx = m2, false, i2
+		else
+			mod = makeNeutral()
+			table.insert(MovementStyles, mod)
+			lk.Module, lk.Injected, idx = mod, true, #MovementStyles
+		end
+	end
+	return idx
+end
+
+local lastWarn = 0
+Util.EffectLockBlocked = function(kind)
+	if not Util.EffectLock then return false end
+	if os.clock() - lastWarn > 1.2 then
+		lastWarn = os.clock()
+		say((kind == "dance" and "Dances" or "Movesets") .. " are disabled while Be someone's effect is active.")
+	end
+	return true
+end
+
+-- ---------------------------------------------------------------- formations (all in the target's root space: +X right, +Y up, +Z behind)
+local function face(pos, dir, up)
+	if dir.Magnitude < 1e-4 then dir = V3(0, 0, 1) end
+	local u = up or V3(0, 1, 0)
+	if math.abs(dir.Unit:Dot(u)) > 0.97 then u = V3(1, 0, 0) end
+	return CFrame.lookAt(pos, pos + dir, u)
+end
+
+local function layTail(n, t, unit, base, out)
+	local gap = unit * 0.95
+	local lp = {}
+	for k = 1, n do
+		local s = k - 1
+		local u = n > 1 and s / (n - 1) or 0
+		local amp = math.min(2.4, 0.3 + s * unit * 0.11)
+		lp[k] = V3(math.sin(t * 2.3 - s * 0.6) * amp, -0.4 + math.sin(u * math.pi * 0.75) * 0.9 * unit, 0.85 + unit * 0.5 + s * gap)
+	end
+	for k = 1, n do
+		local nxt = lp[k + 1] or (lp[k] + (lp[k] - (lp[k - 1] or (lp[k] - V3(0, 0, 1)))))
+		out[k] = base * face(lp[k], nxt - lp[k], nil)
+	end
+end
+
+-- one wing (side = 1 right, -1 left): a spine that sweeps outward / up / back with a second "feather" row hanging below it
+local function wingPoints(m, side, t, unit, out)
+	local L = math.clamp((m - 1) * unit * 0.9 + 2.6, 4.2, 24) -- wider with more hats
+	local hinge = V3(side * 0.75, 0.55, 0.85)
+	local bump = L * 0.26
+	local rot = CFrame.Angles(0, 0, math.sin(t * 2.2) * 0.2 * side)
+	for j = 1, m do
+		local f = m > 1 and (j - 1) / (m - 1) or 0.55
+		local r = 0.9 + f * L
+		local x, y, z = side * r * 0.94, bump * math.sin(f * math.pi * 0.8), r * 0.26
+		if j % 2 == 0 then
+			y -= (0.9 + f * 0.7) * unit
+			z += 0.45 * unit
+		end
+		local rel = rot * V3(x, y, z)
+		out[j] = {hinge + rel, rel}
+	end
+end
+
+local function layWings(n, t, unit, base, out, which)
+	if which == "both" then
+		local R, L = {}, {}
+		local nr = (n + 1) // 2
+		wingPoints(nr, 1, t, unit, R)
+		wingPoints(n - nr, -1, t, unit, L)
+		for k = 1, n do
+			local p = (k % 2 == 1) and R[(k + 1) // 2] or L[k // 2]
+			out[k] = base * face(p[1], p[2], nil)
+		end
+	else
+		local pts = {}
+		wingPoints(n, which == "left" and -1 or 1, t, unit, pts)
+		for k = 1, n do
+			out[k] = base * face(pts[k][1], pts[k][2], nil)
+		end
+	end
+end
+
+local function layAromatic(n, t, unit, base, out)
+	local R = math.max(1.7, n * unit * 1.15 / PI2)
+	local cy = math.max(0.5, R - 2.2)
+	local cz = 1.7 + unit * 0.5 + R * 0.2
+	local spin = t * 2
+	for k = 1, n do
+		local a = (k - 1) / n * PI2 + spin
+		out[k] = base * (CFrame.new(math.cos(a) * R, cy + math.sin(a) * R, cz) * CFrame.Angles(0, t * 5 + k, 0))
+	end
+end
+
+local function layCircle(n, t, unit, base, out)
+	local R = math.max(4, n * unit * 1.25 / PI2)
+	local c = base.Position
+	local spin = t * 1.6
+	for k = 1, n do
+		local a = (k - 1) / n * PI2 + spin
+		out[k] = face(c + V3(math.cos(a) * R, math.sin(t * 2 + k) * 0.25, math.sin(a) * R), V3(-math.sin(a), 0, math.cos(a)), nil)
+	end
+end
+
+local BUILD = {
+	Tail = layTail,
+	Wings = function(n, t, u, b, o) layWings(n, t, u, b, o, "both") end,
+	Aromatic = layAromatic,
+	Circle = layCircle,
+	["Wing left"] = function(n, t, u, b, o) layWings(n, t, u, b, o, "left") end,
+	["Wing right"] = function(n, t, u, b, o) layWings(n, t, u, b, o, "right") end,
+}
+BSE.Layout = function(name, n, t, unit, base, out) -- exposed so the formations can be checked offline
+	BUILD[name](n, t, unit, base, out)
+end
+
+-- ---------------------------------------------------------------- hat override entries (one world-space entry per hat Index)
+local function removeEntries()
+	local hco = HatReanimator.HatCFrameOverride
+	if type(hco) == "table" then
+		for i = 1, #S.Keys do hco[S.Keys[i]] = nil end
+	end
+	table.clear(S.Keys)
+	table.clear(S.Entries)
+	S.Count, S.MapRef = 0, nil
+end
+
+local function syncEntries(map, n)
+	local hco = HatReanimator.HatCFrameOverride
+	if type(hco) ~= "table" then return false end
+	if map ~= S.MapRef or n ~= S.Count then
+		removeEntries()
+		for i = 1, n do
+			local m = map[i]
+			-- Index branch of GetHatMappedOverride: handle CFrame = C0 * (hatmapped.C1 * C1):Inverse(); C1 cancels the hat's own C1 so C0 IS the handle CFrame
+			S.Entries[i] = {Index = m.Index, C0 = CFrame.identity, C1 = (m.C1 or CFrame.identity):Inverse(), BeSomeonesEffect = true}
+			S.Keys[i] = KEYP .. i
+		end
+		S.MapRef, S.Count = map, n
+		table.clear(S.From)
+		S.Blend = 1
+	end
+	for i = 1, n do
+		local k = S.Keys[i]
+		if hco[k] ~= S.Entries[i] then hco[k] = S.Entries[i] end
+	end
+	return true
+end
+
+-- ---------------------------------------------------------------- stop / cleanup (idempotent)
+local function doStop(reason)
+	if S.Stopping then return end
+	S.Stopping = true
+	S.Token += 1
+	for i = 1, #S.Conns do
+		local c = S.Conns[i]
+		pcall(function() c:Disconnect() end)
+	end
+	table.clear(S.Conns)
+	removeEntries()
+	unlockMoveset()
+	restoreView()
+	local deanimate = S.StartedReanim
+	S.Active, S.Target, S.Lost, S.StartedReanim, S.Warned = false, nil, nil, false, false
+	S.Mode, S.RefPlr, S.RefMode, S.RefPart, S.RefHum, S.Yaw, S.PrevPos = "real", nil, nil, nil, nil, nil, nil
+	table.clear(S.From)
+	table.clear(S.Last)
+	table.clear(S.Cur)
+	S.Blend = 1
+	S.Status = (reason and reason ~= "") and reason or "Idle - pick a player to begin"
+	if reason and reason ~= "" then say(reason) end
+	if deanimate and Reanimate.Current == HatReanimator then
+		-- the effect started the hat reanimation itself, so it hands it back through the normal deanimate path (hats are released by the existing lifecycle)
+		task.spawn(function()
+			local t0 = os.clock()
+			while Reanimate.Current == HatReanimator and os.clock() - t0 < 15 do
+				local okD, did = pcall(Util.ModDeanimate)
+				if okD and did then break end
+				task.wait(0.25)
+			end
+			S.Stopping = false
+		end)
+	else
+		S.Stopping = false
+	end
+end
+
+function BSE.Stop(reason)
+	if S.Busy then
+		S.Cancel = reason or "Be someone's effect stopped."
+		return true
+	end
+	if not S.Active and not Util.EffectLock then return false end
+	doStop(reason or "Be someone's effect stopped.")
+	return true
+end
+
+-- ---------------------------------------------------------------- once-a-second housekeeping
+local function slow()
+	local sizes, owned, total = {}, 0, 0
+	local ch = Player.Character
+	if ch then
+		for _, a in ipairs(ch:GetChildren()) do
+			if a:IsA("Accessory") then
+				local h = a:FindFirstChild("Handle")
+				if h and h:IsA("BasePart") then
+					local sz = h.Size
+					sizes[#sizes + 1] = math.max(sz.X, sz.Y, sz.Z)
+					total += 1
+					if h:GetAttribute("_Uhhhhhh_ClaimTime") ~= nil then owned += 1 end -- set by the Hats Reanimator while the engine reports you as the owner
+				end
+			end
+		end
+	end
+	if #sizes > 0 then
+		table.sort(sizes)
+		S.Unit = math.clamp(sizes[(#sizes + 1) // 2], 1, 2.2)
+	end
+	S.Owned, S.Total = owned, total
+	local fx = Util.FX
+	S.Low = (fx and fx.IsLowEnd and fx.IsLowEnd()) and true or false
+	if S.Active and not S.Warned and os.clock() - S.StartAt > 3 and total > 0 then
+		S.Warned = true
+		if owned == 0 then
+			say("Warning: the engine does not report you as network owner of any hat right now, so other players will NOT see this effect (local only).")
+		elseif owned < total then
+			say("Only " .. owned .. " of " .. total .. " hats are network-owned, so other players only see those hats.")
+		end
+	end
+end
+
+-- ---------------------------------------------------------------- reference frame of the target
+-- re-resolved every 0.4s (or when the part is gone); a hat-group reference sticks to its part so it does not hop between hats
+local function refOf(plr, now)
+	local part = S.RefPart
+	if part and part.Parent and S.RefPlr == plr and now - S.RefAt < 0.4 then return S.RefMode, part, S.RefHum end
+	local mode, p2, hum = resolve(plr)
+	if mode == "body" and S.RefMode == "body" and S.RefPlr == plr and part and part.Parent and p2 and (part.Position - p2.Position).Magnitude < 6 then
+		p2 = part
+	end
+	S.RefPlr, S.RefMode, S.RefPart, S.RefHum, S.RefAt = plr, mode, p2, hum, now
+	return mode, p2, hum
+end
+
+-- "real" / "torso": the part's own CFrame. "body": hats carry no facing, so the frame is upright at the group and yaws toward the walking direction
+local function frameOf(mode, part, now)
+	if mode ~= "body" then
+		local lv = part.CFrame.LookVector
+		S.Yaw, S.PrevPos, S.PrevT = math.atan2(-lv.X, -lv.Z), nil, now
+		return part.CFrame
+	end
+	local pos = part.Position
+	if not S.Yaw then
+		local lv = part.CFrame.LookVector
+		S.Yaw = math.atan2(-lv.X, -lv.Z)
+	end
+	local prev, dt = S.PrevPos, now - S.PrevT
+	S.PrevPos, S.PrevT = pos, now
+	if prev and dt > 0 and dt < 0.5 then
+		local h = Vector3.new(pos.X - prev.X, 0, pos.Z - prev.Z)
+		local sp = h.Magnitude / dt
+		if sp > 2 and sp < 300 then
+			local diff = (math.atan2(-h.X, -h.Z) - S.Yaw + math.pi) % PI2 - math.pi
+			S.Yaw += diff * (1 - math.exp(-dt * 8))
+		end
+	end
+	return CFrame.new(pos) * CFrame.Angles(0, S.Yaw, 0)
+end
+
+-- ---------------------------------------------------------------- per-frame update
+local function step(dt)
+	if not S.Active then return end
+	if SCREENGUI.Parent == nil then BSE.Stop("Script unloaded - effect stopped.") return end
+	if Reanimate.Current ~= HatReanimator or not HatReanimator.Running then
+		if Reanimate.Starting then return end
+		BSE.Stop("Hat reanimation stopped - effect stopped.")
+		return
+	end
+	local plr = S.Target
+	if not plr or not inServer(plr) then
+		BSE.Stop("Target left the server - effect stopped.")
+		return
+	end
+	S.Frame += 1
+	local now = os.clock()
+	local ticked = now - S.Tick >= 1
+	if ticked then
+		S.Tick = now
+		slow()
+	end
+	local mode, part, hum = refOf(plr, now)
+	if S.View and part then
+		local sub = (mode == "real" and hum and hum.Parent and hum.Health > 0) and hum or part
+		S.ViewSub = sub
+		local cam = workspace.CurrentCamera
+		if cam and cam.CameraSubject ~= sub then cam.CameraSubject = sub end
+		S.Viewing = true
+	end
+	local base = part and frameOf(mode, part, now)
+	if not part or (mode == "real" and hum and hum.Health <= 0) or not finiteCF(base) then
+		-- target died / is respawning: hats go back to the normal rig while we wait, then the new character is revalidated
+		if not S.Lost then
+			S.Lost = now
+			removeEntries()
+			S.Status = plr.DisplayName .. " is unavailable - waiting for their respawn..."
+			say(plr.DisplayName .. " is unavailable (died or respawning). Waiting up to 10 seconds.")
+		end
+		if now - S.Lost > 10 then
+			BSE.Stop(plr.DisplayName .. " did not come back - effect stopped.")
+		end
+		return
+	end
+	if S.Lost then
+		S.Lost = nil
+		S.Status = "Following " .. plr.DisplayName
+		say(plr.DisplayName .. " is back - effect resumed.")
+	end
+	if S.Mode ~= mode then
+		-- the target started / stopped reanimating (or changed reference part type): glide to the new frame instead of jumping
+		S.Mode = mode
+		for i = 1, S.Count do S.From[i] = S.Last[i] end
+		S.Blend = 0
+	end
+	if ticked then
+		if HatReanimator.HatSpin then
+			S.Status = "Following " .. plr.DisplayName .. " (Hat Spin is ON in the Hats config - it scrambles formations)"
+		elseif S.Status:find("Hat Spin", 1, true) then
+			S.Status = "Following " .. plr.DisplayName
+		end
+	end
+	if S.Low and S.Frame % 2 == 1 and S.Count > 0 then return end -- Low End UI Mode: update every other frame
+	local map = HatReanimator.GetHatMap and HatReanimator.GetHatMap()
+	local n = type(map) == "table" and #map or 0
+	if n == 0 then
+		S.Status = "Waiting for the Hats Reanimator to map your hats..."
+		if S.Count > 0 then removeEntries() end
+		return
+	end
+	if S.Status:sub(1, 7) == "Waiting" then S.Status = "Following " .. plr.DisplayName end
+	if not syncEntries(map, n) then return end
+	local cur = S.Cur
+	BUILD[S.Formation](n, now, S.Unit, base, cur)
+	if S.Blend < 1 then
+		S.Blend = math.min(1, S.Blend + dt / 0.5)
+		local a = S.Blend * S.Blend * (3 - 2 * S.Blend)
+		for i = 1, n do
+			local f = S.From[i]
+			if f then cur[i] = f:Lerp(cur[i], a) end
+		end
+	end
+	local last, ents = S.Last, S.Entries
+	for i = 1, n do
+		local cf = cur[i]
+		ents[i].C0 = cf
+		last[i] = cf
+	end
+end
+
+local function guard(dt)
+	local ok, err = pcall(step, dt)
+	if not ok then
+		BSE.Stop("Effect error: " .. tostring(err):sub(1, 140))
+	end
+end
+
+-- ---------------------------------------------------------------- start
+local function activate(plr)
+	S.Active, S.Target, S.Lost, S.Blend, S.MapRef, S.Warned = true, plr, nil, 1, nil, false
+	S.Mode, S.RefPlr, S.RefMode, S.RefPart, S.RefHum, S.Yaw, S.PrevPos = "real", nil, nil, nil, nil, nil, nil
+	S.StartAt, S.Tick, S.Frame = os.clock(), 0, 0
+	S.Status = "Following " .. plr.DisplayName
+	local c = S.Conns
+	c[#c + 1] = Players.PlayerRemoving:Connect(function(p)
+		if S.Active and p == S.Target then
+			BSE.Stop(p.DisplayName .. " left the server - effect stopped.")
+		end
+	end)
+	c[#c + 1] = Player.CharacterAdded:Connect(function()
+		local tok = S.Token
+		task.delay(3, function()
+			if tok == S.Token and S.Active and not Reanimate.Starting and not (Reanimate.Current == HatReanimator and HatReanimator.Running) then
+				BSE.Stop("Your character respawned and the hat reanimation is no longer running - effect stopped.")
+			end
+		end)
+	end)
+	local okD, cd = pcall(function()
+		return SCREENGUI.Destroying:Connect(function()
+			BSE.Stop("Script unloaded - effect stopped.")
+		end)
+	end)
+	if okD and cd then c[#c + 1] = cd end
+	c[#c + 1] = RunService.PreSimulation:Connect(guard)
+end
+
+local function startFlow(plr)
+	local reuse = Reanimate.Current == HatReanimator and HatReanimator.Running == true
+	if not reuse and (Reanimate.Current or Reanimate.Starting or Reanimate.Stopping) then
+		local cur = Reanimate.Current
+		return false, "Another reanimation is running" .. ((cur and cur.Name) and (" (" .. tostring(cur.Name) .. ")") or "") .. ". Deanimate it first, then pick a player."
+	end
+	lockMoveset()
+	say("Neutral moveset selected. Movesets and dances are disabled while this effect runs.")
+	if not reuse then
+		say("Starting hat reanimation...")
+		S.Status = "Starting hat reanimation..."
+		S.StartedReanim = true
+		local okStart = Util.ModReanimate and Util.ModReanimate(HatReanimator)
+		if S.Cancel then return false, S.Cancel end
+		if not okStart or Reanimate.Current ~= HatReanimator then
+			return false, "Could not start the hat reanimation."
+		end
+	end
+	S.Status = "Waiting for the Hats Reanimator to map your hats..."
+	local waited = 0
+	local n = 0
+	while waited < 10 do
+		local map = HatReanimator.GetHatMap and HatReanimator.GetHatMap()
+		n = type(map) == "table" and #map or 0
+		if n > 0 then break end
+		task.wait(0.1)
+		waited += 0.1
+		if S.Cancel then return false, S.Cancel end
+	end
+	if n == 0 then return false, "No usable hats were found - the effect needs at least one hat." end
+	if not available(plr) then
+		return false, plr.DisplayName .. " is no longer available."
+	end
+	activate(plr)
+	say("Hat reanimation running with " .. n .. " hat" .. (n == 1 and "" or "s") .. ". Effect formation activated: " .. S.Formation .. ".")
+	return true
+end
+
+-- Steps 2 + 3: select a target and (if needed) begin the hat reanimation. Yields - call it from task.spawn.
+function BSE.Start(plr, formation)
+	if formation and table.find(FORMATIONS, formation) then S.Formation = formation end
+	if S.Busy or S.Stopping then
+		say("Be someone's effect is busy - please wait a moment.")
+		return false
+	end
+	if not inServer(plr) or plr == Player then
+		say("That player is not available.")
+		return false
+	end
+	if not available(plr) then
+		say(plr.DisplayName .. " has no available character right now.")
+		return false
+	end
+	if S.Active then
+		if S.Target == plr then
+			say("Already following " .. plr.DisplayName .. ".")
+			return true
+		end
+		-- switching target never restarts the reanimation
+		S.Target, S.Lost = plr, nil
+		S.RefPlr, S.Yaw, S.PrevPos = nil, nil, nil
+		for i = 1, S.Count do S.From[i] = S.Last[i] end
+		S.Blend = 0
+		S.Status = "Following " .. plr.DisplayName
+		say("Selected " .. plr.DisplayName .. " (@" .. plr.Name .. "). The hat reanimation keeps running.")
+		return true
+	end
+	S.Busy, S.Cancel = true, nil
+	say("Selected " .. plr.DisplayName .. " (@" .. plr.Name .. ").")
+	S.Target = plr
+	S.Status = "Starting..."
+	local ok, res, msg = pcall(startFlow, plr)
+	S.Busy = false
+	local cancel = S.Cancel
+	S.Cancel = nil
+	if not ok then
+		doStop("Error while starting: " .. tostring(res):sub(1, 140))
+		return false
+	end
+	if cancel then
+		doStop(cancel)
+		return false
+	end
+	if not res then
+		doStop(msg or "Could not start the effect.")
+		return false
+	end
+	return true
+end
+
+function BSE.SetFormation(name)
+	if not table.find(FORMATIONS, name) then return false end
+	if S.Formation == name then return true end
+	S.Formation = name
+	if S.Active then
+		for i = 1, S.Count do S.From[i] = S.Last[i] end
+		S.Blend = 0
+		say("Effect formation activated: " .. name .. ".")
+	else
+		say("Formation selected: " .. name .. ".")
+	end
+	return true
+end
 end
 -- ===================== ANIMATION STUDIO (Feature Center > ANIMATION STUDIO) =====================
 -- Frame-by-frame animation editor for the REANIMATED character (Reanimate.Character only). Open to all players
@@ -103345,6 +104117,7 @@ Title = "DANCES & EMOTES", Short = "DANCE", Key = Enum.KeyCode.N, Live = "PLAYIN
 List = function() return DanceableDances end,
 On = function(m) return CurrentDance == m end,
 Use = function(m)
+if Util.EffectLockBlocked and Util.EffectLockBlocked("dance") then return end
 if CurrentDance == m then
 CurrentDance = nil
 say("Dance stopped: " .. m.Name)
@@ -103359,6 +104132,7 @@ Title = "MOVESETS", Short = "MOVE", Key = Enum.KeyCode.Y, Live = "ACTIVE",
 List = function() return MovementStyles end,
 On = function(m) return MovementStyleIndex == table.find(MovementStyles, m) end,
 Use = function(m)
+if Util.EffectLockBlocked and Util.EffectLockBlocked("moveset") then return end
 local idx = table.find(MovementStyles, m)
 if idx then
 MovementStyleIndex = idx
@@ -103852,10 +104626,16 @@ held:SetAttribute("MovesetInternalName", nil)
 end
 end
 end
+if Util.EffectLock then -- [BSE] "Be someone's effect": neutral moveset forced, dances off, the saved moveset is left untouched
+local okF, forced = pcall(Util.EffectEnforce)
+if okF and forced then MovementStyleIndex = forced end
+CurrentDance = nil
+else
 SaveData.MovesetIndex = MovementStyleIndex
 do
 local curStyle = MovementStyles[MovementStyleIndex]
 if curStyle and curStyle.Hash then SaveData.MovesetHash = curStyle.Hash end
+end
 end
 if ReanimCharacter then
 if _oldcharacterreference ~= ReanimCharacter then
@@ -114244,6 +115024,181 @@ end)
 UI.CreateText(Hub, "<font color=\"#AAAAAA\">Use your reanimated limbs as building blocks to create custom formations and constructions.</font>", 10, Enum.TextXAlignment.Center)
 Util.LimbBlocks.Attach(blocksPage, closePage)
 end)
+local okBSETab, errBSETab = pcall(function()
+local BSE = Util.BSE
+local S = BSE and BSE.State
+local CEN = Enum.TextXAlignment.Center
+local bsePage = newPage()
+pcall(function() Util.Search.Titles[bsePage] = "Be someone's effect" end)
+UI.CreateButton(Hub, "BE SOMEONE'S EFFECT &gt;", 20).Activated:Connect(function()
+if busy then return end
+if #Stack == 0 then
+MainPage.Visible = false
+Hub.Position = UDim2.new(0.5, 0, 0.5, 0)
+Hub.Visible = true
+table.insert(Stack, Hub)
+MainPage.Interactable = true
+end
+if Stack[#Stack] == Hub then openPage(bsePage) end
+end)
+UI.CreateText(Hub, "<font color=\"#AAAAAA\">Turn your hats into Tail / Wings / Aromatic / Circle effects that follow a player.</font>", 10, CEN)
+UI.CreateButton(bsePage, "&lt; Back", 20).Activated:Connect(closePage)
+UI.CreateText(bsePage, "<b>BE SOMEONE'S EFFECT</b>", 15, CEN)
+UI.CreateText(bsePage, "<font color=\"#AAAAAA\">Pick a formation, then tap a player. Your own hats follow them. Movesets and dances are switched off only while the effect runs.</font>", 10, CEN)
+UI.CreateSeparator(bsePage)
+if not (BSE and S) then
+UI.CreateText(bsePage, "<font color=\"#FF8080\">Feature unavailable (the Be someone's effect module did not load).</font>", 12, CEN)
+return
+end
+local function esc(t)
+return (tostring(t):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"))
+end
+local function note(t)
+pcall(Util.UINotify or Util.Notify, t)
+end
+local rows, scanned = {}, {}
+local drawRows, rebuild
+local stMain = UI.CreateText(bsePage, "Idle - pick a player to begin", 12, CEN)
+local stInfo = UI.CreateText(bsePage, "Target: none", 10, CEN)
+UI.CreateSeparator(bsePage)
+local fSel = UI.CreateDropdown(bsePage, "Formation", BSE.Formations, table.find(BSE.Formations, S.Formation) or 1)
+fSel.Changed:Connect(function()
+local name = BSE.Formations[fSel.Value]
+if name then pcall(BSE.SetFormation, name) end
+end)
+local viewLever = UI.CreateSwitch(bsePage, "View selected player", S.View)
+viewLever.Changed:Connect(function()
+BSE.SetView(viewLever.Value)
+end)
+UI.CreateButton(bsePage, "Refresh scan", 20).Activated:Connect(function()
+if rebuild then rebuild("all") end
+end)
+UI.CreateButton(bsePage, "Stop effect", 20).Activated:Connect(function()
+if S.Active or S.Busy then
+BSE.Stop("Be someone's effect stopped.")
+else
+note("Be someone's effect is not running.")
+end
+end)
+UI.CreateSeparator(bsePage)
+UI.CreateText(bsePage, "<b>PLAYERS IN SERVER</b>", 12, CEN)
+local countL = UI.CreateText(bsePage, "Scanning...", 10, CEN)
+local listFrame = Util.Instance("Frame", bsePage)
+listFrame.BackgroundTransparency = 1
+listFrame.BorderSizePixel = 0
+listFrame.AutomaticSize = Enum.AutomaticSize.Y
+listFrame.Size = UDim2.new(1, 0, 0, 0)
+listFrame.LayoutOrder = #bsePage:GetChildren()
+local lay = Util.Instance("UIListLayout", listFrame)
+lay.SortOrder = Enum.SortOrder.LayoutOrder
+lay.Padding = UDim.new(0, 2)
+-- player rows are rebuilt on every scan: keep them out of the settings search
+local function unreg()
+pcall(function()
+local ents = Util.Search.Entries
+for i = #ents, 1, -1 do
+if ents[i].Parent == listFrame then table.remove(ents, i) end
+end
+end)
+end
+drawRows = function()
+for _, r in ipairs(rows) do pcall(function() r:Destroy() end) end
+rows = {}
+local n = #scanned
+if n == 0 then
+countL.Text = "<font color=\"#AAAAAA\">No available players found in the server</font>"
+else
+countL.Text = n .. (n == 1 and " player in range" or " players in range")
+end
+for _, entry in ipairs(scanned) do
+local plr = entry.Player
+local following = S.Active and S.Target == plr
+local info
+if following then
+info = "<font color=\"#7CFF9A\">Following</font>"
+else
+info = entry.Distance and (math.floor(entry.Distance + 0.5) .. " studs") or "-"
+end
+if entry.Reanimated then
+info = info .. "  <font color=\"#FFC857\">| reanimated (fake character)</font>"
+end
+local btn = UI.CreateButton(listFrame, "<b>" .. esc(entry.Display) .. "</b> <font color=\"#AAAAAA\">@" .. esc(entry.Name) .. "</font>\n" .. info, 14)
+rows[#rows + 1] = btn.Parent
+btn.Activated:Connect(function()
+task.spawn(function()
+BSE.Start(plr)
+pcall(drawRows)
+end)
+end)
+end
+unreg()
+end
+-- announce: "all" (manual refresh) | "none" (automatic scan when the page opens: only warns about an empty result)
+rebuild = function(announce)
+local ok, list = pcall(BSE.Scan)
+scanned = (ok and type(list) == "table") and list or {}
+pcall(drawRows)
+if announce == "all" then
+if #scanned == 0 then
+note("No available players found in the server.")
+else
+note(#scanned .. (#scanned == 1 and " player available in the server." or " players available in the server."))
+end
+elseif announce == "none" and #scanned == 0 then
+note("No available players found in the server.")
+end
+end
+local lastMain, lastInfo
+local function updateStatus()
+local col = S.Active and "#7CFF9A" or (S.Busy and "#FFC857" or "#FFFFFF")
+local main = "<font color=\"" .. col .. "\"><b>" .. esc(S.Status) .. "</b></font>"
+if main ~= lastMain then
+lastMain = main
+stMain.Text = main
+end
+local plr = S.Target
+local lines = {}
+if plr then
+lines[1] = "Target: " .. esc(plr.DisplayName) .. " (@" .. esc(plr.Name) .. ") | " .. esc(S.Formation) .. ((S.Active and S.Mode ~= "real") and " | on their fake character" or "")
+else
+lines[1] = "Target: none | Formation: " .. esc(S.Formation)
+end
+if S.Active then
+lines[2] = "Hats used: " .. S.Count .. " | network-owned: " .. S.Owned .. "/" .. S.Total .. ". Other players only see hats the engine reports as owned by you."
+end
+local info = "<font color=\"#AAAAAA\">" .. table.concat(lines, "\n") .. "</font>"
+if info ~= lastInfo then
+lastInfo = info
+stInfo.Text = info
+end
+local fi = table.find(BSE.Formations, S.Formation)
+if fi and fSel.Value ~= fi then fSel.Value = fi end
+if viewLever.Value ~= S.View then viewLever.Value = S.View end
+end
+bsePage:GetPropertyChangedSignal("Visible"):Connect(function()
+if bsePage.Visible then
+pcall(rebuild, "none")
+pcall(updateStatus)
+end
+end)
+task.spawn(function()
+local lastActive, lastTarget = false, nil
+while bsePage.Parent do
+if bsePage.Visible then
+pcall(updateStatus)
+local act = S.Active and true or false
+-- the effect ended or switched target by itself (target left, reanimation stopped...): refresh the highlighted row
+if act ~= lastActive or S.Target ~= lastTarget then
+lastActive, lastTarget = act, S.Target
+pcall(drawRows)
+end
+end
+task.wait(0.5)
+end
+end)
+pcall(updateStatus)
+end)
+if not okBSETab then warn("[BSE] Feature Center tab failed to build: " .. tostring(errBSETab)) end
 pcall(function()
 local lpl = Util.LivePlayerLog
 if not lpl then return end
@@ -115281,6 +116236,151 @@ end
 end)
 refresh()
 end
+local bse = newPage()
+Nav.BeSomeonesEffect = bse
+pcall(function() Util.Search.Titles[bse] = "Be someone's effect" end)
+do
+local BSE = Util.BSE
+local S = BSE and BSE.State
+local scanned, rows = {}, {}
+local setChips, rebuild
+local hHost = rowOf(bse, 40)
+label(hHost, "Be someone's effect", 18, C.text, BOLD, LEFT, {Position = UDim2.new(0, 4, 0, 0), Size = UDim2.new(1, -8, 1, -6)})
+local stHost = rowOf(bse, 96)
+local stCard = glass(stHost)
+label(stCard, "STATUS", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
+local stMain = label(stCard, "", 13, C.text, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 24), Size = UDim2.new(1, -24, 0, 16)})
+local stTarget = label(stCard, "", 11, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 44), Size = UDim2.new(1, -24, 0, 14)})
+local stHats = label(stCard, "", 10, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 62), Size = UDim2.new(1, -24, 0, 26), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, TextTruncate = Enum.TextTruncate.None})
+local fHost = rowOf(bse, 104)
+local fCard = glass(fHost)
+label(fCard, "EFFECT FORMATION", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
+local chips = {}
+if BSE then
+for i, name in ipairs(BSE.Formations) do
+local col, rw = (i - 1) % 3, (i - 1) // 3
+local b = new("TextButton", {AutoButtonColor = false, Text = name, TextSize = 12, Font = MED, TextColor3 = C.mute, BackgroundColor3 = W, BackgroundTransparency = 0.92, BorderSizePixel = 0, Position = UDim2.new(col / 3, 8 - 4 * col, 0, 26 + rw * 38), Size = UDim2.new(1 / 3, -8, 0, 32)}, fCard)
+corner(b, UDim.new(1, 0))
+stroke(b, 0.86)
+chips[name] = b
+b.Activated:Connect(function()
+BSE.SetFormation(name)
+setChips()
+end)
+end
+end
+setChips = function()
+for name, b in pairs(chips) do
+local on = S and S.Formation == name
+tw(b, 0.25, {BackgroundTransparency = on and 0.7 or 0.93, TextColor3 = on and W or C.mute})
+end
+end
+setChips()
+local aHost = rowOf(bse, 56)
+tile(aHost, UDim2.new(0, 0, 0, 0), UDim2.new(0.5, -3, 1, 0), "Refresh scan", "All players", C.blue, function()
+if rebuild then rebuild("all") end
+end)
+tile(aHost, UDim2.new(0.5, 3, 0, 0), UDim2.new(0.5, -3, 1, 0), "Stop effect", "Restore normal", C.pink, function()
+if BSE and (S.Active or S.Busy) then
+BSE.Stop("Be someone's effect stopped.")
+else
+note("Be someone's effect is not running.")
+end
+end)
+local lHost = rowOf(bse, 24)
+label(lHost, "PLAYERS IN SERVER", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 4, 0, 4), Size = UDim2.new(0.6, 0, 0, 14)})
+local countL = label(lHost, "", 11, C.mute, MED, RIGHT, {Position = UDim2.new(0.5, 0, 0, 4), Size = UDim2.new(0.5, -4, 0, 14)})
+local listFrame = new("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, 0, 0, 0), LayoutOrder = #bse:GetChildren()}, bse)
+new("UIListLayout", {SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), HorizontalAlignment = Enum.HorizontalAlignment.Center}, listFrame)
+new("UIPadding", {PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8)}, listFrame)
+local function drawRows()
+for _, r in ipairs(rows) do r:Destroy() end
+rows = {}
+countL.Text = #scanned .. (#scanned == 1 and " player in range" or " players in range")
+if #scanned == 0 then
+local e = label(listFrame, "No available players found", 12, C.mute, MED, CENTER, {Size = UDim2.new(1, 0, 0, 40), LayoutOrder = 1})
+rows[1] = e
+return
+end
+for i, entry in ipairs(scanned) do
+local plr = entry.Player
+local following = S and S.Active and S.Target == plr
+local b = new("TextButton", {AutoButtonColor = false, Text = "", BackgroundColor3 = C.card, BackgroundTransparency = following and 0.2 or 0.45, BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 44), LayoutOrder = i}, listFrame)
+corner(b, UDim.new(0, 14))
+stroke(b, following and 0.5 or 0.88)
+local av = new("ImageLabel", {BackgroundColor3 = W, BackgroundTransparency = 0.88, BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 8, 0.5, 0), Size = UDim2.fromOffset(28, 28), Image = ""}, b)
+corner(av, UDim.new(1, 0))
+loadAvatar(av, plr.UserId)
+label(b, entry.Display, 13, C.text, BOLD, LEFT, {Position = UDim2.new(0, 44, 0, 5), Size = UDim2.new(1, -130, 0, 16)})
+label(b, "@" .. entry.Name .. (entry.Reanimated and "  |  reanimated (fake character)" or ""), 10, entry.Reanimated and C.amber or C.mute, MED, LEFT, {Position = UDim2.new(0, 44, 0, 23), Size = UDim2.new(1, -130, 0, 14)})
+label(b, following and "Following" or (entry.Distance and (math.floor(entry.Distance + 0.5) .. " studs") or "-"), 11, following and C.green or C.mute, BOLD, RIGHT, {Position = UDim2.new(1, -84, 0, 0), Size = UDim2.new(0, 74, 1, 0)})
+feel(b, following and 0.2 or 0.45, 0.3)
+b.Activated:Connect(function()
+task.spawn(function()
+BSE.Start(plr)
+drawRows()
+end)
+end)
+rows[#rows + 1] = b
+end
+end
+-- announce: "all" (manual refresh) | "none" (automatic scan when the tab opens: only warns about an empty result)
+rebuild = function(announce)
+local ok, list = pcall(BSE.Scan)
+scanned = ok and list or {}
+drawRows()
+if announce == "all" then
+if #scanned == 0 then
+note("No available players found in the server.")
+else
+note(#scanned .. (#scanned == 1 and " player available in the server." or " players available in the server."))
+end
+elseif announce == "none" and #scanned == 0 then
+note("No available players found in the server.")
+end
+end
+local function updateStatus()
+if not S then return end
+stMain.Text = S.Status
+stMain.TextColor3 = S.Active and C.green or (S.Busy and C.amber or C.text)
+local plr = S.Target
+if plr then
+stTarget.Text = "Target: " .. plr.DisplayName .. " (@" .. plr.Name .. ")  |  " .. S.Formation .. (S.Active and S.Mode ~= "real" and "  |  on their fake character" or "")
+else
+stTarget.Text = "Target: none  |  Formation: " .. S.Formation
+end
+if S.Active then
+stHats.Text = "Hats used: " .. S.Count .. "  |  network-owned: " .. S.Owned .. "/" .. S.Total .. ". Other players only see hats the engine reports as owned by you."
+else
+stHats.Text = "Pick a player below to begin. Movesets and dances are switched off only while the effect runs."
+end
+setChips()
+end
+if not BSE then
+stMain.Text = "Feature unavailable (module failed to load)"
+else
+bse:GetPropertyChangedSignal("Visible"):Connect(function()
+if bse.Visible then
+pcall(rebuild, "none")
+pcall(updateStatus)
+end
+end)
+task.spawn(function()
+local lastActive, lastTarget = false, nil
+while bse.Parent do
+if bse.Visible then
+pcall(updateStatus)
+-- the effect ended or switched target by itself (target left, reanimation stopped...): refresh the highlighted row
+if (S.Active and true or false) ~= lastActive or S.Target ~= lastTarget then
+lastActive, lastTarget = S.Active and true or false, S.Target
+pcall(drawRows)
+end
+end
+task.wait(calm() and 1 or 0.4)
+end
+end)
+end
+end
 local shadow = new("ImageLabel", {
 Name = "GlassShadow", BackgroundTransparency = 1, Image = "rbxassetid://1316045217", ImageColor3 = Color3.new(0, 0, 0),
 ImageTransparency = 0.5, ScaleType = Enum.ScaleType.Slice, SliceCenter = Rect.new(10, 10, 118, 118),
@@ -115342,15 +116442,31 @@ corner(pillF, UDim.new(1, 0))
 local dockStroke = rim(stroke(pillF, 0.7))
 new("UIPadding", {PaddingLeft = UDim.new(0, 5), PaddingRight = UDim.new(0, 5)}, pillF)
 new("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center, VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder}, pillF)
-local KEYS = {"Home", "Menu", "Players", "Music", "Cmds", "Settings"}
-local ICON = {Home = "\u{25B2}", Menu = "\u{2630}", Players = "\u{263A}", Music = "\u{266A}", Cmds = "</>", Settings = "\u{2699}"}
+local KEYS = {"Home", "Menu", "Players", "Music", "Cmds", "Settings", "Be someone's effect"}
+local ICON = {Home = "\u{25B2}", Menu = "\u{2630}", Players = "\u{263A}", Music = "\u{266A}", Cmds = "</>", Settings = "\u{2699}", ["Be someone's effect"] = "\u{2726}"}
+-- the long tab name has to fit the 360px window: idle buttons shrink only as far as needed (40px = the original size) and the long label may use a smaller font
+local LONG_KEY = "Be someone's effect"
+local DOCK_FIT, LONG_SIZE = 40, 12
+do
+local winW = UIMainWindow.Size.X.Offset
+if winW < 250 then winW = 360 end
+local avail = (winW - 12) - 10 - 2 * (#KEYS - 1)
+for sz = 12, 9, -1 do
+local okW, tw1 = pcall(function() return TextService:GetTextSize(LONG_KEY, sz, BOLD, Vector2.new(400, 20)).X end)
+local need = math.ceil(okW and tw1 or #LONG_KEY * sz * 0.58)
+local fit = math.floor((avail - (34 + need + 12)) / (#KEYS - 1))
+LONG_SIZE = sz
+DOCK_FIT = math.clamp(fit, 28, 40)
+if fit >= 28 then break end
+end
+end
 local dockBtns, activeKey, parts = {}, nil, {}
 local function setActive(key)
 if key == activeKey then return end
 activeKey = key
 for name, d in pairs(parts) do
 local on = name == key
-tw(d.b, on and 0.5 or 0.32, {Size = UDim2.new(0, on and d.w or 40, 0, 30), BackgroundTransparency = on and 0.84 or 1}, on and Enum.EasingStyle.Back or Enum.EasingStyle.Quint)
+tw(d.b, on and 0.5 or 0.32, {Size = UDim2.new(0, on and d.w or DOCK_FIT, 0, 30), BackgroundTransparency = on and 0.84 or 1}, on and Enum.EasingStyle.Back or Enum.EasingStyle.Quint)
 tw(d.st, 0.3, {Transparency = on and 0.6 or 1})
 tw(d.ico, 0.3, {TextColor3 = on and W or C.mute})
 tw(d.lbl, on and 0.38 or 0.12, {TextTransparency = on and 0 or 1})
@@ -115361,13 +116477,14 @@ end
 end
 end
 for i, key in ipairs(KEYS) do
-local okW, tx = pcall(function() return TextService:GetTextSize(key, 12, BOLD, Vector2.new(200, 20)).X end)
-local b = new("TextButton", {Name = key, AutoButtonColor = false, Text = "", BackgroundColor3 = W, BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, Size = UDim2.new(0, 40, 0, 30), LayoutOrder = i, ZIndex = 6}, pillF)
+local keySize = key == LONG_KEY and LONG_SIZE or 12
+local okW, tx = pcall(function() return TextService:GetTextSize(key, keySize, BOLD, Vector2.new(400, 20)).X end)
+local b = new("TextButton", {Name = key, AutoButtonColor = false, Text = "", BackgroundColor3 = W, BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true, Size = UDim2.new(0, DOCK_FIT, 0, 30), LayoutOrder = i, ZIndex = 6}, pillF)
 corner(b, UDim.new(1, 0))
 local st = stroke(b, 1)
-local ico = label(b, ICON[key], key == "Cmds" and 12 or 16, C.mute, BOLD, CENTER, {Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(0, 40, 1, 0), TextTruncate = Enum.TextTruncate.None, ZIndex = 7})
+local ico = label(b, ICON[key], key == "Cmds" and 12 or 16, C.mute, BOLD, CENTER, {Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(0, DOCK_FIT, 1, 0), TextTruncate = Enum.TextTruncate.None, ZIndex = 7})
 local isc = new("UIScale", {Scale = 1}, ico)
-local lbl = label(b, key, 12, W, BOLD, LEFT, {Position = UDim2.new(0, 34, 0, 0), Size = UDim2.new(1, -38, 1, 0), TextTransparency = 1, TextTruncate = Enum.TextTruncate.None, ZIndex = 7})
+local lbl = label(b, key, keySize, W, BOLD, LEFT, {Position = UDim2.new(0, DOCK_FIT - 6, 0, 0), Size = UDim2.new(1, -(DOCK_FIT - 2), 1, 0), TextTransparency = 1, TextTruncate = Enum.TextTruncate.None, ZIndex = 7})
 local sc = new("UIScale", {Scale = 1}, b)
 b.MouseEnter:Connect(function()
 if activeKey ~= key then tw(ico, 0.2, {TextColor3 = C.text}) end
@@ -115384,7 +116501,7 @@ if CracktroFrame.Visible then return end
 Nav.Go(key)
 end)
 dockBtns[key] = b
-parts[key] = {b = b, st = st, ico = ico, isc = isc, lbl = lbl, sc = sc, w = 34 + math.ceil(okW and tx or #key * 7) + 12}
+parts[key] = {b = b, st = st, ico = ico, isc = isc, lbl = lbl, sc = sc, w = (DOCK_FIT - 6) + math.ceil(okW and tx or #key * 7) + 12}
 end
 local function popDock()
 if calm() then return end
@@ -115407,6 +116524,7 @@ Nav.Targets = {
 Menu = function() end,
 Home = function() Nav.Open(cards) end,
 Players = function() Nav.Open(pp) end,
+["Be someone's effect"] = function() Nav.Open(bse) end,
 Music = function()
 if not press(Util.NavBtns and Util.NavBtns["Music &gt;"]) then note("Music needs firesignal / getconnections support") end
 end,
@@ -115422,6 +116540,7 @@ local p = Nav.TopPage()
 if not p then return "Menu" end
 if p == cards then return "Home" end
 if p == pp then return "Players" end
+if p == bse then return "Be someone's effect" end
 if Util.NavLast == "Music &gt;" then return "Music" end
 if Util.NavLast == "Customization &gt;" then return "Settings" end
 return "Menu"
@@ -115965,7 +117084,7 @@ for _, d in DanceableDances do
 if not pickedDance and d.Name == nm then pickedDance = d end
 end
 end
-if picked then
+if picked and not Util.EffectLock then
 if picked.Hash then SaveData.MovesetHash = picked.Hash end
 Util.MovesetPickedByUser = true
 MovementStyleIndex = table.find(MovementStyles, picked)
