@@ -42634,7 +42634,7 @@ local word = ((cmdInput.Text:lower()):gsub("^%s*" .. pfx, "")):match("^%s*(%S+)"
 local known = (Commands[word] or Aliases[word]) and true or false
 pcall(Util.UhAdmin.Fire, known and "run" or (word ~= "" and "unknown" or "close"))
 if not known and word:find("fling", 1, true) and not word:find("antifling", 1, true) then
-Notify({Description = "Standalone fling variants are disabled. Choose Fling 1, Fling 2, Fling 3, or NaN State from the Fling Method dropdown."; Title = "Uh Admin"; Duration = 6;})
+Notify({Description = "Standalone fling variants are disabled. Choose Fling 1, Fling 2, or Fling 3 from the Fling Method dropdown."; Title = "Uh Admin"; Duration = 6;})
 end
 wrap(function()
 local entered=cmdInput.Text or ""
@@ -73776,7 +73776,6 @@ Util.Fling.Names = {
 "Default Fling",
 "Weak Fling (just trips them)",
 "Nooby's Method (clip + nullzone)",
-"NaN State Fling",
 "Fling 1 (Nameless / Source)",
 "Fling 2 (Carpet)",
 "Fling 3 (Hidden / Flight)",
@@ -73791,7 +73790,6 @@ Util.Fling.Descriptions = {
 "default fling: spins into the target at crazy velocity and sends them flying",
 "weak fling: only trips people over, doesn't send them to the void",
 "nooby's method: clips inside their HumanoidRootPart, flings them to the nullzone and stays attached until they die",
-"NaN state fling: sticks to their root with a NaN humanoid state, falls back to a velocity fling if they only get pushed",
 "Fling 1: adapted from Nameless Admin's classic high-velocity multi-position fling sequence",
 "Fling 2: adapted from the carpet-animation target-following fling sequence",
 "Fling 3: adapted from the hidden-fling target sweep + flight sequence",
@@ -73808,8 +73806,6 @@ Util.Fling.PRootPower = 9e8
 Util.Fling.KillDuration = 0.75
 Util.Fling.UnderVoidFlingDuration = 1.5
 Util.Fling.WeakDuration = 0.4
-Util.Fling.NaNWindow = 0.6
-Util.Fling.NaNEscalateDistance = 60
 Util.Fling.NoobyMaxTime = 90
 Util.Fling.SourceFling1Duration = 2.0
 Util.Fling.SourceFling2Duration = 0.9
@@ -73817,18 +73813,22 @@ Util.Fling.SourceFling3Duration = 1.35
 do
 local saved = SaveData.FlingMethod
 if type(saved) ~= "number" then
-saved = (SaveData.Reanimator and SaveData.Reanimator.LimbUseNaNFling) and 4 or 1
+saved = 1
+elseif not SaveData.FlingMethodNaNRemoved then
+-- one-time migration: the NaN State method (old slot 4) was removed, so every later method moved up one slot
+if saved == 4 then saved = 1 elseif saved > 4 then saved = saved - 1 end
 end
+SaveData.FlingMethodNaNRemoved = true
 Util.Fling.Method = math.clamp(math.floor(saved), 1, #Util.Fling.Names)
+SaveData.FlingMethod = Util.Fling.Method
+if SaveData.Reanimator then SaveData.Reanimator.LimbUseNaNFling = nil end
 end
 Util.Fling.SetMethod = function(m)
 m = math.clamp(math.floor(tonumber(m) or 1), 1, #Util.Fling.Names)
 Util.Fling.Method = m
 SaveData.FlingMethod = m
-SaveData.Reanimator = SaveData.Reanimator or {}
-SaveData.Reanimator.LimbUseNaNFling = (m == 4)
 Util.Notify("Fling method: " .. Util.Fling.Names[m])
-if Util.AltFling then if m == 8 then Util.AltFling.Enable() else Util.AltFling.Disable() end end
+if Util.AltFling then if m == 7 then Util.AltFling.Enable() else Util.AltFling.Disable() end end
 end
 Util.Fling.GetPart = function(target)
 if typeof(target) == "Instance" then
@@ -73901,24 +73901,22 @@ dur = Util.Fling.WeakDuration
 elseif ft.Mode == 3 and isinstance then
 dur = Util.Fling.NoobyMaxTime
 elseif ft.Mode == 4 then
-dur = math.max(defaultduration, Util.Fling.NaNWindow + 1)
-elseif ft.Mode == 5 then
 dur = Util.Fling.SourceFling1Duration
-elseif ft.Mode == 6 then
+elseif ft.Mode == 5 then
 dur = math.max(defaultduration, Util.Fling.SourceFling2Duration, 2.5)
-elseif ft.Mode == 7 then
+elseif ft.Mode == 6 then
 dur = Util.Fling.SourceFling3Duration
-elseif ft.Mode == 9 then
+elseif ft.Mode == 8 then
 dur = Util.Fling.InstantDuration
-elseif ft.Mode == 10 then
+elseif ft.Mode == 9 then
 dur = 1.5
 else
 dur = defaultduration
 end
 end
-if ft.Mode == 11 then dur = Util.Fling.PRootDuration end
-if ft.Mode == 12 then dur = Util.Fling.KillDuration end
-if ft.Mode == 13 then dur = Util.Fling.UnderVoidFlingDuration end
+if ft.Mode == 10 then dur = Util.Fling.PRootDuration end
+if ft.Mode == 11 then dur = Util.Fling.KillDuration end
+if ft.Mode == 12 then dur = Util.Fling.UnderVoidFlingDuration end
 ft.Time = t + dur
 Util.Fling.ReportStart(ft)
 elseif t > ft.Time then
@@ -73939,37 +73937,29 @@ if ft.Mode == 3 and not Util.Fling.TargetAlive(ft.Target) then
 table.remove(queue, 1)
 return nil, CFrame.identity, true
 end
-if ft.Mode == 12 and not Util.Fling.TargetAlive(ft.Target) then
+if ft.Mode == 11 and not Util.Fling.TargetAlive(ft.Target) then
 table.remove(queue, 1)
 return nil, CFrame.identity, true
 end
-if ft.Mode == 13 and not Util.Fling.TargetAlive(ft.Target) then
+if ft.Mode == 12 and not Util.Fling.TargetAlive(ft.Target) then
 table.remove(queue, 1)
 return nil, CFrame.identity, true
 end
 if ft.Mode == 3 and t - ft.Start < Util.Fling.NoobyMaxTime then
 ft.Time = math.max(ft.Time, t + 1)
 end
-if ft.Mode == 6 and ft.StartPos and t - ft.Start > 0.15 and (p - ft.StartPos).Magnitude > 150 then
+if ft.Mode == 5 and ft.StartPos and t - ft.Start > 0.15 and (p - ft.StartPos).Magnitude > 150 then
 table.remove(queue, 1)
 return nil, CFrame.identity, true
 end
-if ft.Mode == 4 and not ft.Escalated and t - ft.Start > Util.Fling.NaNWindow then
-local moved = ft.StartPos and (p - ft.StartPos).Magnitude or math.huge
-if moved < Util.Fling.NaNEscalateDistance then
-ft.Escalated = true
-ft.Mode = 1
-ft.Time = math.max(ft.Time, t + 1)
-end
-end
 end
 local flingcf, flinged
-if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 7 or ft.Mode == 9 or ft.Mode == 10 or ft.Mode == 11 or ft.Mode == 12 or ft.Mode == 13) then
+if isinstance and (ft.Mode == 2 or ft.Mode == 3 or ft.Mode == 4 or ft.Mode == 5 or ft.Mode == 6 or ft.Mode == 8 or ft.Mode == 9 or ft.Mode == 10 or ft.Mode == 11 or ft.Mode == 12) then
 if ft.Mode == 2 then
 local wv = part.AssemblyLinearVelocity
 if wv.Magnitude > 60 then wv = wv.Unit * 60 end
 flingcf = CFrame.new(part.Position + wv * 0.08 + Vector3.new(0, -2, 0))
-elseif ft.Mode == 6 then
+elseif ft.Mode == 5 then
 local speed = part.AssemblyLinearVelocity.Magnitude
 if speed <= 28 then
 flingcf = CFrame.new(part.Position + part.AssemblyLinearVelocity * 0.5)
@@ -73977,7 +73967,7 @@ else
 flingcf = part.CFrame
 end
 if speed > 1e4 then flingcf = CFrame.new(part.Position) end
-elseif ft.Mode == 5 then
+elseif ft.Mode == 4 then
 local hum = ft.Target:IsA("Model") and ft.Target:FindFirstChildOfClass("Humanoid") or nil
 local moveDir = hum and hum.MoveDirection or Vector3.zero
 local speed = part.AssemblyLinearVelocity.Magnitude
@@ -74009,7 +73999,7 @@ local extra = moveDir * math.min(speed, 100) / 1.25
 local offset = offsets[index] + extra
 local angle = math.rad(math.floor(elapsed / interval) * 100)
 flingcf = CFrame.new(part.Position + offset) * CFrame.Angles(angle, 0, 0)
-elseif ft.Mode == 7 then
+elseif ft.Mode == 6 then
 local offsets = {
 Vector3.new(0, 0, 4),
 Vector3.new(0, 0, -2),
@@ -74024,17 +74014,17 @@ local interval = 0.04
 local elapsed = math.max(0, t - ft.Start)
 local index = (math.floor(elapsed / interval) % #offsets) + 1
 flingcf = part.CFrame * CFrame.new(offsets[index])
-elseif ft.Mode == 10 then
+elseif ft.Mode == 9 then
 flingcf = CFrame.new(part.Position)
-elseif ft.Mode == 11 then
+elseif ft.Mode == 10 then
 flingcf = part.CFrame
-elseif ft.Mode == 12 then
+elseif ft.Mode == 11 then
 flingcf = part.CFrame -- zero-offset lock: fused directly onto target's HumanoidRootPart
-elseif ft.Mode == 13 then
+elseif ft.Mode == 12 then
 flingcf = part.CFrame -- zero-offset lock: same as Kill Fling; ApplyRoot re-fetches live CFrame every call
 else
 local cv = part.AssemblyLinearVelocity
-if (ft.Mode == 3 or ft.Mode == 4) and cv.Magnitude < 80 then
+if ft.Mode == 3 and cv.Magnitude < 80 then
 flingcf = part.CFrame + cv * 0.05
 else
 flingcf = part.CFrame
@@ -74069,11 +74059,7 @@ Util.Fling.ApplyRoot = function(RootPart, ft, flingcf)
 local mode = ft.Mode or 1
 local t = os.clock()
 local jitter = Vector3.new(0, 0, math.random(0, 1) * 0.005)
-if mode == 4 then
-RootPart.CFrame = CFrame.new(flingcf.Position + jitter + Vector3.new(math.sin(t * 40) * 0.15, 0, math.cos(t * 40) * 0.15)) * CFrame.Angles(0, t * 15, 0)
-RootPart.Velocity, RootPart.RotVelocity = Vector3.zero, Vector3.zero
-pcall(function() RootPart.AssemblyLinearVelocity, RootPart.AssemblyAngularVelocity = Vector3.zero, Vector3.zero end)
-elseif mode == 2 then
+if mode == 2 then
 RootPart.CFrame = CFrame.new(flingcf.Position + jitter) * CFrame.Angles(0, t * 10, 0)
 RootPart.Velocity = Vector3.new(math.sin(t * 25) * 26, -4, math.cos(t * 25) * 26)
 RootPart.RotVelocity = Vector3.new(0, 30, 0)
@@ -74083,11 +74069,11 @@ local tp = Util.Fling.GetPart(ft.Target)
 local at = tp and tp.Position or flingcf.Position
 RootPart.CFrame = CFrame.new(at + jitter + Vector3.new(0, nf * 0.2, 0)) * CFrame.Angles(t * 31, t * 47, 0)
 RootPart.Velocity, RootPart.RotVelocity = Vector3.new(0, -16384 * nf, 0), Vector3.one * 16384
-elseif mode == 5 then
+elseif mode == 4 then
 RootPart.CFrame = flingcf + jitter
 RootPart.Velocity = Vector3.new(9e7, 9e8, 9e7)
 RootPart.RotVelocity = Vector3.new(9e8, 9e8, 9e8)
-elseif mode == 6 then
+elseif mode == 5 then
 local frame = math.floor(t * 120)
 local flip = (frame % 2 == 0) and 1 or -1
 local sweep = Vector3.new(
@@ -74098,11 +74084,11 @@ math.sin(t * 110) * 1.6
 RootPart.CFrame = flingcf * CFrame.Angles(t * 53, t * 71, t * 37) + sweep + jitter
 RootPart.Velocity = Vector3.new(flip * 9e8, flip * 9e8, -flip * 9e8)
 RootPart.RotVelocity = Vector3.new(9e8, -9e8 * flip, 9e8)
-elseif mode == 7 then
+elseif mode == 6 then
 RootPart.CFrame = flingcf + jitter
 RootPart.Velocity = Vector3.new(9e7, 9e8, 9e7)
 RootPart.RotVelocity = Vector3.new(9e8, 9e8, 9e8)
-elseif mode == 9 then
+elseif mode == 8 then
 local parts = {}
 for _, p in RootPart.Parent:GetChildren() do
 if p:IsA("BasePart") then parts[p] = p.CFrame end
@@ -74118,7 +74104,7 @@ p.CFrame = cf
 p.AssemblyLinearVelocity, p.AssemblyAngularVelocity = Vector3.zero, Vector3.zero
 end
 end)
-elseif mode == 10 then
+elseif mode == 9 then
 -- Overflow Fling: scaled finite physics (see Util.Fling.OverflowMagnitude)
 local elapsed = math.max(0, t - (ft and ft.Start or t))
 local mag = Util.Fling.OverflowMagnitude(elapsed)
@@ -74136,7 +74122,7 @@ pcall(function()
 RootPart.AssemblyLinearVelocity  = Vector3.new(mag * flipA,      mag * flipB,      mag * flipC * -1)
 RootPart.AssemblyAngularVelocity = Vector3.new(mag * flipC,      mag * flipA * -1, mag * flipB)
 end)
-elseif mode == 11 then
+elseif mode == 10 then
 -- PRoot fling: root is rigidly locked (welded) to the target's HumanoidRootPart every frame, with huge alternating linear + angular power; Step ends it after exactly PRootDuration and the reanimator then puts the root back at its normal position
 local pw = Util.Fling.PRootPower
 local fl = (math.floor(t * 120) % 2 == 0) and 1 or -1
@@ -74147,7 +74133,7 @@ pcall(function()
 RootPart.AssemblyLinearVelocity = Vector3.new(pw * fl, pw * fl, -pw * fl)
 RootPart.AssemblyAngularVelocity = Vector3.new(pw, -pw * fl, pw)
 end)
-elseif mode == 12 then
+elseif mode == 11 then
 -- Kill Fling: re-fetches the target's live HumanoidRootPart CFrame every ApplyRoot call so the
 -- attachment stays exact even if the target moved since Step ran (fixes drift / "not attaching" bug).
 -- Uses a large but float32-finite velocity (1.5e9) instead of 1e300: 1e300 overflows to inf in
@@ -74166,7 +74152,7 @@ pcall(function()
 RootPart.AssemblyLinearVelocity  = Vector3.new( kv * kf, -kv, -kv * kf)
 RootPart.AssemblyAngularVelocity = Vector3.new(-kv * kf,  kv,  kv * kf)
 end)
-elseif mode == 13 then
+elseif mode == 12 then
 	-- Under void fling: our entire reanimation assembly is pinned to the target's live
 	-- HumanoidRootPart position every frame. A constant uniform force (previous version)
 	-- gives the physics solver a predictable steady state to equilibrate against, which is
@@ -74212,17 +74198,7 @@ RootPart.Velocity, RootPart.RotVelocity = Vector3.new(0, -16384 * df, 0), Vector
 end
 end
 Util.Fling.ApplyHumanoid = function(Humanoid, ft, lastspawn)
-local nan = (ft and ft.Mode or Util.Fling.Method) == 4
-if nan then
-if os.clock() - lastspawn > 0.08 then
-pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.new(0/0, 0/0, 0/0))
-else
-pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.zero)
-end
-pcall(sethiddenproperty, Humanoid, "NetworkHumanoidState", Enum.HumanoidStateType.Freefall.Value)
-else
 pcall(sethiddenproperty, Humanoid, "NetworkHumanoidState", Enum.HumanoidStateType.Flying.Value)
-end
 end
 SaveData.Reanimator = SaveData.Reanimator or {}
 Util.Fling.Queue = function(R, target, duration)
@@ -74976,7 +74952,6 @@ SaveData.Reanimator.LimbVelocity = SaveData.Reanimator.LimbVelocity or 0
 SaveData.Reanimator.LimbInitMode = SaveData.Reanimator.LimbInitMode or 2
 SaveData.Reanimator.LimbReplicateFPS10 = not not SaveData.Reanimator.LimbReplicateFPS10
 SaveData.Reanimator.LimbRoleplay = not not SaveData.Reanimator.LimbRoleplay
-SaveData.Reanimator.LimbUseNaNFling = not not SaveData.Reanimator.LimbUseNaNFling
 LimbReanimator.Mode = SaveData.Reanimator.LimbMode
 if LimbReanimator.Mode >= 7 then LimbReanimator.Mode = 2 end
 LimbReanimator.Velocity = SaveData.Reanimator.LimbVelocity
@@ -75741,7 +75716,7 @@ LimbReanimator.FlingEnabled = val
 SaveData.Reanimator.LimbRoleplay = not val
 end)
 UI.CreateText(parent, "vvv touch player = they lose ownership vvv", 10, Enum.TextXAlignment.Center)
-UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / NaN State / Fling 1 / Fling 2 / Fling 3 / Kill Fling / Under void fling)", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / Fling 1 / Fling 2 / Fling 3 / Kill Fling / Under void fling)", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
 do
 local UX = Reanimate.UnanchoredReanimator
@@ -77522,9 +77497,6 @@ held = tcf ~= nil and flingtarget == nil and not VelInterp
 if flingtarget then
 Util.Fling.ApplyHumanoid(Humanoid, flingtarget, lastspawn)
 else
-if Util.Fling.Method == 4 then
-pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.zero)
-end
 pcall(sethiddenproperty, Humanoid, "NetworkHumanoidState", Enum.HumanoidStateType.Flying.Value)
 end
 end
@@ -79439,7 +79411,6 @@ HatReanimator.FlingMethod = SaveData.Reanimator.HatsFlingMethod
 if HatReanimator.FlingMethod >= 4 then HatReanimator.FlingMethod = 1 end
 HatReanimator.ToolHolding = not SaveData.Reanimator.NoToolHolding
 HatReanimator.ToolAnimMethod = SaveData.Reanimator.HatsToolAnim
-HatReanimator.UseNaNFling = true
 HatReanimator.HasPermadeath = false
 HatReanimator.AutoForceRespawn = SaveData.Reanimator.HatsAutoForceRespawn
 HatReanimator.StuckTimeout = SaveData.Reanimator.HatsStuckTimeout
@@ -81857,9 +81828,6 @@ HatReanimator.Status.Permadeath = "Fired CDSB Signal."
 cdsbeffect += Players.RespawnTime
 end
 HatReanimator.Status.RespawnFling = "Flinging targets..."
-if Util.Fling.Method == 4 and HatReanimator.FlingTargets[1] then
-task.wait(0.2)
-end
 while character:IsDescendantOf(workspace) do
 local t = os.clock()
 local flingtarget = HatReanimator.FlingTargets[1]
@@ -81877,9 +81845,6 @@ Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 end
 Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
-if flingtarget.Mode == 4 then
-pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.new(0/0, 0/0, 0/0))
-end
 elseif #HatReanimator.FlingTargets == 0 then
 break
 else
@@ -82838,7 +82803,6 @@ HairReanimator.FlingMethod = HairReanimator.Save.HatsFlingMethod
 if HairReanimator.FlingMethod >= 4 then HairReanimator.FlingMethod = 1 end
 HairReanimator.ToolHolding = not HairReanimator.Save.NoToolHolding
 HairReanimator.ToolAnimMethod = HairReanimator.Save.HatsToolAnim
-HairReanimator.UseNaNFling = true
 HairReanimator.HasPermadeath = false
 HairReanimator.AutoForceRespawn = HairReanimator.Save.HatsAutoForceRespawn
 HairReanimator.StuckTimeout = HairReanimator.Save.HatsStuckTimeout
@@ -84515,9 +84479,6 @@ HairReanimator.Status.Permadeath = "Fired CDSB Signal."
 cdsbeffect += Players.RespawnTime
 end
 HairReanimator.Status.RespawnFling = "Flinging targets..."
-if Util.Fling.Method == 4 and HairReanimator.FlingTargets[1] then
-task.wait(0.2)
-end
 while character:IsDescendantOf(workspace) do
 local t = os.clock()
 local flingtarget = HairReanimator.FlingTargets[1]
@@ -84535,9 +84496,6 @@ Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 end
 Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
-if flingtarget.Mode == 4 then
-pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.new(0/0, 0/0, 0/0))
-end
 elseif #HairReanimator.FlingTargets == 0 then
 break
 else
@@ -85223,7 +85181,6 @@ HatHairReanimator.FlingMethod = HatHairReanimator.Save.HatsFlingMethod
 if HatHairReanimator.FlingMethod >= 4 then HatHairReanimator.FlingMethod = 1 end
 HatHairReanimator.ToolHolding = not HatHairReanimator.Save.NoToolHolding
 HatHairReanimator.ToolAnimMethod = HatHairReanimator.Save.HatsToolAnim
-HatHairReanimator.UseNaNFling = true
 HatHairReanimator.HasPermadeath = false
 HatHairReanimator.AutoForceRespawn = HatHairReanimator.Save.HatsAutoForceRespawn
 HatHairReanimator.StuckTimeout = HatHairReanimator.Save.HatsStuckTimeout
@@ -86933,9 +86890,6 @@ HatHairReanimator.Status.Permadeath = "Fired CDSB Signal."
 cdsbeffect += Players.RespawnTime
 end
 HatHairReanimator.Status.RespawnFling = "Flinging targets..."
-if Util.Fling.Method == 4 and HatHairReanimator.FlingTargets[1] then
-task.wait(0.2)
-end
 while character:IsDescendantOf(workspace) do
 local t = os.clock()
 local flingtarget = HatHairReanimator.FlingTargets[1]
@@ -86953,9 +86907,6 @@ Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 end
 Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
-if flingtarget.Mode == 4 then
-pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.new(0/0, 0/0, 0/0))
-end
 elseif #HatHairReanimator.FlingTargets == 0 then
 break
 else
@@ -87652,7 +87603,6 @@ AccessoriesReanimator.FlingMethod = AccessoriesReanimator.Save.HatsFlingMethod
 if AccessoriesReanimator.FlingMethod >= 4 then AccessoriesReanimator.FlingMethod = 1 end
 AccessoriesReanimator.ToolHolding = not AccessoriesReanimator.Save.NoToolHolding
 AccessoriesReanimator.ToolAnimMethod = AccessoriesReanimator.Save.HatsToolAnim
-AccessoriesReanimator.UseNaNFling = true
 AccessoriesReanimator.HasPermadeath = false
 AccessoriesReanimator.AutoForceRespawn = AccessoriesReanimator.Save.HatsAutoForceRespawn
 AccessoriesReanimator.StuckTimeout = AccessoriesReanimator.Save.HatsStuckTimeout
@@ -89304,9 +89254,6 @@ AccessoriesReanimator.Status.Permadeath = "Fired CDSB Signal."
 cdsbeffect += Players.RespawnTime
 end
 AccessoriesReanimator.Status.RespawnFling = "Flinging targets..."
-if Util.Fling.Method == 4 and AccessoriesReanimator.FlingTargets[1] then
-task.wait(0.2)
-end
 while character:IsDescendantOf(workspace) do
 local t = os.clock()
 local flingtarget = AccessoriesReanimator.FlingTargets[1]
@@ -89324,9 +89271,6 @@ Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 end
 Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
-if flingtarget.Mode == 4 then
-pcall(sethiddenproperty, Humanoid, "MoveDirectionInternal", Vector3.new(0/0, 0/0, 0/0))
-end
 elseif #AccessoriesReanimator.FlingTargets == 0 then
 break
 else
@@ -91354,7 +91298,7 @@ Reanimator.ShowHitboxes()
 end
 end
 local function ReanimateFling(target, duration)
-if Util.Fling.Method == 8 and Util.AltFling then return Util.AltFling.Request(target) end
+if Util.Fling.Method == 7 and Util.AltFling then return Util.AltFling.Request(target) end
 local Reanimator = Reanimate.Current
 if Reanimator and Reanimator.Fling then
 return Reanimator.Fling(target, duration)
@@ -94324,7 +94268,6 @@ update(rig, root, rootcf, rootvel, ft, fcf)
 if ft then
 Util.Fling.ApplyHumanoid(hum, ft, lastspawn)
 else
-if Util.Fling.Method == 4 then pcall(sethiddenproperty, hum, "MoveDirectionInternal", Vector3.zero) end
 pcall(sethiddenproperty, hum, "NetworkHumanoidState", Enum.HumanoidStateType.Flying.Value)
 end
 end
@@ -96064,7 +96007,7 @@ FlingMethodDesc.Text = Util.Fling.Descriptions[Util.Fling.Method]
 end)
 Util.AltFlingUI = UI.CreateText(MainPage, "Alt-fling: pick it above, then click a target", 10, Enum.TextXAlignment.Center)
 UI.CreateButton(MainPage, "Alt-fling: resend command", 15).Activated:Connect(function()
-if Util.Fling.Method == 8 and Util.AltFling then Util.AltFling.Send() end
+if Util.Fling.Method == 7 and Util.AltFling then Util.AltFling.Send() end
 end)
 do
 local SU = {}
@@ -96087,6 +96030,10 @@ end)
 local NoobyKill = {
 Enabled = false,
 YaKids = SaveData.YaKidsToolKill == true,
+Method = (SaveData.ToolKillMethod == "Instant tool-kill") and "Instant tool-kill" or "Standard tool-kill",
+InstantTimeout = 0.6,
+InstantAttempts = 3,
+InstantActivate = 0,
 Targets = {},
 Queue = {},
 Run = nil,
@@ -96261,7 +96208,7 @@ firetouchinterest(handle, part, 0)
 firetouchinterest(handle, part, 1)
 end
 function NoobyKill.Burst(handle, char)
-if NoobyKill.YaKids then pcall(NoobyKill.YaKidsBurst, handle, char) end
+if NoobyKill.YaKids or NoobyKill.IsInstant() then pcall(NoobyKill.YaKidsBurst, handle, char) end
 for _, name in ipairs(KILL_PRIMARY_PARTS) do
 local p = char:FindFirstChild(name)
 if p and p:IsA("BasePart") then killFire(handle, p) end
@@ -96334,6 +96281,7 @@ local tHum = char.Parent and char:FindFirstChildOfClass("Humanoid")
 if not tHum then
 NoobyKill.Finish(char, "gone")
 elseif tHum.Health <= 0 then
+if NoobyKill.IsInstant() and info and not info.InRun then NoobyKill.Notify("ikill" .. info.Name, "Instant tool-kill: killed " .. info.Name) end
 NoobyKill.Finish(char, "killed")
 elseif char:FindFirstChildOfClass("ForceField") then
 info.FFStart = info.FFStart or now
@@ -96350,21 +96298,37 @@ info.FocusStart = now
 info.Attempts = 0
 end
 info.LastHealth = tHum.Health
-if now - info.FocusStart > NoobyKill.FocusTimeout then
+local instant = NoobyKill.IsInstant()
+if now - info.FocusStart > (instant and NoobyKill.InstantTimeout or NoobyKill.FocusTimeout) then
 info.Attempts = info.Attempts + 1
 info.FocusStart = nil
-if info.Attempts >= NoobyKill.MaxAttempts then
+if info.Attempts >= (instant and NoobyKill.InstantAttempts or NoobyKill.MaxAttempts) then
 NoobyKill.Notify("timeout", "Couldn't kill " .. info.Name .. " with '" .. tool.Name .. "'")
 NoobyKill.Finish(char, "failed")
 else
 NoobyKill.Rotate()
 end
 else
+if instant and not info.Flung then info.Flung = true pcall(ReanimateFling, char) end
 pcall(NoobyKill.Burst, handle, char)
 end
 end
 end
-if now - NoobyKill.LastActivate > 0.25 then
+if NoobyKill.IsInstant() then
+for _, c in ipairs(table.clone(NoobyKill.Queue)) do
+if c ~= char then
+local inf = NoobyKill.Targets[c]
+local th = c.Parent and c:FindFirstChildOfClass("Humanoid")
+if not inf then
+elseif not th then NoobyKill.Finish(c, "gone")
+elseif th.Health <= 0 then
+if not inf.InRun then NoobyKill.Notify("ikill" .. inf.Name, "Instant tool-kill: killed " .. inf.Name) end
+NoobyKill.Finish(c, "killed")
+else NoobyKill.InstantStrike(c, inf, true) end
+end
+end
+end
+if now - NoobyKill.LastActivate > (NoobyKill.IsInstant() and NoobyKill.InstantActivate or 0.25) then
 NoobyKill.LastActivate = now
 pcall(function() tool:Activate() end)
 end
@@ -96401,6 +96365,23 @@ return false
 end
 return true
 end
+function NoobyKill.IsInstant()
+return NoobyKill.Method == "Instant tool-kill"
+end
+function NoobyKill.InstantStrike(char, info, noActivate)
+if not Util.Capabilities.firetouch or not info then return end
+local tool, handle = NoobyKill.GetDamageTool()
+if not tool or not handle.Parent then return end
+local tHum = char.Parent and char:FindFirstChildOfClass("Humanoid")
+if not tHum or tHum.Health <= 0 or char:FindFirstChildOfClass("ForceField") then return end
+pcall(function() handle.CanTouch = true end)
+if not info.Flung then info.Flung = true pcall(ReanimateFling, char) end
+pcall(NoobyKill.Burst, handle, char)
+if not noActivate then
+pcall(function() tool:Activate() end)
+NoobyKill.LastActivate = os.clock()
+end
+end
 function NoobyKill.AddTarget(char, inRun, name)
 if not char or NoobyKill.Targets[char] then return false end
 if char == Player.Character or char == Reanimate.Character then return false end
@@ -96413,6 +96394,7 @@ InRun = inRun and true or false,
 Name = name or char.Name,
 }
 table.insert(NoobyKill.Queue, char)
+if NoobyKill.IsInstant() and NoobyKill.WorkerRunning then NoobyKill.InstantStrike(char, NoobyKill.Targets[char]) end
 NoobyKill.EnsureWorker()
 return true
 end
@@ -96435,6 +96417,14 @@ NoobyKill.Enabled = false
 NoobyKill.StopAll()
 end
 end)
+NoobyKill.MethodNames = {"Standard tool-kill", "Instant tool-kill"}
+NoobyKill.MethodDropdown = UI.CreateDropdown(MainPage, "Tool-kill method", NoobyKill.MethodNames, NoobyKill.IsInstant() and 2 or 1)
+NoobyKill.MethodDropdown.Changed:Connect(function(val)
+local name = NoobyKill.MethodNames[val] or NoobyKill.MethodNames[1]
+NoobyKill.Method = name
+SaveData.ToolKillMethod = name
+end)
+UI.CreateText(MainPage, "Instant tool-kill: fires the tool the moment a target is picked, sends it through your selected Fling Method, re-activates the tool every frame, touches both ways, hits every queued target each frame, and gives up faster when no damage lands.", 10, Enum.TextXAlignment.Center)
 NoobyKill.YaKidsSwitch = UI.CreateSwitch(MainPage, "Ya kids tool kill option", NoobyKill.YaKids)
 NoobyKill.YaKidsSwitch.Changed:Connect(function(val)
 NoobyKill.YaKids = val and true or false
@@ -97454,7 +97444,7 @@ table.clear(AF.Hide)
 AF.Active, AF.Target, AF.Command = nil, nil, nil
 status("Alt-fling: disabled")
 end
-if Util.Fling.Method == 8 then AF.Enable() end
+if Util.Fling.Method == 7 then AF.Enable() end
 end
 do
 -- Lua Chat Mode: toggle beside the chat mic icon; ON = chat input runs as Lua on THIS client only.
