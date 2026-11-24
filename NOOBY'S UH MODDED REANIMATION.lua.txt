@@ -199,6 +199,10 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 root; other players only see hats the engine reports you as network owner of)
        Custom mod (BE SOMEONE'S EFFECT: dolteddown's permadeath method option - switch on the tab (both UIs); applied to the Hats Reanimator only when the
                 effect starts the hat reanimation itself, handed back when the effect stops, saved setting never written)
+       Custom mod (HAT OWNERSHIP + BE SOMEONE'S EFFECT STABILITY: Util.HatOwn - grace-aware ReceiveAge check so a one-frame ownership blip no longer drops a hat or restarts its claim,
+                one rate-limited SimulationRadius refresh only after a real ownership loss, event-driven re-weld guard on released handles, ClaimTime written only when it changes,
+                everything released by Reset() when the reanimation ends; Be someone's effect holds its pose while the target respawns, tolerates short reanimator state flips and
+                forces Hat Fling / Hat Spin off only while it runs. The server still decides ownership - nothing here can force it)
        Custom mod (v545: NAMELESS ADMIN CONSENT PROMPT - the embedded Nameless Admin is blocked until the user answers ONE Yes / No prompt
                 ("Initialize Nameless Admin for Uh Admin?") that is shown BEFORE anything is unpacked, compiled or started; it is asked once per session
                 (the startup auto-boot and the first NA command share the same answer); No leaves it fully unloaded and NA commands just say it is not initialized)
@@ -79631,6 +79635,79 @@ Reanimate.Stopping = false
 end
 end
 end
+-- [HAT OWNERSHIP] Shared by the hat-based reanimators (Hats / Hair / Hat X Hair / Accessories). The SERVER decides who owns a part's physics: a client can only keep
+-- its claim by staying in range (SimulationRadius) and by writing consistent state - it can never force or hold ownership. This helper therefore only makes the
+-- existing logic tolerant and cheap:
+--  * Check(): ReceiveAge == 0 means "this client simulates the part". It briefly reads non-zero during ordinary hand-offs / packet gaps, which used to wipe the hat's
+--    claim state and restart the whole 0.5s claim phase. A short grace window now keeps the hat pinned to its target and its claim state intact through such blips.
+--  * a REAL loss (grace expired) raises ONE rate-limited SimulationRadius refresh request, never a per-frame request.
+--  * Guard(): event-driven. Once a hat has been released, any joint / weld re-added to its Handle (server re-weld on respawn / re-equip) is removed again.
+--    One ChildAdded connection per handle, no polling; Reset() drops every connection when the reanimation ends.
+do
+	local HO = {
+		Gen = 0, Grace = 0.4, Poke = false, PokeAt = 0, MaxR = nil,
+		Last = setmetatable({}, {__mode = "k"}), Lost = setmetatable({}, {__mode = "k"}), Guards = {},
+	}
+	Util.HatOwn = HO
+	-- returns owned, transient (transient = ownership blip inside the grace window)
+	function HO.Check(part, now)
+		if part.ReceiveAge == 0 then
+			HO.Last[part] = now
+			HO.Lost[part] = nil
+			return true, false
+		end
+		local last = HO.Last[part]
+		if last and now - last <= HO.Grace then return true, true end
+		if not HO.Lost[part] then
+			HO.Lost[part] = true
+			HO.Poke = true
+		end
+		return false, false
+	end
+	-- true at most once per second, and only after a real ownership loss was seen
+	function HO.SimWanted()
+		if not HO.Poke then return false end
+		HO.Poke = false
+		local t = os.clock()
+		if t - HO.PokeAt < 1 then return false end
+		HO.PokeAt = t
+		return true
+	end
+	-- the engine clamps SimulationRadius to MaximumSimulationRadius; raise the ceiling only when it is lower than what is requested (pcall: not writable on every executor)
+	function HO.RaiseMax(r)
+		if HO.MaxR == r then return end
+		HO.MaxR = r
+		pcall(function()
+			if Player.MaximumSimulationRadius < r then
+				sethiddenproperty(Player, "MaximumSimulationRadius", r)
+			end
+		end)
+	end
+	function HO.Guard(handle)
+		if typeof(handle) ~= "Instance" or HO.Guards[handle] then return end
+		local gen = HO.Gen
+		HO.Guards[handle] = handle.ChildAdded:Connect(function(c)
+			if gen ~= HO.Gen or not Reanimate.Current then return end
+			-- only handles the reanimator already released (the release step sets _Uhhhhhh_HasCollide), so the claim sequence is never touched
+			if handle:GetAttribute("_Uhhhhhh_HasCollide") == nil then return end
+			if c:IsA("JointInstance") or c:IsA("WeldConstraint") then
+				task.defer(function()
+					if c.Parent == handle then pcall(c.Destroy, c) end
+				end)
+			end
+		end)
+	end
+	function HO.Reset()
+		HO.Gen += 1
+		for h, conn in HO.Guards do
+			pcall(function() conn:Disconnect() end)
+			HO.Guards[h] = nil
+		end
+		table.clear(HO.Last)
+		table.clear(HO.Lost)
+		HO.Poke = false
+	end
+end
 local HatReanimator = {}
 HatReanimator.Name = "Hats"
 SaveData.Reanimator.HatsCollide = not not SaveData.Reanimator.HatsCollide
@@ -79648,6 +79725,29 @@ SaveData.Reanimator.HatsStuckTimeout = math.clamp(tonumber(SaveData.Reanimator.H
 SaveData.Reanimator.HatsToolAnim = SaveData.Reanimator.HatsToolAnim or 0
 HatReanimator.HatCollide = SaveData.Reanimator.HatsCollide
 HatReanimator.HatCollideMethod = SaveData.Reanimator.HatsCollideMethod
+HatReanimator.RespawnPosOverride = nil -- Be someone's effect: respawntp (0-4) used INSTEAD of RespawnPosition by the session it starts; temporary, never saved
+HatReanimator.RespawnPositionNames = {
+"The Void",
+"Behind ReanimCharacter",
+"Randomtp near",
+"At spawn",
+"Under ReanimCharacter (Keep Streamed)",
+}
+HatReanimator.TorsoOverride = nil -- Be someone's effect: Torso Offset (0-10) used INSTEAD of HatCollideMethod by the session it starts; temporary, never saved
+HatReanimator.TorsoOffsetNames = {
+"1 - ShownApe's method (???)",
+"2 - STEVE's method V1 (specific)",
+"3 - 2 but for back accessories",
+"4 - 2 but for shoulder accessories",
+"5 - 2 but for waist accessories",
+"6 - STEVE's method V2 (kinda stable)",
+"7 - 6 but further from void (gl getting hatdrop)",
+"8 - STEVE's method V3 (most stable)",
+"9 - experimental do not use",
+"10 - NOOBY'S METHOD *EXPERIMENTAL!!!*",
+-- always listed: it used to be hidden whenever the character was not a loaded R15 rig at the moment this config was built; an R6 character falls back to method 7 when reanimating
+"11 - R15 Hat Reanimation (R15 only)",
+}
 HatReanimator.IWantAllHats = SaveData.Reanimator.IWantAllHats
 HatReanimator.IWantHatCollide = SaveData.Reanimator.IWantHatCollide
 HatReanimator.Permadeath = false
@@ -79776,13 +79876,7 @@ HatReanimator.StuckTimeout = val
 SaveData.Reanimator.HatsStuckTimeout = val
 end)
 UI.CreateText(parent, "^^^ if the reanimate never finishes with permadeath, your character is force respawned after this long", 10, Enum.TextXAlignment.Center)
-UI.CreateDropdown(parent, "respawntp", {
-"The Void",
-"Behind ReanimCharacter",
-"Randomtp near",
-"At spawn",
-"Under ReanimCharacter (Keep Streamed)",
-}, HatReanimator.RespawnPosition + 1).Changed:Connect(function(val)
+UI.CreateDropdown(parent, "respawntp", HatReanimator.RespawnPositionNames, HatReanimator.RespawnPosition + 1).Changed:Connect(function(val)
 HatReanimator.RespawnPosition = val - 1
 SaveData.Reanimator.RespawnPosition = val - 1
 end)
@@ -79791,20 +79885,7 @@ HatReanimator.HatCollide = val
 SaveData.Reanimator.HatsCollide = val
 end)
 UI.CreateText(parent, "if ur hats get voided when u try to hat collide\nvvv try changing this vvv", 10, Enum.TextXAlignment.Center)
-local torsoOffsetNames = {
-"1 - ShownApe's method (???)",
-"2 - STEVE's method V1 (specific)",
-"3 - 2 but for back accessories",
-"4 - 2 but for shoulder accessories",
-"5 - 2 but for waist accessories",
-"6 - STEVE's method V2 (kinda stable)",
-"7 - 6 but further from void (gl getting hatdrop)",
-"8 - STEVE's method V3 (most stable)",
-"9 - experimental do not use",
-"10 - NOOBY'S METHOD *EXPERIMENTAL!!!*",
-}
--- always listed: it used to be hidden whenever the character was not a loaded R15 rig at the moment this config was built; an R6 character falls back to method 7 when reanimating
-table.insert(torsoOffsetNames, "11 - R15 Hat Reanimation (R15 only)")
+local torsoOffsetNames = HatReanimator.TorsoOffsetNames
 if HatReanimator.HatCollideMethod > 10 then
 HatReanimator.HatCollideMethod = 6
 SaveData.Reanimator.HatsCollideMethod = 6
@@ -81271,7 +81352,7 @@ HatReanimator.HatMapSummary = "(no hat map yet...)"
 table.clear(HatReanimator.FlingTargets)
 local lastsimradchange = 0
 local function SetSimulationRadius()
-if not Util.FX.SimDue() then return end
+if not (Util.FX.SimDue() or Util.HatOwn.SimWanted()) then return end
 local function setsimrad(plr, radius)
 pcall(function()
 plr.SimulationRadius = radius
@@ -81280,6 +81361,7 @@ pcall(sethiddenproperty, plr, "SimulationRadius", radius)
 end
 local r = #Players:GetPlayers() * 1000
 setsimrad(Player, r)
+Util.HatOwn.RaiseMax(r)
 end
 local function IsNetworkOwner(part)
 return part.ReceiveAge == 0
@@ -81319,8 +81401,10 @@ local netless = Reanimate.NetlessVelocity + (math.sin(timing * 0.5) + 1) / 2
 local aligned = true
 local lastcf = handle:GetAttribute("_Uhhhhhh_LastPosition")
 local claimtime = handle:GetAttribute("_Uhhhhhh_ClaimTime")
+local prevclaim = claimtime
 if typeof(lastcf) ~= "CFrame" then lastcf = handle.CFrame end
-if not handle:IsGrounded() and IsNetworkOwner(handle) then
+local owned = Util.HatOwn.Check(handle, timing) -- grace-aware: a one-frame ReceiveAge blip no longer drops the hat or resets its claim
+if not handle:IsGrounded() and owned then
 local newpos = newcf.Position
 local lastpos = lastcf.Position
 local vel = (newpos - lastpos) / dt
@@ -81367,7 +81451,7 @@ lastcf = handle.CFrame
 aligned = false
 end
 handle:SetAttribute("_Uhhhhhh_LastPosition", lastcf)
-handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime)
+if claimtime ~= prevclaim then handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime) end
 return aligned
 end
 local CharOnDesc = function(v)
@@ -81390,6 +81474,7 @@ end)
 elseif v:IsA("Accessory") and v.Parent == Player.Character then
 local handle = v:WaitForChild("Handle", 10)
 if handle then
+pcall(Util.HatOwn.Guard, handle)
 if not table.find(CharHats, v) then
 table.insert(CharHats, v)
 local conn = nil
@@ -81961,7 +82046,7 @@ HatReanimator.Status.HatCollide = "Respawn detected."
 HatReanimator.Status.RespawnFling = "Respawn detected."
 local hatcols = HatReanimator.HatCollide
 local perma = HatReanimator.Permadeath
-local hatcolmeth = HatReanimator.HatCollideMethod
+local hatcolmeth = HatReanimator.TorsoOverride or HatReanimator.HatCollideMethod
 if not replicatesignal then perma = false end
 HatReanimator.HasPermadeath, HatReanimator.HasHatCollide = perma, hatcols
 local pdfired = false
@@ -81977,8 +82062,10 @@ if perma then HatReanimator.PDBegin(HatReanimator.Status, character, Humanoid) e
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
 selhatcol = HatCollideMethods[hatcolmeth]
+if HatReanimator.TorsoOverride == nil then
 HatReanimator.HatCollideMethod = 6
 SaveData.Reanimator.HatsCollideMethod = 6
+end
 pcall(Util.UINotify, "R15 Hat Reanimation is R15 only - using method 7 instead.")
 end
 if not Reanimate.UseLoadAnimationHook then
@@ -82033,30 +82120,31 @@ break
 end
 end
 end
+local respawnTp = HatReanimator.RespawnPosOverride or HatReanimator.RespawnPosition
 if not perma then
 RootPosition += Vector3.new(0, 12, 0)
 if ReanimCharacter then
 local root = ReanimCharacter:FindFirstChild("HumanoidRootPart")
 if root then
-if HatReanimator.RespawnPosition == 1 then
+if respawnTp == 1 then
 RootPosition = root.CFrame * Vector3.new(0, 0, 6)
 end
-if HatReanimator.RespawnPosition == 2 then
+if respawnTp == 2 then
 local dir = Vector3.new(math.random() * 2 - 1, math.random() * 2 - 1, math.random() * 2 - 1).Unit
 if dir ~= dir or dir.Magnitude == 0 then
 dir = Vector3.yAxis
 end
 RootPosition = root.Position + dir * math.random(8, 12)
 end
-if HatReanimator.RespawnPosition == 4 then
+if respawnTp == 4 then
 RootPosition = root.Position + Vector3.new(0, -16, 0)
 end
 end
 end
-if HatReanimator.RespawnPosition == 3 then
+if respawnTp == 3 then
 RootPosition = RootPart.Position
 end
-if HatReanimator.RespawnPosition == 4 and not (ReanimCharacter and ReanimCharacter:FindFirstChild("HumanoidRootPart")) then
+if respawnTp == 4 and not (ReanimCharacter and ReanimCharacter:FindFirstChild("HumanoidRootPart")) then
 RootPosition = RootPart.Position
 end
 end
@@ -82736,6 +82824,7 @@ end
 ResetHatRefs()
 for _,v in HatRefs do if v.PH then v.PH:Destroy() end end
 CharConn:Disconnect()
+pcall(Util.HatOwn.Reset)
 Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
 end
@@ -83924,7 +84013,7 @@ HairReanimator.HatMapSummary = "(no hair map yet...)"
 table.clear(HairReanimator.FlingTargets)
 local lastsimradchange = 0
 local function SetSimulationRadius()
-if not Util.FX.SimDue() then return end
+if not (Util.FX.SimDue() or Util.HatOwn.SimWanted()) then return end
 local function setsimrad(plr, radius)
 pcall(function()
 plr.SimulationRadius = radius
@@ -83933,6 +84022,7 @@ pcall(sethiddenproperty, plr, "SimulationRadius", radius)
 end
 local r = #Players:GetPlayers() * 1000
 setsimrad(Player, r)
+Util.HatOwn.RaiseMax(r)
 end
 local function IsNetworkOwner(part)
 return part.ReceiveAge == 0
@@ -83972,8 +84062,10 @@ local netless = Reanimate.NetlessVelocity + (math.sin(timing * 0.5) + 1) / 2
 local aligned = true
 local lastcf = handle:GetAttribute("_Uhhhhhh_LastPosition")
 local claimtime = handle:GetAttribute("_Uhhhhhh_ClaimTime")
+local prevclaim = claimtime
 if typeof(lastcf) ~= "CFrame" then lastcf = handle.CFrame end
-if not handle:IsGrounded() and IsNetworkOwner(handle) then
+local owned = Util.HatOwn.Check(handle, timing) -- grace-aware: a one-frame ReceiveAge blip no longer drops the hat or resets its claim
+if not handle:IsGrounded() and owned then
 local newpos = newcf.Position
 local lastpos = lastcf.Position
 local vel = (newpos - lastpos) / dt
@@ -84020,7 +84112,7 @@ lastcf = handle.CFrame
 aligned = false
 end
 handle:SetAttribute("_Uhhhhhh_LastPosition", lastcf)
-handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime)
+if claimtime ~= prevclaim then handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime) end
 return aligned
 end
 local CharOnDesc = function(v)
@@ -84043,6 +84135,7 @@ end)
 elseif v:IsA("Accessory") and v.Parent == Player.Character then
 local handle = v:WaitForChild("Handle", 10)
 if handle and Reanimate.AccExt.Accept(HairReanimator, v) then
+pcall(Util.HatOwn.Guard, handle)
 if not table.find(CharHats, v) then
 table.insert(CharHats, v)
 local conn = nil
@@ -85390,6 +85483,7 @@ end
 ResetHatRefs()
 for _,v in HatRefs do if v.PH then v.PH:Destroy() end end
 CharConn:Disconnect()
+pcall(Util.HatOwn.Reset)
 Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
 end
@@ -86335,7 +86429,7 @@ HatHairReanimator.HatMapSummary = "(no accessory map yet...)"
 table.clear(HatHairReanimator.FlingTargets)
 local lastsimradchange = 0
 local function SetSimulationRadius()
-if not Util.FX.SimDue() then return end
+if not (Util.FX.SimDue() or Util.HatOwn.SimWanted()) then return end
 local function setsimrad(plr, radius)
 pcall(function()
 plr.SimulationRadius = radius
@@ -86344,6 +86438,7 @@ pcall(sethiddenproperty, plr, "SimulationRadius", radius)
 end
 local r = #Players:GetPlayers() * 1000
 setsimrad(Player, r)
+Util.HatOwn.RaiseMax(r)
 end
 local function IsNetworkOwner(part)
 return part.ReceiveAge == 0
@@ -86383,8 +86478,10 @@ local netless = Reanimate.NetlessVelocity + (math.sin(timing * 0.5) + 1) / 2
 local aligned = true
 local lastcf = handle:GetAttribute("_Uhhhhhh_LastPosition")
 local claimtime = handle:GetAttribute("_Uhhhhhh_ClaimTime")
+local prevclaim = claimtime
 if typeof(lastcf) ~= "CFrame" then lastcf = handle.CFrame end
-if not handle:IsGrounded() and IsNetworkOwner(handle) then
+local owned = Util.HatOwn.Check(handle, timing) -- grace-aware: a one-frame ReceiveAge blip no longer drops the hat or resets its claim
+if not handle:IsGrounded() and owned then
 local newpos = newcf.Position
 local lastpos = lastcf.Position
 local vel = (newpos - lastpos) / dt
@@ -86431,7 +86528,7 @@ lastcf = handle.CFrame
 aligned = false
 end
 handle:SetAttribute("_Uhhhhhh_LastPosition", lastcf)
-handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime)
+if claimtime ~= prevclaim then handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime) end
 return aligned
 end
 local CharOnDesc = function(v)
@@ -86454,6 +86551,7 @@ end)
 elseif v:IsA("Accessory") and v.Parent == Player.Character then
 local handle = v:WaitForChild("Handle", 10)
 if handle and Reanimate.AccExt.Accept(HatHairReanimator, v) then
+pcall(Util.HatOwn.Guard, handle)
 if not table.find(CharHats, v) then
 table.insert(CharHats, v)
 local conn = nil
@@ -87813,6 +87911,7 @@ end
 ResetHatRefs()
 for _,v in HatRefs do if v.PH then v.PH:Destroy() end end
 CharConn:Disconnect()
+pcall(Util.HatOwn.Reset)
 Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
 end
@@ -88699,7 +88798,7 @@ AccessoriesReanimator.HatMapSummary = "(no accessory map yet...)"
 table.clear(AccessoriesReanimator.FlingTargets)
 local lastsimradchange = 0
 local function SetSimulationRadius()
-if not Util.FX.SimDue() then return end
+if not (Util.FX.SimDue() or Util.HatOwn.SimWanted()) then return end
 local function setsimrad(plr, radius)
 pcall(function()
 plr.SimulationRadius = radius
@@ -88708,6 +88807,7 @@ pcall(sethiddenproperty, plr, "SimulationRadius", radius)
 end
 local r = #Players:GetPlayers() * 1000
 setsimrad(Player, r)
+Util.HatOwn.RaiseMax(r)
 end
 local function IsNetworkOwner(part)
 return part.ReceiveAge == 0
@@ -88747,8 +88847,10 @@ local netless = Reanimate.NetlessVelocity + (math.sin(timing * 0.5) + 1) / 2
 local aligned = true
 local lastcf = handle:GetAttribute("_Uhhhhhh_LastPosition")
 local claimtime = handle:GetAttribute("_Uhhhhhh_ClaimTime")
+local prevclaim = claimtime
 if typeof(lastcf) ~= "CFrame" then lastcf = handle.CFrame end
-if not handle:IsGrounded() and IsNetworkOwner(handle) then
+local owned = Util.HatOwn.Check(handle, timing) -- grace-aware: a one-frame ReceiveAge blip no longer drops the hat or resets its claim
+if not handle:IsGrounded() and owned then
 local newpos = newcf.Position
 local lastpos = lastcf.Position
 local vel = (newpos - lastpos) / dt
@@ -88795,7 +88897,7 @@ lastcf = handle.CFrame
 aligned = false
 end
 handle:SetAttribute("_Uhhhhhh_LastPosition", lastcf)
-handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime)
+if claimtime ~= prevclaim then handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime) end
 return aligned
 end
 local CharOnDesc = function(v)
@@ -88818,6 +88920,7 @@ end)
 elseif v:IsA("Accessory") and v.Parent == Player.Character then
 local handle = v:WaitForChild("Handle", 10)
 if handle and Reanimate.AccExt.Accept(AccessoriesReanimator, v) then
+pcall(Util.HatOwn.Guard, handle)
 if not table.find(CharHats, v) then
 table.insert(CharHats, v)
 local conn = nil
@@ -90174,6 +90277,7 @@ end
 ResetHatRefs()
 for _,v in HatRefs do if v.PH then v.PH:Destroy() end end
 CharConn:Disconnect()
+pcall(Util.HatOwn.Reset)
 Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
 end
@@ -99400,7 +99504,7 @@ end
 do
 local BSE = {}
 Util.BSE = BSE
-local FORMATIONS = {"Tail", "Wings", "Aromatic", "Circle", "Wing left", "Wing right", "Kernel", "Square", "Friend", "Halo"}
+local FORMATIONS = {"Tail", "Wings", "Aromatic", "Circle", "Wing left", "Wing right", "Kernel", "Square", "Friend", "Halo", "Astral Armillary", "Crown", "Vortex"}
 BSE.Formations = FORMATIONS
 BSE.Range = math.huge -- no radius limit: the scan lists every available player in the server
 local KEYP = "BSE_"
@@ -99408,11 +99512,14 @@ local PI2 = math.pi * 2
 local V3 = Vector3.new
 local S = {
 	Active = false, Busy = false, Stopping = false, Cancel = nil, Target = nil, Formation = FORMATIONS[1],
+	AutoCycle = false, CycleDelay = 5, CycleAt = nil, -- automatic formation cycling: preference (kept for the session), delay in seconds, os.clock() deadline of the next switch
 	Status = "Idle - pick a player to begin", Conns = {}, Entries = {}, Keys = {}, MapRef = nil, Count = 0,
 	Cur = {}, Last = {}, From = {}, Blend = 1, Unit = 1.4, Owned = 0, Total = 0, Lost = nil, StartedReanim = false,
 	Low = false, Tick = 0, Frame = 0, StartAt = 0, Warned = false, Token = 0, View = true, Viewing = false,
+	RespTp = nil, RespTpApplied = false, -- respawntp chosen for the hat reanimation this effect starts (nil = follow the Hats Reanimator setting); applied flag
+	Torso = nil, TorsoApplied = false, -- Torso Offset chosen for the hat reanimation this effect starts (nil = follow the Hats Reanimator setting); applied flag
 	Permadeath = nil, PDApplied = false, PDPrev = nil, PDSet = nil, -- dolteddown's permadeath option (nil = follow the Hats Reanimator switch)
-	Mode = "real", RefPlr = nil, RefMode = nil, RefPart = nil, RefHum = nil, RefAt = 0, Yaw = nil, PrevPos = nil, PrevT = 0,
+	Mode = "real", RefPlr = nil, RefMode = nil, RefPart = nil, RefHum = nil, RefAt = 0, RefPos = nil, Yaw = nil, PrevPos = nil, PrevT = 0,
 	FriendCF = nil, Dt = 1 / 60, CurMap = nil, Warn15 = false, -- Friend formation: smoothed companion root, frame time, current hat map, one-shot warning
 }
 BSE.State = S
@@ -99431,7 +99538,31 @@ end
 
 -- the camera views the selected player while the effect runs (their Humanoid, or their visible body part when they are reanimating); the Hats
 -- reanimator's own per-frame camera line defers to Util.EffectView, and the camera goes back to your own character when the effect stops
+-- a part of a destroyed character keeps its Parent chain, so Parent alone does not prove it is still in the world
+local function live(p)
+	return typeof(p) == "Instance" and p.Parent ~= nil and p:FindFirstAncestorOfClass("Workspace") ~= nil
+end
+
+-- the held camera subject is destroyed / stale (or force: decaying) while the target is between characters: a local invisible anchor at the last
+-- valid position stands in for it, so the camera keeps looking at the target and never falls back to your respawned Humanoid or a parked real root
+local function anchorView(force)
+	local sub = S.ViewSub
+	if typeof(sub) ~= "Instance" or not S.RefPos or (live(sub) and not (force and sub.Name ~= "BSE_ViewAnchor")) then return sub end
+	local a = Instance.new("Part")
+	a.Name, a.Anchored, a.CanCollide, a.CanQuery, a.CanTouch, a.CastShadow = "BSE_ViewAnchor", true, false, false, false, false
+	a.Transparency, a.Size = 1, V3(1, 1, 1)
+	a.CFrame = CFrame.new(S.RefPos + V3(0, sub:IsA("Humanoid") and 1.5 or 0, 0))
+	a.Parent = workspace.CurrentCamera or workspace
+	S.ViewSub = a
+	return a
+end
+local function dropAnchor(keep)
+	local sub = S.ViewSub
+	if sub ~= keep and typeof(sub) == "Instance" and sub.Name == "BSE_ViewAnchor" then pcall(sub.Destroy, sub) end
+end
+
 local function restoreView()
+	dropAnchor()
 	S.ViewSub = nil
 	if not S.Viewing then return end
 	S.Viewing = false
@@ -99446,9 +99577,15 @@ end
 Util.EffectView = function()
 	if S.Active and S.View then
 		local sub = S.ViewSub
-		if typeof(sub) == "Instance" and sub.Parent then return sub end
+		-- the last subject is kept while the target is between characters (an anchor at the last valid position replaces it once it is destroyed),
+		-- so neither this nor the Hats camera line ever falls back to your own freshly respawned Humanoid or to a parked real root
+		if typeof(sub) == "Instance" then return anchorView() end
 	end
 	return nil
+end
+local function holdView()
+	local sub, cam = Util.EffectView(), workspace.CurrentCamera
+	if sub and cam and cam.CameraSubject ~= sub then cam.CameraSubject = sub end
 end
 function BSE.SetView(on)
 	S.View = on and true or false
@@ -99788,6 +99925,92 @@ local function layFriend(n, t, unit, base, out)
 	end
 end
 
+-- Astral Armillary / Crown / Vortex: each is designed around exactly 10 hats. A hat keeps its slot ((k - 1) % 10 + 1); with fewer hats the missing slots are
+-- simply left out, extra hats wrap onto a second lap (offset so they never sit on top of a slot hat)
+local layArmillary, layCrown, layVortex
+do
+	-- Astral Armillary: 4 + 3 + 3 hats on three nested orbital rings that share one centre. Ring 1 is horizontal, ring 2 / ring 3 are tilted in opposite
+	-- diagonals; every ring spins at its own speed / direction from its own phase, and the two tilted rings precess slowly around the target
+	local ARM_RING = {1, 2, 3, 1, 2, 3, 1, 2, 3, 1} -- ring of each slot (interleaved, so a short hat list still shows all three rings)
+	local ARM_IDX = {0, 0, 0, 1, 1, 1, 2, 2, 2, 3} -- position of the slot along its ring
+	local ARM_STEP = {PI2 / 4, PI2 / 3, PI2 / 3} -- 90 / 120 / 120 degrees apart
+	local ARM_W = {0.55, 1.15, -0.85} -- spin (rad/s): slow, faster, opposite direction
+	local ARM_P = {0.4, 1.9, 4.0} -- starting phases
+	local ARM_RM = {0.85, 1.0, 1.15} -- nested shells: hats of different rings never collide where the rings cross
+	local ARM_O2 = CFrame.Angles(0, 0.55, 0) * CFrame.Angles(0, 0, 0.8)
+	local ARM_O3 = CFrame.Angles(0, -0.55, 0) * CFrame.Angles(0, 0, -0.8)
+	layArmillary = function(n, t, unit, base, out)
+		local R = math.max(4.6, 2.8 + unit * 1.5)
+		local c = V3(0, 1.3 + math.sin(t * 1.1) * 0.15, 0)
+		local pre = CFrame.Angles(0, t * 0.3, 0)
+		local o2, o3 = pre * ARM_O2, pre * ARM_O3
+		for k = 1, n do
+			local s = (k - 1) % 10 + 1
+			local lap = (k - 1) // 10
+			local r = ARM_RING[s]
+			local o = r == 1 and CFrame.identity or (r == 2 and o2 or o3)
+			local w = ARM_W[r]
+			local sg = w < 0 and -1 or 1
+			local a = ARM_P[r] + t * w + ARM_IDX[s] * ARM_STEP[r] + lap * 0.9
+			local rad = R * ARM_RM[r] * (1 + lap * 0.3)
+			local ca, sa = math.cos(a), math.sin(a)
+			-- the hat faces along its orbit and keeps the ring's normal as "up"
+			out[k] = base * face(c + o * V3(ca * rad, 0, sa * rad), o * V3(-sa * sg, 0, ca * sg), o.UpVector)
+		end
+	end
+
+	-- Crown: 5 raised peaks alternating with 5 lower band hats on a flared ring above the head; it turns slowly and bobs
+	layCrown = function(n, t, unit, base, out)
+		local R = math.max(2.4, 10 * unit * 1.12 / PI2)
+		local cy = 3.3 + unit * 0.3 + math.sin(t * 1.7) * 0.18
+		local rise = 1.5 + unit * 0.6
+		local spin = t * 0.9
+		for k = 1, n do
+			local s = (k - 1) % 10
+			local lap = (k - 1) // 10
+			local peak = s % 2 == 0
+			local a = s * (PI2 / 10) + spin
+			local rad = (peak and R * 1.1 or R * 0.94) * math.max(0.3, 1 - lap * 0.22)
+			local y = cy + (peak and rise or 0) + lap * 0.9
+			out[k] = base * face(V3(math.cos(a) * rad, y, math.sin(a) * rad), V3(-math.sin(a), 0, math.cos(a)), nil)
+		end
+	end
+
+	-- Vortex: a funnel-shaped helix of 1.5 turns around the target (narrow at the feet, wide above the head). The 10 slots are placed at equal arc
+	-- length along it once at load, so the spacing stays even; the whole helix turns and every hat points up its tangent
+	local VX_R0, VX_R1, VX_H, VX_Y0 = 1.9, 4.8, 8.2, -2.2
+	local VX_TH = 1.5 * PI2 -- angle swept over the whole helix
+	local VX_ANG, VX_RAD, VX_Y = {}, {}, {}
+	do
+		local N = 240
+		local cum = {0}
+		for i = 1, N do
+			local r = VX_R0 + (VX_R1 - VX_R0) * ((i - 0.5) / N)
+			cum[i + 1] = cum[i] + math.sqrt((r * VX_TH) ^ 2 + (VX_R1 - VX_R0) ^ 2 + VX_H ^ 2) / N
+		end
+		local j = 1
+		for s = 1, 10 do
+			local want = (s - 1) / 9 * cum[N + 1]
+			while j < N and cum[j + 1] < want do j += 1 end
+			local seg = cum[j + 1] - cum[j]
+			local u = math.clamp(((j - 1) + (seg > 0 and (want - cum[j]) / seg or 0)) / N, 0, 1)
+			VX_ANG[s], VX_RAD[s], VX_Y[s] = u * VX_TH, VX_R0 + (VX_R1 - VX_R0) * u, VX_Y0 + VX_H * u
+		end
+	end
+	layVortex = function(n, t, unit, base, out)
+		local sc = 0.85 + unit * 0.15
+		local spin = t * 1.5
+		local dr = (VX_R1 - VX_R0) * sc
+		for k = 1, n do
+			local s = (k - 1) % 10 + 1
+			local a = VX_ANG[s] + spin + ((k - 1) // 10) * 2.4
+			local r = VX_RAD[s] * sc
+			local ca, sa = math.cos(a), math.sin(a)
+			out[k] = base * face(V3(ca * r, VX_Y[s], sa * r), V3(dr * ca - r * VX_TH * sa, VX_H, dr * sa + r * VX_TH * ca), nil)
+		end
+	end
+end
+
 local BUILD = {
 	Tail = layTail,
 	Wings = function(n, t, u, b, o) layWings(n, t, u, b, o, "both") end,
@@ -99799,6 +100022,9 @@ local BUILD = {
 	Square = function(n, t, u, b, o) layPolygon(n, t, u, b, o, 4, math.pi / 4, 1.8) end,
 	Friend = layFriend,
 	Halo = layHalo,
+	["Astral Armillary"] = layArmillary,
+	Crown = layCrown,
+	Vortex = layVortex,
 }
 BSE.Layout = function(name, n, t, unit, base, out) -- exposed so the formations can be checked offline
 	BUILD[name](n, t, unit, base, out)
@@ -99886,6 +100112,115 @@ function BSE.PermadeathStatus()
 	return (ok and st ~= nil) and tostring(st) or nil
 end
 
+-- Torso Offset (same 11 methods as the Hats config). The choice only decides which method the hat reanimation STARTED BY THE EFFECT captures: it is handed
+-- to HatReanimator.TorsoOverride before ModReanimate and cleared when the effect ends, fails or is cancelled. HatCollideMethod and
+-- SaveData.Reanimator.HatsCollideMethod are never written, so the regular Hats Reanimator setting is untouched. A hat reanimation that is already running
+-- keeps its own method.
+BSE.TorsoNames = HatReanimator.TorsoOffsetNames
+function BSE.GetTorso() return S.Torso end
+function BSE.TorsoName(idx)
+	if idx == nil then return "Hats Reanimator setting" end
+	return BSE.TorsoNames[idx + 1] or ("method " .. tostring(idx + 1))
+end
+function BSE.SetTorso(idx)
+	if idx ~= nil then
+		idx = tonumber(idx)
+		if not idx or idx % 1 ~= 0 or idx < 0 or idx > #BSE.TorsoNames - 1 then return false end
+	end
+	if S.Torso == idx then return true end
+	S.Torso = idx
+	if S.Active or S.Busy then
+		say("Torso Offset: " .. BSE.TorsoName(idx) .. ". It applies the next time the effect starts the hat reanimation (stop the effect and pick a player again).")
+	else
+		say("Torso Offset for the next effect: " .. BSE.TorsoName(idx) .. ".")
+	end
+	return true
+end
+function BSE.TorsoApply()
+	if S.TorsoApplied or S.Torso == nil then return end
+	S.TorsoApplied = true
+	HatReanimator.TorsoOverride = S.Torso
+	say("Torso Offset for this hat reanimation: " .. BSE.TorsoName(S.Torso) .. ".")
+	if not HatReanimator.HatCollide then
+		say("Hat Collide is off in the Hats Reanimator config, so no Torso Offset method is used. Turn Hat Collide on to use this selection.")
+	end
+end
+function BSE.TorsoRelease()
+	if not S.TorsoApplied then return end
+	S.TorsoApplied = false
+	HatReanimator.TorsoOverride = nil
+end
+-- status line: what the running session uses / when a pending selection takes effect (nil = nothing to report)
+function BSE.TorsoStatus()
+	if S.Torso == nil then return nil end
+	if S.TorsoApplied then return "Torso Offset: " .. BSE.TorsoName(S.Torso) .. " (this hat reanimation)" end
+	if S.Active or S.Busy then
+		return "Torso Offset: " .. BSE.TorsoName(S.Torso) .. " - applies the next time the effect starts the hat reanimation (the running one keeps its own)"
+	end
+	return nil
+end
+
+-- respawntp (same 5 options as the Hats config): handled exactly like the Torso Offset above - handed to HatReanimator.RespawnPosOverride only for the hat
+-- reanimation this effect starts, cleared when the effect ends / fails / is cancelled, RespawnPosition and its saved value are never written.
+BSE.RespawnNames = HatReanimator.RespawnPositionNames
+function BSE.GetRespawnTp() return S.RespTp end
+function BSE.RespawnTpName(idx)
+	if idx == nil then return "Hats Reanimator setting" end
+	return BSE.RespawnNames[idx + 1] or ("option " .. tostring(idx + 1))
+end
+function BSE.SetRespawnTp(idx)
+	if idx ~= nil then
+		idx = tonumber(idx)
+		if not idx or idx % 1 ~= 0 or idx < 0 or idx > #BSE.RespawnNames - 1 then return false end
+	end
+	if S.RespTp == idx then return true end
+	S.RespTp = idx
+	if S.Active or S.Busy then
+		say("respawntp: " .. BSE.RespawnTpName(idx) .. ". It applies the next time the effect starts the hat reanimation (stop the effect and pick a player again).")
+	else
+		say("respawntp for the next effect: " .. BSE.RespawnTpName(idx) .. ".")
+	end
+	return true
+end
+function BSE.RespawnTpApply()
+	if S.RespTpApplied or S.RespTp == nil then return end
+	S.RespTpApplied = true
+	HatReanimator.RespawnPosOverride = S.RespTp
+	say("respawntp for this hat reanimation: " .. BSE.RespawnTpName(S.RespTp) .. ".")
+end
+function BSE.RespawnTpRelease()
+	if not S.RespTpApplied then return end
+	S.RespTpApplied = false
+	HatReanimator.RespawnPosOverride = nil
+end
+function BSE.RespawnTpStatus()
+	if S.RespTp == nil then return nil end
+	if S.RespTpApplied then return "respawntp: " .. BSE.RespawnTpName(S.RespTp) .. " (this hat reanimation)" end
+	if S.Active or S.Busy then
+		return "respawntp: " .. BSE.RespawnTpName(S.RespTp) .. " - applies the next time the effect starts the hat reanimation (the running one keeps its own)"
+	end
+	return nil
+end
+
+-- Hat Fling / Hat Spin (Hats config) write 16384 velocities onto the handles: they scramble the formation and are a main reason hats get thrown off. They are forced off
+-- only while the effect runs (the saved settings are never written) and handed back when it stops, unless the user changed them meanwhile.
+function BSE.FXApply()
+	if S.FXApplied then return end
+	S.FXApplied = true
+	S.FXPrev = {Fling = HatReanimator.HatFling, Spin = HatReanimator.HatSpin}
+	HatReanimator.HatFling, HatReanimator.HatSpin = false, false
+end
+function BSE.FXRelease()
+	if not S.FXApplied then return end
+	S.FXApplied = false
+	local pv = S.FXPrev
+	S.FXPrev = nil
+	if pv then
+		if HatReanimator.HatFling == false then HatReanimator.HatFling = pv.Fling and true or false end
+		if HatReanimator.HatSpin == false then HatReanimator.HatSpin = pv.Spin and true or false end
+	end
+end
+
 local function doStop(reason)
 	if S.Stopping then return end
 	S.Stopping = true
@@ -99898,14 +100233,17 @@ local function doStop(reason)
 	removeEntries()
 	unlockMoveset()
 	pcall(BSE.PDRelease)
+	pcall(BSE.TorsoRelease)
+	pcall(BSE.RespawnTpRelease)
+	pcall(BSE.FXRelease)
 	restoreView()
 	local deanimate = S.StartedReanim
-	S.Active, S.Target, S.Lost, S.StartedReanim, S.Warned = false, nil, nil, false, false
+	S.Active, S.Target, S.Lost, S.StartedReanim, S.Warned, S.DownAt = false, nil, nil, false, false, nil
 	S.Mode, S.RefPlr, S.RefMode, S.RefPart, S.RefHum, S.Yaw, S.PrevPos = "real", nil, nil, nil, nil, nil, nil
 	table.clear(S.From)
 	table.clear(S.Last)
 	table.clear(S.Cur)
-	S.Blend = 1
+	S.Blend, S.CycleAt = 1, nil
 	S.Status = (reason and reason ~= "") and reason or "Idle - pick a player to begin"
 	if reason and reason ~= "" then say(reason) end
 	if deanimate and Reanimate.Current == HatReanimator then
@@ -99971,11 +100309,29 @@ end
 -- ---------------------------------------------------------------- reference frame of the target
 -- re-resolved every 0.4s (or when the part is gone); a hat-group reference sticks to its part so it does not hop between hats
 local function refOf(plr, now)
-	local part = S.RefPart
-	if part and part.Parent and S.RefPlr == plr and now - S.RefAt < 0.4 then return S.RefMode, part, S.RefHum end
+	local part, rm = S.RefPart, S.RefMode
+	local same = S.RefPlr == plr
+	local hm = S.RefHum
+	-- the cached part is trusted for 0.4 s, but never past a replacement of the target's character (the old character's parts are decaying then)
+	if same and part and live(part) and now - S.RefAt < 0.4 and (not hm or hm.Parent == plr.Character) then return rm, part, hm end
 	local mode, p2, hum = resolve(plr)
-	if mode == "body" and S.RefMode == "body" and S.RefPlr == plr and part and part.Parent and p2 and (part.Position - p2.Position).Magnitude < 6 then
+	if same and rm and rm ~= "real" and (not p2 or mode == "real") then
+		-- a target already known to be reanimating whose visible body does not resolve (reset / respawn): the resolver then offers nothing or their
+		-- PARKED real root, which must never replace the visible body, and the old body's parts are decaying (falling) so they are not followed
+		-- either. The reference is dropped and step() holds the formation and the camera at the last valid pose (S.RefPos) until the new visible
+		-- body resolves; RefPlr / RefMode stay, so the reanimating state survives the gap. A real root is only accepted when it sits next to that
+		-- last valid pose (they really stopped reanimating) - never because time passed.
+		local ref = S.RefPos
+		if not (p2 and ref and (p2.Position - ref).Magnitude <= 6) then
+			S.RefAt, S.RefPart = now, nil
+			return nil
+		end
+	end
+	if mode == "body" and rm == "body" and same and live(part) and p2 and (part.Position - p2.Position).Magnitude < 6 then
 		p2 = part
+	elseif same and part and p2 and p2 ~= part and S.Count > 0 and (not live(part) or (part.Position - p2.Position).Magnitude > 6) then
+		for i = 1, S.Count do S.From[i] = S.Last[i] end -- the reference was replaced: glide from the held pose to the new body
+		S.Blend = 0
 	end
 	S.RefPlr, S.RefMode, S.RefPart, S.RefHum, S.RefAt = plr, mode, p2, hum, now
 	return mode, p2, hum
@@ -100010,11 +100366,18 @@ end
 local function step(dt)
 	if not S.Active then return end
 	if SCREENGUI.Parent == nil then BSE.Stop("Script unloaded - effect stopped.") return end
+	holdView()
 	if Reanimate.Current ~= HatReanimator or not HatReanimator.Running then
-		if Reanimate.Starting then return end
+		if Reanimate.Starting then S.DownAt = nil return end
+		-- Running is only set a moment after Starting clears and a respawn / restart can flip these flags briefly: only a state that stays down
+		-- (or an explicit deanimate / another reanimator) ends the effect
+		local nowc = os.clock()
+		S.DownAt = S.DownAt or nowc
+		if nowc - S.DownAt < 1.5 and not Reanimate.Stopping and Reanimate.Current == HatReanimator then return end
 		BSE.Stop("Hat reanimation stopped - effect stopped.")
 		return
 	end
+	S.DownAt = nil
 	local plr = S.Target
 	if not plr or not inServer(plr) then
 		BSE.Stop("Target left the server - effect stopped.")
@@ -100036,31 +100399,55 @@ local function step(dt)
 		end
 	end
 	local mode, part, hum = refOf(plr, now)
-	if S.View and part then
+	local avail = part and not (mode == "real" and hum and hum.Health <= 0)
+	local base = avail and frameOf(mode, part, now) -- the frame is never taken from an invalid / parked / dead reference
+	if not avail or not finiteCF(base) then
+		-- target died / is respawning: the hats HOLD their last formation pose while we wait (no snap back to your own rig, no ownership churn), the
+		-- camera keeps looking at the last valid position, then the new character is revalidated
+		if not S.Lost then S.Lost = now end
+		S.PrevPos = nil -- the new body's first frame must not read the jump from the old pose as walking
+		if now - S.Lost > 1.5 and not S.Status:find("unavailable", 1, true) then -- short resolver gaps stay silent
+			S.Status = plr.DisplayName .. " is unavailable - waiting for their respawn..."
+			say(plr.DisplayName .. " is unavailable (died or respawning). Waiting up to 20 seconds.")
+		end
+		if S.View and typeof(S.ViewSub) == "Instance" then
+			anchorView(now - S.Lost > 0.3)
+			holdView()
+		end
+		if now - S.Lost > 20 then
+			BSE.Stop(plr.DisplayName .. " did not come back - effect stopped.")
+		end
+		return
+	end
+	S.RefPos = part.Position
+	if S.Lost then
+		local said = S.Status:find("unavailable", 1, true)
+		S.Lost = nil
+		for i = 1, S.Count do S.From[i] = S.Last[i] end -- glide from the held pose to the target's new position instead of jumping
+		S.Blend = 0
+		S.Status = "Following " .. plr.DisplayName
+		if said then
+			say(plr.DisplayName .. " is back - effect resumed.")
+			S.CycleAt = nil
+		end
+	end
+	if S.View then
 		local sub = (mode == "real" and hum and hum.Parent and hum.Health > 0) and hum or part
+		dropAnchor(sub)
 		S.ViewSub = sub
 		local cam = workspace.CurrentCamera
 		if cam and cam.CameraSubject ~= sub then cam.CameraSubject = sub end
 		S.Viewing = true
 	end
-	local base = part and frameOf(mode, part, now)
-	if not part or (mode == "real" and hum and hum.Health <= 0) or not finiteCF(base) then
-		-- target died / is respawning: hats go back to the normal rig while we wait, then the new character is revalidated
-		if not S.Lost then
-			S.Lost = now
-			removeEntries()
-			S.Status = plr.DisplayName .. " is unavailable - waiting for their respawn..."
-			say(plr.DisplayName .. " is unavailable (died or respawning). Waiting up to 10 seconds.")
+	if S.AutoCycle then
+		local at = S.CycleAt
+		if not at then
+			S.CycleAt = now + S.CycleDelay
+		elseif now >= at then
+			-- one switch per update; the next deadline counts from now, so a frame-rate dip never causes catch-up switching
+			BSE.SetFormation(FORMATIONS[((table.find(FORMATIONS, S.Formation) or 0) % #FORMATIONS) + 1], true)
+			S.CycleAt = now + S.CycleDelay
 		end
-		if now - S.Lost > 10 then
-			BSE.Stop(plr.DisplayName .. " did not come back - effect stopped.")
-		end
-		return
-	end
-	if S.Lost then
-		S.Lost = nil
-		S.Status = "Following " .. plr.DisplayName
-		say(plr.DisplayName .. " is back - effect resumed.")
 	end
 	if S.Mode ~= mode then
 		-- the target started / stopped reanimating (or changed reference part type): glide to the new frame instead of jumping
@@ -100115,8 +100502,9 @@ end
 -- ---------------------------------------------------------------- start
 local function activate(plr)
 	S.Active, S.Target, S.Lost, S.Blend, S.MapRef, S.Warned = true, plr, nil, 1, nil, false
-	S.Mode, S.RefPlr, S.RefMode, S.RefPart, S.RefHum, S.Yaw, S.PrevPos = "real", nil, nil, nil, nil, nil, nil
+	S.Mode, S.RefPlr, S.RefMode, S.RefPart, S.RefHum, S.RefPos, S.Yaw, S.PrevPos = "real", nil, nil, nil, nil, nil, nil, nil
 	S.StartAt, S.Tick, S.Frame = os.clock(), 0, 0
+	S.CycleAt = nil
 	S.Status = "Following " .. plr.DisplayName
 	local c = S.Conns
 	c[#c + 1] = Players.PlayerRemoving:Connect(function(p)
@@ -100125,6 +100513,7 @@ local function activate(plr)
 		end
 	end)
 	c[#c + 1] = Player.CharacterAdded:Connect(function()
+		holdView() -- the engine hands the camera to your new Humanoid on spawn: give it back to the selected player at once
 		local tok = S.Token
 		task.delay(3, function()
 			if tok == S.Token and S.Active and not Reanimate.Starting and not (Reanimate.Current == HatReanimator and HatReanimator.Running) then
@@ -100132,6 +100521,8 @@ local function activate(plr)
 			end
 		end)
 	end)
+	local cam0 = workspace.CurrentCamera
+	if cam0 then c[#c + 1] = cam0:GetPropertyChangedSignal("CameraSubject"):Connect(holdView) end -- event driven, no polling
 	local okD, cd = pcall(function()
 		return SCREENGUI.Destroying:Connect(function()
 			BSE.Stop("Script unloaded - effect stopped.")
@@ -100149,12 +100540,21 @@ local function startFlow(plr)
 	end
 	lockMoveset()
 	say("Neutral moveset selected. Movesets and dances are disabled while this effect runs.")
+	pcall(BSE.FXApply)
 	if reuse and S.Permadeath ~= nil and (HatReanimator.HasPermadeath and true or false) ~= S.Permadeath then
 		-- the running hat reanimation decided on permadeath when it started: it cannot be switched from here
 		say("Your hat reanimation is already running " .. (HatReanimator.HasPermadeath and "with" or "without") .. " dolteddown's permadeath, so that option cannot change now. Deanimate first, then pick a player again to use the new setting.")
 	end
+	if reuse and S.Torso ~= nil then
+		say("Your hat reanimation is already running, so its Torso Offset cannot change now. \"" .. BSE.TorsoName(S.Torso) .. "\" applies the next time the effect starts the hat reanimation (deanimate first, then pick a player again).")
+	end
+	if reuse and S.RespTp ~= nil then
+		say("Your hat reanimation is already running, so its respawntp cannot change now. \"" .. BSE.RespawnTpName(S.RespTp) .. "\" applies the next time the effect starts the hat reanimation (deanimate first, then pick a player again).")
+	end
 	if not reuse then
 		BSE.PDApply()
+		BSE.TorsoApply()
+		BSE.RespawnTpApply()
 		local pdTxt = HatReanimator.Permadeath and " with dolteddown's permadeath" or ""
 		say("Starting hat reanimation" .. pdTxt .. "...")
 		S.Status = "Starting hat reanimation" .. pdTxt .. "..."
@@ -100206,7 +100606,7 @@ function BSE.Start(plr, formation)
 			return true
 		end
 		-- switching target never restarts the reanimation
-		S.Target, S.Lost = plr, nil
+		S.Target, S.Lost, S.CycleAt = plr, nil, nil
 		S.RefPlr, S.Yaw, S.PrevPos = nil, nil, nil
 		for i = 1, S.Count do S.From[i] = S.Last[i] end
 		S.Blend = 0
@@ -100237,17 +100637,34 @@ function BSE.Start(plr, formation)
 	return true
 end
 
-function BSE.SetFormation(name)
+function BSE.SetFormation(name, auto)
 	if not table.find(FORMATIONS, name) then return false end
 	if S.Formation == name then return true end
 	S.Formation = name
+	if not auto then S.CycleAt = nil end -- a manual pick restarts the countdown
 	if S.Active then
 		for i = 1, S.Count do S.From[i] = S.Last[i] end
 		S.Blend = 0
-		say("Effect formation activated: " .. name .. ".")
+		if not auto then say("Effect formation activated: " .. name .. ".") end
 	else
 		say("Formation selected: " .. name .. ".")
 	end
+	return true
+end
+
+BSE.CycleDelays = {3, 5, 10}
+function BSE.SetAutoCycle(on)
+	on = on and true or false
+	if S.AutoCycle == on then return true end
+	S.AutoCycle, S.CycleAt = on, nil
+	say(on and ("Auto cycle formations ON - switching every " .. S.CycleDelay .. " seconds.") or ("Auto cycle formations OFF - keeping " .. S.Formation .. "."))
+	return true
+end
+function BSE.SetCycleDelay(sec)
+	sec = tonumber(sec)
+	if not sec or not table.find(BSE.CycleDelays, sec) then return false end
+	if S.CycleDelay == sec then return true end
+	S.CycleDelay, S.CycleAt = sec, nil
 	return true
 end
 end
@@ -115712,6 +116129,16 @@ fSel.Changed:Connect(function()
 local name = BSE.Formations[fSel.Value]
 if name then pcall(BSE.SetFormation, name) end
 end)
+local cycLever = UI.CreateSwitch(bsePage, "Auto Cycle Formations", S.AutoCycle)
+cycLever.Changed:Connect(function()
+BSE.SetAutoCycle(cycLever.Value)
+end)
+local DELAY_LABELS = {"3 Seconds", "5 Seconds", "10 Seconds"}
+local dSel = UI.CreateDropdown(bsePage, "Formation Switch Delay", DELAY_LABELS, table.find(BSE.CycleDelays, S.CycleDelay) or 2)
+dSel.Changed:Connect(function()
+local s = BSE.CycleDelays[dSel.Value]
+if s then BSE.SetCycleDelay(s) end
+end)
 local viewLever = UI.CreateSwitch(bsePage, "View selected player", S.View)
 viewLever.Changed:Connect(function()
 BSE.SetView(viewLever.Value)
@@ -115720,6 +116147,22 @@ UI.CreateText(bsePage, "<font color=\"#AAAAAA\">dolteddown's permadeath keeps yo
 local pdLever = UI.CreateSwitch(bsePage, "dolteddown's permadeath", BSE.GetPermadeath())
 pdLever.Changed:Connect(function()
 BSE.SetPermadeath(pdLever.Value)
+end)
+UI.CreateText(bsePage, "<font color=\"#AAAAAA\">Torso Offset: the same methods as the Hats Reanimator config. The choice is used when the effect starts its own hat reanimation (a running one keeps its method) and is never saved. Default follows your Hats Reanimator setting. Method 11 is R15 only (R6 falls back to method 7).</font>", 10, CEN)
+local TORSO_OPTS = {"Hats Reanimator setting (default)"}
+for _, n in ipairs(BSE.TorsoNames) do TORSO_OPTS[#TORSO_OPTS + 1] = n end
+local tSel = UI.CreateDropdown(bsePage, "Torso Offset", TORSO_OPTS, (BSE.GetTorso() or -1) + 2)
+tSel.Changed:Connect(function()
+local v = tSel.Value - 2
+BSE.SetTorso(v >= 0 and v or nil)
+end)
+UI.CreateText(bsePage, "<font color=\"#AAAAAA\">respawntp: the same options as the Hats Reanimator config, used only when the effect starts its own hat reanimation (never saved). Default follows your Hats Reanimator setting.</font>", 10, CEN)
+local RTP_OPTS = {"Hats Reanimator setting (default)"}
+for _, n in ipairs(BSE.RespawnNames) do RTP_OPTS[#RTP_OPTS + 1] = n end
+local rSel = UI.CreateDropdown(bsePage, "respawntp", RTP_OPTS, (BSE.GetRespawnTp() or -1) + 2)
+rSel.Changed:Connect(function()
+local v = rSel.Value - 2
+BSE.SetRespawnTp(v >= 0 and v or nil)
 end)
 UI.CreateButton(bsePage, "Refresh scan", 20).Activated:Connect(function()
 if rebuild then rebuild("all") end
@@ -115814,11 +116257,16 @@ lines[1] = "Target: " .. esc(plr.DisplayName) .. " (@" .. esc(plr.Name) .. ") | 
 else
 lines[1] = "Target: none | Formation: " .. esc(S.Formation)
 end
+lines[1] = lines[1] .. (S.AutoCycle and (" | Auto cycle: ON, every " .. S.CycleDelay .. "s") or " | Auto cycle: OFF")
 if S.Active then
 lines[2] = "Hats used: " .. S.Count .. " | network-owned: " .. S.Owned .. "/" .. S.Total .. ". Other players only see hats the engine reports as owned by you."
 end
 local pdSt = S.Active and BSE.PermadeathStatus()
 if pdSt then lines[#lines + 1] = "dolteddown's permadeath: " .. esc(pdSt) end
+local tsSt = BSE.TorsoStatus()
+if tsSt then lines[#lines + 1] = esc(tsSt) end
+local rtSt = BSE.RespawnTpStatus()
+if rtSt then lines[#lines + 1] = esc(rtSt) end
 local info = "<font color=\"#AAAAAA\">" .. table.concat(lines, "\n") .. "</font>"
 if info ~= lastInfo then
 lastInfo = info
@@ -115827,8 +116275,15 @@ end
 local fi = table.find(BSE.Formations, S.Formation)
 if fi and fSel.Value ~= fi then fSel.Value = fi end
 if viewLever.Value ~= S.View then viewLever.Value = S.View end
+if cycLever.Value ~= S.AutoCycle then cycLever.Value = S.AutoCycle end
+local di = table.find(BSE.CycleDelays, S.CycleDelay)
+if di and dSel.Value ~= di then dSel.Value = di end
 local pdNow = BSE.GetPermadeath()
 if pdLever.Value ~= pdNow then pdLever.Value = pdNow end
+local tn = (BSE.GetTorso() or -1) + 2
+if tSel.Value ~= tn then tSel.Value = tn end
+local rn = (BSE.GetRespawnTp() or -1) + 2
+if rSel.Value ~= rn then rSel.Value = rn end
 end
 bsePage:GetPropertyChangedSignal("Visible"):Connect(function()
 if bsePage.Visible then
@@ -116914,7 +117369,7 @@ local chips = {}
 if BSE then
 for i, name in ipairs(BSE.Formations) do
 local col, rw = (i - 1) % 3, (i - 1) // 3
-local b = new("TextButton", {AutoButtonColor = false, Text = name, TextSize = 12, Font = MED, TextColor3 = C.mute, BackgroundColor3 = W, BackgroundTransparency = 0.92, BorderSizePixel = 0, Position = UDim2.new(col / 3, 8 - 4 * col, 0, 26 + rw * 38), Size = UDim2.new(1 / 3, -8, 0, 32)}, fCard)
+local b = new("TextButton", {AutoButtonColor = false, Text = name, TextSize = 12, TextWrapped = true, Font = MED, TextColor3 = C.mute, BackgroundColor3 = W, BackgroundTransparency = 0.92, BorderSizePixel = 0, Position = UDim2.new(col / 3, 8 - 4 * col, 0, 26 + rw * 38), Size = UDim2.new(1 / 3, -8, 0, 32)}, fCard)
 corner(b, UDim.new(1, 0))
 stroke(b, 0.86)
 chips[name] = b
@@ -116931,7 +117386,7 @@ tw(b, 0.25, {BackgroundTransparency = on and 0.7 or 0.93, TextColor3 = on and W 
 end
 end
 setChips()
-local setPD
+local setPD, setTorso, setRespTp
 do
 local pdHost = rowOf(bse, 64)
 local pdCard = glass(pdHost)
@@ -116963,6 +117418,72 @@ BSE.SetPermadeath(not BSE.GetPermadeath())
 setPD()
 end)
 setPD()
+end
+do
+local tHost = rowOf(bse, 56 + 12 * 34 + 4)
+local tCard = glass(tHost)
+label(tCard, "TORSO OFFSET", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
+local tSub = label(tCard, "", 10, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 22), Size = UDim2.new(1, -24, 0, 30), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, TextTruncate = Enum.TextTruncate.None})
+local tChips = {}
+local function addTorsoChip(i, text, val)
+local b = new("TextButton", {AutoButtonColor = false, Text = text, TextSize = 11, TextWrapped = true, Font = MED, TextColor3 = C.mute, BackgroundColor3 = W, BackgroundTransparency = 0.92, BorderSizePixel = 0, Position = UDim2.new(0, 10, 0, 56 + (i - 1) * 34), Size = UDim2.new(1, -20, 0, 30)}, tCard)
+corner(b, UDim.new(0, 10))
+stroke(b, 0.86)
+tChips[i] = b
+b.Activated:Connect(function()
+if not BSE then return end
+BSE.SetTorso(val)
+setTorso()
+end)
+end
+if BSE then
+addTorsoChip(1, "Hats Reanimator setting (default)", nil)
+for i, name in ipairs(BSE.TorsoNames) do addTorsoChip(i + 1, name, i - 1) end
+end
+setTorso = function()
+if not BSE then return end
+local cur = (BSE.GetTorso() or -1) + 2
+for i, b in ipairs(tChips) do
+local on = i == cur
+tw(b, 0.25, {BackgroundTransparency = on and 0.7 or 0.93, TextColor3 = on and W or C.mute})
+end
+local txt = BSE.TorsoStatus() or "Same methods as the Hats Reanimator config. Used when the effect starts its own hat reanimation; never saved. Method 11 is R15 only (R6 uses 7)."
+if tSub.Text ~= txt then tSub.Text = txt end
+end
+setTorso()
+end
+do
+local rHost = rowOf(bse, 56 + 6 * 34 + 4)
+local rCard = glass(rHost)
+label(rCard, "RESPAWN TP", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
+local rSub = label(rCard, "", 10, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 22), Size = UDim2.new(1, -24, 0, 30), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, TextTruncate = Enum.TextTruncate.None})
+local rChips = {}
+local function addRespChip(i, text, val)
+local b = new("TextButton", {AutoButtonColor = false, Text = text, TextSize = 11, TextWrapped = true, Font = MED, TextColor3 = C.mute, BackgroundColor3 = W, BackgroundTransparency = 0.92, BorderSizePixel = 0, Position = UDim2.new(0, 10, 0, 56 + (i - 1) * 34), Size = UDim2.new(1, -20, 0, 30)}, rCard)
+corner(b, UDim.new(0, 10))
+stroke(b, 0.86)
+rChips[i] = b
+b.Activated:Connect(function()
+if not BSE then return end
+BSE.SetRespawnTp(val)
+setRespTp()
+end)
+end
+if BSE then
+addRespChip(1, "Hats Reanimator setting (default)", nil)
+for i, name in ipairs(BSE.RespawnNames) do addRespChip(i + 1, name, i - 1) end
+end
+setRespTp = function()
+if not BSE then return end
+local cur = (BSE.GetRespawnTp() or -1) + 2
+for i, b in ipairs(rChips) do
+local on = i == cur
+tw(b, 0.25, {BackgroundTransparency = on and 0.7 or 0.93, TextColor3 = on and W or C.mute})
+end
+local txt = BSE.RespawnTpStatus() or "Same options as the Hats Reanimator respawntp. Used when the effect starts its own hat reanimation; never saved."
+if rSub.Text ~= txt then rSub.Text = txt end
+end
+setRespTp()
 end
 local aHost = rowOf(bse, 56)
 tile(aHost, UDim2.new(0, 0, 0, 0), UDim2.new(0.5, -3, 1, 0), "Refresh scan", "All players", C.blue, function()
@@ -117044,6 +117565,8 @@ stHats.Text = "Pick a player below to begin. Movesets and dances are switched of
 end
 setChips()
 pcall(setPD)
+pcall(setTorso)
+pcall(setRespTp)
 end
 if not BSE then
 stMain.Text = "Feature unavailable (module failed to load)"
