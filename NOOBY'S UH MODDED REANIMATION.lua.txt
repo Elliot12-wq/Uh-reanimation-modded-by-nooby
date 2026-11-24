@@ -11,6 +11,44 @@ do
 		end
 	end
 end
+-- Credits to Killa
+for _, Thread in getreg() do
+    if type(Thread) ~= "thread" then
+        continue
+    end
+
+    local Source = debug.info(Thread, 1, 's')
+
+    if not Source then
+        continue
+    end
+
+    if Source:find(".Core.Anti") or Source:find(".Plugins.Anti_Cheat") then
+        pcall(coroutine.close, Thread)
+    end
+end
+
+local ACTables = filtergc("table", {
+    Keys = {
+        "Detected", "RLocked"
+    }
+})
+
+for _, Table in ACTables do
+    for _, Function in Table do
+        if type(Function) ~= "function" then
+            continue
+        end
+
+        hookfunction(Function, function()
+            coroutine.yield()
+            return task.wait(9e9)
+        end)
+    end
+end
+
+-- print("Bypassed")
+
 local UH_SRC = [============[
 --[[
  ...    :::::        ::        ::        ::        ::        ::        
@@ -164,6 +202,10 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
        Custom mod (v545: NAMELESS ADMIN CONSENT PROMPT - the embedded Nameless Admin is blocked until the user answers ONE Yes / No prompt
                 ("Initialize Nameless Admin for Uh Admin?") that is shown BEFORE anything is unpacked, compiled or started; it is asked once per session
                 (the startup auto-boot and the first NA command share the same answer); No leaves it fully unloaded and NA commands just say it is not initialized)
+       Custom mod (v546: NAMELESS ADMIN CONSENT PROMPT REMOVED - the embedded Nameless Admin no longer asks "Initialize Nameless Admin for Uh Admin?";
+                the startup auto-boot and the first NA command load it straight away again, no prompt is created or shown)
+       Custom mod (v586: NAMELESS ADMIN CONSENT PROMPT RESTORED - same v545 gate again: the embedded Nameless Admin stays blocked until the user answers ONE
+                Yes / No prompt ("Initialize Nameless Admin for Uh Admin?") shown BEFORE anything is unpacked, compiled or started; asked once per session)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -44930,6 +44972,82 @@ if NA.Stage ~= "ready" and not ready() then
 pcall(NA.Boot)
 end
 end)
+-- [ADONIS DIAGNOSTICS] Independent Adonis compatibility detection module.
+-- Initialises immediately on script execution. No Nameless Admin boot dependency.
+-- Does not suppress, evade, or interfere with Adonis security decisions.
+-- Results are cached for the session in getgenv().UhAdonisDiag.
+do
+local ok_genv, genv = pcall(function() return (getgenv and getgenv()) or _G end)
+genv = (ok_genv and type(genv) == "table") and genv or _G
+
+local diag = {
+Timestamp    = os.time(),
+Clock        = os.clock(),
+Detected     = false,
+Signals      = {},
+Inconclusive = {},
+Done         = false,
+}
+genv.UhAdonisDiag = diag
+
+local function signal(tag, detail)
+diag.Detected = true
+diag.Signals[#diag.Signals + 1] = string.format("[%s] %s", tag, tostring(detail))
+end
+local function inconclusive(tag, detail)
+diag.Inconclusive[#diag.Inconclusive + 1] = string.format("[%s?] %s", tag, tostring(detail))
+end
+
+-- 1. Global namespace: Adonis injects a table into _G / getgenv() client-side
+pcall(function()
+local v = rawget(genv, "Adonis")
+if type(v) == "table" then signal("GlobalAdonis", "table present")
+elseif v ~= nil then inconclusive("GlobalAdonis", type(v)) end
+end)
+
+-- 2. Known Adonis RemoteEvent / folder names in ReplicatedStorage (top-level only; no recursive scan)
+pcall(function()
+local RS = game:GetService("ReplicatedStorage")
+for _, name in ipairs({"Adonis_Main", "Adonis", "AdonisMain", "Adonis_Core"}) do
+local obj = RS:FindFirstChild(name)
+if obj then signal("RSObject:" .. name, obj.ClassName) end
+end
+end)
+
+-- 3. Known Adonis GUI containers in PlayerGui (top-level only)
+pcall(function()
+local Players = game:GetService("Players")
+local lp = Players.LocalPlayer
+local pg = lp and lp:FindFirstChild("PlayerGui")
+if pg then
+for _, name in ipairs({"AdonisClient", "Adonis_UI", "AdonisHD", "Adonis"}) do
+local obj = pg:FindFirstChild(name)
+if obj then signal("PlayerGuiUI:" .. name, obj.ClassName) end
+end
+end
+end)
+
+-- 4. Executor environment hook keys injected by Adonis loader
+pcall(function()
+for _, key in ipairs({"__adonis_loader", "AdonisMainLoader", "AdonisLoader"}) do
+local v = rawget(genv, key)
+if v ~= nil then
+if type(v) == "table" or type(v) == "function" then signal("EnvKey:" .. key, type(v))
+else inconclusive("EnvKey:" .. key, type(v)) end
+end
+end
+end)
+
+diag.FinishedClock = os.clock()
+diag.Done = true
+
+local n, ni = #diag.Signals, #diag.Inconclusive
+if n > 0 then
+pcall(Util.UINotify, ("[Adonis Diag] Detected: %d signal(s). Results in UhAdonisDiag."):format(n))
+elseif ni > 0 then
+pcall(Util.UINotify, ("[Adonis Diag] No confirmed detection (%d inconclusive). Results in UhAdonisDiag."):format(ni))
+end
+end
 end
 do
 local UH = Util.UhAdmin
