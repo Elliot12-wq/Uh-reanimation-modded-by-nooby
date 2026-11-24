@@ -155,10 +155,15 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
        Custom mod (v438: SIMPLE UI REMASTER - calmer defaults for new installs (rounder 8, clearer window background, ambient particles / cursor trail off),
                 flatter button bevel (motion, blur, springs and intros untouched), clean section headers, plain-language labels, Feature Center reordered with short descriptions)
        Custom mod (BE SOMEONE'S EFFECT - new bottom tab: scans nearby players, you pick one and your own hats (through the existing Hats
-                Reanimator, via HatCFrameOverride) become Tail / Wings / Aromatic / Circle / Wing left / Wing right effects that follow them.
+                Reanimator, via HatCFrameOverride) become Tail / Wings / Aromatic / Circle / Wing left / Wing right / Kernel / Square / Friend / Halo effects that follow them.
                 Forces the Nothing moveset and blocks movesets / dances / dance keybinds only while it runs; the saved moveset is never overwritten.
                 Never touches the target's character; reanimating players are followed on their visible body (fake character), not their parked real
                 root; other players only see hats the engine reports you as network owner of)
+       Custom mod (BE SOMEONE'S EFFECT: dolteddown's permadeath method option - switch on the tab (both UIs); applied to the Hats Reanimator only when the
+                effect starts the hat reanimation itself, handed back when the effect stops, saved setting never written)
+       Custom mod (v545: NAMELESS ADMIN CONSENT PROMPT - the embedded Nameless Admin is blocked until the user answers ONE Yes / No prompt
+                ("Initialize Nameless Admin for Uh Admin?") that is shown BEFORE anything is unpacked, compiled or started; it is asked once per session
+                (the startup auto-boot and the first NA command share the same answer); No leaves it fully unloaded and NA commands just say it is not initialized)
        Command triangle: reactive spinning 3D triangle opens the command bar (works with or without
                 reanimation), tap/hold command list, hide/show option, fling commands -> walkfling only on external admin; Fling Method dropdown on main UI
        GFX:     STEVETHEREALONE
@@ -44609,8 +44614,85 @@ if NA.Loaded then return ready() ~= nil end
 if not booting and NA.Stage == "idle" then return ready() ~= nil end
 return false
 end
+-- [v545 consent gate] Nameless Admin stays completely blocked (nothing is unpacked, compiled or started) until the user answers ONE Yes / No prompt.
+-- NA.Consent: nil = not asked yet, true = Yes, false = No. Every entry point (the startup auto-boot and any NA command) goes through
+-- NA.Boot -> NA.AskConsent BEFORE the unpack, so the prompt can only exist once per session: later callers wait for / reuse the same answer.
+NA.Consent = nil
+NA.ConsentAsking = false
+function NA.MountConsentGui(g)
+	for _, get in ipairs({
+		function() return gethui and gethui() end,
+		function() return game:GetService("CoreGui") end,
+		function() return game:GetService("Players").LocalPlayer:FindFirstChildOfClass("PlayerGui") end,
+	}) do
+		local okP, parent = pcall(get)
+		if okP and typeof(parent) == "Instance" and pcall(function() g.Parent = parent end) and g.Parent == parent then return true end
+	end
+	return false
+end
+function NA.AskConsent()
+	if NA.Consent ~= nil then return NA.Consent end
+	if NA.ConsentAsking then
+		while NA.Consent == nil do task.wait(0.1) end
+		return NA.Consent
+	end
+	NA.ConsentAsking = true
+	NA.Stage = "awaiting consent"
+	local gui = Instance.new("ScreenGui")
+	gui.Name, gui.ResetOnSpawn, gui.DisplayOrder, gui.IgnoreGuiInset = "UhNamelessAdminConsent", false, 100000, true
+	pcall(function() gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling end)
+	local function answer(yes)
+		if NA.Consent ~= nil then return end
+		NA.Consent = yes
+		NA.Stage = yes and "idle" or "declined"
+		pcall(function() gui:Destroy() end)
+	end
+	-- if the prompt is removed by anything other than a button press it counts as No (never as Yes)
+	pcall(function() gui.Destroying:Connect(function() answer(false) end) end)
+	local shade = Instance.new("Frame")
+	shade.Size, shade.BackgroundColor3, shade.BackgroundTransparency, shade.BorderSizePixel = UDim2.fromScale(1, 1), Color3.new(0, 0, 0), 0.55, 0
+	shade.Active = true -- sinks clicks so nothing behind the prompt can be pressed by accident
+	shade.Parent = gui
+	local f = Instance.new("Frame")
+	f.Size, f.Position, f.AnchorPoint = UDim2.fromOffset(320, 150), UDim2.fromScale(0.5, 0.5), Vector2.new(0.5, 0.5)
+	f.BackgroundColor3, f.BorderSizePixel = Color3.fromRGB(24, 24, 30), 0
+	f.Parent = gui
+	Instance.new("UICorner", f).CornerRadius = UDim.new(0, 10)
+	local title = Instance.new("TextLabel")
+	title.Size, title.Position, title.BackgroundTransparency = UDim2.new(1, -24, 0, 54), UDim2.fromOffset(12, 10), 1
+	title.TextWrapped, title.TextColor3, title.Font, title.TextSize = true, Color3.new(1, 1, 1), Enum.Font.GothamBold, 17
+	title.Text = "Initialize Nameless Admin for Uh Admin?"
+	title.Parent = f
+	local sub = Instance.new("TextLabel")
+	sub.Size, sub.Position, sub.BackgroundTransparency = UDim2.new(1, -24, 0, 30), UDim2.fromOffset(12, 64), 1
+	sub.TextWrapped, sub.TextColor3, sub.Font, sub.TextSize = true, Color3.fromRGB(170, 170, 180), Enum.Font.Gotham, 12
+	sub.Text = "No keeps it fully unloaded for this session."
+	sub.Parent = f
+	local function button(txt, x, col, yes)
+		local b = Instance.new("TextButton")
+		b.Size, b.Position, b.Text = UDim2.fromOffset(140, 36), UDim2.fromOffset(x, 100), txt
+		b.BackgroundColor3, b.TextColor3, b.Font, b.TextSize = col, Color3.new(1, 1, 1), Enum.Font.GothamBold, 15
+		b.BorderSizePixel = 0
+		Instance.new("UICorner", b).CornerRadius = UDim.new(0, 8)
+		b.Activated:Connect(function() answer(yes) end)
+		b.Parent = f
+	end
+	button("Yes", 16, Color3.fromRGB(60, 150, 90), true)
+	button("No", 164, Color3.fromRGB(70, 70, 80), false)
+	if not NA.MountConsentGui(gui) then
+		-- no place to show the prompt: stay blocked rather than initializing without an answer
+		answer(false)
+		warn("[UhAdmin] could not show the Nameless Admin prompt - Nameless Admin was NOT initialized")
+		pcall(Util.Notify, "Could not show the Nameless Admin prompt, so it was not initialized.")
+		return false
+	end
+	while NA.Consent == nil do task.wait(0.1) end
+	return NA.Consent
+end
 function NA.Boot()
 if NA.IsLoaded() then return true end
+-- [v545] consent gate: ask (once) BEFORE anything is unpacked / compiled / started; No keeps Nameless Admin fully unloaded
+if not NA.AskConsent() then return false end
 if booting then
 local t0 = os.clock()
 while booting and os.clock() - t0 < 100 do task.wait(0.2) end
@@ -44701,7 +44783,10 @@ return true
 end
 function NA.Run(primary, args)
 task.spawn(function()
-if not NA.Boot() then return end
+if not NA.Boot() then
+if NA.Consent == false then pcall(Util.Notify, "Nameless Admin is not initialized (you chose No), so '" .. tostring(primary) .. "' did nothing.") end
+return
+end
 local _, c = ready()
 if not c then return end
 local argv = { primary }
@@ -73791,6 +73876,7 @@ Util.Fling.Names = {
 "PRoot fling",
 "Kill Fling",
 "Under void fling",
+"Sky fling",
 }
 Util.Fling.Descriptions = {
 "default fling: spins into the target at crazy velocity and sends them flying",
@@ -73805,12 +73891,14 @@ Util.Fling.Descriptions = {
 "PRoot fling: welds your HumanoidRootPart onto the target's HumanoidRootPart (locked to them every frame) and dumps huge linear + angular power into them for exactly 1 second, then your character snaps back to its normal reanimated position",
 "kill fling: fuses your HumanoidRootPart directly onto the target's HumanoidRootPart (zero offset, no jitter) and floods every physics channel with 1e300 linear and angular velocity — alternating axes every frame at 480 Hz — so astronomically extreme that the physics simulation collapses and kills them instead of sending them flying",
 "under void fling: attaches your HumanoidRootPart to the target's HumanoidRootPart (zero offset, re-fetched every frame) and floods every limb with 1e18 purely downward linear velocity plus 1e18 three-phase alternating angular velocity simultaneously — smashes the target straight down through the floor and under the void; the violent all-axis spin prevents any coherent directional escape so the assembly is driven directly beneath the map with no lateral launch",
+"sky fling: attaches your HumanoidRootPart to the target's HumanoidRootPart (zero offset, re-fetched every frame) and floods every limb with 1e18 purely upward linear velocity plus alternating X/Z to break physics equilibrium — launches the target straight up into the sky; the upward force overwhelms gravity and sends the assembly far above the map with no lateral drift",
 }
 Util.Fling.InstantDuration = 0.02
 Util.Fling.PRootDuration = 1.0
 Util.Fling.PRootPower = 9e8
 Util.Fling.KillDuration = 0.75
 Util.Fling.UnderVoidFlingDuration = 1.5
+Util.Fling.SkyFlingDuration = 1.5
 Util.Fling.WeakDuration = 0.4
 Util.Fling.NoobyMaxTime = 90
 Util.Fling.SourceFling1Duration = 2.0
@@ -73923,6 +74011,7 @@ end
 if ft.Mode == 10 then dur = Util.Fling.PRootDuration end
 if ft.Mode == 11 then dur = Util.Fling.KillDuration end
 if ft.Mode == 12 then dur = Util.Fling.UnderVoidFlingDuration end
+if ft.Mode == 13 then dur = Util.Fling.SkyFlingDuration end
 ft.Time = t + dur
 Util.Fling.ReportStart(ft)
 elseif t > ft.Time then
@@ -74192,6 +74281,40 @@ elseif mode == 12 then
 					bp.Velocity                 = Vector3.new(kn, -kv, -kn)
 					bp.RotVelocity              = Vector3.zero
 					bp.AssemblyLinearVelocity   = Vector3.new(kn, -kv, -kn)
+					bp.AssemblyAngularVelocity  = Vector3.zero
+				end)
+			end
+		end
+	end
+elseif mode == 13 then
+	-- Sky fling: mirror of Under void fling but purely upward (+Y instead of -Y).
+	-- Pins our assembly onto the target every frame and applies 1.5e9 upward linear
+	-- velocity. Small alternating X/Z at 10% magnitude breaks physics equilibrium so
+	-- the solver cannot settle -- the net-zero lateral drift keeps the target going
+	-- straight up without drifting sideways. Gravity is overwhelmed entirely.
+	local livePart3 = typeof(ft.Target) == "Instance" and Util.Fling.GetPart(ft.Target)
+	local liveCF3 = (livePart3 and livePart3.Parent) and livePart3.CFrame or flingcf
+	local kv = 1.5e9
+	local kf = (math.floor(t * 480) % 2 == 0) and 1 or -1
+	local kn = kv * 0.1 * kf  -- small alternating X/Z: breaks equilibrium, net-zero lateral
+	-- Pin our HRP directly onto their live HRP CFrame (re-fetched every call)
+	RootPart.CFrame = liveCF3
+	RootPart.Velocity    = Vector3.new(kn, kv, -kn)   -- +kv = upward
+	RootPart.RotVelocity = Vector3.zero
+	pcall(function()
+		RootPart.AssemblyLinearVelocity  = Vector3.new(kn, kv, -kn)
+		RootPart.AssemblyAngularVelocity = Vector3.zero
+	end)
+	-- Flood every part of our own reanimation character with the same upward impulse.
+	local ourChar3 = RootPart.Parent
+	if ourChar3 then
+		for _, bp in ourChar3:GetChildren() do
+			if bp:IsA("BasePart") and bp ~= RootPart then
+				pcall(function()
+					bp.CFrame                   = liveCF3
+					bp.Velocity                 = Vector3.new(kn, kv, -kn)
+					bp.RotVelocity              = Vector3.zero
+					bp.AssemblyLinearVelocity   = Vector3.new(kn, kv, -kn)
 					bp.AssemblyAngularVelocity  = Vector3.zero
 				end)
 			end
@@ -75722,7 +75845,7 @@ LimbReanimator.FlingEnabled = val
 SaveData.Reanimator.LimbRoleplay = not val
 end)
 UI.CreateText(parent, "vvv touch player = they lose ownership vvv", 10, Enum.TextXAlignment.Center)
-UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / Fling 1 / Fling 2 / Fling 3 / Kill Fling / Under void fling)", 10, Enum.TextXAlignment.Center)
+UI.CreateText(parent, "fling style is chosen with the 'Fling Method' dropdown on the main page\n(Default / Weak / Nooby's / Fling 1 / Fling 2 / Fling 3 / Kill Fling / Under void fling / Sky fling)", 10, Enum.TextXAlignment.Center)
 UI.CreateSeparator(parent)
 do
 local UX = Reanimate.UnanchoredReanimator
@@ -97778,6 +97901,250 @@ if gate then gate.Collapse() end
 end)
 end)
 end
+-- [FAVORITES] Heart on every Moveset / Dance row. Pressing it moves the row to the top of its list (most recently hearted first) and lists it on the
+-- "Favorite Movesets" / "Favorite Dances" pages of the Movesets & Dances tab. Saved in SaveData.FavoriteMovesets / SaveData.FavoriteDances
+-- (module hashes, newest first), so favorites survive module reloads and restarts. Kept separate from the wheel slots (SaveData.WheelFavs).
+-- Everything lives inside one function so the main chunk gets no extra locals; if anything in here errors the rest of the script keeps running.
+pcall(function()
+Util.Fav = (function()
+local F = {}
+local SAVE = {moveset = "FavoriteMovesets", dance = "FavoriteDances"}
+local TITLE = {moveset = "Favorite Movesets", dance = "Favorite Dances"}
+local EMPTY = {
+moveset = "No favorite movesets yet.\nTap the heart next to a moveset in the Movesets list to add it here.",
+dance = "No favorite dances yet.\nTap the heart next to a dance in the Dances list to add it here.",
+}
+local WAITING = "Your favorites appear here as soon as their modules finish loading."
+local FAV_BASE = 1000000
+local HEART_ON, HEART_OFF = "\u{2665}", "\u{2661}"
+local ON_COLOR = Color3.fromRGB(255, 72, 112)
+local S = {}
+local H = setmetatable({}, {__mode = "k"})
+local function state(kind)
+local st = S[kind]
+if not st then
+st = {kind = kind, byHash = {}, rows = {}, hearts = {}, openers = {}, pending = false, page = nil, favPage = nil, favGate = nil}
+S[kind] = st
+end
+return st
+end
+local function favList(kind)
+local key = SAVE[kind]
+local l = SaveData[key]
+if type(l) ~= "table" then
+l = {}
+SaveData[key] = l
+end
+return l
+end
+local function paint(heart, on)
+local info = H[heart]
+if not info or not heart.Parent then return end
+if on ~= nil then info.on = on end
+heart.Text = info.on and HEART_ON or HEART_OFF
+heart.TextColor3 = info.on and ON_COLOR or info.base
+heart.TextTransparency = info.on and 0 or 0.2
+end
+local function pop(heart)
+pcall(function()
+heart.TextSize = 31
+TweenService:Create(heart, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {TextSize = 22}):Play()
+end)
+end
+local function makeHeart(st, m, item, on)
+local row = item.Parent
+local pad = item:FindFirstChildOfClass("UIPadding")
+if pad then pad.PaddingRight = UDim.new(0, 34) end
+local heart = Util.Instance("TextButton", row)
+heart.AnchorPoint = Vector2.new(1, 0)
+heart.Position = UDim2.new(1, -4, 0, 3)
+heart.Size = UDim2.fromOffset(30, 28)
+heart.BackgroundTransparency = 1
+heart.BorderSizePixel = 0
+heart.AutoButtonColor = false
+heart.Font = Enum.Font.Code
+heart.TextSize = 22
+heart.TextXAlignment = Enum.TextXAlignment.Center
+heart.TextYAlignment = Enum.TextYAlignment.Center
+heart.ZIndex = item.ZIndex + 5
+local lbl = item:FindFirstChild("LabelName", true)
+H[heart] = {on = on and true or false, base = lbl and lbl.TextColor3 or Color3.new(1, 1, 1)}
+if lbl then
+Util.LinkDestroyI2C(heart, lbl:GetPropertyChangedSignal("TextColor3"):Connect(function()
+local info = H[heart]
+if info then
+info.base = lbl.TextColor3
+paint(heart)
+end
+end))
+end
+paint(heart)
+heart.Activated:Connect(function()
+pcall(Util.FX.Click, "click", 1, 1)
+F.Toggle(st.kind, m)
+end)
+return heart
+end
+-- the Favorite page rows are not search entries of their own (the original rows already are)
+local function dropSearchEntry(item)
+pcall(function()
+local SS = Util.Search
+local e = SS.Items[item]
+if not e then return end
+SS.Items[item] = nil
+local n = #SS.Entries
+if SS.Entries[n] == e then
+SS.Entries[n] = nil
+else
+local i = table.find(SS.Entries, e)
+if i then table.remove(SS.Entries, i) end
+end
+end)
+end
+local function buildFavRow(st, m)
+local page = st.favPage
+local item = UI.CreateItemListItem(page.List)
+local msname = UI.CreateText(item, m.Name .. " &gt;", 20, Enum.TextXAlignment.Left)
+local msdesc = UI.CreateText(item, string.split(m.Description, "\n")[1], 12, Enum.TextXAlignment.Left)
+msname.Name = "LabelName"
+msdesc.Name = "LabelDesc"
+item.Parent.Name = m.Name .. " " .. m.Description
+dropSearchEntry(item)
+Util.LinkDestroyI2C(item, item.Activated:Connect(function()
+local open = st.openers[m]
+if open then open(page) end
+end))
+makeHeart(st, m, item, true)
+end
+function F.Rebuild(kind)
+local st = state(kind)
+local page = st.favPage
+if not (page and page.Parent) then return end
+local box = page.List
+Util.ClearAllChildrenGui(box)
+if st.favGate then st.favGate.Reset() end
+local list = favList(kind)
+local shown = 0
+for _, h in ipairs(list) do
+local m = st.byHash[h]
+if m then
+local ok, err = pcall(buildFavRow, st, m)
+if ok then
+shown += 1
+else
+warn("[Favorites] could not list " .. tostring(m.Name) .. ": " .. tostring(err))
+end
+end
+end
+if shown == 0 then
+UI.CreateText(box, #list == 0 and EMPTY[kind] or WAITING, 12, Enum.TextXAlignment.Center)
+end
+end
+-- favorites first (newest first), everything else back in its original order; the lazy row window follows the same order
+function F.Reflow(kind)
+local st = state(kind)
+local rank = {}
+for i, h in ipairs(favList(kind)) do rank[h] = i end
+for m, r in pairs(st.rows) do
+if r.row.Parent then
+local k = m.Hash and rank[m.Hash]
+r.row.LayoutOrder = k and (k - FAV_BASE) or r.orig
+end
+end
+local gate = st.page and Util.ListGate.Get(st.page.List)
+if gate then
+table.sort(gate.rows, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+gate.Sync()
+end
+end
+local function schedule(st)
+if st.pending then return end
+st.pending = true
+task.defer(function()
+st.pending = false
+pcall(F.Reflow, st.kind)
+pcall(F.Rebuild, st.kind)
+end)
+end
+function F.Toggle(kind, m)
+if not (m and m.Hash) then return end
+local st = state(kind)
+local l = favList(kind)
+local i = table.find(l, m.Hash)
+local on
+if i then
+table.remove(l, i)
+on = false
+else
+table.insert(l, 1, m.Hash)
+on = true
+end
+local h = st.hearts[m]
+if h then
+paint(h, on)
+if on then pop(h) end
+end
+pcall(F.Reflow, kind)
+task.defer(function() pcall(F.Rebuild, kind) end)
+pcall(Util.Notify, (on and "Added to favorites: " or "Removed from favorites: ") .. tostring(m.Name))
+end
+-- called by AddMoveset / AddDance for every row: draws the heart and puts an already-favorite row straight back on top
+function F.Attach(kind, m, item, opener)
+local st = state(kind)
+local row = item.Parent
+if not (row and m.Hash) then return end
+st.byHash[m.Hash] = m
+st.openers[m] = opener
+st.rows[m] = {row = row, orig = row.LayoutOrder}
+local rank = table.find(favList(kind), m.Hash)
+st.hearts[m] = makeHeart(st, m, item, rank ~= nil)
+if rank then
+row.LayoutOrder = rank - FAV_BASE
+schedule(st)
+end
+end
+-- modules were cleared (reload): forget rows, keep what was saved
+function F.Reset()
+for _, st in pairs(S) do
+table.clear(st.byHash)
+table.clear(st.rows)
+table.clear(st.hearts)
+table.clear(st.openers)
+st.pending = false
+if st.favPage and st.favPage.Parent then
+pcall(F.Rebuild, st.kind)
+end
+end
+end
+-- creates the "Favorite ..." button (right below the Movesets / Dances button) and its list page
+function F.Setup(kind, listPage)
+local st = state(kind)
+st.page = listPage
+local l = favList(kind)
+local clean, seen = {}, {}
+for _, h in ipairs(l) do
+if type(h) == "string" and not seen[h] then
+seen[h] = true
+clean[#clean + 1] = h
+end
+end
+table.clear(l)
+for i, h in ipairs(clean) do l[i] = h end
+local page = UI.CreateItemListPage()
+pcall(function() Util.Search.Titles[page] = TITLE[kind] end)
+page.ZIndex = 1
+page.Position = UDim2.new(0.5, 360, 0.5, 0)
+page.Interactable = false
+page.Visible = false
+st.favPage = page
+st.favGate = Util.ListGate.Attach(page)
+local button = UI.CreateButton(MainPage, TITLE[kind] .. " &gt;", 20)
+BindListPageNav(page, st.favGate, button)
+F.Rebuild(kind)
+end
+return F
+end)()
+end)
 local MovesetsPage = UI.CreateItemListPage()
 pcall(function() Util.Search.Titles[MovesetsPage] = "Movesets" end)
 MovesetsPage.ZIndex = 1
@@ -97788,6 +98155,7 @@ local MovesetsGate = Util.ListGate.Attach(MovesetsPage)
 Util.FCMark("moves")
 local MovesetsOpenButton = UI.CreateButton(MainPage, "Movesets &gt;", 20)
 BindListPageNav(MovesetsPage, MovesetsGate, MovesetsOpenButton)
+if Util.Fav and not pcall(Util.Fav.Setup, "moveset", MovesetsPage) then warn("[Favorites] Favorite Movesets page failed to build") end
 local DancesPage = UI.CreateItemListPage()
 pcall(function() Util.Search.Titles[DancesPage] = "Dances" end)
 DancesPage.ZIndex = 1
@@ -97797,6 +98165,7 @@ DancesPage.Visible = false
 local DancesGate = Util.ListGate.Attach(DancesPage)
 local DancesOpenButton = UI.CreateButton(MainPage, "Dances &gt;", 20)
 BindListPageNav(DancesPage, DancesGate, DancesOpenButton)
+if Util.Fav and not pcall(Util.Fav.Setup, "dance", DancesPage) then warn("[Favorites] Favorite Dances page failed to build") end
 local KeybindsPage = UI.CreateItemListPage()
 pcall(function() Util.Search.Titles[KeybindsPage] = "Dance Keybinds" end)
 KeybindsPage.ZIndex = 1
@@ -98151,6 +98520,7 @@ Util.ClearAllChildrenGui(MovesetsPage.List)
 Util.ClearAllChildrenGui(DancesPage.List)
 Util.ListGate.Reset(MovesetsPage.List)
 Util.ListGate.Reset(DancesPage.List)
+if Util.Fav then pcall(Util.Fav.Reset) end
 RefreshKeybinds()
 end
 local function GetModuleHash(m)
@@ -98677,8 +99047,9 @@ end)
 -- [DANCEFIX] one detail page per row at a time; the exit runs once (no stacked Back activations), uses a single one-shot completion callback and
 -- always tears the page (and with it the preview session) down, even if the tween's Completed event never fires
 local detail
-Util.LinkDestroyI2C(item, item.Activated:Connect(function()
+local function openDetail(host)
 if detail and detail.Parent then return end
+host = host or MovesetsPage
 local page = UI.CreatePage()
 detail = page
 page.ZIndex = 2
@@ -98691,7 +99062,7 @@ if leaving then return end
 leaving = true
 page.Interactable = false
 pcall(Util.Preview.Release)
-MovesetsPage.Interactable = false
+host.Interactable = false
 local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 Position = UDim2.new(0.5, 360, 0.5, 0),
 })
@@ -98699,7 +99070,7 @@ local finished = false
 local function finish()
 if finished then return end
 finished = true
-MovesetsPage.Interactable = true
+host.Interactable = true
 if page.Parent then page:Destroy() end
 end
 tween:Play()
@@ -98724,7 +99095,7 @@ UI.CreateSeparator(page)
 UI.CreateText(page, "* Configuration *", 15, Enum.TextXAlignment.Center)
 local cfgOk, cfgErr = pcall(m.Config, page)
 if not cfgOk then warn("[Movesets] config error for " .. tostring(m.Name) .. ": " .. tostring(cfgErr)) end
-MovesetsPage.Interactable = false
+host.Interactable = false
 local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.In), {
 Position = UDim2.new(0.5, 0, 0.5, 0),
 })
@@ -98732,7 +99103,9 @@ tween:Play()
 tween.Completed:Once(function()
 page.Interactable = true
 end)
-end))
+end
+Util.LinkDestroyI2C(item, item.Activated:Connect(function() openDetail(MovesetsPage) end))
+if Util.Fav then pcall(Util.Fav.Attach, "moveset", m, item, openDetail) end
 return m.Name
 end
 end
@@ -98779,8 +99152,9 @@ end,
 })
 end)
 local detail
-Util.LinkDestroyI2C(item, item.Activated:Connect(function()
+local function openDetail(host)
 if detail and detail.Parent then return end
+host = host or DancesPage
 local page = UI.CreatePage()
 detail = page
 page.ZIndex = 2
@@ -98793,7 +99167,7 @@ if leaving then return end
 leaving = true
 page.Interactable = false
 pcall(Util.Preview.Release)
-DancesPage.Interactable = false
+host.Interactable = false
 local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
 Position = UDim2.new(0.5, 360, 0.5, 0),
 })
@@ -98801,7 +99175,7 @@ local finished = false
 local function finish()
 if finished then return end
 finished = true
-DancesPage.Interactable = true
+host.Interactable = true
 if page.Parent then page:Destroy() end
 end
 tween:Play()
@@ -98830,7 +99204,7 @@ UI.CreateSeparator(page)
 UI.CreateText(page, "* Configuration *", 15, Enum.TextXAlignment.Center)
 local cfgOk, cfgErr = pcall(m.Config, page)
 if not cfgOk then warn("[Dances] config error for " .. tostring(m.Name) .. ": " .. tostring(cfgErr)) end
-DancesPage.Interactable = false
+host.Interactable = false
 local tween = TweenService:Create(page, TweenInfo.new(0.5, Enum.EasingStyle.Cubic, Enum.EasingDirection.In), {
 Position = UDim2.new(0.5, 0, 0.5, 0),
 })
@@ -98838,7 +99212,9 @@ tween:Play()
 tween.Completed:Once(function()
 page.Interactable = true
 end)
-end))
+end
+Util.LinkDestroyI2C(item, item.Activated:Connect(function() openDetail(DancesPage) end))
+if Util.Fav then pcall(Util.Fav.Attach, "dance", m, item, openDetail) end
 return m.Name
 end
 end
@@ -98906,7 +99282,7 @@ end
 do
 local BSE = {}
 Util.BSE = BSE
-local FORMATIONS = {"Tail", "Wings", "Aromatic", "Circle", "Wing left", "Wing right"}
+local FORMATIONS = {"Tail", "Wings", "Aromatic", "Circle", "Wing left", "Wing right", "Kernel", "Square", "Friend", "Halo"}
 BSE.Formations = FORMATIONS
 BSE.Range = math.huge -- no radius limit: the scan lists every available player in the server
 local KEYP = "BSE_"
@@ -98917,7 +99293,9 @@ local S = {
 	Status = "Idle - pick a player to begin", Conns = {}, Entries = {}, Keys = {}, MapRef = nil, Count = 0,
 	Cur = {}, Last = {}, From = {}, Blend = 1, Unit = 1.4, Owned = 0, Total = 0, Lost = nil, StartedReanim = false,
 	Low = false, Tick = 0, Frame = 0, StartAt = 0, Warned = false, Token = 0, View = true, Viewing = false,
+	Permadeath = nil, PDApplied = false, PDPrev = nil, PDSet = nil, -- dolteddown's permadeath option (nil = follow the Hats Reanimator switch)
 	Mode = "real", RefPlr = nil, RefMode = nil, RefPart = nil, RefHum = nil, RefAt = 0, Yaw = nil, PrevPos = nil, PrevT = 0,
+	FriendCF = nil, Dt = 1 / 60, CurMap = nil, Warn15 = false, -- Friend formation: smoothed companion root, frame time, current hat map, one-shot warning
 }
 BSE.State = S
 
@@ -99051,6 +99429,18 @@ local function findNothing()
 	return nil
 end
 
+-- the existing 2015 moveset (downloaded module): the first moveset with "2015" in its name / internal name
+local function find2015()
+	for i, m in ipairs(MovementStyles) do
+		if type(m) == "table" and not m.BSENeutral then
+			local nm = string.lower(tostring(m.Name or ""))
+			local inn = string.lower(tostring(m.InternalName or ""))
+			if nm:find("2015", 1, true) or inn:find("2015", 1, true) then return i, m end
+		end
+	end
+	return nil
+end
+
 local function makeNeutral()
 	local m = {
 		ModuleType = "MOVESET", Name = "Nothing", Description = "Internal neutral moveset used by Be someone's effect (does nothing).",
@@ -99074,7 +99464,7 @@ local function lockMoveset()
 		injected = true
 	end
 	Util.EffectLock = {Module = mod, Injected = injected, Saved = saved}
-	MovementStyleIndex = idx
+	MovementStyleIndex = (S.Formation == "Friend" and (find2015())) or idx
 	CurrentDance = nil
 end
 
@@ -99104,6 +99494,10 @@ end
 Util.EffectEnforce = function()
 	local lk = Util.EffectLock
 	if not lk then return nil end
+	if S.Formation == "Friend" then -- Friend plays the existing 2015 moveset on your rig; every other formation keeps the neutral one
+		local i15 = find2015()
+		if i15 then return i15 end
+	end
 	local mod = lk.Module
 	local idx = table.find(MovementStyles, mod)
 	if not idx then
@@ -99211,6 +99605,71 @@ local function layCircle(n, t, unit, base, out)
 	end
 end
 
+-- Kernel (triangle) / Square: the hats run along the outline of a regular polygon standing behind the target; the whole outline spins around the axis pointing at their back
+local function layPolygon(n, t, unit, base, out, sides, phase, rate)
+	local perim = n * unit * 1.2
+	local R = math.max(2.2, perim / (sides * 2 * math.sin(math.pi / sides)))
+	local cy = math.max(0.5, R - 2.2)
+	local cz = 1.7 + unit * 0.5 + R * 0.2
+	local spin = t * rate
+	for k = 1, n do
+		local f = (k - 1) / n * sides
+		local e = math.floor(f)
+		local fr = f - e
+		local a1 = spin + phase + e * PI2 / sides
+		local a2 = spin + phase + (e + 1) * PI2 / sides
+		local x1, y1 = math.cos(a1) * R, math.sin(a1) * R
+		local x2, y2 = math.cos(a2) * R, math.sin(a2) * R
+		out[k] = base * face(V3(x1 + (x2 - x1) * fr, cy + y1 + (y2 - y1) * fr, cz), V3(x2 - x1, y2 - y1, 0), V3(0, 0, 1))
+	end
+end
+
+-- Halo: a flat ring of hats above the target's head, spinning continuously
+local function layHalo(n, t, unit, base, out)
+	local R = math.max(1.6, n * unit * 1.15 / PI2)
+	local cy = 3 + unit * 0.25
+	local spin = t * 2.4
+	for k = 1, n do
+		local a = (k - 1) / n * PI2 + spin
+		local lp = V3(math.cos(a) * R, cy + math.sin(t * 3 + k * 1.7) * 0.07, math.sin(a) * R)
+		out[k] = base * face(lp, V3(-math.sin(a), 0, math.cos(a)), nil)
+	end
+end
+
+-- Friend: a humanoid companion built from the hats. Every hat keeps its Hats Reanimator limb mapping (head / torso / arms / legs); its pose on your own
+-- reanimated rig (driven by the 2015 moveset while this formation runs) is copied onto a companion root that stands behind and to the right of the target
+-- and trails after it
+local function layFriend(n, t, unit, base, out)
+	local rig = Reanimate.Character
+	local rroot = rootOfChar(rig)
+	local map = S.CurMap
+	local lv = base.LookVector
+	local want = CFrame.new(base.Position) * CFrame.Angles(0, math.atan2(-lv.X, -lv.Z), 0) * CFrame.new(3.4, 0, 4.2)
+	local fc = S.FriendCF
+	if not fc or (fc.Position - want.Position).Magnitude > 60 then
+		fc = want
+	else
+		fc = fc:Lerp(want, 1 - math.exp(-S.Dt * 6))
+	end
+	S.FriendCF = fc
+	local scale = 1
+	if rig then
+		local okS, sc = pcall(rig.GetScale, rig)
+		if okS and type(sc) == "number" then scale = sc end
+	end
+	local rootCF = rroot and rroot.CFrame
+	for k = 1, n do
+		local m = map and map[k]
+		local limb = rig and m and m.Limb and rig:FindFirstChild(m.Limb)
+		if rootCF and limb and limb:IsA("BasePart") and m.C0 and m.C1 then
+			local hat = limb.CFrame * Util.ApplyAxis(Util.ScaleCFrame(m.C0, scale)) * Util.ScaleCFrame(m.C1, m.Scale or 1):Inverse()
+			out[k] = fc * rootCF:ToObjectSpace(hat)
+		else
+			out[k] = fc * CFrame.new(0, 0.5 * (k % 3), 0)
+		end
+	end
+end
+
 local BUILD = {
 	Tail = layTail,
 	Wings = function(n, t, u, b, o) layWings(n, t, u, b, o, "both") end,
@@ -99218,6 +99677,10 @@ local BUILD = {
 	Circle = layCircle,
 	["Wing left"] = function(n, t, u, b, o) layWings(n, t, u, b, o, "left") end,
 	["Wing right"] = function(n, t, u, b, o) layWings(n, t, u, b, o, "right") end,
+	Kernel = function(n, t, u, b, o) layPolygon(n, t, u, b, o, 3, math.pi / 2, 2.2) end,
+	Square = function(n, t, u, b, o) layPolygon(n, t, u, b, o, 4, math.pi / 4, 1.8) end,
+	Friend = layFriend,
+	Halo = layHalo,
 }
 BSE.Layout = function(name, n, t, unit, base, out) -- exposed so the formations can be checked offline
 	BUILD[name](n, t, unit, base, out)
@@ -99257,6 +99720,54 @@ local function syncEntries(map, n)
 end
 
 -- ---------------------------------------------------------------- stop / cleanup (idempotent)
+-- ---------------------------------------------------------------- dolteddown's permadeath method (optional)
+-- The Hats Reanimator reads its own "dolteddown's permadeath" switch only when the hat reanimation starts, so this option is applied right
+-- before the effect starts that reanimation itself and the previous value is handed back when the effect stops (unless someone changed it
+-- meanwhile). SaveData is never written, so the Hats Reanimator's saved setting is untouched.
+function BSE.PermadeathSupported()
+	return replicatesignal ~= nil
+end
+function BSE.GetPermadeath()
+	if S.Permadeath == nil then return HatReanimator.Permadeath and true or false end
+	return S.Permadeath
+end
+function BSE.SetPermadeath(on)
+	on = on and true or false
+	if BSE.GetPermadeath() == on then return on end
+	S.Permadeath = on
+	local word = on and "on" or "off"
+	if on and not BSE.PermadeathSupported() then
+		say("dolteddown's permadeath needs replicatesignal, which your executor does not have - a normal death will be used.")
+	elseif S.Active or S.Busy then
+		say("dolteddown's permadeath " .. word .. ". It applies the next time the effect starts the hat reanimation (stop the effect and pick a player again).")
+	else
+		say("dolteddown's permadeath " .. word .. " for the next effect.")
+	end
+	return on
+end
+function BSE.PDApply()
+	if S.PDApplied then return end
+	S.PDApplied = true
+	S.PDPrev = HatReanimator.Permadeath
+	S.PDSet = BSE.GetPermadeath()
+	HatReanimator.Permadeath = S.PDSet
+end
+function BSE.PDRelease()
+	if not S.PDApplied then return end
+	S.PDApplied = false
+	if HatReanimator.Permadeath == S.PDSet then
+		HatReanimator.Permadeath = S.PDPrev and true or false
+	end
+	S.PDPrev, S.PDSet = nil, nil
+end
+-- live status line of the Hats Reanimator's permadeath (only while the running hat reanimation actually uses it)
+function BSE.PermadeathStatus()
+	local ok, st = pcall(function()
+		if HatReanimator.HasPermadeath then return HatReanimator.Status and HatReanimator.Status.Permadeath end
+	end)
+	return (ok and st ~= nil) and tostring(st) or nil
+end
+
 local function doStop(reason)
 	if S.Stopping then return end
 	S.Stopping = true
@@ -99268,6 +99779,7 @@ local function doStop(reason)
 	table.clear(S.Conns)
 	removeEntries()
 	unlockMoveset()
+	pcall(BSE.PDRelease)
 	restoreView()
 	local deanimate = S.StartedReanim
 	S.Active, S.Target, S.Lost, S.StartedReanim, S.Warned = false, nil, nil, false, false
@@ -99396,6 +99908,14 @@ local function step(dt)
 	if ticked then
 		S.Tick = now
 		slow()
+		if S.Formation == "Friend" then
+			if find2015() then
+				S.Warn15 = false
+			elseif not S.Warn15 then
+				S.Warn15 = true
+				say("Friend: no moveset with \"2015\" in its name was found - the companion keeps the neutral pose.")
+			end
+		end
 	end
 	local mode, part, hum = refOf(plr, now)
 	if S.View and part then
@@ -99448,7 +99968,9 @@ local function step(dt)
 	if S.Status:sub(1, 7) == "Waiting" then S.Status = "Following " .. plr.DisplayName end
 	if not syncEntries(map, n) then return end
 	local cur = S.Cur
+	S.CurMap, S.Dt = map, dt
 	BUILD[S.Formation](n, now, S.Unit, base, cur)
+	if S.Formation ~= "Friend" then S.FriendCF = nil end
 	if S.Blend < 1 then
 		S.Blend = math.min(1, S.Blend + dt / 0.5)
 		local a = S.Blend * S.Blend * (3 - 2 * S.Blend)
@@ -99509,9 +100031,15 @@ local function startFlow(plr)
 	end
 	lockMoveset()
 	say("Neutral moveset selected. Movesets and dances are disabled while this effect runs.")
+	if reuse and S.Permadeath ~= nil and (HatReanimator.HasPermadeath and true or false) ~= S.Permadeath then
+		-- the running hat reanimation decided on permadeath when it started: it cannot be switched from here
+		say("Your hat reanimation is already running " .. (HatReanimator.HasPermadeath and "with" or "without") .. " dolteddown's permadeath, so that option cannot change now. Deanimate first, then pick a player again to use the new setting.")
+	end
 	if not reuse then
-		say("Starting hat reanimation...")
-		S.Status = "Starting hat reanimation..."
+		BSE.PDApply()
+		local pdTxt = HatReanimator.Permadeath and " with dolteddown's permadeath" or ""
+		say("Starting hat reanimation" .. pdTxt .. "...")
+		S.Status = "Starting hat reanimation" .. pdTxt .. "..."
 		S.StartedReanim = true
 		local okStart = Util.ModReanimate and Util.ModReanimate(HatReanimator)
 		if S.Cancel then return false, S.Cancel end
@@ -99535,7 +100063,7 @@ local function startFlow(plr)
 		return false, plr.DisplayName .. " is no longer available."
 	end
 	activate(plr)
-	say("Hat reanimation running with " .. n .. " hat" .. (n == 1 and "" or "s") .. ". Effect formation activated: " .. S.Formation .. ".")
+	say("Hat reanimation running with " .. n .. " hat" .. (n == 1 and "" or "s") .. ". Effect formation activated: " .. S.Formation .. "." .. ((not reuse and HatReanimator.HasPermadeath) and " dolteddown's permadeath is active." or ""))
 	return true
 end
 
@@ -115041,7 +115569,7 @@ MainPage.Interactable = true
 end
 if Stack[#Stack] == Hub then openPage(bsePage) end
 end)
-UI.CreateText(Hub, "<font color=\"#AAAAAA\">Turn your hats into Tail / Wings / Aromatic / Circle effects that follow a player.</font>", 10, CEN)
+UI.CreateText(Hub, "<font color=\"#AAAAAA\">Turn your hats into Tail / Wings / Aromatic / Circle / Kernel / Square / Friend / Halo effects that follow a player.</font>", 10, CEN)
 UI.CreateButton(bsePage, "&lt; Back", 20).Activated:Connect(closePage)
 UI.CreateText(bsePage, "<b>BE SOMEONE'S EFFECT</b>", 15, CEN)
 UI.CreateText(bsePage, "<font color=\"#AAAAAA\">Pick a formation, then tap a player. Your own hats follow them. Movesets and dances are switched off only while the effect runs.</font>", 10, CEN)
@@ -115069,6 +115597,11 @@ end)
 local viewLever = UI.CreateSwitch(bsePage, "View selected player", S.View)
 viewLever.Changed:Connect(function()
 BSE.SetView(viewLever.Value)
+end)
+UI.CreateText(bsePage, "<font color=\"#AAAAAA\">dolteddown's permadeath keeps your real character alive while the hats run. It is used when the effect starts its own hat reanimation. Needs replicatesignal; the game must have ragdoll first.</font>", 10, CEN)
+local pdLever = UI.CreateSwitch(bsePage, "dolteddown's permadeath", BSE.GetPermadeath())
+pdLever.Changed:Connect(function()
+BSE.SetPermadeath(pdLever.Value)
 end)
 UI.CreateButton(bsePage, "Refresh scan", 20).Activated:Connect(function()
 if rebuild then rebuild("all") end
@@ -115166,6 +115699,8 @@ end
 if S.Active then
 lines[2] = "Hats used: " .. S.Count .. " | network-owned: " .. S.Owned .. "/" .. S.Total .. ". Other players only see hats the engine reports as owned by you."
 end
+local pdSt = S.Active and BSE.PermadeathStatus()
+if pdSt then lines[#lines + 1] = "dolteddown's permadeath: " .. esc(pdSt) end
 local info = "<font color=\"#AAAAAA\">" .. table.concat(lines, "\n") .. "</font>"
 if info ~= lastInfo then
 lastInfo = info
@@ -115174,6 +115709,8 @@ end
 local fi = table.find(BSE.Formations, S.Formation)
 if fi and fSel.Value ~= fi then fSel.Value = fi end
 if viewLever.Value ~= S.View then viewLever.Value = S.View end
+local pdNow = BSE.GetPermadeath()
+if pdLever.Value ~= pdNow then pdLever.Value = pdNow end
 end
 bsePage:GetPropertyChangedSignal("Visible"):Connect(function()
 if bsePage.Visible then
@@ -116252,7 +116789,7 @@ label(stCard, "STATUS", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 
 local stMain = label(stCard, "", 13, C.text, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 24), Size = UDim2.new(1, -24, 0, 16)})
 local stTarget = label(stCard, "", 11, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 44), Size = UDim2.new(1, -24, 0, 14)})
 local stHats = label(stCard, "", 10, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 62), Size = UDim2.new(1, -24, 0, 26), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, TextTruncate = Enum.TextTruncate.None})
-local fHost = rowOf(bse, 104)
+local fHost = rowOf(bse, 26 + math.ceil(((BSE and #BSE.Formations) or 6) / 3) * 38 + 2)
 local fCard = glass(fHost)
 label(fCard, "EFFECT FORMATION", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 12)})
 local chips = {}
@@ -116276,6 +116813,39 @@ tw(b, 0.25, {BackgroundTransparency = on and 0.7 or 0.93, TextColor3 = on and W 
 end
 end
 setChips()
+local setPD
+do
+local pdHost = rowOf(bse, 64)
+local pdCard = glass(pdHost)
+label(pdCard, "DOLTEDDOWN'S PERMADEATH", 10, C.mute, BOLD, LEFT, {Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -80, 0, 12)})
+local pdSub = label(pdCard, "", 10, C.mute, MED, LEFT, {Position = UDim2.new(0, 12, 0, 24), Size = UDim2.new(1, -80, 0, 34), TextWrapped = true, TextYAlignment = Enum.TextYAlignment.Top, TextTruncate = Enum.TextTruncate.None})
+local pdBtn = new("TextButton", {AutoButtonColor = false, Text = "", BackgroundColor3 = W, BackgroundTransparency = 0.9, BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.fromOffset(46, 24)}, pdCard)
+corner(pdBtn, UDim.new(1, 0))
+stroke(pdBtn, 0.8)
+local pdKnob = new("Frame", {BackgroundColor3 = W, BorderSizePixel = 0, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 3, 0.5, 0), Size = UDim2.fromOffset(18, 18)}, pdBtn)
+corner(pdKnob, UDim.new(1, 0))
+setPD = function()
+local on = BSE and BSE.GetPermadeath() or false
+tw(pdBtn, 0.2, {BackgroundColor3 = on and C.green or W, BackgroundTransparency = on and 0.35 or 0.9})
+tw(pdKnob, 0.2, {Position = on and UDim2.new(1, -21, 0.5, 0) or UDim2.new(0, 3, 0.5, 0)})
+local txt = "Keeps your real character alive while the hats run. Used when the effect starts the hat reanimation. The game must have ragdoll."
+if BSE then
+if not BSE.PermadeathSupported() then
+txt = "Needs replicatesignal - your executor has none, so a normal death is used."
+else
+local st = S and S.Active and BSE.PermadeathStatus()
+if st then txt = "Status: " .. st end
+end
+end
+if pdSub.Text ~= txt then pdSub.Text = txt end
+end
+pdBtn.Activated:Connect(function()
+if not BSE then return end
+BSE.SetPermadeath(not BSE.GetPermadeath())
+setPD()
+end)
+setPD()
+end
 local aHost = rowOf(bse, 56)
 tile(aHost, UDim2.new(0, 0, 0, 0), UDim2.new(0.5, -3, 1, 0), "Refresh scan", "All players", C.blue, function()
 if rebuild then rebuild("all") end
@@ -116355,6 +116925,7 @@ else
 stHats.Text = "Pick a player below to begin. Movesets and dances are switched off only while the effect runs."
 end
 setChips()
+pcall(setPD)
 end
 if not BSE then
 stMain.Text = "Feature unavailable (module failed to load)"
