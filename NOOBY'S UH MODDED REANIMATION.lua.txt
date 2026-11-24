@@ -79996,13 +79996,25 @@ end
 HatReanimator.LastForceRespawn = 0
 HatReanimator.PDBusyUntil = 0
 HatReanimator.PDActive = nil
+-- the last Humanoid state THIS script requested (PDRequest): a detector built later never takes that state for the game's
+HatReanimator.PDSelfState = {at = 0}
 do
--- dolteddown's pd v3: ONE managed detector per character.
--- PDBegin (baseline + background monitor, BEFORE any script-driven state change) -> PDRequest/PDDetect (trigger, then confirm a real game ragdoll) -> PDExecute (signal + observed joint break).
+-- dolteddown's pd v4: ONE managed detector per character.
+-- PDBegin (snapshot + background monitor, BEFORE any script-driven state change) -> PDRequest (every script-driven Humanoid state is registered so it never counts as game evidence) -> PDDetect (PASSIVELY confirms a real game ragdoll; nothing is forced or manufactured) -> PDExecute (fresh final confirmation, then signal + observed joint break).
+-- A ragdoll is recognised two ways, scored together: CHANGES since PDBegin (a ragdoll the game starts later) and the character's CURRENT Humanoid / structure / markers (a ragdoll that was already active when PDBegin ran).
 -- Shared by the Hat/Hair/HatHair/Accessories/Tool reanimators.
 local pdSt = Enum.HumanoidStateType
 local pdCS = game:GetService("CollectionService")
-local pdSG = game:GetService("StarterGui")
+local PD_LIFE = 45 -- idle lifetime of a detector; PDBegin on the same character and every detect / execute step refresh it
+local PD_GAP = 0.03 -- minimum time between two evaluations (shared by the background monitor and the detection / execution loops)
+-- Standard R6 + R15 body part names: the BODY used to judge an already-active ragdoll (accessories, tools and custom extras never count).
+local pdCoreNames = {}
+for _, n in {"HumanoidRootPart", "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "UpperTorso", "LowerTorso", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot"} do
+pdCoreNames[n] = true
+end
+-- characters this script already fired ServerBreakJoints for: {at, res}. One signal per character, whoever calls PDExecute.
+local pdSent = setmetatable({}, {__mode = "k"})
+local pdNoEv = {score = 0, pri = 0, sup = 0, why = "", confirmed = false}
 -- Force/align constraints are never body joints.
 local pdForce = {AlignPosition = true, AlignOrientation = true, Torque = true, LineForce = true, VectorForce = true, LinearVelocity = true, AngularVelocity = true, PlaneConstraint = true}
 -- neg: words that turn a "ragdoll" name into a negative / permission marker (NoRagdoll, CanRagdoll, RagdollOff, UnRagdolled ...). off: string values that mean "inactive".
@@ -80015,7 +80027,7 @@ t[w] = true
 end
 return t
 end
-pdW.neg = set("no non not un anti cant cannot can allow allows allowed disable disabled disables off stop stopped end ended finish finished recover recovered recovering getup remove removed clear cleared immune immunity block blocked prevent prevented ignore ignored cooldown resist resistance protect protected protection")
+pdW.neg = set("no non not un anti cant cannot can allow allows allowed disable disabled disables off stop stopped end ended finish finished recover recovered recovering getup remove removed clear cleared immune immunity block blocked prevent prevented ignore ignored cooldown resist resistance protect protected protection enable enabled enables able ability available ready capable supported")
 pdW.off = set("false off no none null nil disabled disable inactive stopped ended idle normal standing recovered")
 end
 -- Legacy substring match (any name containing "ragdoll"; case, spaces, underscores ignored). The reanimators use it to leave the game's own ragdoll scripts alone.
@@ -80175,44 +80187,79 @@ end
 end
 return hits
 end
+-- Was the CURRENT Humanoid state entered by the game? A transition this script requested (PDRequest) is matched to its own state change and never counts. A state that was already there when PDBegin ran (no transition seen since) is the game's, because PDBegin runs before any script-driven state change. If the change event has not arrived yet, the pending requests decide.
+local function pdGst(D, st, now)
+if D.curState == st then return not D.curSelf end
+if st == D.state then return D.curState == nil end
+for _, r in D.requests do
+if r[1] == st and now - r[2] <= 0.75 then return false end
+end
+return true
+end
+-- Humanoid group, judged on the CURRENT values (not only on changes since PDBegin, so an already-active ragdoll counts like a new one). One underlying ragdoll flag set, so the strongest member counts once. Physics / FallingDown belong to this group (never added a second time as "support").
+local function pdHuman(D, hum, st, gst, now)
+if gst and st == pdSt.Ragdoll then return 2, "state" end
+if hum.PlatformStand or (gst and st == pdSt.PlatformStanding) then return 1.5, "platform" end
+if not hum.RequiresNeck then return 1, "neck" end
+if (gst and st == pdSt.Physics) or now - D.physAt <= 1.5 then return 1, "physics" end
+if (gst and st == pdSt.FallingDown) or now - D.fallAt <= 1.5 then return 0.5, "falling" end
+return 0, nil
+end
+local function pdHas(t, w)
+for _, x in t do
+if x == w then return true end
+end
+return false
+end
+-- 1 when enabled body-to-body constraint c links two DIFFERENT physics assemblies (a joint that was swapped for a constraint), else 0
+local function pdBridge(D, c)
+if c.Parent and c.Enabled and c:IsDescendantOf(D.char) then
+local p0, p1 = pdLink(c, D.body)
+if p0 then
+local r0, r1 = p0.AssemblyRootPart, p1.AssemblyRootPart
+if r0 and r1 and r0 ~= r1 then return 1 end
+end
+end
+return 0
+end
+-- Body structure RIGHT NOW, no baseline: how many separate physics assemblies the standard body parts form, and how many enabled body constraints bridge them. A normal character is ONE assembly.
+local function pdAsm(D)
+local roots, n = D.roots, 0
+table.clear(roots)
+for _, p in D.core do
+if p.Parent then
+local r = p.AssemblyRootPart
+if r and not roots[r] then
+roots[r] = true
+n += 1
+end
+end
+end
+local br = 0
+if n >= 2 then
+for c in D.cons do br += pdBridge(D, c) end
+for c in D.addedCons do br += pdBridge(D, c) end
+end
+return n, br
+end
 -- Live comparison of the character against the baseline. Independent signals only; signals describing the same underlying change are not added twice.
 local function pdEval(D)
 local hum, character = D.hum, D.char
 local now, st = os.clock(), hum:GetState()
 local why = {}
--- Was the CURRENT state entered by the game? A transition this script requested (PDRequest) is matched to its own state change and never counts. If the change event has not arrived yet, the pending requests decide.
-local gst
-if D.curState == st then
-gst = not D.curSelf
-elseif st == D.state then
-gst = false
+local gst = pdGst(D, st, now)
+-- A. Humanoid group (judged on the CURRENT values, so a ragdoll that was already active when PDBegin ran counts like a newly started one).
+local human, hw = pdHuman(D, hum, st, gst, now)
+-- PDRequest replaced the state the game's ragdoll was in with the one it requested: that evidence is held until the game itself moves the Humanoid on.
+local keep = D.keep
+if keep then
+if st == keep.req or now - keep.at < 0.15 then
+if human < keep.lvl then human, hw = keep.lvl, keep.why end
 else
-gst = true
-for _, r in D.requests do
-if r[1] == st and now - r[2] <= 0.75 then
-gst = false
-break
+D.keep = nil
 end
 end
-end
--- A. Humanoid group (one underlying ragdoll flag set, so the strongest member counts once). Physics / FallingDown belong to this group too (never added a second time as "support").
-local human = 0
-if gst and st == pdSt.Ragdoll then
-human = 2
-why[#why + 1] = "state"
-elseif (hum.PlatformStand and not D.platform) or (gst and st == pdSt.PlatformStanding) then
-human = 1.5
-why[#why + 1] = "platform"
-elseif D.neck and not hum.RequiresNeck then
-human = 1
-why[#why + 1] = "neck"
-elseif (gst and st == pdSt.Physics) or now - D.physAt <= 1.5 then
-human = 1
-why[#why + 1] = "physics"
-elseif (gst and st == pdSt.FallingDown) or now - D.fallAt <= 1.5 then
-human = 0.5
-why[#why + 1] = "falling"
-end
+if hw then why[#why + 1] = hw end
 -- B. Constraints: new, newly enabled, or re-linked body-to-body constraints (existing enabled ones and accessory/force constraints never count).
 local links, K, conOff = {}, 0, false
 for c, r in D.cons do
@@ -80275,32 +80322,25 @@ struct += sp >= 3 and 2 or 1
 why[#why + 1] = "assembly"
 end
 end
+-- F. Body structure RIGHT NOW (no baseline): the standard body parts split into separate physics assemblies, with enabled body-to-body constraints bridging them (joint -> constraint swap). This is what recognises a ragdoll that was already built before PDBegin. Same underlying change as C / D, so only the stronger reading counts.
+local asm, br = pdAsm(D)
+if asm >= 2 then
+local sA = (br >= 2 or asm >= 4) and 2 or 1
+if sA > struct then
+struct = sA
+local w = br > 0 and "swap" or "assembly"
+if not pdHas(why, w) then why[#why + 1] = w end
+end
+end
 local pri = human + struct
--- E. Supporting evidence: ragdoll markers that are active NOW but were not at the baseline (attributes / ValueObjects / tags / new ragdoll-named instances). Can never confirm on its own. Scanned at 10Hz.
+-- E. Supporting evidence: ragdoll markers that are active NOW (attributes / ValueObjects / tags, including ones already active when PDBegin ran; negated / permission names never count) plus new ragdoll-named instances. Can never confirm on its own. Scanned at 10Hz.
 if now - D.scanAt >= 0.1 then
 D.scanAt = now
-local cur, flag, tag = {}, false, false
+local flag, tg = false, false
 for _, h in pdHits(D) do
-local inst, key = h[1], h[2]
-local c = cur[inst]
-if not c then
-c = {}
-cur[inst] = c
+if h[3] == "tag" then tg = true else flag = true end
 end
-c[key] = true
-local b = D.hitBase[inst]
-if not (b and b[key]) then
-if h[3] == "tag" then tag = true else flag = true end
-end
-end
--- a baseline marker that is inactive now is forgotten, so a later re-activation counts as new
-for inst, keys in D.hitBase do
-local c = cur[inst]
-for key in keys do
-if not (c and c[key]) then keys[key] = nil end
-end
-end
-D.flag, D.tag = flag, tag
+D.flag, D.tag = flag, tg
 end
 local named = false
 for v in D.addedNamed do
@@ -80329,26 +80369,53 @@ local w = table.concat(why, "+")
 if score > D.peak then
 D.peak, D.peakWhy = score, w
 end
-return {score = score, pri = pri, sup = sup, why = w, confirmed = pri >= 2 or (pri >= 1 and score >= 2)}
+-- solid: evidence an ORDINARY death cannot produce by itself (BreakJointsOnDeath only destroys joints / splits assemblies). Humanoid-side ragdoll state / PlatformStand, body constraints that replaced or bridge the joints, active ragdoll markers. RequiresNeck alone is never solid (some games ship it disabled). Used only to tell a game ragdoll from a plain death when the Humanoid also shows death signs.
+local solid = (hw == "state" or hw == "platform" or B > 0 or (K - B) > 0 or br > 0 or D.flag or D.tag or named) and true or false
+return {score = score, pri = pri, sup = sup, why = w, confirmed = pri >= 2 or (pri >= 1 and score >= 2), solid = solid}
 end
--- One evaluation per frame, shared by the background monitor and the detection loop. Tracks how long the evidence has been CONTINUOUSLY confirmed (a flicker of <= 0.25s does not reset the settle timer).
-local function pdStep(D)
+-- One evaluation per PD_GAP, shared by the background monitor and the detection / execution loops. Tracks how long the evidence has been CONTINUOUSLY confirmed (a flicker of <= 0.25s does not reset the settle timer) and whether the confirmation began with the initial snapshot (an already-active ragdoll) or later (a ragdoll the game started after PDBegin).
+local function pdStep(D, fresh)
+if D.done then return D.ev or pdNoEv end
 local now = os.clock()
-if D.ev and now - D.evAt < 0.004 then return D.ev end
+if not fresh and D.ev and now - D.evAt < PD_GAP then return D.ev end
 local ev = pdEval(D)
 D.ev, D.evAt = ev, now
 if ev.confirmed then
-if not D.confSince then D.confSince, D.confWhy = now, ev.why end
+if not D.confSince then
+D.confSince, D.confWhy = now, ev.why
+D.confKind = D.first and "existing" or "new"
+end
 D.lastConf = now
 elseif D.confSince and now - D.lastConf > 0.25 then
 D.confSince = nil
 end
 return ev
 end
+-- Death signs (Died fired, Health <= 0, Dead state) are NOT a verdict by themselves: a game's own ragdoll may use those transitions, or build a frame or two after them. A death is ORDINARY only when the CURRENT, freshly evaluated body shows no genuine (solid) ragdoll behind it and the signs have stood for a short grace period. An alive Humanoid that merely had a Died event a moment ago is not dead.
+local pdDeath = {grace = 0.25}
+function pdDeath.sign(D, hum)
+if hum.Health <= 0 or hum:GetState() == pdSt.Dead then return true end
+return D.died == true and os.clock() - (D.diedAt or 0) <= 1
+end
+function pdDeath.ordinary(D, ev, now, final)
+if ev.confirmed and ev.solid then
+D.deathRag = now
+return false
+end
+D.deathAt = D.deathAt or now
+if D.deathRag and now - D.deathRag <= 0.25 then return false end
+if not final and now - D.deathAt < pdDeath.grace then return false end
+return true
+end
 local function pdNew(status, character, hum)
-local D = {status = status, char = character, hum = hum, conns = {}, requests = {}, body = {}, parts = {}, motors = {}, joints = {}, cons = {}, vals = {}, srcs = {}, addedCons = {}, addedJoints = {}, addedNamed = {}, hitBase = {}, peak = 0, peakWhy = "", scanAt = 0, physAt = -1e9, fallAt = -1e9, lastReq = 0, flag = false, tag = false, died = false, done = false}
--- Baseline of the ORIGINAL character (taken before any script-driven state change).
+local D = {status = status, char = character, hum = hum, conns = {}, requests = {}, body = {}, parts = {}, core = {}, roots = {}, motors = {}, joints = {}, cons = {}, vals = {}, srcs = {}, addedCons = {}, addedJoints = {}, addedNamed = {}, peak = 0, peakWhy = "", scanAt = 0, physAt = -1e9, fallAt = -1e9, lastReq = 0, lastConf = -1e9, evAt = 0, ops = 0, first = true, flag = false, tag = false, died = false, done = false, expire = os.clock() + PD_LIFE}
+-- registered at once, so a failure while building still leaves something PDBegin can clean up
+HatReanimator.PDActive = D
+-- Snapshot of the character as it IS when PDBegin runs (before any script-driven state change). It is the reference for CHANGES only: it is never assumed to be a normal, non-ragdolled character - the first evaluation at the end judges its current structure, so an already-active ragdoll is recognised.
 D.state, D.platform, D.neck, D.deadOn = hum:GetState(), hum.PlatformStand, hum.RequiresNeck, hum:GetStateEnabled(pdSt.Dead)
+-- a state this script itself requested (PDRequest) and the Humanoid is still in is NOT the game's: a detector rebuilt after that request must not count it
+local ss0 = HatReanimator.PDSelfState
+if ss0 and ss0.hum == hum and ss0.state == D.state then D.curState, D.curSelf = D.state, true end
 -- instances that can carry a ragdoll marker (attribute / tag / value)
 local function src(v)
 return v:IsA("BasePart") or v:IsA("Model") or v:IsA("Folder") or v:IsA("Configuration") or v:IsA("ValueBase") or v:IsA("Constraint") or v:IsA("JointInstance") or v:IsA("Humanoid") or v:IsA("LuaSourceContainer")
@@ -80358,8 +80425,11 @@ for _, v in all do
 if v:IsA("BasePart") and not pdOff(v, character) then
 D.body[v] = true
 D.parts[#D.parts + 1] = v
+if v.Parent == character and pdCoreNames[v.Name] then D.core[#D.core + 1] = v end
 end
 end
+-- a custom rig without the standard names: every body part stands in for the body
+if #D.core < 3 then D.core = D.parts end
 D.srcs[character], D.srcs[hum], D.srcs[Player] = true, true, true
 for _, v in all do
 if not pdOff(v, character) then
@@ -80381,14 +80451,6 @@ end
 end
 end
 D.groups = pdGroups(D.parts)
-for _, h in pdHits(D) do
-local b = D.hitBase[h[1]]
-if not b then
-b = {}
-D.hitBase[h[1]] = b
-end
-b[h[2]] = true
-end
 -- Event monitoring + a background evaluation, so a ragdoll that starts between PDBegin and PDDetect is still seen.
 -- Every script request (PDRequest) is matched to exactly one state transition (same state, within 0.75s, oldest first); stale requests are dropped.
 D.conns[#D.conns + 1] = hum.StateChanged:Connect(function(_, new)
@@ -80413,7 +80475,7 @@ end
 end
 end)
 D.conns[#D.conns + 1] = hum.Died:Connect(function()
-D.died = true
+D.died, D.diedAt = true, os.clock()
 end)
 D.conns[#D.conns + 1] = character.DescendantAdded:Connect(function(v)
 if pdOff(v, character) then return end
@@ -80428,87 +80490,121 @@ elseif pdKind(v.Name) == "pos" then
 D.addedNamed[v] = true
 end
 end)
+-- One lightweight monitor: evaluates at most every PD_GAP, ends the detector when the character is gone or nothing has used it for PD_LIFE (never while a detect / execute is running).
 D.conns[#D.conns + 1] = RunService.Heartbeat:Connect(function()
-if not D.done then pcall(pdStep, D) end
+if D.done then return end
+local now = os.clock()
+if now - D.evAt < PD_GAP then return end
+if D.ops == 0 and (now >= D.expire or hum.Parent ~= character or not character:IsDescendantOf(workspace)) then
+pdKill(D)
+return
+end
+pcall(pdStep, D)
 end)
-task.delay(45, function() pdKill(D) end)
+-- initial evaluation of the snapshot itself: this is where an already-active ragdoll is recognised
+pcall(pdStep, D)
+D.first = false
 return D
 end
--- Records a script-requested state so it is matched to its own transition and never mistaken for a game-driven one, then requests it.
+-- Records a script-requested state so it is matched to its own transition and never mistaken for a game-driven one, then requests it. Used for EVERY script-driven Humanoid state change while a detector may be running.
+-- If the Humanoid is in the game's own Ragdoll state, that state is about to be overwritten by the requested one: the evidence is held (D.keep) only while the Humanoid stays in the state this script put it in. Once the game moves it on the held evidence is released and never re-armed by later script requests.
 function HatReanimator.PDRequest(hum, state)
+local ss = HatReanimator.PDSelfState
+ss.hum, ss.state, ss.at = hum, state, os.clock()
 local D = HatReanimator.PDActive
 if D and D.hum == hum and not D.done then
 local now = os.clock()
 for i = #D.requests, 1, -1 do
 if now - D.requests[i][2] > 2 then table.remove(D.requests, i) end
 end
+local cur = hum:GetState()
 -- already in that state: no transition will follow, so there is nothing to match
-if hum:GetState() ~= state then
+if cur ~= state then
+local keep = D.keep
+if keep then
+local still = cur == keep.req
+if not still then
+for _, r in D.requests do
+if r[1] == keep.req and now - r[2] <= 0.75 then still = true break end
+end
+end
+if still then
+keep.req, keep.at = state, now
+else
+D.keep = nil
+end
+elseif pdGst(D, cur, now) then
+local lvl, lwhy = pdHuman(D, hum, cur, true, now)
+if lvl > 0 then D.keep = {req = state, lvl = lvl, why = lwhy, at = now} end
+end
 D.requests[#D.requests + 1] = {state, now}
 end
 D.lastReq = now
 end
 hum:ChangeState(state)
 end
+-- ONE managed detector per character: a second PDBegin on the same character keeps the running detector (its earlier baseline and monitor) instead of replacing it mid-operation.
 function HatReanimator.PDBegin(status, character, hum)
 local old = HatReanimator.PDActive
+if old and not old.done and old.char == character and old.hum == hum then
+old.status = status
+old.expire = os.clock() + PD_LIFE
+return true
+end
 if old then pdKill(old) end
-local ok, D = pcall(pdNew, status, character, hum)
-HatReanimator.PDActive = ok and D or nil
+local ok = pcall(pdNew, status, character, hum)
+if not ok then
+local bad = HatReanimator.PDActive
+if bad then pdKill(bad) end
+HatReanimator.PDActive = nil
+end
 return ok
 end
 local function pdDetect(status, character, hum, settle, D)
 local t0 = os.clock()
-local lastProg, best, stage, stageT, why, res, fired = t0, 0, 0, t0, "", "timeout", false
+local lastProg, best, why, res = t0, 0, "", "timeout"
+-- PASSIVE: the detector only observes the character. An already-active ragdoll is judged on its current condition, a new one on what changes. It never forces a FallingDown state, never fires a reset callback and never adds evidence of its own; the script's own requested states are never counted.
+if not D.confSince then status.Permadeath = "Waiting for game ragdoll..." end
 while true do
 local now = os.clock()
 HatReanimator.PDBusyUntil = now + 4
-if not character:IsDescendantOf(workspace) or hum.Parent ~= character then
+if D.done or not character:IsDescendantOf(workspace) or hum.Parent ~= character then
 res = "removed"
 break
 end
-if D.died or hum.Health <= 0 or hum:GetState() == pdSt.Dead then
+-- evidence first: death signs only end detection when no genuine ragdoll stands behind them
+local sign = pdDeath.sign(D, hum)
+local ev = pdStep(D, sign)
+if sign then
+if pdDeath.ordinary(D, ev, now) then
 res = "died"
 break
 end
-local ev = pdStep(D)
+else
+D.deathAt = nil
+end
 if ev.score > best + 0.01 then
 best = ev.score
 lastProg = now
 end
 if D.confSince then
--- confirmed (evidence building since PDBegin already counts): it must hold for `settle` seconds
+-- a confirmed ragdoll (already active from PDBegin, or newer from when the evidence built up) counts only while it is CURRENTLY confirmed and has held for `settle` seconds
 lastProg = now
-if now - D.confSince >= settle then
-res, why = "ok", ev.confirmed and ev.why or D.confWhy
+if ev.confirmed and (ev.solid or not sign) and now - D.confSince >= settle then
+res, why = "ok", ev.why
 break
-end
-else
--- Never interrupt a ragdoll that is already progressing. Escalate only when the game shows nothing, a weak signal that stopped growing, or partial evidence that has stalled.
-local idle = now - lastProg
-local weak = ev.score < 1 and (ev.score <= 0 or idle >= 0.8)
-if stage == 0 and (weak or idle >= 1.2) and now - D.lastReq >= 0.5 then
-stage, stageT = 1, now
-status.Permadeath = "Requested FallingDown, watching for the game's ragdoll..."
-HatReanimator.PDRequest(hum, pdSt.FallingDown)
-elseif stage == 1 and weak and now - stageT >= 1.2 then
-stage, stageT = 2, now
--- The engine's own reset hook (not a game-specific remote): only used if the game registered a reset callback, only while the game shows nothing, and never counted as evidence (the callback may just trigger a normal reset).
-local ok, cb = pcall(pdSG.GetCore, pdSG, "ResetButtonCallback")
-if ok and typeof(cb) == "Instance" and cb:IsA("BindableEvent") then
-fired = true
-status.Permadeath = "Fired the game's reset callback, watching for ragdoll..."
-pcall(function() cb:Fire() end)
-end
 end
 end
 -- bounded: 5s, extended (max 8s) only while the evidence is still growing or a confirmation is settling
 if (now - t0 >= 5 and now - lastProg >= 1) or now - t0 >= 8 then break end
 task.wait()
 end
-return res, why, fired
+-- confirmed at some point, but gone again by the end of the wait
+if res == "timeout" and D.lastConf > -1e8 and not D.confSince then res = "recovered" end
+return res, why
 end
--- true only when a real game ragdoll transition was observed live for `settle` seconds. Dead stays enabled until then so the game's own reset/ragdoll handling is never blocked.
+-- true only when a real game ragdoll was confirmed for `settle` seconds: either one that was ALREADY active when the detector started (existing) or one the game started afterwards (new). Dead stays enabled until then so the game's own reset/ragdoll handling is never blocked.
+-- returns ok, why, kind ("existing" | "new")
 function HatReanimator.PDDetect(status, character, hum, settle)
 HatReanimator.PDBusyUntil = os.clock() + 12
 settle = math.clamp(tonumber(settle) or 0.15, 0.1, 1.5)
@@ -80522,37 +80618,81 @@ HatReanimator.PDBusyUntil = 0
 status.Permadeath = "Ragdoll detector failed to start, normal death used."
 return false, "error"
 end
-local ok, res, why, fired = pcall(pdDetect, status, character, hum, settle, D)
+D.status = status
+if D.detecting then
+-- one detection loop per detector: a second caller takes that loop's verdict instead of racing it
+local t = os.clock()
+while D.detecting and not D.done and os.clock() - t < 10 do
+HatReanimator.PDBusyUntil = os.clock() + 4
+task.wait()
+end
+return D.detectOk == true, D.detectWhy or "", D.confKind
+end
+D.detecting, D.detectOk, D.detectWhy = true, nil, nil
+D.ops += 1
+local ok, res, why = pcall(pdDetect, status, character, hum, settle, D)
+D.detecting = false
+D.ops -= 1
 if not ok then
+D.detectOk = false
 pdKill(D)
 HatReanimator.PDBusyUntil = 0
 status.Permadeath = "Ragdoll detection errored, normal death used."
 return false, "error"
 end
 if res == "ok" then
-status.Permadeath = "Ragdoll detected (" .. why .. "), running pd."
-return true, why
+D.detectOk, D.detectWhy = true, why
+-- the confirmation has to survive until PDExecute: the detector stays alive and its idle timer restarts
+D.expire = os.clock() + PD_LIFE
+local kind = D.confKind or "new"
+status.Permadeath = (kind == "existing" and "Existing ragdoll recognized (" or "Newly established ragdoll recognized (") .. why .. "), running pd."
+return true, why, kind
 end
+D.detectOk = false
 local peak, pwhy = D.peak, D.peakWhy
 pdKill(D)
 HatReanimator.PDBusyUntil = 0
 if res == "removed" then
 status.Permadeath = "Character removed before ragdoll."
 elseif res == "died" then
-status.Permadeath = fired and "Character died after the game's reset callback, normal death used." or "Character died before pd, normal death used."
+status.Permadeath = "Character died before pd, normal death used."
+elseif res == "recovered" then
+status.Permadeath = "Ragdoll recovered before pd, permadeath cancelled, normal death used."
 elseif peak >= 0.5 then
-status.Permadeath = "Ragdoll evidence incomplete (" .. pwhy .. "), normal death used."
+status.Permadeath = "Ragdoll confirmation incomplete (" .. pwhy .. "), permadeath cancelled, normal death used."
 else
-status.Permadeath = "No game ragdoll detected" .. (fired and " (FallingDown + reset callback tried)" or " (FallingDown tried)") .. ", normal death used."
+status.Permadeath = "No game ragdoll detected, permadeath cancelled, normal death used."
 end
 return false, res
 end
--- Pre-signal state of EVERY body joint (enabled or not) + assembly groups. Taken as late as possible (after the game's ragdoll settled), so what the game already broke is part of the snapshot and only the signal's own effect is measured.
+-- Cheap "is the game still rebuilding the body" signature: enabled body joints / constraints from the detector's own tracked lists (no character rescan).
+local function pdSig(D)
+local j, c = 0, 0
+for _, v in D.joints do
+if v.Parent and v.Enabled then j += 1 end
+end
+for v in D.addedJoints do
+if v.Parent and v.Enabled then j += 1 end
+end
+for v in D.cons do
+if v.Parent and v.Enabled and not pdForce[v.ClassName] then c += 1 end
+end
+for v in D.addedCons do
+if v.Parent and v.Enabled and not pdForce[v.ClassName] then c += 1 end
+end
+return j * 4096 + c
+end
+-- Pre-signal state of EVERY tracked body joint (enabled or not) + assembly groups. Taken as late as possible (after the game's ragdoll settled), so what the game already broke is part of the snapshot and only the signal's own effect is measured.
 local function pdSnap(D)
-local character = D.char
 local s = {joints = {}, n = 0, groups = pdGroups(D.parts)}
-for _, v in character:GetDescendants() do
-if v:IsA("JointInstance") and not pdOff(v, character) then
+for _, v in D.joints do
+if v.Parent then
+s.n += 1
+s.joints[s.n] = {v, v.Enabled, v.Part0, v.Part1}
+end
+end
+for v in D.addedJoints do
+if v.Parent then
 s.n += 1
 s.joints[s.n] = {v, v.Enabled, v.Part0, v.Part1}
 end
@@ -80568,16 +80708,32 @@ if not j:IsDescendantOf(character) or (r[2] and not j.Enabled) or j.Part0 ~= r[3
 end
 return n, pdSplits(s.groups)
 end
+-- result of a signal this script already sent for the character (a repeated / concurrent PDExecute reports it instead of firing again)
+local function pdAwaitSent(character, sent)
+local t = os.clock()
+while not sent.res and os.clock() - t < 12 and character.Parent do
+HatReanimator.PDBusyUntil = os.clock() + 4
+task.wait()
+end
+return sent.res or "unconfirmed"
+end
 local function pdExecute(status, character, hum, bringconns, D)
 -- Dead goes back to what the game had before this script touched it (never blindly re-enabled).
 local function undead()
 pcall(function() hum:SetStateEnabled(pdSt.Dead, D.deadOn ~= false) end)
 end
 local function gone()
-return not character:IsDescendantOf(workspace) or hum.Parent ~= character
+return D.done or not character:IsDescendantOf(workspace) or hum.Parent ~= character
 end
-local function dead()
-return D.died or hum.Health <= 0 or hum:GetState() == pdSt.Dead
+local function dead(final)
+if not pdDeath.sign(D, hum) then
+D.deathAt = nil
+return false
+end
+return pdDeath.ordinary(D, pdStep(D, true), os.clock(), final)
+end
+local function solidOK(ev)
+return ev.solid or not pdDeath.sign(D, hum)
 end
 if type(replicatesignal) ~= "function" then
 status.Permadeath = "Unsupported: no replicatesignal, normal death used."
@@ -80592,8 +80748,7 @@ status.Permadeath = "Character died before pd, normal death used."
 return "died"
 end
 local t0 = os.clock()
--- 1. The ragdoll must still be live right before the signal: a ragdoll that already recovered would turn the signal into a normal death. A confirmation seen within the last second counts (flicker); otherwise wait briefly for it to return.
-if not D.fresh then
+-- 1. The ragdoll must be CURRENTLY confirmed right before the signal (an already-active ragdoll counts exactly like a new one; there is no way around this check). Every pass forces a fresh evaluation, and evidence that lapsed - even inside the detector's 0.25s flicker tolerance - is never reused. If the ragdoll just dropped, wait briefly for it to return and hold.
 while true do
 local now = os.clock()
 HatReanimator.PDBusyUntil = now + 4
@@ -80605,28 +80760,16 @@ if dead() then
 status.Permadeath = "Character died before pd, normal death used."
 return "died"
 end
-pdStep(D)
-if D.confSince or now - (D.lastConf or -1e9) <= 1 then break end
-if now - t0 >= 0.4 then
-status.Permadeath = "Ragdoll ended before pd, normal death used."
+local ev1 = pdStep(D, true)
+if ev1.confirmed and solidOK(ev1) and D.confSince and now - D.confSince >= 0.1 then break end
+if now - t0 >= (D.detectOk and 0.6 or 0.4) then
+status.Permadeath = D.rebuilt and "Ragdoll could not be re-confirmed before pd, permadeath cancelled, normal death used." or "Ragdoll recovered before pd, permadeath cancelled, normal death used."
 return "unconfirmed"
 end
 task.wait()
 end
-end
 -- 2. Let a game ragdoll that is still rebuilding the character finish (bounded), so its own joint changes are never mistaken for the signal's.
-local function sig()
-local j, c = 0, 0
-for _, v in character:GetDescendants() do
-if v:IsA("JointInstance") then
-if v.Enabled and not pdOff(v, character) then j += 1 end
-elseif v:IsA("Constraint") then
-if v.Enabled and not pdOff(v, character) then c += 1 end
-end
-end
-return j * 4096 + c
-end
-local s0, sigv = os.clock(), sig()
+local s0, sigv = os.clock(), pdSig(D)
 local sigT = s0
 while os.clock() - sigT < 0.12 and os.clock() - s0 < 0.4 do
 task.wait()
@@ -80639,38 +80782,69 @@ if dead() then
 status.Permadeath = "Character died before pd, normal death used."
 return "died"
 end
-local n = sig()
+local n = pdSig(D)
 if n ~= sigv then
 sigv, sigT = n, os.clock()
 end
 end
--- 3. Snapshot, then (only now) stop the client from entering Dead and fire the signal exactly once.
+-- 3. Re-check the ragdoll one last time, snapshot (what the game already broke is part of it), then - only now, exactly once per character - stop the client from entering Dead and fire the signal.
+local evf = pdStep(D, true)
+if not (evf.confirmed and solidOK(evf) and D.confSince) then
+-- the game's ragdoll may still be shifting right after the rebuild window: give an already-detected ragdoll a short chance to settle again instead of dropping it on one lapsed frame
+local w0 = os.clock()
+while os.clock() - w0 < (D.detectOk and 0.3 or 0.1) do
+task.wait()
+HatReanimator.PDBusyUntil = os.clock() + 4
+if gone() then
+status.Permadeath = "Character removed before pd."
+return "removed"
+end
+if dead() then
+status.Permadeath = "Character died before pd, normal death used."
+return "died"
+end
+evf = pdStep(D, true)
+if evf.confirmed and solidOK(evf) and D.confSince then break end
+end
+if not (evf.confirmed and solidOK(evf) and D.confSince) then
+status.Permadeath = "Ragdoll recovered before pd, permadeath cancelled, normal death used."
+return "unconfirmed"
+end
+end
+local other = pdSent[character]
+if other and os.clock() - other.at < 15 then return pdAwaitSent(character, other) end
 local pre = pdSnap(D)
+local sent = {at = os.clock()}
+pdSent[character] = sent
 hum:SetStateEnabled(pdSt.Dead, false)
 status.Permadeath = "Ragdoll confirmed, sending ServerBreakJoints."
 local ok, err = pcall(function() replicatesignal(hum.ServerBreakJoints) end)
 if not ok then
+pdSent[character] = nil -- nothing left the client, a later attempt may try again
 undead()
-status.Permadeath = "replicatesignal failed (" .. tostring(err) .. "), normal death used."
+status.Permadeath = "Signal execution failed (" .. tostring(err) .. "), normal death used."
 return "signalfail"
 end
 local fireAt = os.clock()
 status.Permadeath = "ServerBreakJoints sent, watching for the joint break..."
--- 4. Observe. The signal cannot take effect before one network round trip, so changes inside that first moment belong to the game (the snapshot is simply refreshed). The window scales with ping.
+-- 4. Observe. The signal cannot take effect before it travelled to the server and its result replicated back, so changes inside that window belong to the game (the snapshot is taken again once it has passed). Two trips are budgeted: the engine's ping may be one-way or round-trip.
 local okp, ping = pcall(function() return Player:GetNetworkPing() end)
 if not okp or type(ping) ~= "number" then ping = 0.1 end
-local absorb = fireAt + math.clamp(ping * 0.5, 0.03, 0.25)
+local absorb = fireAt + math.clamp(ping * 2 + 0.04, 0.08, 0.45)
 local window = math.clamp(2.5 + ping * 3, 2.5, 5)
-local seenAt, calm = nil, false
+local seenAt, calm, armed = nil, false, false
 while true do
 local now = os.clock()
 HatReanimator.PDBusyUntil = now + 4
 if gone() then
+undead()
 status.Permadeath = "Character removed during pd."
 return "removed"
 end
-if dead() then break end
-if now < absorb then
+if dead(true) then break end
+if now >= absorb then
+if not armed then
+armed = true
 pre = pdSnap(D)
 else
 local n, split = pdBroke(D, pre)
@@ -80682,18 +80856,19 @@ calm = true
 break
 end
 end
+end
 if now - fireAt >= window then break end
 task.wait()
 end
-if dead() then
+if dead(true) then
 undead()
-status.Permadeath = "Character died after ServerBreakJoints, normal death used."
+status.Permadeath = "Character died during pd after ServerBreakJoints, normal death used."
 return "died"
 end
 if not seenAt and not calm then
 -- invoked, but nothing changed although there was something to break: NOT a success. Fall back instead of leaving the character in limbo.
 undead()
-status.Permadeath = "pd unconfirmed: signal sent, no joint break observed, normal death used."
+status.Permadeath = "Joint-break confirmation incomplete: signal sent, no joint break observed, normal death used."
 return "unconfirmed"
 end
 -- Break observed (or nothing was left to break) and the character is alive: now Climbing + client BreakJoints (never earlier, so the game's ragdoll is not interrupted).
@@ -80714,20 +80889,34 @@ end
 -- Returns "executed" (break observed or already in place, character alive) | "unconfirmed" | "nosignal" | "signalfail" | "died" | "removed" | "error". Only "executed" keeps PD active.
 function HatReanimator.PDExecute(status, character, hum, bringconns)
 HatReanimator.PDBusyUntil = os.clock() + 8
+-- exactly one signal per character: a repeated or concurrent call reports the first call's outcome instead of firing again
+local prior = pdSent[character]
+if prior and os.clock() - prior.at < 15 then
+local res = pdAwaitSent(character, prior)
+HatReanimator.PDBusyUntil = 0
+return res
+end
 local D = HatReanimator.PDActive
+local rebuilt = false
 if not D or D.char ~= character or D.hum ~= hum or D.done then
+-- detector lost: a new one judges the CURRENT character (an existing ragdoll is recognised by what it is now) and the ragdoll is still verified before any signal
 HatReanimator.PDBegin(status, character, hum)
 D = HatReanimator.PDActive
-if D then D.fresh = true end
+rebuilt = true
 end
 if not D then
 HatReanimator.PDBusyUntil = 0
 status.Permadeath = "pd errored, normal death used."
 return "error"
 end
+D.status, D.rebuilt = status, rebuilt or D.rebuilt
+D.ops += 1
 local ok, res = pcall(pdExecute, status, character, hum, bringconns, D)
+D.ops -= 1
 HatReanimator.PDBusyUntil = 0
 pdKill(D)
+local sent = pdSent[character]
+if sent and not sent.res then sent.res = ok and res or "error" end
 if not ok then
 pcall(function() hum:SetStateEnabled(pdSt.Dead, D.deadOn ~= false) end)
 status.Permadeath = "pd errored, normal death used."
@@ -82068,7 +82257,7 @@ CharOnDesc(v)
 end
 r15reanim_cleanup()
 HatReanimator.Status.ReanimState = "Respawned."
-HatReanimator.Status.Permadeath = "Respawn detected."
+HatReanimator.Status.Permadeath = (HatReanimator.PDKeptChar == character) and "Existing ragdoll kept (no reset), running pd." or "Respawn detected."
 HatReanimator.Status.HatCollide = "Respawn detected."
 HatReanimator.Status.RespawnFling = "Respawn detected."
 local hatcols = HatReanimator.HatCollide
@@ -82117,7 +82306,7 @@ end
 end
 if selhatcol.ColLimb then
 Humanoid.EvaluateStateMachine = false
-Humanoid:ChangeState(Enum.HumanoidStateType.Swimming)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Swimming)
 end
 local RootPart = character:WaitForChild("HumanoidRootPart", 10)
 if not RootPart then return end
@@ -82206,13 +82395,13 @@ if not RootPart:IsGrounded() then
 Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 end
-Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 elseif #HatReanimator.FlingTargets == 0 then
 break
 else
 RootPart.CFrame = CFrame.new(0, 1000, 0)
 RootPart.Velocity, RootPart.RotVelocity = Vector3.zero, Vector3.zero
-Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 end
 task.wait()
 end
@@ -82409,10 +82598,27 @@ end
 end
 end
 local CharConn = Player.CharacterAdded:Connect(OnCharacter)
+local keepChar, skipReset = nil, false
+HatReanimator.PDKeptChar = nil
 if Player.Character then
 local h = Player.Character:FindFirstChildOfClass("Humanoid")
 if h and h.RootPart then
 InitCFrame = h.RootPart.CFrame
+-- dolteddown's pd: the current character is NOT reset first. The shared detector (PDBegin, before anything touches the Humanoid) judges it as it is right now: a ragdoll that is already active is recognised at once, otherwise the game's ragdoll transition is awaited (bounded). Only a recognised ragdoll keeps the character and runs the pd on it; anything else falls back to the normal reset below.
+if HatReanimator.Permadeath and replicatesignal ~= nil and h.Health > 0 and h:GetState() ~= Enum.HumanoidStateType.Dead then
+local c = Player.Character
+HatReanimator.Status.Permadeath = "Watching your character for a game ragdoll (not reset)..."
+if HatReanimator.PDBegin(HatReanimator.Status, c, h) then
+local okD, resD = pcall(HatReanimator.PDDetect, HatReanimator.Status, c, h, 0.15)
+if okD and resD and c.Parent and Player.Character == c then
+keepChar = c
+HatReanimator.PDKeptChar = c
+end
+end
+-- the game already respawned the character meanwhile: that respawn is handled by CharacterAdded, so nothing is reset here
+if not keepChar and Player.Character ~= c then skipReset = true end
+end
+if not keepChar and not skipReset then
 pcall(function() Player.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Dead) end)
 pcall(function() Player.Character.Humanoid.Health = 0 end)
 pcall(replicatesignal, Player.Character.Humanoid.ServerBreakJoints)
@@ -82423,8 +82629,13 @@ end
 CurrentCharacter = Player.Character
 end
 end
+end
 Reanimate.CreateCharacter(InitCFrame)
 Reanimate.Starting = false
+-- the kept (ragdolled) character goes through the same per-character flow a respawned one does, so PDDetect (already confirmed) and PDExecute run on it
+if keepChar and not Reanimate.Stopping and Player.Character == keepChar and keepChar:IsDescendantOf(workspace) then
+task.spawn(OnCharacter, keepChar)
+end
 local letitgo = 0
 local stuckSince = nil
 while not Reanimate.Stopping do
@@ -84776,7 +84987,7 @@ end
 end
 if selhatcol.ColLimb then
 Humanoid.EvaluateStateMachine = false
-Humanoid:ChangeState(Enum.HumanoidStateType.Swimming)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Swimming)
 end
 local RootPart = character:WaitForChild("HumanoidRootPart", 10)
 if not RootPart then return end
@@ -84864,13 +85075,13 @@ if not RootPart:IsGrounded() then
 Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 end
-Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 elseif #HairReanimator.FlingTargets == 0 then
 break
 else
 RootPart.CFrame = CFrame.new(0, 1000, 0)
 RootPart.Velocity, RootPart.RotVelocity = Vector3.zero, Vector3.zero
-Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 end
 task.wait()
 end
@@ -87192,7 +87403,7 @@ end
 end
 if selhatcol.ColLimb then
 Humanoid.EvaluateStateMachine = false
-Humanoid:ChangeState(Enum.HumanoidStateType.Swimming)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Swimming)
 end
 local RootPart = character:WaitForChild("HumanoidRootPart", 10)
 if not RootPart then return end
@@ -87280,13 +87491,13 @@ if not RootPart:IsGrounded() then
 Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 end
-Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 elseif #HatHairReanimator.FlingTargets == 0 then
 break
 else
 RootPart.CFrame = CFrame.new(0, 1000, 0)
 RootPart.Velocity, RootPart.RotVelocity = Vector3.zero, Vector3.zero
-Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 end
 task.wait()
 end
@@ -89561,7 +89772,7 @@ end
 end
 if selhatcol.ColLimb then
 Humanoid.EvaluateStateMachine = false
-Humanoid:ChangeState(Enum.HumanoidStateType.Swimming)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Swimming)
 end
 local RootPart = character:WaitForChild("HumanoidRootPart", 10)
 if not RootPart then return end
@@ -89649,13 +89860,13 @@ if not RootPart:IsGrounded() then
 Util.Fling.ApplyRoot(RootPart, flingtarget, flingcf)
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", Util.Fling.UseGlue() and Util.PredictionFlingPart(flingtarget.Target) or nil)
 end
-Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 elseif #AccessoriesReanimator.FlingTargets == 0 then
 break
 else
 RootPart.CFrame = CFrame.new(0, 1000, 0)
 RootPart.Velocity, RootPart.RotVelocity = Vector3.zero, Vector3.zero
-Humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 end
 task.wait()
 end
@@ -100137,7 +100348,7 @@ end
 -- live status line of the Hats Reanimator's permadeath (only while the running hat reanimation actually uses it)
 function BSE.PermadeathStatus()
 	local ok, st = pcall(function()
-		if HatReanimator.HasPermadeath then return HatReanimator.Status and HatReanimator.Status.Permadeath end
+		if HatReanimator.HasPermadeath or (S.PDApplied and S.PDSet) then return HatReanimator.Status and HatReanimator.Status.Permadeath end
 	end)
 	return (ok and st ~= nil) and tostring(st) or nil
 end
@@ -100611,7 +100822,7 @@ local function startFlow(plr)
 		return false, plr.DisplayName .. " is no longer available."
 	end
 	activate(plr)
-	say("Hat reanimation running with " .. n .. " hat" .. (n == 1 and "" or "s") .. ". Effect formation activated: " .. S.Formation .. "." .. ((not reuse and HatReanimator.HasPermadeath) and " dolteddown's permadeath is active." or ""))
+	say("Hat reanimation running with " .. n .. " hat" .. (n == 1 and "" or "s") .. ". Effect formation activated: " .. S.Formation .. "." .. ((not reuse and HatReanimator.HasPermadeath) and " dolteddown's permadeath is requested and only runs once the game's ragdoll is confirmed (cancelled otherwise)." or ""))
 	return true
 end
 
