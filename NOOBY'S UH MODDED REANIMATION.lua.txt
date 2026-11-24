@@ -23874,14 +23874,17 @@ hint.TextTransparency = 0.55
 local cap = label(14, 0.5, 1, UDim2.new(0.5, 0, 1, -104), UDim2.new(1, -20, 0, 16))
 local status = label(13, 0.5, 1, UDim2.new(0.5, 0, 1, -30), UDim2.new(1, -20, 0, 16))
 status.Text = "Loading modules..."
-local pctLabel = label(26, 0.5, 1, UDim2.new(0.5, 0, 1, -66), UDim2.new(1, -20, 0, 30))
-pctLabel.Text = "0%"
+local ART_SIZE = 12
+local art = label(ART_SIZE, 0.5, 1, UDim2.new(0.5, 0, 1, -10), UDim2.new(1, -20, 0, 80))
+art.TextYAlignment = Enum.TextYAlignment.Bottom
+art.TextXAlignment = Enum.TextXAlignment.Center
+art.TextWrapped = false
 local detail = label(12, 0.5, 1, UDim2.new(0.5, 0, 1, -48), UDim2.new(1, -20, 0, 14))
 detail.TextTransparency = 0.25
 detail.Text = ""
 if env.UITextColor then
 env.UITextColor.Changed:Connect(function(v)
-hint.TextColor3, cap.TextColor3, status.TextColor3, pctLabel.TextColor3, detail.TextColor3 = v, v, v, v, v
+hint.TextColor3, cap.TextColor3, status.TextColor3, detail.TextColor3 = v, v, v, v
 end)
 end
 local chargeTrack = Util.Instance("Frame", root)
@@ -23898,41 +23901,65 @@ chargeFill.BorderSizePixel = 0
 chargeFill.BackgroundColor3 = WHITE
 chargeFill.BackgroundTransparency = 1
 chargeFill.ZIndex = 6
-local track = Util.Instance("Frame", root)
-track.AnchorPoint = Vector2.new(0.5, 1)
-track.Position = UDim2.new(0.5, 0, 1, -14)
-track.Size = UDim2.new(1, -40, 0, 10)
-track.BackgroundColor3 = WHITE
-track.BackgroundTransparency = 0.88
-track.BorderSizePixel = 0
-track.ZIndex = 5
-local fill = Util.Instance("Frame", track)
-fill.Size = UDim2.new(0, 0, 1, 0)
-fill.BorderSizePixel = 0
-fill.ZIndex = 6
-Util.Instance("UICorner", track).CornerRadius = UDim.new(1, 0)
-Util.Instance("UICorner", fill).CornerRadius = UDim.new(1, 0)
-fill.ClipsDescendants = true
-local shimmer = Util.Instance("Frame", fill)
-shimmer.Size = UDim2.fromScale(0.35, 1)
-shimmer.BackgroundColor3 = WHITE
-shimmer.BackgroundTransparency = 0.45
-shimmer.BorderSizePixel = 0
-shimmer.ZIndex = 7
-local shimmerGrad = Util.Instance("UIGradient", shimmer)
-shimmerGrad.Transparency = NumberSequence.new({
-NumberSequenceKeypoint.new(0, 1),
-NumberSequenceKeypoint.new(0.5, 0),
-NumberSequenceKeypoint.new(1, 1),
-})
-local knob = Util.Instance("Frame", track)
-knob.AnchorPoint = Vector2.new(0.5, 0.5)
-knob.Size = UDim2.fromOffset(14, 14)
-knob.Position = UDim2.new(0, 0, 0.5, 0)
-knob.BackgroundColor3 = WHITE
-knob.BorderSizePixel = 0
-knob.ZIndex = 8
-Util.Instance("UICorner", knob).CornerRadius = UDim.new(1, 0)
+-- ASCII loader: big 3-row percent + a pac-man maze bar (pac-man eats the pellets, chasing a ghost that he catches at 100%)
+local GLYPH = {
+["0"] = {" _ ", "| |", "|_|"},
+["1"] = {"   ", "  |", "  |"},
+["2"] = {" _ ", " _|", "|_ "},
+["3"] = {" _ ", " _|", " _|"},
+["4"] = {"   ", "|_|", "  |"},
+["5"] = {" _ ", "|_ ", " _|"},
+["6"] = {" _ ", "|_ ", "|_|"},
+["7"] = {" _ ", "  |", "  |"},
+["8"] = {" _ ", "|_|", "|_|"},
+["9"] = {" _ ", "|_|", " _|"},
+["%"] = {"o /", " / ", "/ o"},
+}
+local charW, cells = ART_SIZE * 0.55, 24
+local function relayout()
+art.Text = string.rep("0", 20)
+local w = art.TextBounds.X
+charW = (w > 0) and (w / 20) or (ART_SIZE * 0.55)
+art.Text = "0\n0\n0\n0\n0\n0"
+local h = art.TextBounds.Y
+if not (h > 0) then h = 6 * (ART_SIZE + 2) end
+h = math.ceil(h) + 4
+art.Size = UDim2.new(1, -20, 0, h)
+local s = 10 + h + 2
+status.Position = UDim2.new(0.5, 0, 1, -s)
+detail.Position = UDim2.new(0.5, 0, 1, -(s + 17))
+chargeTrack.Position = UDim2.new(0.5, 0, 1, -(s + 35))
+cap.Position = UDim2.new(0.5, 0, 1, -(s + 41))
+cells = math.clamp(math.floor((root.AbsoluteSize.X - 40) / charW) - 4, 16, 90)
+end
+local function buildArt(pct, pos, open)
+local a, b, c = {}, {}, {}
+local s = tostring(pct) .. "%"
+for i = 1, #s do
+local g = GLYPH[s:sub(i, i)]
+a[i], b[i], c[i] = g[1], g[2], g[3]
+end
+local gpos = math.min(pos + 7, cells - 1)
+local r = table.create(cells)
+for i = 0, cells - 1 do
+local ch
+if i == pos then
+ch = open and "C" or "O"
+elseif i == gpos then
+ch = "m"
+elseif i < pos then
+ch = " "
+elseif i % 2 == 0 then
+ch = (i % 16 == 14) and "o" or "."
+else
+ch = " "
+end
+r[i + 1] = ch
+end
+local dash = string.rep("-", cells + 2)
+return table.concat(a, " ") .. "\n" .. table.concat(b, " ") .. "\n" .. table.concat(c, " ") .. "\n"
+.. "." .. dash .. ".\n| " .. table.concat(r) .. " |\n'" .. dash .. "'"
+end
 local tri = FX.NewTriangle3D(root, {
 Interactive = true, ZIndex = 2, Ring = true, Track = true, RingSize = 176,
 HitSize = UDim2.fromOffset(150, 150),
@@ -23950,29 +23977,29 @@ if not L.Visible and root.BackgroundTransparency >= 0.999 then return end
 local t = env.Time and env.Time() or os.clock()
 if env.GetUIBGColor then root.BackgroundColor3 = env.GetUIBGColor(t) end
 local c = env.GetUIColor and env.GetUIColor(t) or WHITE
-fill.BackgroundColor3 = c
 chargeFill.BackgroundColor3 = c
+if c ~= L.lastC then
+L.lastC = c
+art.TextColor3 = c
+end
 local MP = Util.ModuleProgress
 local real = (type(MP) == "table" and (MP.Total or 0) > 0) and math.clamp((MP.Done or 0) / MP.Total, 0, 1) or 0
 local goal = math.max(L.target, math.min(real, 0.98))
 L.p = L.p + (goal - L.p) * (1 - math.exp(-8 * dt))
-local sdt = math.min(dt, 1 / 30)
-L.bv = (L.bv or 0) + ((L.p - (L.bp or 0)) * 140 - (L.bv or 0) * 13) * sdt
-L.bp = math.clamp((L.bp or 0) + L.bv * sdt, 0, 1)
-fill.Size = UDim2.new(L.bp, 0, 1, 0)
-shimmer.Position = UDim2.new(((t * 0.9) % 1.5) - 0.4, 0, 0, 0)
-local kn = 14 + 3 * math.sin(t * 7) + math.clamp(math.abs(L.bv) * 14, 0, 9)
-knob.Size = UDim2.fromOffset(kn, kn)
-knob.Position = UDim2.new(L.bp, 0, 0.5, 0)
-knob.BackgroundColor3 = c
-local pct = math.floor(L.p * 100 + 0.5)
-if pct ~= L.lastPct then
-L.lastPct = pct
-L.pulse = 1
-pctLabel.Text = pct .. "%"
+local ow = root.AbsoluteSize.X
+if ow ~= L.lastW then
+L.lastW = ow
+relayout()
+L.artKey = nil
 end
-L.pulse = math.max(0, (L.pulse or 0) - dt * 3.2)
-pctLabel.TextSize = math.floor(26 + 8 * L.pulse * L.pulse + 1.5 * math.sin(t * 5))
+local pct = math.floor(L.p * 100 + 0.5)
+local pos = math.floor(L.p * (cells - 1) + 0.5)
+local open = (math.floor(t * 7) % 2) == 0
+local key = pos * 10000 + pct * 2 + (open and 1 or 0)
+if key ~= L.artKey then
+L.artKey = key
+art.Text = buildArt(pct, pos, open)
+end
 L.detT = (L.detT or 0) - dt
 if L.detT <= 0 then
 L.detT = 0.1
@@ -23995,7 +24022,7 @@ if L.Visible then return end
 L.Visible = true
 showToken = showToken + 1
 L.p, L.target = 0, 0
-L.bp, L.bv, L.lastPct, L.pulse = 0, 0, nil, 1
+L.artKey = nil
 root.Visible = true
 tri:SetActive(true)
 tri.scaleBase = 1
@@ -66770,7 +66797,7 @@ local H = {
 ["fly toggle key"] = "The keyboard key that turns Fly on and off.",
 ["tp key"] = "The key you hold while clicking to teleport.",
 ["hop mode"] = "How Server Hop picks the next server.",
-["module loading"] = "How movesets and dances load: all at once, in parts, or one by one.",
+["module loading"] = "How movesets and dances load: normally, two at a time, back to back, or one by one.",
 ["ui font"] = "Pick the text style used in the menu.",
 ["rootpart mode"] = ADV,
 ["rootpart velocity"] = ADV,
@@ -99467,21 +99494,24 @@ lastT = os.clock()
 end
 end
 end
-local function AddModules(list)
+-- Registers ONE module function (list[k]) through the normal pipeline. Returns the registered name (or nil) and an [ERROR] line when it failed.
+-- Shared by AddModules (Default / Pre-load / runtime installs) and the individual-module scheduler of the Splitted / Instant / Slow load modes.
+Util.AddModuleAt = function(list, k)
+local okM, name, logging2 = pcall(AddModule, list[k])
+if not okM then return nil, "\n[ERROR] M" .. k .. ": " .. tostring(name) end
+if logging2 then return name, "\n[ERROR] M" .. k .. ": " .. logging2 end
+return name
+end
+local function AddModules(list, onEach)
 local names = {}
 local logging = ""
 Util.ModuleYield(true)
 if type(list) == "table" then
 for i=1, #list do
-local okM, name, logging2 = pcall(AddModule, list[i])
-if not okM then
-logging ..= "\n[ERROR] M" .. i .. ": " .. tostring(name)
-else
+local name, err = Util.AddModuleAt(list, i)
 if name then table.insert(names, name) end
-if logging2 then
-logging ..= "\n[ERROR] M" .. i .. ": " .. logging2
-end
-end
+if err then logging ..= err end
+if onEach then onEach() end
 Util.ModuleYield()
 end
 else
@@ -112939,7 +112969,8 @@ SaveData.VanillaModuleCache = nil
 end
 local loadMode = tonumber(SaveData.ModuleLoadMode)
 if loadMode ~= 2 and loadMode ~= 3 and loadMode ~= 4 and loadMode ~= 5 then loadMode = 1 end
-local SLOW_STEP_DELAY = 0.35
+local modular = loadMode >= 2 and loadMode <= 4 -- Splitted / Instant / Slow: modules are scheduled one by one (Sched below); Default / Pre-load keep the original path
+local SLOW_STEP_DELAY = 0.03 -- file-level pause only (maps, plugin files, between reading and compiling a bundle); individual modules are paced by Sched
 local function SlowPause()
 if loadMode == 4 then
 task.wait(SLOW_STEP_DELAY)
@@ -112963,21 +112994,144 @@ sliceT = os.clock()
 end
 end
 InitLogsText.Add("\n[LOG] Module load mode: " .. ({"Default", "Splitted (2 at a time)", "Instant", "Slow (1 at a time, paced)", "Pre-load (assets cached ahead of time)"})[loadMode])
-if loadMode == 4 then
-InitLogsText.Add("\n[LOG] Slow mode: one module at a time with a short pause between each, this takes longer.")
+do
+local note = ({
+[2] = "\n[LOG] Splitted mode: exactly 2 Movesets / Dances are registered per batch (individual modules, not files), a yield between batches.",
+[3] = "\n[LOG] Instant mode: every Moveset / Dance is registered one after another with no artificial pauses; yields only when a frame's worth of work builds up.",
+[4] = "\n[LOG] Slow mode: one Moveset / Dance at a time with a short frame-paced yield after each (longer after heavy ones).",
+})[loadMode]
+if note then InitLogsText.Add(note) end
 end
-local function RunPhase(items, work, apply)
+-- Progress counts individual Movesets / Dances: a bundled file is ONE pending unit until its module list is known, then that unit is
+-- replaced by one unit per module (RunPhase skips its own per-file bump for a file that did this).
+local fileExpanded = false
+local function ModuleDone()
+local P = Util.ModuleProgress
+if P then P.Done = P.Done + 1 end
+end
+local function ExpandFileUnit(n)
+fileExpanded = true
+local P = Util.ModuleProgress
+if P then P.Total = P.Total + n - 1 end
+end
+-- Individual-module scheduler for modes 2-4. A bundled file only yields a LIST of module functions; every entry is one Moveset / Dance.
+-- Entries are queued in catalogue order (the queue carries over between files, so Splitted pairs are always 2 real modules) and registered
+-- through Util.AddModuleAt, the same pipeline AddModules uses (same errors, names and ordering). Default / Pre-load never touch this.
+local Sched = {}
+do
+local qJob, qIdx, qHead, qTail = {}, {}, 1, 0
+local slice = os.clock()
+local INSTANT_BUDGET = FRAME_BUDGET * 2.5 -- Instant yields only once ~2.5 normal slices of work have built up
+local function finishJob(job)
+InitLogsText.Add("\n[LOG] Loaded " .. #job.Names .. " modules.")
+if job.OnDone then
+local okD, errD = pcall(job.OnDone, job.Names)
+if not okD then InitLogsText.Add("\n[ERROR] Load step failed: " .. tostring(errD)) end
+end
+end
+local function runNext()
+local job, k = qJob[qHead], qIdx[qHead]
+qJob[qHead], qIdx[qHead] = nil, nil
+qHead += 1
+local name, err = Util.AddModuleAt(job.List, k)
+if name then job.Names[#job.Names + 1] = name end
+if err then InitLogsText.Add(err) end
+ModuleDone()
+job.Left -= 1
+if job.Left == 0 then finishJob(job) end
+end
+-- final = nothing more will be queued, so a lone leftover entry (Splitted) is processed too
+function Sched.Drain(final)
+slice = os.clock()
+if loadMode == 2 then
+while qTail - qHead + 1 >= 2 or (final and qHead <= qTail) do
+for _ = 1, math.min(2, qTail - qHead + 1) do runNext() end
+if qHead <= qTail or not final then task.wait() end
+end
+elseif loadMode == 3 then
+while qHead <= qTail do
+runNext()
+if os.clock() - slice >= INSTANT_BUDGET then
+task.wait()
+slice = os.clock()
+end
+end
+else
+while qHead <= qTail do
+local t0 = os.clock()
+runNext()
+local cost = os.clock() - t0
+if cost > FRAME_BUDGET then task.wait(math.min(cost * 3, 0.12)) else task.wait() end
+end
+end
+if qHead > qTail then qHead, qTail = 1, 0 end
+end
+function Sched.Submit(list, onDone)
+local job = {List = list, Names = {}, Left = 0, OnDone = onDone}
+if type(list) ~= "table" then
+InitLogsText.Add("\n[LOG] Module return value is not a table array of module functions. Skipping.")
+ExpandFileUnit(0)
+finishJob(job)
+return
+end
+local n = #list
+ExpandFileUnit(n)
+if n == 0 then finishJob(job) return end
+job.Left = n
+for k = 1, n do
+qTail += 1
+qJob[qTail], qIdx[qTail] = job, k
+end
+Sched.Drain(false)
+end
+end
+local function RunPhase(items, work, apply, modules)
 local rawApply = apply
 local function bump()
 local P = Util.ModuleProgress
 if P then P.Done = P.Done + 1 end
 end
 apply = function(i, x, data)
+fileExpanded = false
 if rawApply then
 local okA, errA = pcall(rawApply, i, x, data)
 if not okA then InitLogsText.Add("\n[ERROR] Load step failed: " .. tostring(errA)) end
 end
-bump()
+if not fileExpanded then bump() end
+end
+if modules and modular then
+-- Splitted / Instant / Slow: strictly one bundled file at a time, never a burst of parallel tasks. The files only produce module lists;
+-- the Movesets / Dances inside are paced one by one by Sched. Instant alone reads the NEXT file in a single helper task while the
+-- current one is applied (max 1 extra task); Splitted and Slow never read ahead.
+local ahead
+local function readAhead(k)
+if k > #items then ahead = nil return end
+local slot = {}
+ahead = slot
+task.spawn(function()
+local okR, res = pcall(work, k, items[k])
+slot.Ok, slot.Res, slot.Ready = okR, res, true
+end)
+end
+if loadMode == 3 then readAhead(1) end
+for i, x in items do
+local okW, data
+if loadMode == 3 then
+local slot = ahead
+while not slot.Ready do task.wait() end
+readAhead(i + 1)
+okW, data = slot.Ok, slot.Res
+else
+okW, data = pcall(work, i, x)
+end
+if not okW then
+InitLogsText.Add("\n[ERROR] Load step failed: " .. tostring(data))
+data = ""
+end
+SlowPause()
+apply(i, x, data)
+end
+return
 end
 if loadMode == 4 then
 for i, x in items do
@@ -113109,8 +113263,13 @@ if not func then return false, "COMPILE FAILED: " .. tostring(comperr) end
 local okF, list = pcall(func)
 if not okF then return false, tostring(list) end
 if type(list) ~= "table" then return false, "file returned " .. typeof(list) .. " instead of a module list" end
-local names, logging = AddModules(list)
+if modular then
+Sched.Submit(list)
+else
+ExpandFileUnit(#list)
+local names, logging = AddModules(list, ModuleDone)
 InitLogsText.Add(logging)
+end
 return true
 end
 local ok, why = attempt(data)
@@ -113126,7 +113285,7 @@ if not ok then
 InitLogsText.Add("\n[ERROR] Failed to load VANILLA " .. x .. ": " .. tostring(why))
 if SaveData.ContentHash then SaveData.ContentHash[x] = nil end
 end
-end)
+end, true)
 Util.UINotify("Loading modules...", 0.8)
 InitLogsText.Add("\n[LOG] Loading user modules...")
 local userfiles = {}
@@ -113164,9 +113323,15 @@ end
 InitLogsText.Add("\n[LOG] Loadstringing USER " .. x .. "...")
 local func, comperr = loadstring(data, "Uhhhhhh :: " .. x)
 if func then
-local names, logging = AddModules(func())
+local list = func()
+if modular then
+Sched.Submit(list, function(names) UserModulesListor[x] = names end)
+else
+ExpandFileUnit(type(list) == "table" and #list or 0)
+local names, logging = AddModules(list, ModuleDone)
 UserModulesListor[x] = names
 InitLogsText.Add(logging)
+end
 elseif comperr then
 error("COMPILE FAILED: " .. comperr)
 end
@@ -113174,7 +113339,8 @@ end, function(msg)
 InitLogsText.Add("\n[ERROR] Failed to load USER " .. x .. ": See traceback below.")
 InitLogsText.Add("\n[ERROR] " .. table.concat(string.split(debug.traceback("USER " .. x .. ": " .. msg), "\n"), "\n[ERROR] "))
 end)
-end)
+end, true)
+if modular then Sched.Drain(true) end -- flush a lone leftover entry (Splitted) before anything else runs
 do
 local function LoadExtensionFolder(folder, label, register)
 local okl, files = pcall(listfiles, folder)
@@ -113872,10 +114038,10 @@ if SaveData.ModuleLoadMode < 1 or SaveData.ModuleLoadMode > 5 then
 SaveData.ModuleLoadMode = 1
 end
 local LoadModeInfo = {
-"Default: loads the modules one at a time, the normal way.",
-"Splitted: reads and loads 2 modules at a time. Lighter on weak devices.",
-"Instant: reads and loads all modules at once, the fastest way.",
-"Slow: reads and loads 1 module at a time with a short pause between each. Saves performance on weak devices, but loading takes longer.",
+"Default: loads the modules file by file, the normal way. Balanced speed and smoothness.",
+"Splitted: registers exactly 2 Movesets / Dances at a time (individual modules, not files) and finishes each pair before the next. Lighter on weak devices.",
+"Instant: registers every Moveset / Dance one after another with no artificial pauses, yielding only when a frame's worth of work builds up. The fastest way, without a loading burst.",
+"Slow: registers 1 Moveset / Dance at a time with a short frame-paced pause after each (longer after heavy ones). Smoothest on weak devices, but loading takes longer.",
 "Pre-load: loads modules normally, then quietly downloads and caches every moveset and dance asset in the background so switching is instant.",
 }
 local LoadModeNote = "\n(applies on the next Reload Modules / restart)"
@@ -113883,7 +114049,7 @@ local LoadModeText
 UI.CreateDropdown(MainPage, "Module Loading", {
 "Default",
 "Splitted (2 at a time)",
-"Instant (all at once)",
+"Instant (fastest, in sequence)",
 "Slow (1 at a time, saves performance)",
 "Pre-load (assets ahead of time)",
 }, SaveData.ModuleLoadMode).Changed:Connect(function(val)
