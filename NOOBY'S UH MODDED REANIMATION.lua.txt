@@ -203,6 +203,14 @@ $$      $$$$$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$ $$$"""$$$
                 one rate-limited SimulationRadius refresh only after a real ownership loss, event-driven re-weld guard on released handles, ClaimTime written only when it changes,
                 everything released by Reset() when the reanimation ends; Be someone's effect holds its pose while the target respawns, tolerates short reanimator state flips and
                 forces Hat Fling / Hat Spin off only while it runs. The server still decides ownership - nothing here can force it)
+       Custom mod (v603 PD FIX: dolteddown's permadeath keeps EVERY accessory - Accessory + legacy Hat, nested ones, late-replicated ones - tracked, released from the original body and counted;
+                body joint break keeps all accessory joints; a hat is only lost after a settle time; one handling per character with stale-callback invalidation;
+                respawn / removal judged by Player.Character identity + a short absence grace instead of any transient reparent; character setup no longer trips the stuck-recovery timer)
+       Custom mod (v605 PD FIX 2: ONE wearable rule (HatReanimator.WearableOf / WearableHandle: Accessory, legacy Hat, any Accoutrement subclass) for collection, release and the body joint break;
+                accessories are tracked as INSTANCES per character (a baseline set, one ancestry connection each hooked on the Handle so a missing Handle counts too, nothing dropped while the character is still being set up,
+                judged one by one after the pd transition instead of a count baseline); every character gets its OWN list, so State1 / State2 threads and callbacks of an older character can never touch a new one;
+                a character is handled only while it is still the player's character and waits (bounded) for its workspace parent; Respawn() performs ONE guarded recovery respawn per character (it was only a flag
+                before), capped at 3 in a row; the Hair / Hat x Hair / Accessories loops got the same grace + zero-owner guards as the Hats loop)
        Custom mod (v545: NAMELESS ADMIN CONSENT PROMPT - the embedded Nameless Admin is blocked until the user answers ONE Yes / No prompt
                 ("Initialize Nameless Admin for Uh Admin?") that is shown BEFORE anything is unpacked, compiled or started; it is asked once per session
                 (the startup auto-boot and the first NA command share the same answer); No leaves it fully unloaded and NA commands just say it is not initialized)
@@ -69258,6 +69266,7 @@ pcall(Reanimate.ToolExtras.BuildConfig, parent, "Hat")
 end
 HatReanimator.LastForceRespawn = 0
 HatReanimator.PDBusyUntil = 0
+HatReanimator.PDHatGrace = 0 -- os.clock() deadline: while the pd transition runs (and shortly after) a hat leaving the character is not yet treated as lost
 HatReanimator.PDActive = nil
 -- the last Humanoid state THIS script requested (PDRequest): a detector built later never takes that state for the game's
 HatReanimator.PDSelfState = {at = 0}
@@ -69270,6 +69279,8 @@ local pdSt = Enum.HumanoidStateType
 local pdCS = game:GetService("CollectionService")
 local PD_LIFE = 45 -- idle lifetime of a detector; PDBegin on the same character and every detect / execute step refresh it
 local PD_GAP = 0.03 -- minimum time between two evaluations (shared by the background monitor and the detection / execution loops)
+-- ARMED wait, kept on HatReanimator so it costs no extra local. PDArm: how long (max, seconds) a detector keeps watching for the game to establish its ragdoll before that is a genuine detection failure (the old 5-8s window is only the first stage of it). PDRearm: how long (max) the pre-signal confirmation keeps waiting for a detected ragdoll that briefly lapsed again.
+HatReanimator.PDArm, HatReanimator.PDRearm = 60, 15
 -- Standard R6 + R15 body part names: the BODY used to judge an already-active ragdoll (accessories, tools and custom extras never count).
 local pdCoreNames = {}
 for _, n in {"HumanoidRootPart", "Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "UpperTorso", "LowerTorso", "LeftUpperArm", "LeftLowerArm", "LeftHand", "RightUpperArm", "RightLowerArm", "RightHand", "LeftUpperLeg", "LeftLowerLeg", "LeftFoot", "RightUpperLeg", "RightLowerLeg", "RightFoot"} do
@@ -69396,6 +69407,20 @@ if (a == p0 and b == p1) or (a == p1 and b == p0) then return true end
 end
 end
 return false
+end
+-- Is the character REALLY gone? A reparent / rebuild of a character that is still Player.Character is not a removal (and never a respawn). Only a destroyed Humanoid, a replaced Player.Character (a genuinely new character) or an absence from workspace that outlasts 0.75s counts.
+local function pdGone(D)
+local character = D.char
+if D.done or D.hum.Parent ~= character then return true end
+local cur = Player.Character
+if cur ~= nil and cur ~= character then return true end
+if character:IsDescendantOf(workspace) then
+D.absentAt = nil
+return false
+end
+local now = os.clock()
+D.absentAt = D.absentAt or now
+return now - D.absentAt >= 0.75
 end
 local function pdKill(D)
 if D.done then return end
@@ -69758,7 +69783,7 @@ D.conns[#D.conns + 1] = RunService.Heartbeat:Connect(function()
 if D.done then return end
 local now = os.clock()
 if now - D.evAt < PD_GAP then return end
-if D.ops == 0 and (now >= D.expire or hum.Parent ~= character or not character:IsDescendantOf(workspace)) then
+if D.ops == 0 and (now >= D.expire or pdGone(D)) then
 pdKill(D)
 return
 end
@@ -69823,15 +69848,28 @@ HatReanimator.PDActive = nil
 end
 return ok
 end
-local function pdDetect(status, character, hum, settle, D)
+local function pdDetect(status, character, hum, settle, D, alive, probe)
 local t0 = os.clock()
 local lastProg, best, why, res = t0, 0, "", "timeout"
+-- ARMED: the detector keeps watching until the game establishes its ragdoll. The wait is bounded by D.armEnd (PDArm, shared with the pre-signal confirmation in pdExecute) and is ended early only by a genuine removal, an ordinary death or a stopped / replaced reanimation (alive). A confirmation that lapses again just goes back to waiting. `probe` (the pre-reset look at the current character) keeps the old bounded 5-8s window as its whole wait, because its fallback is the normal reset, after which the NEW character gets the fully armed flow.
+if not probe then D.armEnd = D.armEnd or (t0 + HatReanimator.PDArm) end
+local stage = 0
+-- the status is rewritten only when the stage changes: 1 waiting, 2 armed and still watching, 3 ragdoll detected / stabilizing, 4 ragdoll lapsed again
+local function say(n, text)
+if stage ~= n then
+stage = n
+status.Permadeath = text
+end
+end
 -- PASSIVE: the detector only observes the character. An already-active ragdoll is judged on its current condition, a new one on what changes. It never forces a FallingDown state, never fires a reset callback and never adds evidence of its own; the script's own requested states are never counted.
-if not D.confSince then status.Permadeath = "Waiting for game ragdoll..." end
 while true do
 local now = os.clock()
 HatReanimator.PDBusyUntil = now + 4
-if D.done or not character:IsDescendantOf(workspace) or hum.Parent ~= character then
+if alive and not alive() then
+res = "cancelled"
+break
+end
+if pdGone(D) then
 res = "removed"
 break
 end
@@ -69853,13 +69891,23 @@ end
 if D.confSince then
 -- a confirmed ragdoll (already active from PDBegin, or newer from when the evidence built up) counts only while it is CURRENTLY confirmed and has held for `settle` seconds
 lastProg = now
+say(3, (D.confKind == "existing" and "Existing ragdoll recognized" or "Ragdoll detected") .. " (" .. tostring(D.confWhy) .. "), stabilizing...")
 if ev.confirmed and (ev.solid or not sign) and now - D.confSince >= settle then
 res, why = "ok", ev.why
 break
 end
+elseif D.lastConf > -1e8 and not probe then
+say(4, "Ragdoll lapsed, still armed: waiting for the game ragdoll...")
+elseif not probe and now - t0 >= 5 then
+say(2, "Waiting for game ragdoll (armed, still watching)...")
+else
+say(1, "Waiting for game ragdoll...")
 end
--- bounded: 5s, extended (max 8s) only while the evidence is still growing or a confirmation is settling
+if probe then
 if (now - t0 >= 5 and now - lastProg >= 1) or now - t0 >= 8 then break end
+elseif now >= D.armEnd then
+break
+end
 task.wait()
 end
 -- confirmed at some point, but gone again by the end of the wait
@@ -69868,13 +69916,21 @@ return res, why
 end
 -- true only when a real game ragdoll was confirmed for `settle` seconds: either one that was ALREADY active when the detector started (existing) or one the game started afterwards (new). Dead stays enabled until then so the game's own reset/ragdoll handling is never blocked.
 -- returns ok, why, kind ("existing" | "new")
-function HatReanimator.PDDetect(status, character, hum, settle)
+function HatReanimator.PDDetect(status, character, hum, settle, alive, probe)
 HatReanimator.PDBusyUntil = os.clock() + 12
 settle = math.clamp(tonumber(settle) or 0.15, 0.1, 1.5)
 local D = HatReanimator.PDActive
 if not D or D.char ~= character or D.hum ~= hum or D.done then
 HatReanimator.PDBegin(status, character, hum)
 D = HatReanimator.PDActive
+end
+if not D and character.Parent and hum.Parent == character then
+-- the snapshot can fail while the character is still being assembled / replicated: ONE bounded retry on the character as it is now (still one detector per character - the failed one was already killed)
+task.wait(0.15)
+if character.Parent and hum.Parent == character then
+HatReanimator.PDBegin(status, character, hum)
+D = HatReanimator.PDActive
+end
 end
 if not D then
 HatReanimator.PDBusyUntil = 0
@@ -69883,25 +69939,44 @@ return false, "error"
 end
 D.status = status
 if D.detecting then
--- one detection loop per detector: a second caller takes that loop's verdict instead of racing it
-local t = os.clock()
-while D.detecting and not D.done and os.clock() - t < 10 do
+-- one detection loop per detector: a second caller takes that loop's verdict instead of racing it. It waits as long as the loop's own armed budget (a fixed 10s here turned a still-armed wait into a failure for the second caller).
+local lim = os.clock() + HatReanimator.PDArm + 2
+while D.detecting and not D.done and os.clock() < lim and not (alive and not alive()) do
 HatReanimator.PDBusyUntil = os.clock() + 4
 task.wait()
 end
-return D.detectOk == true, D.detectWhy or "", D.confKind
+if D.detectOk ~= nil then return D.detectOk == true, D.detectWhy or "", D.confKind end
+if D.detecting or D.done then return false, D.done and "removed" or "timeout" end
 end
 D.detecting, D.detectOk, D.detectWhy = true, nil, nil
 D.ops += 1
-local ok, res, why = pcall(pdDetect, status, character, hum, settle, D)
+local ok, res, why = pcall(pdDetect, status, character, hum, settle, D, alive, probe)
 D.detecting = false
 D.ops -= 1
 if not ok then
+-- an error inside the evaluation (an instance destroyed mid-scan, a half-built character) is not a verdict about the ragdoll: rebuild the detector ONCE on the character as it is now (an already-active ragdoll is recognised by its current state) and judge again
 D.detectOk = false
 pdKill(D)
+if character.Parent and hum.Parent == character and hum.Health > 0 and HatReanimator.PDBegin(status, character, hum) then
+D = HatReanimator.PDActive
+if D then
+D.status = status
+D.detecting, D.detectOk, D.detectWhy = true, nil, nil
+D.ops += 1
+ok, res, why = pcall(pdDetect, status, character, hum, settle, D, alive, probe)
+D.detecting = false
+D.ops -= 1
+end
+end
+if not ok or not D then
+if D then
+D.detectOk = false
+pdKill(D)
+end
 HatReanimator.PDBusyUntil = 0
 status.Permadeath = "Ragdoll detection errored, normal death used."
 return false, "error"
+end
 end
 if res == "ok" then
 D.detectOk, D.detectWhy = true, why
@@ -69913,18 +69988,25 @@ return true, why, kind
 end
 D.detectOk = false
 local peak, pwhy = D.peak, D.peakWhy
+-- a detector that was already replaced (new character / new PDBegin) leaves the status to its replacement
+local mine = HatReanimator.PDActive == D
 pdKill(D)
 HatReanimator.PDBusyUntil = 0
+if mine then
+local tail = probe and "" or string.format(" after the %ds armed wait", HatReanimator.PDArm)
 if res == "removed" then
-status.Permadeath = "Character removed before ragdoll."
+status.Permadeath = "Character genuinely removed before ragdoll."
 elseif res == "died" then
-status.Permadeath = "Character died before pd, normal death used."
+status.Permadeath = "Character genuinely died before pd, normal death used."
+elseif res == "cancelled" then
+status.Permadeath = "Reanimation stopped or character replaced, permadeath wait cancelled."
 elseif res == "recovered" then
-status.Permadeath = "Ragdoll recovered before pd, permadeath cancelled, normal death used."
+status.Permadeath = "Ragdoll recovered before pd" .. tail .. ", permadeath cancelled, normal death used."
 elseif peak >= 0.5 then
-status.Permadeath = "Ragdoll confirmation incomplete (" .. pwhy .. "), permadeath cancelled, normal death used."
+status.Permadeath = "Ragdoll confirmation incomplete (" .. pwhy .. ")" .. tail .. ", permadeath cancelled, normal death used."
 else
-status.Permadeath = "No game ragdoll detected, permadeath cancelled, normal death used."
+status.Permadeath = "No game ragdoll detected" .. tail .. ", permadeath cancelled, normal death used."
+end
 end
 return false, res
 end
@@ -69945,9 +70027,28 @@ if v.Parent and v.Enabled and not pdForce[v.ClassName] then c += 1 end
 end
 return j * 4096 + c
 end
--- Pre-signal state of EVERY tracked body joint (enabled or not) + assembly groups. Taken as late as possible (after the game's ragdoll settled), so what the game already broke is part of the snapshot and only the signal's own effect is measured.
-local function pdSnap(D)
-local s = {joints = {}, n = 0, groups = pdGroups(D.parts)}
+-- A joint that really holds the BODY together: enabled, inside the character, linking two body parts. Accessory welds, tool grips and welds to anything outside the body never count (they would otherwise make an already-ragdolled body look "still intact" and an already-broken body look "unbroken").
+local function pdBodyPart(D, p)
+return p ~= nil and (D.body[p] == true or (p.Parent ~= nil and not pdOff(p, D.char)))
+end
+local function pdLiveJoint(D, j)
+if not (j.Parent and j.Enabled and j:IsDescendantOf(D.char)) then return false end
+return pdBodyPart(D, j.Part0) and pdBodyPart(D, j.Part1)
+end
+-- number of body joints that are STILL holding the body together right now (tracked lists only, no character rescan)
+local function pdLive(D)
+local n = 0
+for _, j in D.joints do
+if pdLiveJoint(D, j) then n += 1 end
+end
+for j in D.addedJoints do
+if pdLiveJoint(D, j) then n += 1 end
+end
+return n
+end
+-- State snapshot of the body: every tracked body joint (enabled or not), the assembly groups, how many body joints are still live, how many separate physics assemblies the body forms and how many enabled constraints bridge them, plus the evidence it was judged on. Used as the PRE-signal state (what the game had already done before the signal) and the POST-signal state (what is true afterwards); the two are COMPARED, but the post state never has to differ from the pre state: a body that was already taken apart and still is, is valid evidence by itself.
+local function pdSnap(D, ev)
+local s = {joints = {}, n = 0, groups = pdGroups(D.parts), at = os.clock(), ev = ev}
 for _, v in D.joints do
 if v.Parent then
 s.n += 1
@@ -69960,16 +70061,19 @@ s.n += 1
 s.joints[s.n] = {v, v.Enabled, v.Part0, v.Part1}
 end
 end
+local asm, br = pdAsm(D)
+s.live, s.asm, s.br = pdLive(D), asm, br
 return s
 end
--- Changes since the snapshot: joints destroyed / disabled / re-pointed, newly split assemblies.
-local function pdBroke(D, s)
+-- Changes since the snapshot: joints destroyed / disabled / re-pointed, newly split assemblies, and how many fewer body joints are live than in the snapshot (`live` = pdLive(D) of this frame, passed in so it is only counted once per frame).
+local function pdBroke(D, s, live)
 local character, n = D.char, 0
 for _, r in s.joints do
 local j = r[1]
 if not j:IsDescendantOf(character) or (r[2] and not j.Enabled) or j.Part0 ~= r[3] or j.Part1 ~= r[4] then n += 1 end
 end
-return n, pdSplits(s.groups)
+local drop = s.live - live
+return n, pdSplits(s.groups), drop > 0 and drop or 0
 end
 -- result of a signal this script already sent for the character (a repeated / concurrent PDExecute reports it instead of firing again)
 local function pdAwaitSent(character, sent)
@@ -69980,13 +70084,36 @@ task.wait()
 end
 return sent.res or "unconfirmed"
 end
-local function pdExecute(status, character, hum, bringconns, D)
+-- Body-only client joint break for the final pd step. A plain character:BreakJoints() also destroys every accessory weld / hat joint, so the Hats Reanimator lost its hats and respawned in a loop. Joints inside an Accessory (AccessoryWeld) and joints attached to an Accessory handle are kept; the R6 / R15 body joints (Motor6D, Weld, WeldConstraint...) are broken exactly as before.
+-- ONE wearable rule for the whole pd (collection, release, joint preservation): an Accoutrement - Accessory, legacy Hat or any other subclass - and everything inside it; never something inside a Tool, never a body part. WearableOf(inst) returns the wearable that inst is or lives in (nil for body parts, tools and unrelated descendants); WearableHandle(w) returns its Handle BasePart (nil while it is missing).
+function HatReanimator.WearableOf(inst)
+if typeof(inst) ~= "Instance" then return nil end
+local w = inst:IsA("Accoutrement") and inst or inst:FindFirstAncestorWhichIsA("Accoutrement")
+if w and not w:FindFirstAncestorWhichIsA("Tool") then return w end
+return nil
+end
+function HatReanimator.WearableHandle(w)
+local h = typeof(w) == "Instance" and w:FindFirstChild("Handle")
+if h and h:IsA("BasePart") then return h end
+return nil
+end
+local function pdBreakBody(character)
+local wear = HatReanimator.WearableOf
+for _, j in character:GetDescendants() do
+if (j:IsA("JointInstance") or j:IsA("WeldConstraint")) and not wear(j) and not wear(j.Part0) and not wear(j.Part1) then
+pcall(function() j:Destroy() end)
+end
+end
+end
+local function pdExecute(status, character, hum, bringconns, D, alive)
 -- Dead goes back to what the game had before this script touched it (never blindly re-enabled).
 local function undead()
 pcall(function() hum:SetStateEnabled(pdSt.Dead, D.deadOn ~= false) end)
 end
 local function gone()
-return D.done or not character:IsDescendantOf(workspace) or hum.Parent ~= character
+-- a stopped / replaced reanimation (the caller's alive callback) ends the operation exactly like a removed character
+if alive and not alive() then return true end
+return pdGone(D)
 end
 local function dead(final)
 if not pdDeath.sign(D, hum) then
@@ -69998,36 +70125,62 @@ end
 local function solidOK(ev)
 return ev.solid or not pdDeath.sign(D, hum)
 end
+-- The game's ragdoll is a valid ragdoll RIGHT NOW: the character is present and genuinely alive and a fresh evaluation still confirms the ragdoll. Decides whether a still-silent signal deserves a bounded extra wait (replication latency) instead of an immediate fallback.
+local function ragdollNow()
+if gone() or dead() then return false end
+local ev = pdStep(D, true)
+return (ev.confirmed and solidOK(ev)) and true or false
+end
+-- The body is ALREADY physically taken apart by the game's own ragdoll (split assemblies / constraints bridging them). Judged on one state snapshot alone, so no fresh joint event is needed to prove it.
+local function apart(st)
+return st.asm >= 4 or (st.asm >= 2 and st.br >= 2)
+end
 if type(replicatesignal) ~= "function" then
 status.Permadeath = "Unsupported: no replicatesignal, normal death used."
 return "nosignal"
 end
 if gone() then
-status.Permadeath = "Character removed before pd."
+status.Permadeath = "Character genuinely removed before pd."
 return "removed"
 end
 if dead() then
-status.Permadeath = "Character died before pd, normal death used."
+status.Permadeath = "Character genuinely died before pd, normal death used."
 return "died"
 end
-local t0 = os.clock()
--- 1. The ragdoll must be CURRENTLY confirmed right before the signal (an already-active ragdoll counts exactly like a new one; there is no way around this check). Every pass forces a fresh evaluation, and evidence that lapsed - even inside the detector's 0.25s flicker tolerance - is never reused. If the ragdoll just dropped, wait briefly for it to return and hold.
+-- 1-3. PRE-SIGNAL CONFIRMATION, still ARMED. The ragdoll must be CURRENTLY confirmed right before the signal (an already-active ragdoll counts exactly like a new one; there is no way around this check). Every pass forces a fresh evaluation, and evidence that lapsed - even inside the detector's 0.25s flicker tolerance - is never reused. The detector's earlier confirmation is not discarded by a brief transition, but it is not trusted either: if the ragdoll dropped (or is still rebuilding its joints / constraints), nothing is sent and nothing is consumed - the operation keeps observing the SAME character, bounded by armEnd, until the ragdoll holds again. Only a genuine removal / ordinary death / stop, or the armed wait running out, ends it.
+local armEnd = math.max(D.armEnd or (os.clock() + HatReanimator.PDArm), os.clock() + HatReanimator.PDRearm)
+local function giveup()
+status.Permadeath = D.rebuilt and "Ragdoll could not be re-confirmed before pd, permadeath cancelled, normal death used." or "Ragdoll recovered before pd and did not return in time, permadeath cancelled, normal death used."
+return "unconfirmed"
+end
+local evf
+while not evf do
+local s1 = os.clock()
+if s1 >= armEnd then return giveup() end
+local said = 0
+-- 1. wait until the ragdoll is confirmed and has held for 0.1s
 while true do
 local now = os.clock()
 HatReanimator.PDBusyUntil = now + 4
 if gone() then
-status.Permadeath = "Character removed before pd."
+status.Permadeath = "Character genuinely removed before pd."
 return "removed"
 end
 if dead() then
-status.Permadeath = "Character died before pd, normal death used."
+status.Permadeath = "Character genuinely died before pd, normal death used."
 return "died"
 end
 local ev1 = pdStep(D, true)
 if ev1.confirmed and solidOK(ev1) and D.confSince and now - D.confSince >= 0.1 then break end
-if now - t0 >= (D.detectOk and 0.6 or 0.4) then
-status.Permadeath = D.rebuilt and "Ragdoll could not be re-confirmed before pd, permadeath cancelled, normal death used." or "Ragdoll recovered before pd, permadeath cancelled, normal death used."
-return "unconfirmed"
+if now >= armEnd then return giveup() end
+if now - s1 >= 1.5 then
+if said < 2 then
+said = 2
+status.Permadeath = "Ragdoll lapsed before pd, still armed: waiting for the game ragdoll to return..."
+end
+elseif now - s1 >= 0.15 and said < 1 then
+said = 1
+status.Permadeath = "Ragdoll stabilizing, waiting for it to hold before pd..."
 end
 task.wait()
 end
@@ -70038,11 +70191,11 @@ while os.clock() - sigT < 0.12 and os.clock() - s0 < 0.4 do
 task.wait()
 HatReanimator.PDBusyUntil = os.clock() + 4
 if gone() then
-status.Permadeath = "Character removed before pd."
+status.Permadeath = "Character genuinely removed before pd."
 return "removed"
 end
 if dead() then
-status.Permadeath = "Character died before pd, normal death used."
+status.Permadeath = "Character genuinely died before pd, normal death used."
 return "died"
 end
 local n = pdSig(D)
@@ -70050,114 +70203,165 @@ if n ~= sigv then
 sigv, sigT = n, os.clock()
 end
 end
--- 3. Re-check the ragdoll one last time, snapshot (what the game already broke is part of it), then - only now, exactly once per character - stop the client from entering Dead and fire the signal.
-local evf = pdStep(D, true)
-if not (evf.confirmed and solidOK(evf) and D.confSince) then
--- the game's ragdoll may still be shifting right after the rebuild window: give an already-detected ragdoll a short chance to settle again instead of dropping it on one lapsed frame
+-- 3. Re-check the ragdoll one last time. A lapse right after the rebuild window is not final either: the loop goes back to step 1 (still armed) instead of cancelling.
+local e3 = pdStep(D, true)
+if not (e3.confirmed and solidOK(e3) and D.confSince) then
 local w0 = os.clock()
 while os.clock() - w0 < (D.detectOk and 0.3 or 0.1) do
 task.wait()
 HatReanimator.PDBusyUntil = os.clock() + 4
 if gone() then
-status.Permadeath = "Character removed before pd."
+status.Permadeath = "Character genuinely removed before pd."
 return "removed"
 end
 if dead() then
-status.Permadeath = "Character died before pd, normal death used."
+status.Permadeath = "Character genuinely died before pd, normal death used."
 return "died"
 end
-evf = pdStep(D, true)
-if evf.confirmed and solidOK(evf) and D.confSince then break end
-end
-if not (evf.confirmed and solidOK(evf) and D.confSince) then
-status.Permadeath = "Ragdoll recovered before pd, permadeath cancelled, normal death used."
-return "unconfirmed"
+e3 = pdStep(D, true)
+if e3.confirmed and solidOK(e3) and D.confSince then break end
 end
 end
+if e3.confirmed and solidOK(e3) and D.confSince then
+evf = e3
+else
+status.Permadeath = "Ragdoll lapsed during stabilization, still armed: waiting for it to hold again..."
+end
+end
+-- COMMITMENT. Everything above sends nothing and consumes nothing. From here: snapshot (what the game already broke is part of it), RESERVE the character's one execution (a concurrent caller reports this call's outcome instead of firing), stop the client from entering Dead and fire the signal. The one-time execution counts as consumed (sent.fired) only once the signal has really left the client; a failure before that releases the reservation.
 local other = pdSent[character]
 if other and os.clock() - other.at < 15 then return pdAwaitSent(character, other) end
-local pre = pdSnap(D)
+-- PRE-signal state: what the game had already done to the body before the signal (live body joints, physics assemblies, bridging constraints, the evidence it was judged on).
+local preSignalState = pdSnap(D, evf)
 local sent = {at = os.clock()}
 pdSent[character] = sent
+D.sent = sent
+status.Permadeath = "Executing permadeath: " .. (D.confKind == "existing" and "existing ragdoll recognized" or "ragdoll confirmed") .. (preSignalState.live == 0 and " (body joints already broken)" or "") .. ", sending ServerBreakJoints..."
+local ok, err = pcall(function()
 hum:SetStateEnabled(pdSt.Dead, false)
-status.Permadeath = "Ragdoll confirmed, sending ServerBreakJoints."
-local ok, err = pcall(function() replicatesignal(hum.ServerBreakJoints) end)
+replicatesignal(hum.ServerBreakJoints)
+end)
 if not ok then
+sent.res = "signalfail"
 pdSent[character] = nil -- nothing left the client, a later attempt may try again
 undead()
 status.Permadeath = "Signal execution failed (" .. tostring(err) .. "), normal death used."
 return "signalfail"
 end
+sent.fired = true -- COMMITMENT POINT: the signal is out
 local fireAt = os.clock()
-status.Permadeath = "ServerBreakJoints sent, watching for the joint break..."
--- 4. Observe. The signal cannot take effect before it travelled to the server and its result replicated back, so changes inside that window belong to the game (the snapshot is taken again once it has passed). Two trips are budgeted: the engine's ping may be one-way or round-trip.
+status.Permadeath = "ServerBreakJoints sent, waiting for replicated joint state..."
+-- 4. Observe. The signal cannot take effect before it travelled to the server and its result replicated back, so changes inside that window belong to the game (the baseline is taken again once it has passed). Two trips are budgeted: the engine's ping may be one-way or round-trip.
+-- The signal does NOT have to produce a new event. It succeeded when (a) a joint break / split / live-joint drop is observed after the window, or (b) no body joint is live any more (the game already broke the body, or the break replicated inside the window) and that held continuously, or (c) the body was already physically taken apart by the game's constraint ragdoll before AND after the signal (judged after the loop). A rebuild that brings joints back (live > 0) restarts (b); it is never read as a death.
 local okp, ping = pcall(function() return Player:GetNetworkPing() end)
 if not okp or type(ping) ~= "number" then ping = 0.1 end
 local absorb = fireAt + math.clamp(ping * 2 + 0.04, 0.08, 0.45)
 local window = math.clamp(2.5 + ping * 3, 2.5, 5)
-local seenAt, calm, armed = nil, false, false
+local LATE = 1.5 -- ONE bounded extension for late replication, granted only while the character is alive, present and still a valid ragdoll
+local baseState = preSignalState
+local seenAt, calm, armed, extended, zeroSince = nil, false, false, false, nil
+local sigWas = pdSig(D)
 while true do
 local now = os.clock()
 HatReanimator.PDBusyUntil = now + 4
 if gone() then
 undead()
-status.Permadeath = "Character removed during pd."
+status.Permadeath = "Character genuinely removed during pd."
 return "removed"
 end
 if dead(true) then break end
+local live = pdLive(D)
+if live == 0 then zeroSince = zeroSince or now else zeroSince = nil end
+local sg = pdSig(D)
+if sg ~= sigWas then
+sigWas, D.sigMoveAt = sg, now
+end
 if now >= absorb then
 if not armed then
 armed = true
-pre = pdSnap(D)
+baseState = pdSnap(D)
 else
-local n, split = pdBroke(D, pre)
-if n > 0 or split > 0 then seenAt = seenAt or now end
+local n, split, drop = pdBroke(D, baseState, live)
+if n > 0 or split > 0 or drop > 0 then seenAt = seenAt or now end
 if seenAt and now - seenAt >= 0.25 then break end
--- Nothing left to break: the game's ragdoll already removed every body joint, so no joint break can be observed. The character simply has to stay alive.
-if pre.n == 0 and now - absorb >= 0.8 then
+-- No body joint is live (the game's ragdoll already removed / disabled them, or the break replicated inside the window): there is nothing left to break, so no NEW break can ever be observed. Held for 0.8s while the character stays alive.
+if zeroSince and now - math.max(zeroSince, absorb) >= 0.8 then
 calm = true
 break
 end
 end
 end
-if now - fireAt >= window then break end
+if now - fireAt >= window then
+if not extended and not seenAt and not calm and ragdollNow() then
+extended, window = true, window + LATE
+status.Permadeath = "Waiting for replicated joint state (late replication grace)..."
+else
+break
+end
+end
 task.wait()
+end
+if gone() then
+undead()
+status.Permadeath = "Character genuinely removed during pd."
+return "removed"
 end
 if dead(true) then
 undead()
-status.Permadeath = "Character died during pd after ServerBreakJoints, normal death used."
+status.Permadeath = "Character genuinely died during pd after ServerBreakJoints, normal death used."
 return "died"
 end
-if not seenAt and not calm then
--- invoked, but nothing changed although there was something to break: NOT a success. Fall back instead of leaving the character in limbo.
+-- POST-signal state, judged on the same information as the pre-signal state.
+local evp = pdStep(D, true)
+local postSignalState = pdSnap(D, evp)
+local how
+if seenAt then
+how = "break"
+elseif calm then
+how = preSignalState.live == 0 and "existing" or "window"
+elseif evp.confirmed and solidOK(evp) and apart(preSignalState) and apart(postSignalState) then
+how = "apart"
+end
+if not how then
+-- A REAL failure: the signal went out, the wait (plus the late-replication grace) is over, the body joints are still intact and the game's ragdoll does not hold the body apart. Nothing proves the pd took effect, so the normal death is used and the status says exactly why.
 undead()
-status.Permadeath = "Joint-break confirmation incomplete: signal sent, no joint break observed, normal death used."
+status.Permadeath = string.format("ServerBreakJoints had no observable effect (%d body joint(s) still intact after %.1fs; %s), normal death used.", postSignalState.live, os.clock() - fireAt, evp.confirmed and ("ragdoll still present: " .. tostring(evp.why)) or "ragdoll no longer confirmed")
 return "unconfirmed"
 end
--- Break observed (or nothing was left to break) and the character is alive: now Climbing + client BreakJoints (never earlier, so the game's ragdoll is not interrupted).
+-- Valid Permadeath state and the character is alive: now Climbing + client BreakJoints (never earlier, so the game's ragdoll is not interrupted).
 hum.EvaluateStateMachine = true
 hum.BreakJointsOnDeath = true
 hum:SetStateEnabled(pdSt.Climbing, true)
 hum:SetStateEnabled(pdSt.Dead, false)
-pcall(function() character:BreakJoints() end)
+pcall(pdBreakBody, character)
 hum:ChangeState(pdSt.Climbing)
 table.insert(bringconns, RunService.Heartbeat:Connect(function()
 if hum.Parent and hum:GetStateEnabled(pdSt.Dead) then
 hum:SetStateEnabled(pdSt.Dead, false)
 end
 end))
-status.Permadeath = seenAt and "Executed dolteddown's pd." or "Executed dolteddown's pd (the game's ragdoll had already broken the body)."
+if how == "break" then
+status.Permadeath = "Permadeath active: ServerBreakJoints took effect (joint break observed)."
+elseif how == "existing" then
+status.Permadeath = "Permadeath active: existing joint-break state accepted (the body joints were already broken, no new break needed)."
+elseif how == "window" then
+status.Permadeath = "Permadeath active: joint break replicated inside the signal window (no body joint left)."
+else
+status.Permadeath = "Permadeath active: existing joint-break state accepted (the game's ragdoll already holds the body apart)."
+end
 return "executed"
 end
--- Returns "executed" (break observed or already in place, character alive) | "unconfirmed" | "nosignal" | "signalfail" | "died" | "removed" | "error". Only "executed" keeps PD active.
-function HatReanimator.PDExecute(status, character, hum, bringconns)
+-- Returns "executed" (break observed, or the body was already broken / held apart by the game's ragdoll, character alive) | "unconfirmed" | "nosignal" | "signalfail" | "died" | "removed" | "error". Only "executed" keeps PD active.
+function HatReanimator.PDExecute(status, character, hum, bringconns, alive)
 HatReanimator.PDBusyUntil = os.clock() + 8
+HatReanimator.PDHatGrace = os.clock() + 20
 -- exactly one signal per character: a repeated or concurrent call reports the first call's outcome instead of firing again
 local prior = pdSent[character]
 if prior and os.clock() - prior.at < 15 then
 local res = pdAwaitSent(character, prior)
 HatReanimator.PDBusyUntil = 0
-return res
+HatReanimator.PDHatGrace = os.clock() + 3
+return res, prior.fired == true
 end
 local D = HatReanimator.PDActive
 local rebuilt = false
@@ -70170,22 +70374,42 @@ end
 if not D then
 HatReanimator.PDBusyUntil = 0
 status.Permadeath = "pd errored, normal death used."
-return "error"
+return "error", false
 end
 D.status, D.rebuilt = status, rebuilt or D.rebuilt
+local ex = D.exec
+if ex then
+-- one execution thread per detector: a second caller takes the running call's result instead of racing it
+local lim = os.clock() + HatReanimator.PDArm + 20
+while ex.res == nil and os.clock() < lim and not (alive and not alive()) do
+HatReanimator.PDBusyUntil = os.clock() + 4
+task.wait()
+end
+HatReanimator.PDBusyUntil = 0
+return ex.res or "unconfirmed", ex.fired == true
+end
+ex = {}
+D.exec = ex
 D.ops += 1
-local ok, res = pcall(pdExecute, status, character, hum, bringconns, D)
+local ok, res = pcall(pdExecute, status, character, hum, bringconns, D, alive)
 D.ops -= 1
 HatReanimator.PDBusyUntil = 0
+-- an accessory that is briefly away right after a ragdoll that was still rebuilding its body (structure moved in the last 1.5s) gets a longer grace before it is judged lost
+local rebuilding = D.sigMoveAt ~= nil and os.clock() - D.sigMoveAt < 1.5
+HatReanimator.PDHatGrace = os.clock() + ((ok and res == "executed" and rebuilding) and 6 or 3)
 pdKill(D)
-local sent = pdSent[character]
-if sent and not sent.res then sent.res = ok and res or "error" end
+res = ok and res or "error"
+-- this call's reservation: it reports its outcome to concurrent callers, and it only stays consumed when the signal was really sent
+local mine = D.sent
+local fired = mine ~= nil and mine.fired == true
+if mine and not mine.res then mine.res = res end
+if mine and not fired and pdSent[character] == mine then pdSent[character] = nil end
+ex.res, ex.fired = res, fired
 if not ok then
 pcall(function() hum:SetStateEnabled(pdSt.Dead, D.deadOn ~= false) end)
 status.Permadeath = "pd errored, normal death used."
-return "error"
 end
-return res
+return res, fired
 end
 end
 function HatReanimator.ForceRespawn(reason, force)
@@ -70826,6 +71050,7 @@ HatReanimator.GetHatCFrameMeshAndTexture = GetHatCFrameMeshAndTexture
 HatReanimator.GetAttachmentCFrame = GetAttachmentCFrame
 local InitCFrame = nil
 local CurrentCharacter = nil
+local PDX = {Gen = 0, Hooks = {}, Exp = {}, ExpN = 0, Gone = {}, GoneN = 0, Pend = 0, Tries = 0}
 HatReanimator.RebuildRequired = true
 HatReanimator.HatMapSummary = "(no hat map yet...)"
 table.clear(HatReanimator.FlingTargets)
@@ -70855,10 +71080,18 @@ Equipped = 4,
 local function SetAccoutrementState(hat, state)
 sethiddenproperty(hat, "BackendAccoutrementState", state)
 end
-local IsRespawning = false
-local function Respawn()
-if IsRespawning then return end
-IsRespawning = true
+local IsRespawning = nil -- the character a recovery respawn was already requested for: ONE request per character, whichever check or callback finds the failure
+local function Respawn(character, reason)
+if typeof(character) ~= "Instance" or Player.Character ~= character or IsRespawning == character then return false end
+IsRespawning = character
+-- a game that strips the accessories of every character would respawn forever: after 3 requests in a row (reset by the first character that keeps all of its accessories) the character continues with what survived
+if PDX.Tries >= 3 then
+HatReanimator.Status.Permadeath = "Accessories keep getting lost (3 respawns in a row), continuing with the ones that survived."
+return false
+end
+PDX.Tries += 1
+HatReanimator.ForceRespawn(reason or HatReanimator.Status.Permadeath, true)
+return true
 end
 local function SetUACFrameNetless(handle, dt, newcf, tvel, fling, spin)
 if dt <= 0 then return false end
@@ -70933,10 +71166,104 @@ handle:SetAttribute("_Uhhhhhh_LastPosition", lastcf)
 if claimtime ~= prevclaim then handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime) end
 return aligned
 end
+-- ACCESSORY RECORD of the current character (PDX.Owner). The original accessories are tracked as INSTANCES, not as a count: PDX.Exp = the baseline (taken right before the hat-state step), PDX.Gone = baseline accessories that are really lost, PDX.Hooks = exactly ONE ancestry connection per accessory (on its Handle, so an accessory that leaves the character AND a Handle that disappears are both seen). The wearable rule is HatReanimator.WearableOf / WearableHandle - the same one pdBreakBody uses.
+PDX.Alive = function(hat, owner)
+return hat:IsDescendantOf(owner) and HatReanimator.WearableHandle(hat) ~= nil
+end
+-- really lost (not merely re-parented): out of the list, hook released, counted when it belongs to the baseline
+PDX.Lose = function(hat)
+local i = table.find(CharHats, hat)
+if i then table.remove(CharHats, i) end
+local hk = PDX.Hooks[hat]
+if hk then
+hk:Disconnect()
+PDX.Hooks[hat] = nil
+end
+if PDX.Exp[hat] and not PDX.Gone[hat] then
+PDX.Gone[hat] = true
+PDX.GoneN += 1
+end
+end
+-- baseline = the accessory instances registered right now; nothing is lost at this point
+PDX.Base = function()
+PDX.Exp, PDX.ExpN, PDX.Gone, PDX.GoneN = {}, 0, {}, 0
+for _,hat in CharHats do
+PDX.Exp[hat] = true
+PDX.ExpN += 1
+end
+end
+-- end of a setup: an accessory that is still away is lost only after the pd transition grace (and at least the usual settle time), then judged one by one
+PDX.Settle = function(owner)
+local away = false
+for _,hat in CharHats do
+if not PDX.Alive(hat, owner) then
+away = true
+break
+end
+end
+if not away then return end
+task.wait(math.max(HatReanimator.PDHatGrace - os.clock(), 0.5) + 0.05)
+if PDX.Owner ~= owner then return end
+for i = #CharHats, 1, -1 do
+local hat = CharHats[i]
+if not PDX.Alive(hat, owner) then PDX.Lose(hat) end
+end
+end
+PDX.Reg = function(v)
+local owner = Player.Character
+if not owner or PDX.Owner ~= owner or HatReanimator.WearableOf(v) ~= v or not v:IsDescendantOf(owner) then return end
+local function track(handle)
+-- bound to the character it belongs to: a late callback of an old character can never add to the new one's list
+if PDX.Owner ~= owner or Player.Character ~= owner or not v:IsDescendantOf(owner) then return end
+pcall(Util.HatOwn.Guard, handle)
+if not table.find(CharHats, v) then
+table.insert(CharHats, v)
+if PDX.Gone[v] then
+PDX.Gone[v] = nil
+PDX.GoneN -= 1
+end
+if PDX.Late then pcall(PDX.Late, v) end
+end
+if PDX.Hooks[v] then return end
+local conn
+conn = handle.AncestryChanged:Connect(function()
+-- the character is still being set up: nothing is dropped now, PDX.Settle judges every accessory when the pd transition is over
+if PDX.Owner ~= owner or PDX.Hooks[v] ~= conn or PDX.Flow == owner or PDX.Alive(v, owner) then return end
+local function verdict()
+if PDX.Owner ~= owner or PDX.Hooks[v] ~= conn or PDX.Alive(v, owner) then return end
+local left = HatReanimator.PDHatGrace - os.clock()
+if left > 0 then
+task.delay(left + 0.05, verdict)
+return
+end
+PDX.Lose(v)
+end
+task.delay(0.5, verdict)
+end)
+PDX.Hooks[v] = conn
+end
+local handle = HatReanimator.WearableHandle(v)
+if handle then
+track(handle)
+else
+PDX.Pend += 1
+task.spawn(function()
+local h = v:WaitForChild("Handle", 10)
+if PDX.Owner == owner then PDX.Pend -= 1 end
+if h and h:IsA("BasePart") then track(h) end
+end)
+end
+end
 local CharOnDesc = function(v)
-if v:IsA("BasePart") and not (v:FindFirstAncestorWhichIsA("Tool") or v:FindFirstAncestorWhichIsA("Accessory")) then
+if v:IsA("BasePart") then
+local w = HatReanimator.WearableOf(v)
+if w then
+-- the Handle of an accessory that showed up (or came back) after the accessory itself registers that accessory
+if v.Name == "Handle" and v.Parent == w then PDX.Reg(w) end
+elseif not v:FindFirstAncestorWhichIsA("Tool") then
 if not table.find(BaseParts, v) then
 table.insert(BaseParts, v)
+end
 end
 elseif v:IsA("Animator") then
 task.defer(function()
@@ -70950,21 +71277,8 @@ end)
 v:GetPropertyChangedSignal("Disabled"):Connect(function()
 if not v.Disabled then v.Disabled = true end
 end)
-elseif v:IsA("Accessory") and v.Parent == Player.Character then
-local handle = v:WaitForChild("Handle", 10)
-if handle then
-pcall(Util.HatOwn.Guard, handle)
-if not table.find(CharHats, v) then
-table.insert(CharHats, v)
-local conn = nil
-conn = v.AncestryChanged:Connect(function()
-if v.Parent ~= Player.Character then
-local i = table.find(CharHats, v)
-if i then table.remove(CharHats, i) end
-end
-end)
-end
-end
+elseif v:IsA("Accoutrement") then
+PDX.Reg(v)
 elseif v:IsA("Tool") and v.Parent == Player.Character and not v:GetAttribute("_Uhhhhhh_ToolExtra") then
 if not table.find(CharTools, v) then
 table.insert(CharTools, v)
@@ -70976,6 +71290,53 @@ if i then table.remove(CharTools, i) end
 end
 end)
 end
+end
+end
+-- Shared accessory plumbing of this reanimation: the record of the current character, the DescendantAdded binding, the handling token, late-accessory release.
+PDX.Bind = function(char)
+-- a NEW record and a NEW list for this character: the previous character's hooks are released and its table stays with whatever still holds it, so nothing old can leak into the new character
+for _,hk in PDX.Hooks do hk:Disconnect() end
+PDX.Hooks = {}
+PDX.Owner = char
+PDX.Exp, PDX.ExpN, PDX.Gone, PDX.GoneN, PDX.Pend = {}, 0, {}, 0, 0
+CharHats = {}
+if PDX.Conn then PDX.Conn:Disconnect() end
+PDX.Conn = char.DescendantAdded:Connect(CharOnDesc)
+end
+PDX.Sweep = function(char)
+for _,d in char:GetDescendants() do
+if d:IsA("Accoutrement") then PDX.Reg(d) end
+end
+end
+PDX.Release = function(hat, claimarea, bringconns)
+local handle = hat:FindFirstChild("Handle")
+if handle and handle:IsA("BasePart") then
+if bringconns then
+table.insert(bringconns, RunService.Heartbeat:Connect(function(dt)
+if handle:IsDescendantOf(workspace) and IsNetworkOwner(handle) then
+handle.CFrame = CFrame.new(claimarea)
+handle.Velocity = Vector3.new(0, 67, 0)
+handle.RotVelocity = Vector3.new(0, 0, 0)
+end
+end))
+end
+for _,v in handle:GetChildren() do
+if v:IsA("JointInstance") then v:Destroy() end
+if v:IsA("Constraint") then v.Enabled = false end
+if v:IsA("Attachment") then
+v.Archivable = true
+local w = v:Clone()
+v:Destroy()
+w.Parent = handle
+end
+end
+-- any other joint still tying the handle to something (a weld parked outside the handle, a game's own body weld) would keep the hat on the original character
+pcall(function()
+for _,j in handle:GetJoints() do
+if j:IsA("JointInstance") or j:IsA("WeldConstraint") then j:Destroy() end
+end
+end)
+handle:SetAttribute("_Uhhhhhh_HasCollide", false)
 end
 end
 local currentping = 0
@@ -71505,19 +71866,21 @@ return _counthats(hats)
 end,
 }
 local NumHats = 0
-local function OnCharacter(character)
-if HatReanimator.DontFireCharAddOnThisChar == character then return end
+PDX.Setup = function(character, myGen)
+NumHats = 0
+-- bounded: setting a character up (replication waits, pd detection) is never "stuck" for the auto force-respawn timer
+HatReanimator.PDBusyUntil = math.max(HatReanimator.PDBusyUntil, os.clock() + 15)
 currentping = Player:GetNetworkPing()
 local toolnames = {}
 for _,v in CharTools do table.insert(toolnames, v.Name) end
 table.clear(BaseParts)
-table.clear(CharHats)
 table.clear(CharTools)
 ResetHatRefs()
-character.DescendantAdded:Connect(CharOnDesc)
+PDX.Bind(character)
 for _,v in character:GetDescendants() do
 CharOnDesc(v)
 end
+local myHats = CharHats -- this character's accessory list (PDX.Bind made a NEW table for it): State1 / State2 and every later step of THIS setup only ever see this character's list
 r15reanim_cleanup()
 HatReanimator.Status.ReanimState = "Respawned."
 HatReanimator.Status.Permadeath = (HatReanimator.PDKeptChar == character) and "Existing ragdoll kept (no reset), running pd." or "Respawn detected."
@@ -71537,6 +71900,12 @@ local selhatcol = HatCollideMethods[hatcolmeth]
 CurrentCharacter = nil
 local Humanoid = character:WaitForChild("Humanoid", 10)
 if not Humanoid then return end
+-- some games build / replicate the character before parenting it to the workspace: wait for that (bounded, only while it is still the player's character) instead of abandoning a genuine new character
+if not character:IsDescendantOf(workspace) then
+local pw = os.clock()
+while not character:IsDescendantOf(workspace) and Player.Character == character and myGen == PDX.Gen and os.clock() - pw < 10 do task.wait() end
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then return end
+end
 if perma then HatReanimator.PDBegin(HatReanimator.Status, character, Humanoid) end
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
@@ -71668,7 +72037,7 @@ HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 end
 task.wait()
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 return
 end
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", nil)
@@ -71677,6 +72046,11 @@ local lgloop = nil
 local bringconns = {}
 local readystate = 0
 if perma then task.wait(1) end
+do
+-- delayed replication: let the appearance (every accessory) finish loading, bounded, so no hat shows up after the release step
+local aw = os.clock()
+while os.clock() - aw < 2.5 and myGen == PDX.Gen and character:IsDescendantOf(workspace) and not Player:HasAppearanceLoaded() do task.wait() end
+end
 local backpack = Player:FindFirstChildOfClass("Backpack")
 local tools = GetTools()
 if backpack then
@@ -71699,7 +72073,7 @@ HatReanimator.Status.Permadeath = "no."
 else
 HatReanimator.Status.Permadeath = HatReanimator.Permadeath and "Unsupported: no replicatesignal, normal death used." or "Disabled, nothing to do."
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 return
 end
@@ -71708,42 +72082,32 @@ HatReanimator.Status.ReanimState = "Reanimate State: 1"
 if not selhatcol.ColLimb then
 HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Physics)
 end
-NumHats = #CharHats
-selhatcol.State1(character, Humanoid, CharHats)
+-- an accessory whose Handle is still replicating is registered before the baseline and the hat-state step (returns at once when nothing is pending)
+local pend0 = os.clock()
+while PDX.Pend > 0 and os.clock() - pend0 < 2 and myGen == PDX.Gen and character:IsDescendantOf(workspace) do task.wait() end
+PDX.Sweep(character)
+PDX.Base()
+NumHats = PDX.ExpN
+selhatcol.State1(character, Humanoid, myHats)
 local claimarea = RootPart.CFrame.Position + RootPart.CFrame.LookVector * 8
 claimarea = Vector3.new(claimarea.X, math.max(FallenPartsDestroyHeight + 16, claimarea.Y + 4), claimarea.Z)
 task.wait(selhatcol.Wait1 or 0.1)
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 return
 end
 readystate = 2
 HatReanimator.Status.ReanimState = "Reanimate State: 2"
-for _,hat in CharHats do
-local handle = hat:FindFirstChild("Handle")
-if handle and handle:IsA("BasePart") then
-table.insert(bringconns, RunService.Heartbeat:Connect(function(dt)
-if handle:IsDescendantOf(workspace) and IsNetworkOwner(handle) then
-handle.CFrame = CFrame.new(claimarea)
-handle.Velocity = Vector3.new(0, 67, 0)
-handle.RotVelocity = Vector3.new(0, 0, 0)
+for _,hat in myHats do
+PDX.Release(hat, claimarea, bringconns)
 end
-end))
-for _,v in handle:GetChildren() do
-if v:IsA("JointInstance") then v:Destroy() end
-if v:IsA("Constraint") then v.Enabled = false end
-if v:IsA("Attachment") then
-v.Archivable = true
-local w = v:Clone()
-v:Destroy()
-w.Parent = handle
-end
-end
-handle:SetAttribute("_Uhhhhhh_HasCollide", false)
-end
+-- an accessory that is tracked AFTER this point (late replication, re-added by the game) is released exactly the same way
+PDX.RelDone = false
+PDX.Late = function(hat)
+PDX.Release(hat, claimarea, (not PDX.RelDone) and bringconns or nil)
 end
 if perma then
-local pdok = HatReanimator.PDDetect(HatReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15)
+local pdok = HatReanimator.PDDetect(HatReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15, function() return character:IsDescendantOf(workspace) and myGen == PDX.Gen and not Reanimate.Stopping end)
 if not pdok then
 perma = false
 HatReanimator.HasPermadeath = false
@@ -71752,7 +72116,7 @@ else
 Humanoid:ChangeState(Enum.HumanoidStateType.FallingDown)
 task.wait(selhatcol.Wait2 or 0.15)
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 for _,c in bringconns do
 c:Disconnect()
@@ -71762,8 +72126,8 @@ end
 AvatarEditorService:BustAvatarFetchCache()
 local pdres
 if perma and not pdfired then
-pdfired = true
-pdres = HatReanimator.PDExecute(HatReanimator.Status, character, Humanoid, bringconns)
+-- pdfired is consumed only when PDExecute reached its signal commitment point (a cancelled / unconfirmed attempt leaves it open)
+pdres, pdfired = HatReanimator.PDExecute(HatReanimator.Status, character, Humanoid, bringconns, function() return character:IsDescendantOf(workspace) and myGen == PDX.Gen and not Reanimate.Stopping end)
 if pdres ~= "executed" then
 perma = false
 HatReanimator.HasPermadeath = false
@@ -71786,31 +72150,31 @@ Humanoid.Health = 0
 Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
 end
+PDX.Sweep(character)
 readystate = 3
 HatReanimator.Status.ReanimState = "Reanimate State: 3"
-IsRespawning = false
 if hatcols then
 local stateunlocked = false
 task.spawn(function()
-local collidable = selhatcol.State2(character, CharHats)
+local collidable = selhatcol.State2(character, myHats)
 stateunlocked = true
 local atleast = 0
 if SaveData.Reanimator.IWantHatCollide == 1 then
 atleast = 1
 end
 if SaveData.Reanimator.IWantHatCollide == 2 then
-atleast = #CharHats - 3
+atleast = #myHats - 3
 end
 if SaveData.Reanimator.IWantHatCollide == 3 then
-atleast = #CharHats - 2
+atleast = #myHats - 2
 end
 if SaveData.Reanimator.IWantHatCollide == 4 then
-atleast = #CharHats - 1
+atleast = #myHats - 1
 end
-if hatcols and collidable <= atleast then
+if hatcols and collidable <= atleast and myGen == PDX.Gen then
 if perma then
 HatReanimator.Status.Permadeath = "No hat collide. Respawning!"
-Respawn()
+Respawn(character)
 end
 end
 end)
@@ -71828,26 +72192,33 @@ if perma then task.wait(1) end
 for _,c in bringconns do
 c:Disconnect()
 end
-if not character:IsDescendantOf(workspace) then
+PDX.RelDone = true
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 return
 end
 HatReanimator.Status.ReanimState = "Done."
-if #CharHats == 0 then
+-- the pd transition is over: from here a hat that leaves is judged by its own hook, and every accessory of the baseline is judged one by one (instances, not a count) once its grace has passed
+if PDX.Flow == character then PDX.Flow = nil end
+PDX.Settle(character)
+if myGen ~= PDX.Gen then return end
+if PDX.ExpN > 0 and #myHats == 0 then
 if perma then
 HatReanimator.Status.Permadeath = "All hats died. Respawning!"
-Respawn()
+Respawn(character)
 end
 end
 if perma and hatcols then
-if HatReanimator.IWantAllHats and NumHats > #CharHats then
+if HatReanimator.IWantAllHats and PDX.GoneN > 0 then
 if perma then
 HatReanimator.Status.Permadeath = "Some hats died. Respawning!"
-Respawn()
+Respawn(character)
 end
 else
-NumHats = #CharHats
+PDX.Base()
+NumHats = PDX.ExpN
 end
 end
+if PDX.GoneN == 0 and #myHats > 0 then PDX.Tries = 0 end
 CurrentCharacter = character
 task.wait()
 if backpack then
@@ -71859,6 +72230,19 @@ tool.Parent = character
 end
 end
 end
+end
+-- One handling per genuine character change. The character must still BE the player's character (a stale CharacterAdded of an already replaced character is ignored); PDX.Flow marks the setup of the current character for as long as it runs (also when it ends early or errors); PDX.Gen invalidates everything an older character still has in flight.
+local function OnCharacter(character)
+if HatReanimator.DontFireCharAddOnThisChar == character then return end
+if PDX.Last == character or Player.Character ~= character then return end
+PDX.Last = character
+PDX.Gen += 1
+local myGen = PDX.Gen
+PDX.Late, PDX.RelDone = nil, false
+PDX.Flow = character
+local ok, err = pcall(PDX.Setup, character, myGen)
+if PDX.Flow == character then PDX.Flow = nil end
+if not ok then warn("[Uhhhhhh] character setup failed: " .. tostring(err)) end
 end
 local CharConn = Player.CharacterAdded:Connect(OnCharacter)
 local keepChar, skipReset = nil, false
@@ -71872,7 +72256,7 @@ if HatReanimator.Permadeath and replicatesignal ~= nil and h.Health > 0 and h:Ge
 local c = Player.Character
 HatReanimator.Status.Permadeath = "Watching your character for a game ragdoll (not reset)..."
 if HatReanimator.PDBegin(HatReanimator.Status, c, h) then
-local okD, resD = pcall(HatReanimator.PDDetect, HatReanimator.Status, c, h, 0.15)
+local okD, resD = pcall(HatReanimator.PDDetect, HatReanimator.Status, c, h, 0.15, nil, true)
 if okD and resD and c.Parent and Player.Character == c then
 keepChar = c
 HatReanimator.PDKeptChar = c
@@ -71885,7 +72269,7 @@ if not keepChar and not skipReset then
 pcall(function() Player.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Dead) end)
 pcall(function() Player.Character.Humanoid.Health = 0 end)
 pcall(replicatesignal, Player.Character.Humanoid.ServerBreakJoints)
-Player.Character.DescendantAdded:Connect(CharOnDesc)
+PDX.Bind(Player.Character)
 for _,v in Player.Character:GetDescendants() do
 CharOnDesc(v)
 end
@@ -71914,10 +72298,10 @@ if CurrentCharacter == Character then
 if #CharHats > 0 then
 ReanimOkay = true
 end
-if HatReanimator.HasPermadeath and not IsRespawning and HatReanimator.IWantAllHats then
-if NumHats > #CharHats then
+if HatReanimator.HasPermadeath and IsRespawning ~= Character and HatReanimator.IWantAllHats and os.clock() >= HatReanimator.PDHatGrace then
+if PDX.GoneN > 0 then
 HatReanimator.Status.Permadeath = "Some hats died. Respawning!"
-Respawn()
+Respawn(Character)
 else
 local midpoint = Vector3.zero
 local hatsowned = 0
@@ -71925,7 +72309,7 @@ local hatsnotowned = {}
 for _,v in CharHats do
 local h = v:FindFirstChild("Handle")
 if h and h:IsA("BasePart") then
-if IsNetworkOwner(h) then
+if (Util.HatOwn.Check(h, os.clock())) then
 midpoint += h.Position
 hatsowned += 1
 else
@@ -71933,11 +72317,11 @@ table.insert(hatsnotowned, h)
 end
 end
 end
-midpoint /= hatsowned
+if hatsowned == 0 then hatsnotowned = {} else midpoint /= hatsowned end
 for _,v in hatsnotowned do
 if (v.Position - midpoint).Magnitude > 2000 then
 HatReanimator.Status.Permadeath = "Some hats unclaimable. Respawning!"
-Respawn()
+Respawn(Character)
 break
 end
 end
@@ -71968,7 +72352,7 @@ debug.profileend()
 if HatReanimator.AutoForceRespawn and HatReanimator.HasPermadeath then
 local now = os.clock()
 if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
-stuckSince = os.clock() < HatReanimator.PDBusyUntil and now or stuckSince or now
+stuckSince = os.clock() < math.max(HatReanimator.PDBusyUntil, HatReanimator.PDHatGrace) and now or stuckSince or now
 if now - stuckSince > HatReanimator.StuckTimeout and now - HatReanimator.LastForceRespawn > 5 then
 stuckSince = nil
 HatReanimator.ForceRespawn("Stuck for " .. HatReanimator.StuckTimeout .. "s. Force respawning!")
@@ -72325,6 +72709,10 @@ end
 ResetHatRefs()
 for _,v in HatRefs do if v.PH then v.PH:Destroy() end end
 CharConn:Disconnect()
+PDX.Late, PDX.Flow = nil, nil
+if PDX.Conn then PDX.Conn:Disconnect() PDX.Conn = nil end
+for _,hk in PDX.Hooks do hk:Disconnect() end
+PDX.Hooks = {}
 pcall(Util.HatOwn.Reset)
 Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
@@ -73509,6 +73897,7 @@ HairReanimator.GetHatCFrameMeshAndTexture = GetHatCFrameMeshAndTexture
 HairReanimator.GetAttachmentCFrame = GetAttachmentCFrame
 local InitCFrame = nil
 local CurrentCharacter = nil
+local PDX = {Gen = 0, Hooks = {}, Exp = {}, ExpN = 0, Gone = {}, GoneN = 0, Pend = 0, Tries = 0}
 HairReanimator.RebuildRequired = true
 HairReanimator.HatMapSummary = "(no hair map yet...)"
 table.clear(HairReanimator.FlingTargets)
@@ -73538,10 +73927,18 @@ Equipped = 4,
 local function SetAccoutrementState(hat, state)
 sethiddenproperty(hat, "BackendAccoutrementState", state)
 end
-local IsRespawning = false
-local function Respawn()
-if IsRespawning then return end
-IsRespawning = true
+local IsRespawning = nil -- the character a recovery respawn was already requested for: ONE request per character, whichever check or callback finds the failure
+local function Respawn(character, reason)
+if typeof(character) ~= "Instance" or Player.Character ~= character or IsRespawning == character then return false end
+IsRespawning = character
+-- a game that strips the accessories of every character would respawn forever: after 3 requests in a row (reset by the first character that keeps all of its accessories) the character continues with what survived
+if PDX.Tries >= 3 then
+HairReanimator.Status.Permadeath = "Accessories keep getting lost (3 respawns in a row), continuing with the ones that survived."
+return false
+end
+PDX.Tries += 1
+HairReanimator.ForceRespawn(reason or HairReanimator.Status.Permadeath, true)
+return true
 end
 local function SetUACFrameNetless(handle, dt, newcf, tvel, fling, spin)
 if dt <= 0 then return false end
@@ -73616,10 +74013,105 @@ handle:SetAttribute("_Uhhhhhh_LastPosition", lastcf)
 if claimtime ~= prevclaim then handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime) end
 return aligned
 end
+-- ACCESSORY RECORD of the current character (PDX.Owner). The original accessories are tracked as INSTANCES, not as a count: PDX.Exp = the baseline (taken right before the hat-state step), PDX.Gone = baseline accessories that are really lost, PDX.Hooks = exactly ONE ancestry connection per accessory (on its Handle, so an accessory that leaves the character AND a Handle that disappears are both seen). The wearable rule is HatReanimator.WearableOf / WearableHandle - the same one pdBreakBody uses.
+PDX.Alive = function(hat, owner)
+return hat:IsDescendantOf(owner) and HatReanimator.WearableHandle(hat) ~= nil
+end
+-- really lost (not merely re-parented): out of the list, hook released, counted when it belongs to the baseline
+PDX.Lose = function(hat)
+local i = table.find(CharHats, hat)
+if i then table.remove(CharHats, i) end
+local hk = PDX.Hooks[hat]
+if hk then
+hk:Disconnect()
+PDX.Hooks[hat] = nil
+end
+if PDX.Exp[hat] and not PDX.Gone[hat] then
+PDX.Gone[hat] = true
+PDX.GoneN += 1
+end
+end
+-- baseline = the accessory instances registered right now; nothing is lost at this point
+PDX.Base = function()
+PDX.Exp, PDX.ExpN, PDX.Gone, PDX.GoneN = {}, 0, {}, 0
+for _,hat in CharHats do
+PDX.Exp[hat] = true
+PDX.ExpN += 1
+end
+end
+-- end of a setup: an accessory that is still away is lost only after the pd transition grace (and at least the usual settle time), then judged one by one
+PDX.Settle = function(owner)
+local away = false
+for _,hat in CharHats do
+if not PDX.Alive(hat, owner) then
+away = true
+break
+end
+end
+if not away then return end
+task.wait(math.max(HatReanimator.PDHatGrace - os.clock(), 0.5) + 0.05)
+if PDX.Owner ~= owner then return end
+for i = #CharHats, 1, -1 do
+local hat = CharHats[i]
+if not PDX.Alive(hat, owner) then PDX.Lose(hat) end
+end
+end
+PDX.Reg = function(v)
+local owner = Player.Character
+if not owner or PDX.Owner ~= owner or HatReanimator.WearableOf(v) ~= v or not v:IsDescendantOf(owner) then return end
+local function track(handle)
+-- bound to the character it belongs to: a late callback of an old character can never add to the new one's list
+if PDX.Owner ~= owner or Player.Character ~= owner or not v:IsDescendantOf(owner) then return end
+if not Reanimate.AccExt.Accept(HairReanimator, v) then return end
+pcall(Util.HatOwn.Guard, handle)
+if not table.find(CharHats, v) then
+table.insert(CharHats, v)
+if PDX.Gone[v] then
+PDX.Gone[v] = nil
+PDX.GoneN -= 1
+end
+if PDX.Late then pcall(PDX.Late, v) end
+end
+if PDX.Hooks[v] then return end
+local conn
+conn = handle.AncestryChanged:Connect(function()
+-- the character is still being set up: nothing is dropped now, PDX.Settle judges every accessory when the pd transition is over
+if PDX.Owner ~= owner or PDX.Hooks[v] ~= conn or PDX.Flow == owner or PDX.Alive(v, owner) then return end
+local function verdict()
+if PDX.Owner ~= owner or PDX.Hooks[v] ~= conn or PDX.Alive(v, owner) then return end
+local left = HatReanimator.PDHatGrace - os.clock()
+if left > 0 then
+task.delay(left + 0.05, verdict)
+return
+end
+PDX.Lose(v)
+end
+task.delay(0.5, verdict)
+end)
+PDX.Hooks[v] = conn
+end
+local handle = HatReanimator.WearableHandle(v)
+if handle then
+track(handle)
+else
+PDX.Pend += 1
+task.spawn(function()
+local h = v:WaitForChild("Handle", 10)
+if PDX.Owner == owner then PDX.Pend -= 1 end
+if h and h:IsA("BasePart") then track(h) end
+end)
+end
+end
 local CharOnDesc = function(v)
-if v:IsA("BasePart") and not (v:FindFirstAncestorWhichIsA("Tool") or v:FindFirstAncestorWhichIsA("Accessory")) then
+if v:IsA("BasePart") then
+local w = HatReanimator.WearableOf(v)
+if w then
+-- the Handle of an accessory that showed up (or came back) after the accessory itself registers that accessory
+if v.Name == "Handle" and v.Parent == w then PDX.Reg(w) end
+elseif not v:FindFirstAncestorWhichIsA("Tool") then
 if not table.find(BaseParts, v) then
 table.insert(BaseParts, v)
+end
 end
 elseif v:IsA("Animator") then
 task.defer(function()
@@ -73633,21 +74125,8 @@ end)
 v:GetPropertyChangedSignal("Disabled"):Connect(function()
 if not v.Disabled then v.Disabled = true end
 end)
-elseif v:IsA("Accessory") and v.Parent == Player.Character then
-local handle = v:WaitForChild("Handle", 10)
-if handle and Reanimate.AccExt.Accept(HairReanimator, v) then
-pcall(Util.HatOwn.Guard, handle)
-if not table.find(CharHats, v) then
-table.insert(CharHats, v)
-local conn = nil
-conn = v.AncestryChanged:Connect(function()
-if v.Parent ~= Player.Character then
-local i = table.find(CharHats, v)
-if i then table.remove(CharHats, i) end
-end
-end)
-end
-end
+elseif v:IsA("Accoutrement") then
+PDX.Reg(v)
 elseif v:IsA("Tool") and v.Parent == Player.Character and not v:GetAttribute("_Uhhhhhh_ToolExtra") then
 if not table.find(CharTools, v) then
 table.insert(CharTools, v)
@@ -73659,6 +74138,53 @@ if i then table.remove(CharTools, i) end
 end
 end)
 end
+end
+end
+-- Shared accessory plumbing of this reanimation: the record of the current character, the DescendantAdded binding, the handling token, late-accessory release.
+PDX.Bind = function(char)
+-- a NEW record and a NEW list for this character: the previous character's hooks are released and its table stays with whatever still holds it, so nothing old can leak into the new character
+for _,hk in PDX.Hooks do hk:Disconnect() end
+PDX.Hooks = {}
+PDX.Owner = char
+PDX.Exp, PDX.ExpN, PDX.Gone, PDX.GoneN, PDX.Pend = {}, 0, {}, 0, 0
+CharHats = {}
+if PDX.Conn then PDX.Conn:Disconnect() end
+PDX.Conn = char.DescendantAdded:Connect(CharOnDesc)
+end
+PDX.Sweep = function(char)
+for _,d in char:GetDescendants() do
+if d:IsA("Accoutrement") then PDX.Reg(d) end
+end
+end
+PDX.Release = function(hat, claimarea, bringconns)
+local handle = hat:FindFirstChild("Handle")
+if handle and handle:IsA("BasePart") then
+if bringconns then
+table.insert(bringconns, RunService.Heartbeat:Connect(function(dt)
+if handle:IsDescendantOf(workspace) and IsNetworkOwner(handle) then
+handle.CFrame = CFrame.new(claimarea)
+handle.Velocity = Vector3.new(0, 67, 0)
+handle.RotVelocity = Vector3.new(0, 0, 0)
+end
+end))
+end
+for _,v in handle:GetChildren() do
+if v:IsA("JointInstance") then v:Destroy() end
+if v:IsA("Constraint") then v.Enabled = false end
+if v:IsA("Attachment") then
+v.Archivable = true
+local w = v:Clone()
+v:Destroy()
+w.Parent = handle
+end
+end
+-- any other joint still tying the handle to something (a weld parked outside the handle, a game's own body weld) would keep the hat on the original character
+pcall(function()
+for _,j in handle:GetJoints() do
+if j:IsA("JointInstance") or j:IsA("WeldConstraint") then j:Destroy() end
+end
+end)
+handle:SetAttribute("_Uhhhhhh_HasCollide", false)
 end
 end
 local currentping = 0
@@ -74188,19 +74714,21 @@ return _counthats(hats)
 end,
 }
 local NumHats = 0
-local function OnCharacter(character)
-if HairReanimator.DontFireCharAddOnThisChar == character then return end
+PDX.Setup = function(character, myGen)
+NumHats = 0
+-- bounded: setting a character up (replication waits, pd detection) is never "stuck" for the auto force-respawn timer
+HatReanimator.PDBusyUntil = math.max(HatReanimator.PDBusyUntil, os.clock() + 15)
 currentping = Player:GetNetworkPing()
 local toolnames = {}
 for _,v in CharTools do table.insert(toolnames, v.Name) end
 table.clear(BaseParts)
-table.clear(CharHats)
 table.clear(CharTools)
 ResetHatRefs()
-character.DescendantAdded:Connect(CharOnDesc)
+PDX.Bind(character)
 for _,v in character:GetDescendants() do
 CharOnDesc(v)
 end
+local myHats = CharHats -- this character's accessory list (PDX.Bind made a NEW table for it): State1 / State2 and every later step of THIS setup only ever see this character's list
 r15reanim_cleanup()
 HairReanimator.Status.ReanimState = "Respawned."
 HairReanimator.Status.Permadeath = "Respawn detected."
@@ -74220,6 +74748,12 @@ local selhatcol = HatCollideMethods[hatcolmeth]
 CurrentCharacter = nil
 local Humanoid = character:WaitForChild("Humanoid", 10)
 if not Humanoid then return end
+-- some games build / replicate the character before parenting it to the workspace: wait for that (bounded, only while it is still the player's character) instead of abandoning a genuine new character
+if not character:IsDescendantOf(workspace) then
+local pw = os.clock()
+while not character:IsDescendantOf(workspace) and Player.Character == character and myGen == PDX.Gen and os.clock() - pw < 10 do task.wait() end
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then return end
+end
 if perma then HatReanimator.PDBegin(HairReanimator.Status, character, Humanoid) end
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
@@ -74348,7 +74882,7 @@ HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 end
 task.wait()
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 return
 end
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", nil)
@@ -74357,6 +74891,11 @@ local lgloop = nil
 local bringconns = {}
 local readystate = 0
 if perma then task.wait(1) end
+do
+-- delayed replication: let the appearance (every accessory) finish loading, bounded, so no hat shows up after the release step
+local aw = os.clock()
+while os.clock() - aw < 2.5 and myGen == PDX.Gen and character:IsDescendantOf(workspace) and not Player:HasAppearanceLoaded() do task.wait() end
+end
 local backpack = Player:FindFirstChildOfClass("Backpack")
 local tools = GetTools()
 if backpack then
@@ -74379,7 +74918,7 @@ HairReanimator.Status.Permadeath = "no."
 else
 HairReanimator.Status.Permadeath = HairReanimator.Permadeath and "Unsupported: no replicatesignal, normal death used." or "Disabled, nothing to do."
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 return
 end
@@ -74388,42 +74927,32 @@ HairReanimator.Status.ReanimState = "Reanimate State: 1"
 if not selhatcol.ColLimb then
 HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Physics)
 end
-NumHats = #CharHats
-selhatcol.State1(character, Humanoid, CharHats)
+-- an accessory whose Handle is still replicating is registered before the baseline and the hat-state step (returns at once when nothing is pending)
+local pend0 = os.clock()
+while PDX.Pend > 0 and os.clock() - pend0 < 2 and myGen == PDX.Gen and character:IsDescendantOf(workspace) do task.wait() end
+PDX.Sweep(character)
+PDX.Base()
+NumHats = PDX.ExpN
+selhatcol.State1(character, Humanoid, myHats)
 local claimarea = RootPart.CFrame.Position + RootPart.CFrame.LookVector * 8
 claimarea = Vector3.new(claimarea.X, math.max(FallenPartsDestroyHeight + 16, claimarea.Y + 4), claimarea.Z)
 task.wait(selhatcol.Wait1 or 0.1)
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 return
 end
 readystate = 2
 HairReanimator.Status.ReanimState = "Reanimate State: 2"
-for _,hat in CharHats do
-local handle = hat:FindFirstChild("Handle")
-if handle and handle:IsA("BasePart") then
-table.insert(bringconns, RunService.Heartbeat:Connect(function(dt)
-if handle:IsDescendantOf(workspace) and IsNetworkOwner(handle) then
-handle.CFrame = CFrame.new(claimarea)
-handle.Velocity = Vector3.new(0, 67, 0)
-handle.RotVelocity = Vector3.new(0, 0, 0)
+for _,hat in myHats do
+PDX.Release(hat, claimarea, bringconns)
 end
-end))
-for _,v in handle:GetChildren() do
-if v:IsA("JointInstance") then v:Destroy() end
-if v:IsA("Constraint") then v.Enabled = false end
-if v:IsA("Attachment") then
-v.Archivable = true
-local w = v:Clone()
-v:Destroy()
-w.Parent = handle
-end
-end
-handle:SetAttribute("_Uhhhhhh_HasCollide", false)
-end
+-- an accessory that is tracked AFTER this point (late replication, re-added by the game) is released exactly the same way
+PDX.RelDone = false
+PDX.Late = function(hat)
+PDX.Release(hat, claimarea, (not PDX.RelDone) and bringconns or nil)
 end
 if perma then
-local pdok = HatReanimator.PDDetect(HairReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15)
+local pdok = HatReanimator.PDDetect(HairReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15, function() return character:IsDescendantOf(workspace) and myGen == PDX.Gen and not Reanimate.Stopping end)
 if not pdok then
 perma = false
 HairReanimator.HasPermadeath = false
@@ -74432,7 +74961,7 @@ else
 Humanoid:ChangeState(Enum.HumanoidStateType.FallingDown)
 task.wait(selhatcol.Wait2 or 0.15)
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 for _,c in bringconns do
 c:Disconnect()
@@ -74442,8 +74971,8 @@ end
 AvatarEditorService:BustAvatarFetchCache()
 local pdres
 if perma and not pdfired then
-pdfired = true
-pdres = HatReanimator.PDExecute(HairReanimator.Status, character, Humanoid, bringconns)
+-- pdfired is consumed only when PDExecute reached its signal commitment point (a cancelled / unconfirmed attempt leaves it open)
+pdres, pdfired = HatReanimator.PDExecute(HairReanimator.Status, character, Humanoid, bringconns, function() return character:IsDescendantOf(workspace) and myGen == PDX.Gen and not Reanimate.Stopping end)
 if pdres ~= "executed" then
 perma = false
 HairReanimator.HasPermadeath = false
@@ -74466,31 +74995,31 @@ Humanoid.Health = 0
 Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
 end
+PDX.Sweep(character)
 readystate = 3
 HairReanimator.Status.ReanimState = "Reanimate State: 3"
-IsRespawning = false
 if hatcols then
 local stateunlocked = false
 task.spawn(function()
-local collidable = selhatcol.State2(character, CharHats)
+local collidable = selhatcol.State2(character, myHats)
 stateunlocked = true
 local atleast = 0
 if HairReanimator.Save.IWantHatCollide == 1 then
 atleast = 1
 end
 if HairReanimator.Save.IWantHatCollide == 2 then
-atleast = #CharHats - 3
+atleast = #myHats - 3
 end
 if HairReanimator.Save.IWantHatCollide == 3 then
-atleast = #CharHats - 2
+atleast = #myHats - 2
 end
 if HairReanimator.Save.IWantHatCollide == 4 then
-atleast = #CharHats - 1
+atleast = #myHats - 1
 end
-if hatcols and collidable <= atleast then
+if hatcols and collidable <= atleast and myGen == PDX.Gen then
 if perma then
 HairReanimator.Status.Permadeath = "No hat collide. Respawning!"
-Respawn()
+Respawn(character)
 end
 end
 end)
@@ -74508,26 +75037,33 @@ if perma then task.wait(1) end
 for _,c in bringconns do
 c:Disconnect()
 end
-if not character:IsDescendantOf(workspace) then
+PDX.RelDone = true
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 return
 end
 HairReanimator.Status.ReanimState = "Done."
-if #CharHats == 0 then
+-- the pd transition is over: from here a hat that leaves is judged by its own hook, and every accessory of the baseline is judged one by one (instances, not a count) once its grace has passed
+if PDX.Flow == character then PDX.Flow = nil end
+PDX.Settle(character)
+if myGen ~= PDX.Gen then return end
+if PDX.ExpN > 0 and #myHats == 0 then
 if perma then
 HairReanimator.Status.Permadeath = "All hats died. Respawning!"
-Respawn()
+Respawn(character)
 end
 end
 if perma and hatcols then
-if HairReanimator.IWantAllHats and NumHats > #CharHats then
+if HairReanimator.IWantAllHats and PDX.GoneN > 0 then
 if perma then
 HairReanimator.Status.Permadeath = "Some hats died. Respawning!"
-Respawn()
+Respawn(character)
 end
 else
-NumHats = #CharHats
+PDX.Base()
+NumHats = PDX.ExpN
 end
 end
+if PDX.GoneN == 0 and #myHats > 0 then PDX.Tries = 0 end
 CurrentCharacter = character
 task.wait()
 if backpack then
@@ -74540,6 +75076,19 @@ end
 end
 end
 end
+-- One handling per genuine character change. The character must still BE the player's character (a stale CharacterAdded of an already replaced character is ignored); PDX.Flow marks the setup of the current character for as long as it runs (also when it ends early or errors); PDX.Gen invalidates everything an older character still has in flight.
+local function OnCharacter(character)
+if HairReanimator.DontFireCharAddOnThisChar == character then return end
+if PDX.Last == character or Player.Character ~= character then return end
+PDX.Last = character
+PDX.Gen += 1
+local myGen = PDX.Gen
+PDX.Late, PDX.RelDone = nil, false
+PDX.Flow = character
+local ok, err = pcall(PDX.Setup, character, myGen)
+if PDX.Flow == character then PDX.Flow = nil end
+if not ok then warn("[Uhhhhhh] character setup failed: " .. tostring(err)) end
+end
 local CharConn = Player.CharacterAdded:Connect(OnCharacter)
 if Player.Character then
 local h = Player.Character:FindFirstChildOfClass("Humanoid")
@@ -74548,7 +75097,7 @@ InitCFrame = h.RootPart.CFrame
 pcall(function() Player.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Dead) end)
 pcall(function() Player.Character.Humanoid.Health = 0 end)
 pcall(replicatesignal, Player.Character.Humanoid.ServerBreakJoints)
-Player.Character.DescendantAdded:Connect(CharOnDesc)
+PDX.Bind(Player.Character)
 for _,v in Player.Character:GetDescendants() do
 CharOnDesc(v)
 end
@@ -74572,10 +75121,10 @@ if CurrentCharacter == Character then
 if #CharHats > 0 then
 ReanimOkay = true
 end
-if HairReanimator.HasPermadeath and not IsRespawning and HairReanimator.IWantAllHats then
-if NumHats > #CharHats then
+if HairReanimator.HasPermadeath and IsRespawning ~= Character and HairReanimator.IWantAllHats and os.clock() >= HatReanimator.PDHatGrace then
+if PDX.GoneN > 0 then
 HairReanimator.Status.Permadeath = "Some hats died. Respawning!"
-Respawn()
+Respawn(Character)
 else
 local midpoint = Vector3.zero
 local hatsowned = 0
@@ -74583,7 +75132,7 @@ local hatsnotowned = {}
 for _,v in CharHats do
 local h = v:FindFirstChild("Handle")
 if h and h:IsA("BasePart") then
-if IsNetworkOwner(h) then
+if (Util.HatOwn.Check(h, os.clock())) then
 midpoint += h.Position
 hatsowned += 1
 else
@@ -74591,11 +75140,11 @@ table.insert(hatsnotowned, h)
 end
 end
 end
-midpoint /= hatsowned
+if hatsowned == 0 then hatsnotowned = {} else midpoint /= hatsowned end
 for _,v in hatsnotowned do
 if (v.Position - midpoint).Magnitude > 2000 then
 HairReanimator.Status.Permadeath = "Some hats unclaimable. Respawning!"
-Respawn()
+Respawn(Character)
 break
 end
 end
@@ -74624,7 +75173,7 @@ debug.profileend()
 if HairReanimator.AutoForceRespawn and HairReanimator.HasPermadeath then
 local now = os.clock()
 if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
-stuckSince = os.clock() < HatReanimator.PDBusyUntil and now or stuckSince or now
+stuckSince = os.clock() < math.max(HatReanimator.PDBusyUntil, HatReanimator.PDHatGrace) and now or stuckSince or now
 if now - stuckSince > HairReanimator.StuckTimeout and now - HairReanimator.LastForceRespawn > 5 then
 stuckSince = nil
 HairReanimator.ForceRespawn("Stuck for " .. HairReanimator.StuckTimeout .. "s. Force respawning!")
@@ -74984,6 +75533,10 @@ end
 ResetHatRefs()
 for _,v in HatRefs do if v.PH then v.PH:Destroy() end end
 CharConn:Disconnect()
+PDX.Late, PDX.Flow = nil, nil
+if PDX.Conn then PDX.Conn:Disconnect() PDX.Conn = nil end
+for _,hk in PDX.Hooks do hk:Disconnect() end
+PDX.Hooks = {}
 pcall(Util.HatOwn.Reset)
 Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
@@ -75925,6 +76478,7 @@ HatHairReanimator.GetHatCFrameMeshAndTexture = GetHatCFrameMeshAndTexture
 HatHairReanimator.GetAttachmentCFrame = GetAttachmentCFrame
 local InitCFrame = nil
 local CurrentCharacter = nil
+local PDX = {Gen = 0, Hooks = {}, Exp = {}, ExpN = 0, Gone = {}, GoneN = 0, Pend = 0, Tries = 0}
 HatHairReanimator.RebuildRequired = true
 HatHairReanimator.HatMapSummary = "(no accessory map yet...)"
 table.clear(HatHairReanimator.FlingTargets)
@@ -75954,10 +76508,18 @@ Equipped = 4,
 local function SetAccoutrementState(hat, state)
 sethiddenproperty(hat, "BackendAccoutrementState", state)
 end
-local IsRespawning = false
-local function Respawn()
-if IsRespawning then return end
-IsRespawning = true
+local IsRespawning = nil -- the character a recovery respawn was already requested for: ONE request per character, whichever check or callback finds the failure
+local function Respawn(character, reason)
+if typeof(character) ~= "Instance" or Player.Character ~= character or IsRespawning == character then return false end
+IsRespawning = character
+-- a game that strips the accessories of every character would respawn forever: after 3 requests in a row (reset by the first character that keeps all of its accessories) the character continues with what survived
+if PDX.Tries >= 3 then
+HatHairReanimator.Status.Permadeath = "Accessories keep getting lost (3 respawns in a row), continuing with the ones that survived."
+return false
+end
+PDX.Tries += 1
+HatHairReanimator.ForceRespawn(reason or HatHairReanimator.Status.Permadeath, true)
+return true
 end
 local function SetUACFrameNetless(handle, dt, newcf, tvel, fling, spin)
 if dt <= 0 then return false end
@@ -76032,10 +76594,105 @@ handle:SetAttribute("_Uhhhhhh_LastPosition", lastcf)
 if claimtime ~= prevclaim then handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime) end
 return aligned
 end
+-- ACCESSORY RECORD of the current character (PDX.Owner). The original accessories are tracked as INSTANCES, not as a count: PDX.Exp = the baseline (taken right before the hat-state step), PDX.Gone = baseline accessories that are really lost, PDX.Hooks = exactly ONE ancestry connection per accessory (on its Handle, so an accessory that leaves the character AND a Handle that disappears are both seen). The wearable rule is HatReanimator.WearableOf / WearableHandle - the same one pdBreakBody uses.
+PDX.Alive = function(hat, owner)
+return hat:IsDescendantOf(owner) and HatReanimator.WearableHandle(hat) ~= nil
+end
+-- really lost (not merely re-parented): out of the list, hook released, counted when it belongs to the baseline
+PDX.Lose = function(hat)
+local i = table.find(CharHats, hat)
+if i then table.remove(CharHats, i) end
+local hk = PDX.Hooks[hat]
+if hk then
+hk:Disconnect()
+PDX.Hooks[hat] = nil
+end
+if PDX.Exp[hat] and not PDX.Gone[hat] then
+PDX.Gone[hat] = true
+PDX.GoneN += 1
+end
+end
+-- baseline = the accessory instances registered right now; nothing is lost at this point
+PDX.Base = function()
+PDX.Exp, PDX.ExpN, PDX.Gone, PDX.GoneN = {}, 0, {}, 0
+for _,hat in CharHats do
+PDX.Exp[hat] = true
+PDX.ExpN += 1
+end
+end
+-- end of a setup: an accessory that is still away is lost only after the pd transition grace (and at least the usual settle time), then judged one by one
+PDX.Settle = function(owner)
+local away = false
+for _,hat in CharHats do
+if not PDX.Alive(hat, owner) then
+away = true
+break
+end
+end
+if not away then return end
+task.wait(math.max(HatReanimator.PDHatGrace - os.clock(), 0.5) + 0.05)
+if PDX.Owner ~= owner then return end
+for i = #CharHats, 1, -1 do
+local hat = CharHats[i]
+if not PDX.Alive(hat, owner) then PDX.Lose(hat) end
+end
+end
+PDX.Reg = function(v)
+local owner = Player.Character
+if not owner or PDX.Owner ~= owner or HatReanimator.WearableOf(v) ~= v or not v:IsDescendantOf(owner) then return end
+local function track(handle)
+-- bound to the character it belongs to: a late callback of an old character can never add to the new one's list
+if PDX.Owner ~= owner or Player.Character ~= owner or not v:IsDescendantOf(owner) then return end
+if not Reanimate.AccExt.Accept(HatHairReanimator, v) then return end
+pcall(Util.HatOwn.Guard, handle)
+if not table.find(CharHats, v) then
+table.insert(CharHats, v)
+if PDX.Gone[v] then
+PDX.Gone[v] = nil
+PDX.GoneN -= 1
+end
+if PDX.Late then pcall(PDX.Late, v) end
+end
+if PDX.Hooks[v] then return end
+local conn
+conn = handle.AncestryChanged:Connect(function()
+-- the character is still being set up: nothing is dropped now, PDX.Settle judges every accessory when the pd transition is over
+if PDX.Owner ~= owner or PDX.Hooks[v] ~= conn or PDX.Flow == owner or PDX.Alive(v, owner) then return end
+local function verdict()
+if PDX.Owner ~= owner or PDX.Hooks[v] ~= conn or PDX.Alive(v, owner) then return end
+local left = HatReanimator.PDHatGrace - os.clock()
+if left > 0 then
+task.delay(left + 0.05, verdict)
+return
+end
+PDX.Lose(v)
+end
+task.delay(0.5, verdict)
+end)
+PDX.Hooks[v] = conn
+end
+local handle = HatReanimator.WearableHandle(v)
+if handle then
+track(handle)
+else
+PDX.Pend += 1
+task.spawn(function()
+local h = v:WaitForChild("Handle", 10)
+if PDX.Owner == owner then PDX.Pend -= 1 end
+if h and h:IsA("BasePart") then track(h) end
+end)
+end
+end
 local CharOnDesc = function(v)
-if v:IsA("BasePart") and not (v:FindFirstAncestorWhichIsA("Tool") or v:FindFirstAncestorWhichIsA("Accessory")) then
+if v:IsA("BasePart") then
+local w = HatReanimator.WearableOf(v)
+if w then
+-- the Handle of an accessory that showed up (or came back) after the accessory itself registers that accessory
+if v.Name == "Handle" and v.Parent == w then PDX.Reg(w) end
+elseif not v:FindFirstAncestorWhichIsA("Tool") then
 if not table.find(BaseParts, v) then
 table.insert(BaseParts, v)
+end
 end
 elseif v:IsA("Animator") then
 task.defer(function()
@@ -76049,21 +76706,8 @@ end)
 v:GetPropertyChangedSignal("Disabled"):Connect(function()
 if not v.Disabled then v.Disabled = true end
 end)
-elseif v:IsA("Accessory") and v.Parent == Player.Character then
-local handle = v:WaitForChild("Handle", 10)
-if handle and Reanimate.AccExt.Accept(HatHairReanimator, v) then
-pcall(Util.HatOwn.Guard, handle)
-if not table.find(CharHats, v) then
-table.insert(CharHats, v)
-local conn = nil
-conn = v.AncestryChanged:Connect(function()
-if v.Parent ~= Player.Character then
-local i = table.find(CharHats, v)
-if i then table.remove(CharHats, i) end
-end
-end)
-end
-end
+elseif v:IsA("Accoutrement") then
+PDX.Reg(v)
 elseif v:IsA("Tool") and v.Parent == Player.Character and not v:GetAttribute("_Uhhhhhh_ToolExtra") then
 if not table.find(CharTools, v) then
 table.insert(CharTools, v)
@@ -76075,6 +76719,53 @@ if i then table.remove(CharTools, i) end
 end
 end)
 end
+end
+end
+-- Shared accessory plumbing of this reanimation: the record of the current character, the DescendantAdded binding, the handling token, late-accessory release.
+PDX.Bind = function(char)
+-- a NEW record and a NEW list for this character: the previous character's hooks are released and its table stays with whatever still holds it, so nothing old can leak into the new character
+for _,hk in PDX.Hooks do hk:Disconnect() end
+PDX.Hooks = {}
+PDX.Owner = char
+PDX.Exp, PDX.ExpN, PDX.Gone, PDX.GoneN, PDX.Pend = {}, 0, {}, 0, 0
+CharHats = {}
+if PDX.Conn then PDX.Conn:Disconnect() end
+PDX.Conn = char.DescendantAdded:Connect(CharOnDesc)
+end
+PDX.Sweep = function(char)
+for _,d in char:GetDescendants() do
+if d:IsA("Accoutrement") then PDX.Reg(d) end
+end
+end
+PDX.Release = function(hat, claimarea, bringconns)
+local handle = hat:FindFirstChild("Handle")
+if handle and handle:IsA("BasePart") then
+if bringconns then
+table.insert(bringconns, RunService.Heartbeat:Connect(function(dt)
+if handle:IsDescendantOf(workspace) and IsNetworkOwner(handle) then
+handle.CFrame = CFrame.new(claimarea)
+handle.Velocity = Vector3.new(0, 67, 0)
+handle.RotVelocity = Vector3.new(0, 0, 0)
+end
+end))
+end
+for _,v in handle:GetChildren() do
+if v:IsA("JointInstance") then v:Destroy() end
+if v:IsA("Constraint") then v.Enabled = false end
+if v:IsA("Attachment") then
+v.Archivable = true
+local w = v:Clone()
+v:Destroy()
+w.Parent = handle
+end
+end
+-- any other joint still tying the handle to something (a weld parked outside the handle, a game's own body weld) would keep the hat on the original character
+pcall(function()
+for _,j in handle:GetJoints() do
+if j:IsA("JointInstance") or j:IsA("WeldConstraint") then j:Destroy() end
+end
+end)
+handle:SetAttribute("_Uhhhhhh_HasCollide", false)
 end
 end
 local currentping = 0
@@ -76604,19 +77295,21 @@ return _counthats(hats)
 end,
 }
 local NumHats = 0
-local function OnCharacter(character)
-if HatHairReanimator.DontFireCharAddOnThisChar == character then return end
+PDX.Setup = function(character, myGen)
+NumHats = 0
+-- bounded: setting a character up (replication waits, pd detection) is never "stuck" for the auto force-respawn timer
+HatReanimator.PDBusyUntil = math.max(HatReanimator.PDBusyUntil, os.clock() + 15)
 currentping = Player:GetNetworkPing()
 local toolnames = {}
 for _,v in CharTools do table.insert(toolnames, v.Name) end
 table.clear(BaseParts)
-table.clear(CharHats)
 table.clear(CharTools)
 ResetHatRefs()
-character.DescendantAdded:Connect(CharOnDesc)
+PDX.Bind(character)
 for _,v in character:GetDescendants() do
 CharOnDesc(v)
 end
+local myHats = CharHats -- this character's accessory list (PDX.Bind made a NEW table for it): State1 / State2 and every later step of THIS setup only ever see this character's list
 r15reanim_cleanup()
 HatHairReanimator.Status.ReanimState = "Respawned."
 HatHairReanimator.Status.Permadeath = "Respawn detected."
@@ -76636,6 +77329,12 @@ local selhatcol = HatCollideMethods[hatcolmeth]
 CurrentCharacter = nil
 local Humanoid = character:WaitForChild("Humanoid", 10)
 if not Humanoid then return end
+-- some games build / replicate the character before parenting it to the workspace: wait for that (bounded, only while it is still the player's character) instead of abandoning a genuine new character
+if not character:IsDescendantOf(workspace) then
+local pw = os.clock()
+while not character:IsDescendantOf(workspace) and Player.Character == character and myGen == PDX.Gen and os.clock() - pw < 10 do task.wait() end
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then return end
+end
 if perma then HatReanimator.PDBegin(HatHairReanimator.Status, character, Humanoid) end
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
@@ -76764,7 +77463,7 @@ HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 end
 task.wait()
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 return
 end
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", nil)
@@ -76773,6 +77472,11 @@ local lgloop = nil
 local bringconns = {}
 local readystate = 0
 if perma then task.wait(1) end
+do
+-- delayed replication: let the appearance (every accessory) finish loading, bounded, so no hat shows up after the release step
+local aw = os.clock()
+while os.clock() - aw < 2.5 and myGen == PDX.Gen and character:IsDescendantOf(workspace) and not Player:HasAppearanceLoaded() do task.wait() end
+end
 local backpack = Player:FindFirstChildOfClass("Backpack")
 local tools = GetTools()
 if backpack then
@@ -76795,7 +77499,7 @@ HatHairReanimator.Status.Permadeath = "no."
 else
 HatHairReanimator.Status.Permadeath = HatHairReanimator.Permadeath and "Unsupported: no replicatesignal, normal death used." or "Disabled, nothing to do."
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 return
 end
@@ -76804,42 +77508,32 @@ HatHairReanimator.Status.ReanimState = "Reanimate State: 1"
 if not selhatcol.ColLimb then
 HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Physics)
 end
-NumHats = #CharHats
-selhatcol.State1(character, Humanoid, CharHats)
+-- an accessory whose Handle is still replicating is registered before the baseline and the hat-state step (returns at once when nothing is pending)
+local pend0 = os.clock()
+while PDX.Pend > 0 and os.clock() - pend0 < 2 and myGen == PDX.Gen and character:IsDescendantOf(workspace) do task.wait() end
+PDX.Sweep(character)
+PDX.Base()
+NumHats = PDX.ExpN
+selhatcol.State1(character, Humanoid, myHats)
 local claimarea = RootPart.CFrame.Position + RootPart.CFrame.LookVector * 8
 claimarea = Vector3.new(claimarea.X, math.max(FallenPartsDestroyHeight + 16, claimarea.Y + 4), claimarea.Z)
 task.wait(selhatcol.Wait1 or 0.1)
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 return
 end
 readystate = 2
 HatHairReanimator.Status.ReanimState = "Reanimate State: 2"
-for _,hat in CharHats do
-local handle = hat:FindFirstChild("Handle")
-if handle and handle:IsA("BasePart") then
-table.insert(bringconns, RunService.Heartbeat:Connect(function(dt)
-if handle:IsDescendantOf(workspace) and IsNetworkOwner(handle) then
-handle.CFrame = CFrame.new(claimarea)
-handle.Velocity = Vector3.new(0, 67, 0)
-handle.RotVelocity = Vector3.new(0, 0, 0)
+for _,hat in myHats do
+PDX.Release(hat, claimarea, bringconns)
 end
-end))
-for _,v in handle:GetChildren() do
-if v:IsA("JointInstance") then v:Destroy() end
-if v:IsA("Constraint") then v.Enabled = false end
-if v:IsA("Attachment") then
-v.Archivable = true
-local w = v:Clone()
-v:Destroy()
-w.Parent = handle
-end
-end
-handle:SetAttribute("_Uhhhhhh_HasCollide", false)
-end
+-- an accessory that is tracked AFTER this point (late replication, re-added by the game) is released exactly the same way
+PDX.RelDone = false
+PDX.Late = function(hat)
+PDX.Release(hat, claimarea, (not PDX.RelDone) and bringconns or nil)
 end
 if perma then
-local pdok = HatReanimator.PDDetect(HatHairReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15)
+local pdok = HatReanimator.PDDetect(HatHairReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15, function() return character:IsDescendantOf(workspace) and myGen == PDX.Gen and not Reanimate.Stopping end)
 if not pdok then
 perma = false
 HatHairReanimator.HasPermadeath = false
@@ -76848,7 +77542,7 @@ else
 Humanoid:ChangeState(Enum.HumanoidStateType.FallingDown)
 task.wait(selhatcol.Wait2 or 0.15)
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 for _,c in bringconns do
 c:Disconnect()
@@ -76858,8 +77552,8 @@ end
 AvatarEditorService:BustAvatarFetchCache()
 local pdres
 if perma and not pdfired then
-pdfired = true
-pdres = HatReanimator.PDExecute(HatHairReanimator.Status, character, Humanoid, bringconns)
+-- pdfired is consumed only when PDExecute reached its signal commitment point (a cancelled / unconfirmed attempt leaves it open)
+pdres, pdfired = HatReanimator.PDExecute(HatHairReanimator.Status, character, Humanoid, bringconns, function() return character:IsDescendantOf(workspace) and myGen == PDX.Gen and not Reanimate.Stopping end)
 if pdres ~= "executed" then
 perma = false
 HatHairReanimator.HasPermadeath = false
@@ -76882,31 +77576,31 @@ Humanoid.Health = 0
 Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
 end
+PDX.Sweep(character)
 readystate = 3
 HatHairReanimator.Status.ReanimState = "Reanimate State: 3"
-IsRespawning = false
 if hatcols then
 local stateunlocked = false
 task.spawn(function()
-local collidable = selhatcol.State2(character, CharHats)
+local collidable = selhatcol.State2(character, myHats)
 stateunlocked = true
 local atleast = 0
 if HatHairReanimator.Save.IWantHatCollide == 1 then
 atleast = 1
 end
 if HatHairReanimator.Save.IWantHatCollide == 2 then
-atleast = #CharHats - 3
+atleast = #myHats - 3
 end
 if HatHairReanimator.Save.IWantHatCollide == 3 then
-atleast = #CharHats - 2
+atleast = #myHats - 2
 end
 if HatHairReanimator.Save.IWantHatCollide == 4 then
-atleast = #CharHats - 1
+atleast = #myHats - 1
 end
-if hatcols and collidable <= atleast then
+if hatcols and collidable <= atleast and myGen == PDX.Gen then
 if perma then
 HatHairReanimator.Status.Permadeath = "No hat collide. Respawning!"
-Respawn()
+Respawn(character)
 end
 end
 end)
@@ -76924,26 +77618,33 @@ if perma then task.wait(1) end
 for _,c in bringconns do
 c:Disconnect()
 end
-if not character:IsDescendantOf(workspace) then
+PDX.RelDone = true
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 return
 end
 HatHairReanimator.Status.ReanimState = "Done."
-if #CharHats == 0 then
+-- the pd transition is over: from here a hat that leaves is judged by its own hook, and every accessory of the baseline is judged one by one (instances, not a count) once its grace has passed
+if PDX.Flow == character then PDX.Flow = nil end
+PDX.Settle(character)
+if myGen ~= PDX.Gen then return end
+if PDX.ExpN > 0 and #myHats == 0 then
 if perma then
 HatHairReanimator.Status.Permadeath = "All hats died. Respawning!"
-Respawn()
+Respawn(character)
 end
 end
 if perma and hatcols then
-if HatHairReanimator.IWantAllHats and NumHats > #CharHats then
+if HatHairReanimator.IWantAllHats and PDX.GoneN > 0 then
 if perma then
 HatHairReanimator.Status.Permadeath = "Some hats died. Respawning!"
-Respawn()
+Respawn(character)
 end
 else
-NumHats = #CharHats
+PDX.Base()
+NumHats = PDX.ExpN
 end
 end
+if PDX.GoneN == 0 and #myHats > 0 then PDX.Tries = 0 end
 CurrentCharacter = character
 task.wait()
 if backpack then
@@ -76956,6 +77657,19 @@ end
 end
 end
 end
+-- One handling per genuine character change. The character must still BE the player's character (a stale CharacterAdded of an already replaced character is ignored); PDX.Flow marks the setup of the current character for as long as it runs (also when it ends early or errors); PDX.Gen invalidates everything an older character still has in flight.
+local function OnCharacter(character)
+if HatHairReanimator.DontFireCharAddOnThisChar == character then return end
+if PDX.Last == character or Player.Character ~= character then return end
+PDX.Last = character
+PDX.Gen += 1
+local myGen = PDX.Gen
+PDX.Late, PDX.RelDone = nil, false
+PDX.Flow = character
+local ok, err = pcall(PDX.Setup, character, myGen)
+if PDX.Flow == character then PDX.Flow = nil end
+if not ok then warn("[Uhhhhhh] character setup failed: " .. tostring(err)) end
+end
 local CharConn = Player.CharacterAdded:Connect(OnCharacter)
 if Player.Character then
 local h = Player.Character:FindFirstChildOfClass("Humanoid")
@@ -76964,7 +77678,7 @@ InitCFrame = h.RootPart.CFrame
 pcall(function() Player.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Dead) end)
 pcall(function() Player.Character.Humanoid.Health = 0 end)
 pcall(replicatesignal, Player.Character.Humanoid.ServerBreakJoints)
-Player.Character.DescendantAdded:Connect(CharOnDesc)
+PDX.Bind(Player.Character)
 for _,v in Player.Character:GetDescendants() do
 CharOnDesc(v)
 end
@@ -76988,10 +77702,10 @@ if CurrentCharacter == Character then
 if #CharHats > 0 then
 ReanimOkay = true
 end
-if HatHairReanimator.HasPermadeath and not IsRespawning and HatHairReanimator.IWantAllHats then
-if NumHats > #CharHats then
+if HatHairReanimator.HasPermadeath and IsRespawning ~= Character and HatHairReanimator.IWantAllHats and os.clock() >= HatReanimator.PDHatGrace then
+if PDX.GoneN > 0 then
 HatHairReanimator.Status.Permadeath = "Some hats died. Respawning!"
-Respawn()
+Respawn(Character)
 else
 local midpoint = Vector3.zero
 local hatsowned = 0
@@ -76999,7 +77713,7 @@ local hatsnotowned = {}
 for _,v in CharHats do
 local h = v:FindFirstChild("Handle")
 if h and h:IsA("BasePart") then
-if IsNetworkOwner(h) then
+if (Util.HatOwn.Check(h, os.clock())) then
 midpoint += h.Position
 hatsowned += 1
 else
@@ -77007,11 +77721,11 @@ table.insert(hatsnotowned, h)
 end
 end
 end
-midpoint /= hatsowned
+if hatsowned == 0 then hatsnotowned = {} else midpoint /= hatsowned end
 for _,v in hatsnotowned do
 if (v.Position - midpoint).Magnitude > 2000 then
 HatHairReanimator.Status.Permadeath = "Some hats unclaimable. Respawning!"
-Respawn()
+Respawn(Character)
 break
 end
 end
@@ -77040,7 +77754,7 @@ debug.profileend()
 if HatHairReanimator.AutoForceRespawn and HatHairReanimator.HasPermadeath then
 local now = os.clock()
 if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
-stuckSince = os.clock() < HatReanimator.PDBusyUntil and now or stuckSince or now
+stuckSince = os.clock() < math.max(HatReanimator.PDBusyUntil, HatReanimator.PDHatGrace) and now or stuckSince or now
 if now - stuckSince > HatHairReanimator.StuckTimeout and now - HatHairReanimator.LastForceRespawn > 5 then
 stuckSince = nil
 HatHairReanimator.ForceRespawn("Stuck for " .. HatHairReanimator.StuckTimeout .. "s. Force respawning!")
@@ -77412,6 +78126,10 @@ end
 ResetHatRefs()
 for _,v in HatRefs do if v.PH then v.PH:Destroy() end end
 CharConn:Disconnect()
+PDX.Late, PDX.Flow = nil, nil
+if PDX.Conn then PDX.Conn:Disconnect() PDX.Conn = nil end
+for _,hk in PDX.Hooks do hk:Disconnect() end
+PDX.Hooks = {}
 pcall(Util.HatOwn.Reset)
 Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
@@ -78294,6 +79012,7 @@ AccessoriesReanimator.GetHatCFrameMeshAndTexture = GetHatCFrameMeshAndTexture
 AccessoriesReanimator.GetAttachmentCFrame = GetAttachmentCFrame
 local InitCFrame = nil
 local CurrentCharacter = nil
+local PDX = {Gen = 0, Hooks = {}, Exp = {}, ExpN = 0, Gone = {}, GoneN = 0, Pend = 0, Tries = 0}
 AccessoriesReanimator.RebuildRequired = true
 AccessoriesReanimator.HatMapSummary = "(no accessory map yet...)"
 table.clear(AccessoriesReanimator.FlingTargets)
@@ -78323,10 +79042,18 @@ Equipped = 4,
 local function SetAccoutrementState(hat, state)
 sethiddenproperty(hat, "BackendAccoutrementState", state)
 end
-local IsRespawning = false
-local function Respawn()
-if IsRespawning then return end
-IsRespawning = true
+local IsRespawning = nil -- the character a recovery respawn was already requested for: ONE request per character, whichever check or callback finds the failure
+local function Respawn(character, reason)
+if typeof(character) ~= "Instance" or Player.Character ~= character or IsRespawning == character then return false end
+IsRespawning = character
+-- a game that strips the accessories of every character would respawn forever: after 3 requests in a row (reset by the first character that keeps all of its accessories) the character continues with what survived
+if PDX.Tries >= 3 then
+AccessoriesReanimator.Status.Permadeath = "Accessories keep getting lost (3 respawns in a row), continuing with the ones that survived."
+return false
+end
+PDX.Tries += 1
+AccessoriesReanimator.ForceRespawn(reason or AccessoriesReanimator.Status.Permadeath, true)
+return true
 end
 local function SetUACFrameNetless(handle, dt, newcf, tvel, fling, spin)
 if dt <= 0 then return false end
@@ -78401,10 +79128,105 @@ handle:SetAttribute("_Uhhhhhh_LastPosition", lastcf)
 if claimtime ~= prevclaim then handle:SetAttribute("_Uhhhhhh_ClaimTime", claimtime) end
 return aligned
 end
+-- ACCESSORY RECORD of the current character (PDX.Owner). The original accessories are tracked as INSTANCES, not as a count: PDX.Exp = the baseline (taken right before the hat-state step), PDX.Gone = baseline accessories that are really lost, PDX.Hooks = exactly ONE ancestry connection per accessory (on its Handle, so an accessory that leaves the character AND a Handle that disappears are both seen). The wearable rule is HatReanimator.WearableOf / WearableHandle - the same one pdBreakBody uses.
+PDX.Alive = function(hat, owner)
+return hat:IsDescendantOf(owner) and HatReanimator.WearableHandle(hat) ~= nil
+end
+-- really lost (not merely re-parented): out of the list, hook released, counted when it belongs to the baseline
+PDX.Lose = function(hat)
+local i = table.find(CharHats, hat)
+if i then table.remove(CharHats, i) end
+local hk = PDX.Hooks[hat]
+if hk then
+hk:Disconnect()
+PDX.Hooks[hat] = nil
+end
+if PDX.Exp[hat] and not PDX.Gone[hat] then
+PDX.Gone[hat] = true
+PDX.GoneN += 1
+end
+end
+-- baseline = the accessory instances registered right now; nothing is lost at this point
+PDX.Base = function()
+PDX.Exp, PDX.ExpN, PDX.Gone, PDX.GoneN = {}, 0, {}, 0
+for _,hat in CharHats do
+PDX.Exp[hat] = true
+PDX.ExpN += 1
+end
+end
+-- end of a setup: an accessory that is still away is lost only after the pd transition grace (and at least the usual settle time), then judged one by one
+PDX.Settle = function(owner)
+local away = false
+for _,hat in CharHats do
+if not PDX.Alive(hat, owner) then
+away = true
+break
+end
+end
+if not away then return end
+task.wait(math.max(HatReanimator.PDHatGrace - os.clock(), 0.5) + 0.05)
+if PDX.Owner ~= owner then return end
+for i = #CharHats, 1, -1 do
+local hat = CharHats[i]
+if not PDX.Alive(hat, owner) then PDX.Lose(hat) end
+end
+end
+PDX.Reg = function(v)
+local owner = Player.Character
+if not owner or PDX.Owner ~= owner or HatReanimator.WearableOf(v) ~= v or not v:IsDescendantOf(owner) then return end
+local function track(handle)
+-- bound to the character it belongs to: a late callback of an old character can never add to the new one's list
+if PDX.Owner ~= owner or Player.Character ~= owner or not v:IsDescendantOf(owner) then return end
+if not Reanimate.AccExt.Accept(AccessoriesReanimator, v) then return end
+pcall(Util.HatOwn.Guard, handle)
+if not table.find(CharHats, v) then
+table.insert(CharHats, v)
+if PDX.Gone[v] then
+PDX.Gone[v] = nil
+PDX.GoneN -= 1
+end
+if PDX.Late then pcall(PDX.Late, v) end
+end
+if PDX.Hooks[v] then return end
+local conn
+conn = handle.AncestryChanged:Connect(function()
+-- the character is still being set up: nothing is dropped now, PDX.Settle judges every accessory when the pd transition is over
+if PDX.Owner ~= owner or PDX.Hooks[v] ~= conn or PDX.Flow == owner or PDX.Alive(v, owner) then return end
+local function verdict()
+if PDX.Owner ~= owner or PDX.Hooks[v] ~= conn or PDX.Alive(v, owner) then return end
+local left = HatReanimator.PDHatGrace - os.clock()
+if left > 0 then
+task.delay(left + 0.05, verdict)
+return
+end
+PDX.Lose(v)
+end
+task.delay(0.5, verdict)
+end)
+PDX.Hooks[v] = conn
+end
+local handle = HatReanimator.WearableHandle(v)
+if handle then
+track(handle)
+else
+PDX.Pend += 1
+task.spawn(function()
+local h = v:WaitForChild("Handle", 10)
+if PDX.Owner == owner then PDX.Pend -= 1 end
+if h and h:IsA("BasePart") then track(h) end
+end)
+end
+end
 local CharOnDesc = function(v)
-if v:IsA("BasePart") and not (v:FindFirstAncestorWhichIsA("Tool") or v:FindFirstAncestorWhichIsA("Accessory")) then
+if v:IsA("BasePart") then
+local w = HatReanimator.WearableOf(v)
+if w then
+-- the Handle of an accessory that showed up (or came back) after the accessory itself registers that accessory
+if v.Name == "Handle" and v.Parent == w then PDX.Reg(w) end
+elseif not v:FindFirstAncestorWhichIsA("Tool") then
 if not table.find(BaseParts, v) then
 table.insert(BaseParts, v)
+end
 end
 elseif v:IsA("Animator") then
 task.defer(function()
@@ -78418,21 +79240,8 @@ end)
 v:GetPropertyChangedSignal("Disabled"):Connect(function()
 if not v.Disabled then v.Disabled = true end
 end)
-elseif v:IsA("Accessory") and v.Parent == Player.Character then
-local handle = v:WaitForChild("Handle", 10)
-if handle and Reanimate.AccExt.Accept(AccessoriesReanimator, v) then
-pcall(Util.HatOwn.Guard, handle)
-if not table.find(CharHats, v) then
-table.insert(CharHats, v)
-local conn = nil
-conn = v.AncestryChanged:Connect(function()
-if v.Parent ~= Player.Character then
-local i = table.find(CharHats, v)
-if i then table.remove(CharHats, i) end
-end
-end)
-end
-end
+elseif v:IsA("Accoutrement") then
+PDX.Reg(v)
 elseif v:IsA("Tool") and v.Parent == Player.Character and not v:GetAttribute("_Uhhhhhh_ToolExtra") then
 if not table.find(CharTools, v) then
 table.insert(CharTools, v)
@@ -78444,6 +79253,53 @@ if i then table.remove(CharTools, i) end
 end
 end)
 end
+end
+end
+-- Shared accessory plumbing of this reanimation: the record of the current character, the DescendantAdded binding, the handling token, late-accessory release.
+PDX.Bind = function(char)
+-- a NEW record and a NEW list for this character: the previous character's hooks are released and its table stays with whatever still holds it, so nothing old can leak into the new character
+for _,hk in PDX.Hooks do hk:Disconnect() end
+PDX.Hooks = {}
+PDX.Owner = char
+PDX.Exp, PDX.ExpN, PDX.Gone, PDX.GoneN, PDX.Pend = {}, 0, {}, 0, 0
+CharHats = {}
+if PDX.Conn then PDX.Conn:Disconnect() end
+PDX.Conn = char.DescendantAdded:Connect(CharOnDesc)
+end
+PDX.Sweep = function(char)
+for _,d in char:GetDescendants() do
+if d:IsA("Accoutrement") then PDX.Reg(d) end
+end
+end
+PDX.Release = function(hat, claimarea, bringconns)
+local handle = hat:FindFirstChild("Handle")
+if handle and handle:IsA("BasePart") then
+if bringconns then
+table.insert(bringconns, RunService.Heartbeat:Connect(function(dt)
+if handle:IsDescendantOf(workspace) and IsNetworkOwner(handle) then
+handle.CFrame = CFrame.new(claimarea)
+handle.Velocity = Vector3.new(0, 67, 0)
+handle.RotVelocity = Vector3.new(0, 0, 0)
+end
+end))
+end
+for _,v in handle:GetChildren() do
+if v:IsA("JointInstance") then v:Destroy() end
+if v:IsA("Constraint") then v.Enabled = false end
+if v:IsA("Attachment") then
+v.Archivable = true
+local w = v:Clone()
+v:Destroy()
+w.Parent = handle
+end
+end
+-- any other joint still tying the handle to something (a weld parked outside the handle, a game's own body weld) would keep the hat on the original character
+pcall(function()
+for _,j in handle:GetJoints() do
+if j:IsA("JointInstance") or j:IsA("WeldConstraint") then j:Destroy() end
+end
+end)
+handle:SetAttribute("_Uhhhhhh_HasCollide", false)
 end
 end
 local currentping = 0
@@ -78973,19 +79829,21 @@ return _counthats(hats)
 end,
 }
 local NumHats = 0
-local function OnCharacter(character)
-if AccessoriesReanimator.DontFireCharAddOnThisChar == character then return end
+PDX.Setup = function(character, myGen)
+NumHats = 0
+-- bounded: setting a character up (replication waits, pd detection) is never "stuck" for the auto force-respawn timer
+HatReanimator.PDBusyUntil = math.max(HatReanimator.PDBusyUntil, os.clock() + 15)
 currentping = Player:GetNetworkPing()
 local toolnames = {}
 for _,v in CharTools do table.insert(toolnames, v.Name) end
 table.clear(BaseParts)
-table.clear(CharHats)
 table.clear(CharTools)
 ResetHatRefs()
-character.DescendantAdded:Connect(CharOnDesc)
+PDX.Bind(character)
 for _,v in character:GetDescendants() do
 CharOnDesc(v)
 end
+local myHats = CharHats -- this character's accessory list (PDX.Bind made a NEW table for it): State1 / State2 and every later step of THIS setup only ever see this character's list
 r15reanim_cleanup()
 AccessoriesReanimator.Status.ReanimState = "Respawned."
 AccessoriesReanimator.Status.Permadeath = "Respawn detected."
@@ -79005,6 +79863,12 @@ local selhatcol = HatCollideMethods[hatcolmeth]
 CurrentCharacter = nil
 local Humanoid = character:WaitForChild("Humanoid", 10)
 if not Humanoid then return end
+-- some games build / replicate the character before parenting it to the workspace: wait for that (bounded, only while it is still the player's character) instead of abandoning a genuine new character
+if not character:IsDescendantOf(workspace) then
+local pw = os.clock()
+while not character:IsDescendantOf(workspace) and Player.Character == character and myGen == PDX.Gen and os.clock() - pw < 10 do task.wait() end
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then return end
+end
 if perma then HatReanimator.PDBegin(AccessoriesReanimator.Status, character, Humanoid) end
 if hatcolmeth == 10 and Humanoid.RigType ~= Enum.HumanoidRigType.R15 then
 hatcolmeth = 6
@@ -79133,7 +79997,7 @@ HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Freefall)
 end
 task.wait()
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 return
 end
 pcall(sethiddenproperty, RootPart, "PhysicsRepRootRef", nil)
@@ -79142,6 +80006,11 @@ local lgloop = nil
 local bringconns = {}
 local readystate = 0
 if perma then task.wait(1) end
+do
+-- delayed replication: let the appearance (every accessory) finish loading, bounded, so no hat shows up after the release step
+local aw = os.clock()
+while os.clock() - aw < 2.5 and myGen == PDX.Gen and character:IsDescendantOf(workspace) and not Player:HasAppearanceLoaded() do task.wait() end
+end
 local backpack = Player:FindFirstChildOfClass("Backpack")
 local tools = GetTools()
 if backpack then
@@ -79164,7 +80033,7 @@ AccessoriesReanimator.Status.Permadeath = "no."
 else
 AccessoriesReanimator.Status.Permadeath = AccessoriesReanimator.Permadeath and "Unsupported: no replicatesignal, normal death used." or "Disabled, nothing to do."
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 return
 end
@@ -79173,42 +80042,32 @@ AccessoriesReanimator.Status.ReanimState = "Reanimate State: 1"
 if not selhatcol.ColLimb then
 HatReanimator.PDRequest(Humanoid, Enum.HumanoidStateType.Physics)
 end
-NumHats = #CharHats
-selhatcol.State1(character, Humanoid, CharHats)
+-- an accessory whose Handle is still replicating is registered before the baseline and the hat-state step (returns at once when nothing is pending)
+local pend0 = os.clock()
+while PDX.Pend > 0 and os.clock() - pend0 < 2 and myGen == PDX.Gen and character:IsDescendantOf(workspace) do task.wait() end
+PDX.Sweep(character)
+PDX.Base()
+NumHats = PDX.ExpN
+selhatcol.State1(character, Humanoid, myHats)
 local claimarea = RootPart.CFrame.Position + RootPart.CFrame.LookVector * 8
 claimarea = Vector3.new(claimarea.X, math.max(FallenPartsDestroyHeight + 16, claimarea.Y + 4), claimarea.Z)
 task.wait(selhatcol.Wait1 or 0.1)
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 return
 end
 readystate = 2
 AccessoriesReanimator.Status.ReanimState = "Reanimate State: 2"
-for _,hat in CharHats do
-local handle = hat:FindFirstChild("Handle")
-if handle and handle:IsA("BasePart") then
-table.insert(bringconns, RunService.Heartbeat:Connect(function(dt)
-if handle:IsDescendantOf(workspace) and IsNetworkOwner(handle) then
-handle.CFrame = CFrame.new(claimarea)
-handle.Velocity = Vector3.new(0, 67, 0)
-handle.RotVelocity = Vector3.new(0, 0, 0)
+for _,hat in myHats do
+PDX.Release(hat, claimarea, bringconns)
 end
-end))
-for _,v in handle:GetChildren() do
-if v:IsA("JointInstance") then v:Destroy() end
-if v:IsA("Constraint") then v.Enabled = false end
-if v:IsA("Attachment") then
-v.Archivable = true
-local w = v:Clone()
-v:Destroy()
-w.Parent = handle
-end
-end
-handle:SetAttribute("_Uhhhhhh_HasCollide", false)
-end
+-- an accessory that is tracked AFTER this point (late replication, re-added by the game) is released exactly the same way
+PDX.RelDone = false
+PDX.Late = function(hat)
+PDX.Release(hat, claimarea, (not PDX.RelDone) and bringconns or nil)
 end
 if perma then
-local pdok = HatReanimator.PDDetect(AccessoriesReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15)
+local pdok = HatReanimator.PDDetect(AccessoriesReanimator.Status, character, Humanoid, selhatcol.Wait2 or 0.15, function() return character:IsDescendantOf(workspace) and myGen == PDX.Gen and not Reanimate.Stopping end)
 if not pdok then
 perma = false
 AccessoriesReanimator.HasPermadeath = false
@@ -79217,7 +80076,7 @@ else
 Humanoid:ChangeState(Enum.HumanoidStateType.FallingDown)
 task.wait(selhatcol.Wait2 or 0.15)
 end
-if not character:IsDescendantOf(workspace) then
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 lgloop:Disconnect()
 for _,c in bringconns do
 c:Disconnect()
@@ -79227,8 +80086,8 @@ end
 AvatarEditorService:BustAvatarFetchCache()
 local pdres
 if perma and not pdfired then
-pdfired = true
-pdres = HatReanimator.PDExecute(AccessoriesReanimator.Status, character, Humanoid, bringconns)
+-- pdfired is consumed only when PDExecute reached its signal commitment point (a cancelled / unconfirmed attempt leaves it open)
+pdres, pdfired = HatReanimator.PDExecute(AccessoriesReanimator.Status, character, Humanoid, bringconns, function() return character:IsDescendantOf(workspace) and myGen == PDX.Gen and not Reanimate.Stopping end)
 if pdres ~= "executed" then
 perma = false
 AccessoriesReanimator.HasPermadeath = false
@@ -79251,31 +80110,31 @@ Humanoid.Health = 0
 Humanoid:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
 Humanoid:ChangeState(Enum.HumanoidStateType.Dead)
 end
+PDX.Sweep(character)
 readystate = 3
 AccessoriesReanimator.Status.ReanimState = "Reanimate State: 3"
-IsRespawning = false
 if hatcols then
 local stateunlocked = false
 task.spawn(function()
-local collidable = selhatcol.State2(character, CharHats)
+local collidable = selhatcol.State2(character, myHats)
 stateunlocked = true
 local atleast = 0
 if AccessoriesReanimator.Save.IWantHatCollide == 1 then
 atleast = 1
 end
 if AccessoriesReanimator.Save.IWantHatCollide == 2 then
-atleast = #CharHats - 3
+atleast = #myHats - 3
 end
 if AccessoriesReanimator.Save.IWantHatCollide == 3 then
-atleast = #CharHats - 2
+atleast = #myHats - 2
 end
 if AccessoriesReanimator.Save.IWantHatCollide == 4 then
-atleast = #CharHats - 1
+atleast = #myHats - 1
 end
-if hatcols and collidable <= atleast then
+if hatcols and collidable <= atleast and myGen == PDX.Gen then
 if perma then
 AccessoriesReanimator.Status.Permadeath = "No hat collide. Respawning!"
-Respawn()
+Respawn(character)
 end
 end
 end)
@@ -79293,26 +80152,33 @@ if perma then task.wait(1) end
 for _,c in bringconns do
 c:Disconnect()
 end
-if not character:IsDescendantOf(workspace) then
+PDX.RelDone = true
+if not character:IsDescendantOf(workspace) or myGen ~= PDX.Gen then
 return
 end
 AccessoriesReanimator.Status.ReanimState = "Done."
-if #CharHats == 0 then
+-- the pd transition is over: from here a hat that leaves is judged by its own hook, and every accessory of the baseline is judged one by one (instances, not a count) once its grace has passed
+if PDX.Flow == character then PDX.Flow = nil end
+PDX.Settle(character)
+if myGen ~= PDX.Gen then return end
+if PDX.ExpN > 0 and #myHats == 0 then
 if perma then
 AccessoriesReanimator.Status.Permadeath = "All hats died. Respawning!"
-Respawn()
+Respawn(character)
 end
 end
 if perma and hatcols then
-if AccessoriesReanimator.IWantAllHats and NumHats > #CharHats then
+if AccessoriesReanimator.IWantAllHats and PDX.GoneN > 0 then
 if perma then
 AccessoriesReanimator.Status.Permadeath = "Some hats died. Respawning!"
-Respawn()
+Respawn(character)
 end
 else
-NumHats = #CharHats
+PDX.Base()
+NumHats = PDX.ExpN
 end
 end
+if PDX.GoneN == 0 and #myHats > 0 then PDX.Tries = 0 end
 CurrentCharacter = character
 task.wait()
 if backpack then
@@ -79325,6 +80191,19 @@ end
 end
 end
 end
+-- One handling per genuine character change. The character must still BE the player's character (a stale CharacterAdded of an already replaced character is ignored); PDX.Flow marks the setup of the current character for as long as it runs (also when it ends early or errors); PDX.Gen invalidates everything an older character still has in flight.
+local function OnCharacter(character)
+if AccessoriesReanimator.DontFireCharAddOnThisChar == character then return end
+if PDX.Last == character or Player.Character ~= character then return end
+PDX.Last = character
+PDX.Gen += 1
+local myGen = PDX.Gen
+PDX.Late, PDX.RelDone = nil, false
+PDX.Flow = character
+local ok, err = pcall(PDX.Setup, character, myGen)
+if PDX.Flow == character then PDX.Flow = nil end
+if not ok then warn("[Uhhhhhh] character setup failed: " .. tostring(err)) end
+end
 local CharConn = Player.CharacterAdded:Connect(OnCharacter)
 if Player.Character then
 local h = Player.Character:FindFirstChildOfClass("Humanoid")
@@ -79333,7 +80212,7 @@ InitCFrame = h.RootPart.CFrame
 pcall(function() Player.Character.Humanoid:ChangeState(Enum.HumanoidStateType.Dead) end)
 pcall(function() Player.Character.Humanoid.Health = 0 end)
 pcall(replicatesignal, Player.Character.Humanoid.ServerBreakJoints)
-Player.Character.DescendantAdded:Connect(CharOnDesc)
+PDX.Bind(Player.Character)
 for _,v in Player.Character:GetDescendants() do
 CharOnDesc(v)
 end
@@ -79357,10 +80236,10 @@ if CurrentCharacter == Character then
 if #CharHats > 0 then
 ReanimOkay = true
 end
-if AccessoriesReanimator.HasPermadeath and not IsRespawning and AccessoriesReanimator.IWantAllHats then
-if NumHats > #CharHats then
+if AccessoriesReanimator.HasPermadeath and IsRespawning ~= Character and AccessoriesReanimator.IWantAllHats and os.clock() >= HatReanimator.PDHatGrace then
+if PDX.GoneN > 0 then
 AccessoriesReanimator.Status.Permadeath = "Some hats died. Respawning!"
-Respawn()
+Respawn(Character)
 else
 local midpoint = Vector3.zero
 local hatsowned = 0
@@ -79368,7 +80247,7 @@ local hatsnotowned = {}
 for _,v in CharHats do
 local h = v:FindFirstChild("Handle")
 if h and h:IsA("BasePart") then
-if IsNetworkOwner(h) then
+if (Util.HatOwn.Check(h, os.clock())) then
 midpoint += h.Position
 hatsowned += 1
 else
@@ -79376,11 +80255,11 @@ table.insert(hatsnotowned, h)
 end
 end
 end
-midpoint /= hatsowned
+if hatsowned == 0 then hatsnotowned = {} else midpoint /= hatsowned end
 for _,v in hatsnotowned do
 if (v.Position - midpoint).Magnitude > 2000 then
 AccessoriesReanimator.Status.Permadeath = "Some hats unclaimable. Respawning!"
-Respawn()
+Respawn(Character)
 break
 end
 end
@@ -79409,7 +80288,7 @@ debug.profileend()
 if AccessoriesReanimator.AutoForceRespawn and AccessoriesReanimator.HasPermadeath then
 local now = os.clock()
 if Character and Character:IsDescendantOf(workspace) and not ReanimOkay then
-stuckSince = os.clock() < HatReanimator.PDBusyUntil and now or stuckSince or now
+stuckSince = os.clock() < math.max(HatReanimator.PDBusyUntil, HatReanimator.PDHatGrace) and now or stuckSince or now
 if now - stuckSince > AccessoriesReanimator.StuckTimeout and now - AccessoriesReanimator.LastForceRespawn > 5 then
 stuckSince = nil
 AccessoriesReanimator.ForceRespawn("Stuck for " .. AccessoriesReanimator.StuckTimeout .. "s. Force respawning!")
@@ -79778,6 +80657,10 @@ end
 ResetHatRefs()
 for _,v in HatRefs do if v.PH then v.PH:Destroy() end end
 CharConn:Disconnect()
+PDX.Late, PDX.Flow = nil, nil
+if PDX.Conn then PDX.Conn:Disconnect() PDX.Conn = nil end
+for _,hk in PDX.Hooks do hk:Disconnect() end
+PDX.Hooks = {}
 pcall(Util.HatOwn.Reset)
 Reanimate.Stopping = false
 Reanimate.DestroyCharacter()
@@ -80949,7 +81832,7 @@ end
 end))
 end
 if perma then
-local pdok = HatReanimator.PDDetect(Status, character, hum, 0.15)
+local pdok = HatReanimator.PDDetect(Status, character, hum, 0.15, alive)
 if not pdok then
 perma = false
 ToolReanimator.HasPermadeath = false
@@ -80961,8 +81844,8 @@ end
 if not alive() then return end
 local pdres
 if perma and not pdfired then
-pdfired = true
-pdres = HatReanimator.PDExecute(Status, character, hum, bringconns)
+-- pdfired is consumed only when PDExecute reached its signal commitment point (a cancelled / unconfirmed attempt leaves it open)
+pdres, pdfired = HatReanimator.PDExecute(Status, character, hum, bringconns, alive)
 if pdres ~= "executed" then
 perma = false
 ToolReanimator.HasPermadeath = false
@@ -87641,12 +88524,19 @@ local WAITING = "Your favorites appear here as soon as their modules finish load
 local FAV_BASE = 1000000
 local HEART_ON, HEART_OFF = "\u{2665}", "\u{2661}"
 local ON_COLOR = Color3.fromRGB(255, 72, 112)
+local POP_INFO = TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local FLUSH_DELAY, NOTE_DELAY, FRAME_BUDGET = 0.08, 0.3, 0.008
 local S = {}
 local H = setmetatable({}, {__mode = "k"})
+-- Per kind: set/ord mirror the saved list at runtime (hash -> true / hash -> LayoutOrder, newest = smallest), so a toggle never scans or sorts.
+-- dirty = hashes whose row on the normal list must be re-placed, favDirty = same for the Favorite page. Both are drained by ONE coalesced worker.
+-- The Favorite page only builds/updates rows while it is open (favFull = reconcile everything once on the next open).
 local function state(kind)
 local st = S[kind]
 if not st then
-st = {kind = kind, byHash = {}, rows = {}, hearts = {}, openers = {}, pending = false, page = nil, favPage = nil, favGate = nil}
+st = {kind = kind, byHash = {}, rows = {}, hearts = {}, openers = {}, list = nil, set = {}, ord = {}, low = 1 - FAV_BASE,
+dirty = {}, favDirty = {}, favRows = {}, nFav = 0, favFull = true, pending = false, busy = false,
+nAdd = 0, nDel = 0, nName = "", nPending = false, page = nil, favPage = nil, favGate = nil, empty = nil}
 S[kind] = st
 end
 return st
@@ -87660,18 +88550,50 @@ SaveData[key] = l
 end
 return l
 end
+-- rebuilt only when the saved table itself is a different table (first use, or SaveData was replaced)
+local function prep(st)
+local l = favList(st.kind)
+if st.list ~= l then
+local had = st.list ~= nil
+st.list = l
+table.clear(st.set)
+table.clear(st.ord)
+for i, h in ipairs(l) do
+st.set[h] = true
+st.ord[h] = i - FAV_BASE
+end
+st.low = 1 - FAV_BASE
+if had then
+st.favFull = true
+for h in pairs(st.byHash) do st.dirty[h] = true end
+end
+end
+return l
+end
 local function paint(heart, on)
 local info = H[heart]
 if not info or not heart.Parent then return end
 if on ~= nil then info.on = on end
+if info.pOn == info.on and info.pBase == info.base then return end
+info.pOn, info.pBase = info.on, info.base
 heart.Text = info.on and HEART_ON or HEART_OFF
 heart.TextColor3 = info.on and ON_COLOR or info.base
 heart.TextTransparency = info.on and 0 or 0.2
 end
+-- one reusable tween per heart; a new click cancels the previous pop instead of stacking another
 local function pop(heart)
+local info = H[heart]
+if not info then return end
 pcall(function()
+local tw = info.tw
+if tw then
+tw:Cancel()
+else
+tw = TweenService:Create(heart, POP_INFO, {TextSize = 22})
+info.tw = tw
+end
 heart.TextSize = 31
-TweenService:Create(heart, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {TextSize = 22}):Play()
+tw:Play()
 end)
 end
 local function makeHeart(st, m, item, on)
@@ -87704,7 +88626,7 @@ end
 paint(heart)
 heart.Activated:Connect(function()
 pcall(Util.FX.Click, "click", 1, 1)
-F.Toggle(st.kind, m)
+F.Toggle(st.kind, m, heart)
 end)
 return heart
 end
@@ -87724,119 +88646,268 @@ if i then table.remove(SS.Entries, i) end
 end
 end)
 end
+-- shows the "no favorites yet" / "waiting for modules" text only while the Favorite page has no rows
+local function updateEmpty(st)
+local page = st.favPage
+if not (page and page.Parent) then return end
+if st.nFav > 0 then
+if st.empty then
+pcall(st.empty.Destroy, st.empty)
+st.empty = nil
+end
+return
+end
+local txt = (st.list and #st.list > 0) and WAITING or EMPTY[st.kind]
+local e = st.empty
+if e and e.Parent then
+if e.Text ~= txt then e.Text = txt end
+else
+st.empty = UI.CreateText(page.List, txt, 12, Enum.TextXAlignment.Center)
+end
+end
 local function buildFavRow(st, m)
 local page = st.favPage
 local item = UI.CreateItemListItem(page.List)
+local row = item.Parent
+local ok, res = pcall(function()
 local msname = UI.CreateText(item, m.Name .. " &gt;", 20, Enum.TextXAlignment.Left)
 local msdesc = UI.CreateText(item, string.split(m.Description, "\n")[1], 12, Enum.TextXAlignment.Left)
 msname.Name = "LabelName"
 msdesc.Name = "LabelDesc"
-item.Parent.Name = m.Name .. " " .. m.Description
+row.Name = m.Name .. " " .. m.Description
 dropSearchEntry(item)
 Util.LinkDestroyI2C(item, item.Activated:Connect(function()
 local open = st.openers[m]
 if open then open(page) end
 end))
-makeHeart(st, m, item, true)
+return makeHeart(st, m, item, true)
+end)
+if not ok then
+pcall(row.Destroy, row)
+error(res, 0)
 end
-function F.Rebuild(kind)
-local st = state(kind)
-local page = st.favPage
-if not (page and page.Parent) then return end
-local box = page.List
-Util.ClearAllChildrenGui(box)
-if st.favGate then st.favGate.Reset() end
-local list = favList(kind)
-local shown = 0
-for _, h in ipairs(list) do
-local m = st.byHash[h]
-if m then
-local ok, err = pcall(buildFavRow, st, m)
-if ok then
-shown += 1
-else
-warn("[Favorites] could not list " .. tostring(m.Name) .. ": " .. tostring(err))
+return row, res
 end
+-- moves one row to its sorted place (by LayoutOrder) inside gate.rows, which the lazy row window follows; gate.rows is kept sorted, so this is a binary search
+local function move(gate, row, order)
+local rows = gate.rows
+local n = #rows
+local i = (rows[n] == row) and n or table.find(rows, row)
+if i then table.remove(rows, i) end
+row.LayoutOrder = order
+local lo, hi = 1, #rows + 1
+while lo < hi do
+local mid = (lo + hi) // 2
+if rows[mid].LayoutOrder < order then lo = mid + 1 else hi = mid end
 end
+table.insert(rows, lo, row)
 end
-if shown == 0 then
-UI.CreateText(box, #list == 0 and EMPTY[kind] or WAITING, 12, Enum.TextXAlignment.Center)
-end
-end
--- favorites first (newest first), everything else back in its original order; the lazy row window follows the same order
-function F.Reflow(kind)
-local st = state(kind)
-local rank = {}
-for i, h in ipairs(favList(kind)) do rank[h] = i end
-for m, r in pairs(st.rows) do
-if r.row.Parent then
-local k = m.Hash and rank[m.Hash]
-r.row.LayoutOrder = k and (k - FAV_BASE) or r.orig
-end
-end
+-- normal list: only rows whose favorite state changed are re-placed (favorites on top newest first, un-favorited rows back to their original slot)
+local function flushOrig(st)
+local d = st.dirty
+if next(d) == nil then return end
 local gate = st.page and Util.ListGate.Get(st.page.List)
-if gate then
-table.sort(gate.rows, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+local set, ord = st.set, st.ord
+local changed = false
+while true do
+local h = next(d)
+if h == nil then break end
+d[h] = nil
+local m = st.byHash[h]
+local r = m and st.rows[m]
+if r then
+local row = r.row
+if row.Parent then
+local target = set[h] and ord[h] or r.orig
+if r.cur ~= target then
+if gate then move(gate, row, target) else row.LayoutOrder = target end
+r.cur = target
+changed = true
+end
+else
+local hrt = st.hearts[m]
+if hrt then H[hrt] = nil end
+st.rows[m] = nil
+st.hearts[m] = nil
+end
+end
+end
+if changed and gate then gate.Sync() end
+end
+-- Favorite page: only while it is open; adds/removes/moves just the affected rows, building at most ~8ms of rows per frame
+local function flushFav(st)
+prep(st)
+local page, gate = st.favPage, st.favGate
+if not (page and gate and page.Parent and page.Visible) then return end
+local set, ord, rows, fd = st.set, st.ord, st.favRows, st.favDirty
+if st.favFull then
+st.favFull = false
+for _, h in ipairs(st.list) do fd[h] = true end
+for h in pairs(rows) do fd[h] = true end
+end
+local t0, changed = os.clock(), false
+while true do
+local h = next(fd)
+if h == nil then break end
+fd[h] = nil
+local fr = rows[h]
+local m = set[h] and st.byHash[h]
+if m then
+if fr and fr.row.Parent then
+local o = ord[h]
+if fr.cur ~= o then
+move(gate, fr.row, o)
+fr.cur = o
+changed = true
+end
+else
+if fr then
+H[fr.heart] = nil
+rows[h] = nil
+st.nFav -= 1
+end
+changed = true
+local ok, row, heart = pcall(buildFavRow, st, m)
+if ok then
+local o = ord[h]
+move(gate, row, o)
+rows[h] = {row = row, heart = heart, cur = o}
+st.nFav += 1
+else
+warn("[Favorites] could not list " .. tostring(m.Name) .. ": " .. tostring(row))
+end
+end
+elseif fr then
+H[fr.heart] = nil
+rows[h] = nil
+st.nFav -= 1
+pcall(fr.row.Destroy, fr.row)
+changed = true
+end
+if os.clock() - t0 > FRAME_BUDGET then
+if changed then
 gate.Sync()
+changed = false
+end
+updateEmpty(st)
+task.wait()
+t0 = os.clock()
+if not page.Parent then return end
 end
 end
-local function schedule(st)
+if changed then gate.Sync() end
+updateEmpty(st)
+end
+local schedule
+local function worker(st)
+st.pending = false
+if st.busy then return end
+st.busy = true
+pcall(flushOrig, st)
+pcall(flushFav, st)
+st.busy = false
+if next(st.dirty) ~= nil then schedule(st) end
+end
+-- single pending worker: any number of changes before it runs become one UI update
+schedule = function(st, delay)
 if st.pending then return end
 st.pending = true
-task.defer(function()
-st.pending = false
-pcall(F.Reflow, st.kind)
-pcall(F.Rebuild, st.kind)
+task.delay(delay or FLUSH_DELAY, worker, st)
+end
+-- rapid changes produce one summary notification instead of one per press
+local function note(st, on, name)
+if on then st.nAdd += 1 else st.nDel += 1 end
+st.nName = tostring(name)
+if st.nPending then return end
+st.nPending = true
+task.delay(NOTE_DELAY, function()
+st.nPending = false
+local a, d = st.nAdd, st.nDel
+st.nAdd, st.nDel = 0, 0
+local msg
+if a + d == 1 then
+msg = (a == 1 and "Added to favorites: " or "Removed from favorites: ") .. st.nName
+elseif a + d > 1 then
+msg = "Favorites updated: " .. a .. " added, " .. d .. " removed"
+end
+if msg then pcall(Util.Notify, msg) end
 end)
 end
-function F.Toggle(kind, m)
-if not (m and m.Hash) then return end
+function F.Toggle(kind, m, src)
+local hash = m and m.Hash
+if not hash then return end
 local st = state(kind)
-local l = favList(kind)
-local i = table.find(l, m.Hash)
+local l = prep(st)
 local on
-if i then
-table.remove(l, i)
+if st.set[hash] then
+local i = table.find(l, hash)
+if i then table.remove(l, i) end
+st.set[hash] = nil
+st.ord[hash] = nil
 on = false
 else
-table.insert(l, 1, m.Hash)
+table.insert(l, 1, hash)
+st.set[hash] = true
+st.low -= 1
+st.ord[hash] = st.low
 on = true
 end
 local h = st.hearts[m]
-if h then
-paint(h, on)
-if on then pop(h) end
+if h then paint(h, on) end
+local fr = st.favRows[hash]
+if fr then paint(fr.heart, on) end
+local pe = src or h
+if on and pe then pop(pe) end
+st.dirty[hash] = true
+st.favDirty[hash] = true
+schedule(st)
+note(st, on, m.Name)
 end
-pcall(F.Reflow, kind)
-task.defer(function() pcall(F.Rebuild, kind) end)
-pcall(Util.Notify, (on and "Added to favorites: " or "Removed from favorites: ") .. tostring(m.Name))
-end
--- called by AddMoveset / AddDance for every row: draws the heart and puts an already-favorite row straight back on top
+-- called by AddMoveset / AddDance for every row: draws the heart; an already-favorite row is moved to the top by the coalesced worker
 function F.Attach(kind, m, item, opener)
 local st = state(kind)
 local row = item.Parent
-if not (row and m.Hash) then return end
-st.byHash[m.Hash] = m
+local hash = m.Hash
+if not (row and hash) then return end
+local oh = st.hearts[m]
+if oh and oh.Parent == row then
 st.openers[m] = opener
-st.rows[m] = {row = row, orig = row.LayoutOrder}
-local rank = table.find(favList(kind), m.Hash)
-st.hearts[m] = makeHeart(st, m, item, rank ~= nil)
-if rank then
-row.LayoutOrder = rank - FAV_BASE
+return
+end
+if oh and not oh.Parent then H[oh] = nil end
+prep(st)
+st.byHash[hash] = m
+st.openers[m] = opener
+local lo = row.LayoutOrder
+st.rows[m] = {row = row, orig = lo, cur = lo}
+local on = st.set[hash] == true
+st.hearts[m] = makeHeart(st, m, item, on)
+if on then
+st.dirty[hash] = true
+st.favDirty[hash] = true
 schedule(st)
 end
 end
--- modules were cleared (reload): forget rows, keep what was saved
+-- modules were cleared (reload): forget rows, keep what was saved; Favorite page rows are rebuilt (lazily) as the modules re-attach
 function F.Reset()
 for _, st in pairs(S) do
+for _, hrt in pairs(st.hearts) do H[hrt] = nil end
 table.clear(st.byHash)
 table.clear(st.rows)
 table.clear(st.hearts)
 table.clear(st.openers)
-st.pending = false
-if st.favPage and st.favPage.Parent then
-pcall(F.Rebuild, st.kind)
+table.clear(st.dirty)
+table.clear(st.favDirty)
+for _, fr in pairs(st.favRows) do
+H[fr.heart] = nil
+pcall(fr.row.Destroy, fr.row)
 end
+table.clear(st.favRows)
+st.nFav = 0
+st.favFull = true
+if st.favGate then st.favGate.Reset() end
+updateEmpty(st)
+if st.favPage and st.favPage.Visible then schedule(st, 0) end
 end
 end
 -- creates the "Favorite ..." button (right below the Movesets / Dances button) and its list page
@@ -87853,6 +88924,8 @@ end
 end
 table.clear(l)
 for i, h in ipairs(clean) do l[i] = h end
+st.list = nil
+prep(st)
 local page = UI.CreateItemListPage()
 pcall(function() Util.Search.Titles[page] = TITLE[kind] end)
 page.ZIndex = 1
@@ -87863,7 +88936,10 @@ st.favPage = page
 st.favGate = Util.ListGate.Attach(page)
 local button = UI.CreateButton(MainPage, TITLE[kind] .. " &gt;", 20)
 BindListPageNav(page, st.favGate, button)
-F.Rebuild(kind)
+updateEmpty(st)
+Util.LinkDestroyI2C(page, page:GetPropertyChangedSignal("Visible"):Connect(function()
+if page.Visible then schedule(st, 0) end
+end))
 end
 return F
 end)()
