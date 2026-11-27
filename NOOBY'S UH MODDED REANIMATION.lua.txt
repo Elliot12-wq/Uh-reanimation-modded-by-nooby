@@ -17940,22 +17940,34 @@ Util.Vector2ToUDim2Offset = function(x)
 return UDim2.fromOffset(x.X, x.Y)
 end
 Util.ForceTextSize = function(inst)
-if inst:IsA("TextLabel") then
-local original = inst.TextSize
-local conn conn = RunService.PreRender:Connect(function()
-local size = GuiService.PreferredTextSize.Name
-if size == "Medium" then
-inst.TextSize = original
-elseif size == "Large" then
-inst.TextSize = original - 4
-elseif size == "Larger" then
-inst.TextSize = original - 9
-elseif size == "Largest" then
-inst.TextSize = original - 14
-end
-end)
-Util.LinkDestroyI2C(inst, conn)
-end
+	if inst:IsA("TextLabel") then
+		local original = inst.TextSize
+		local function apply()
+			local size = GuiService.PreferredTextSize.Name
+			local want
+			if size == "Medium" then
+				want = original
+			elseif size == "Large" then
+				want = original - 4
+			elseif size == "Larger" then
+				want = original - 9
+			elseif size == "Largest" then
+				want = original - 14
+			end
+			if want and inst.TextSize ~= want then inst.TextSize = want end
+		end
+		apply()
+		local c1 = GuiService:GetPropertyChangedSignal("PreferredTextSize"):Connect(apply)
+		local c2 = inst:GetPropertyChangedSignal("TextSize"):Connect(apply)
+		local timer = Util.Loop.Every(Util.Loop.Uid("ForceTextSize"), 1, apply, "ForceTextSize")
+		Util.LinkDestroyI2C(inst, {
+			Disconnect = function()
+				c1:Disconnect()
+				c2:Disconnect()
+				timer:Disconnect()
+			end,
+		})
+	end
 end
 Util.QueryPlayerSelector = function(query, excludespeaker)
 if #query == 0 then return end
@@ -19993,97 +20005,151 @@ pcall(FX.Ring, btn, Color3.new(1, 1, 1), 90, 0.6, 2)
 flashLabel(3)
 end
 end
-local themeT = 0
-local function applyTheme(t)
-if t - themeT < 0.05 then return end
-themeT = t
-local cfg = FX.Cfg
-local a, b, c
-if U.GetTheme then
-local ok, x, y, z = pcall(U.GetTheme, t)
-if ok and x then a, b, c = x, y, z end
+do
+	local th = {t = 0, A = nil, B = nil, C = nil, nA = -1, nB = -1, nC = -1, full = 0, hexKey = nil, hexVal = nil}
+	local dr = {acc = 0, n = 0, tabShown = nil, tabX = nil, shaking = true}
+	local BLACK3, WHITE3 = Color3.new(0, 0, 0), Color3.new(1, 1, 1)
+	local ORBIT_STEP = math.pi * 2 / 3
+
+	local function applyTheme(t)
+		if t - th.t < 0.05 then return end
+		th.t = t
+		local cfg = FX.Cfg
+		local a, b, c
+		if U.GetTheme then
+			local ok, x, y, z = pcall(U.GetTheme, t)
+			if ok and x then a, b, c = x, y, z end
+		end
+		a = a or Util.LoopedHSV(t / 10, 0.8, 1)
+		b = b or BLACK3
+		c = c or WHITE3
+		local hex = cfg.UIAccent
+		if hex and hex ~= "" then
+			if hex ~= th.hexKey then
+				th.hexKey, th.hexVal = hex, Util.ParseHex(hex)
+			end
+			a = th.hexVal or a
+		end
+		local na, nb, nc = #accents, #bgs, #texts
+		if a == th.A and b == th.B and c == th.C and na == th.nA and nb == th.nB and nc == th.nC and t - th.full < 0.5 then
+			return
+		end
+		th.A, th.B, th.C, th.nA, th.nB, th.nC, th.full = a, b, c, na, nb, nc, t
+		for i = 1, na do
+			local o = accents[i]
+			if o:IsA("UIStroke") then o.Color = a else o.BackgroundColor3 = a end
+		end
+		for i = 1, nb do bgs[i].BackgroundColor3 = b end
+		for i = 1, nc do texts[i].TextColor3 = c end
+	end
+
+	local function driverStep(dt)
+		local t = os.clock()
+		applyHidden(FX.Cfg.AdminTriHidden == true)
+		local showTab = S.applied == true and FX.Cfg.AdminTriTab ~= false
+		if dr.tabShown ~= showTab then
+			dr.tabShown = showTab
+			tab.Visible = showTab
+		end
+		if showTab then
+			local px = root.Position.X.Scale
+			if px ~= dr.tabX then
+				dr.tabX = px
+				tab.Position = UDim2.new(px, 0, 0, 0)
+			end
+			tab.BackgroundTransparency = 0.45 + math.sin(t * 2.5) * 0.15
+		end
+		applyTheme(t)
+
+		local boost, flash, shake = S.boost, S.flash, S.shake
+		if boost > 0 then boost = math.max(0, boost - dt * 1.6) S.boost = boost end
+		if flash > 0 then flash = math.max(0, flash - dt * 2.2) S.flash = flash end
+		if shake > 0 then shake = math.max(0, shake - dt * 3) S.shake = shake end
+		local open = S.open
+		local want = 0.9 + (S.hover and 1.1 or 0) + (open and 1.6 or 0) + boost * 2.5 + flash * 3
+
+		local tris = U.Tris
+		local nT = #tris
+		if nT > 0 then
+			local k = 1 - math.exp(-6 * dt)
+			local sclFactor = 1 + 0.05 * math.sin(t * 2.3) + 0.12 * flash
+			for i = 1, nT do
+				local e = tris[i]
+				local T = e.tri
+				if T and T.active then
+					T.baseSpin = T.baseSpin + (want * e.mult - T.baseSpin) * k
+					T.scaleBase = e.scale * sclFactor
+				end
+			end
+		end
+
+		local A = Util.FX.Audio
+		local kick = (A.running and A.kick) or 0
+		if S.shown then
+			local speed = 1.4 + (open and 1.6 or 0) + boost * 3 + flash * 5 + kick * 4
+			U.orbitA = (U.orbitA or 0) + dt * speed
+			local oa = U.orbitA
+			local R = (SIZE + 8) / 2
+			for i = 1, #dots do
+				local ang = oa + (i - 1) * ORBIT_STEP
+				dots[i].Position = UDim2.new(0.5, math.cos(ang) * R, 0.5, math.sin(ang) * R)
+			end
+			U.btnGrad = ((U.btnGrad or 0) + dt * (90 + boost * 220 + (open and 120 or 0))) % 360
+			grad.Rotation = U.btnGrad
+			local pulse = SIZE + 14 + math.sin(t * 2) * 4 + flash * 18 + kick * 10
+			aura.Size = UDim2.fromOffset(pulse, pulse)
+			aura.BackgroundTransparency = 0.9 - flash * 0.35 - (open and 0.07 or 0)
+			if shake > 0 then
+				btn.Rotation = math.sin(t * 55) * 7 * shake
+				dr.shaking = true
+			elseif dr.shaking then
+				btn.Rotation = 0
+				dr.shaking = false
+			end
+			if glyph.Visible then glyph.Rotation = (t * 80 * want) % 360 end
+		end
+
+		local g, bs = U.BarGrad, U.BarStroke
+		if g and g.Parent then
+			U.barGradA = ((U.barGradA or 0) + dt * (70 + (open and 90 or 0) + boost * 260)) % 360
+			g.Rotation = U.barGradA
+			bs.Thickness = 1.4 + boost * 1.2 + flash * 1.4
+		end
+		local scan = U.BarScan
+		if open and scan and scan.Parent then
+			U.scanT = ((U.scanT or 0) + dt / 1.5) % 1
+			scan.Position = UDim2.new(0, -70 + U.scanT * 320, 1, 0)
+		end
+	end
+
+	local function onFrame(dt)
+		if FX.IsLowEnd() then
+			dr.acc = dr.acc + dt
+			if dr.acc < 1 / FX.LowEndUIFPS then return end
+			dt, dr.acc = dr.acc, 0
+		else
+			local gs = FX.Gov and FX.Gov.Stride or 1
+			if gs > 1 then
+				dr.acc = dr.acc + dt
+				dr.n = dr.n + 1
+				if dr.n < gs then return end
+				dt, dr.acc, dr.n = dr.acc, 0, 0
+			else
+				dr.acc, dr.n = 0, 0
+			end
+		end
+		local ok, err = pcall(driverStep, dt)
+		if not ok and not U.tickWarned then
+			U.tickWarned = true
+			warn("[UhAdmin] driver error: " .. tostring(err))
+		end
+	end
+
+	-- unique name/owner per build: a rebuilt launcher never inherits a stale driver, and destroying this ScreenGui releases only its own driver
+	local drvName = Util.Loop.Uid("UhAdmin.Driver")
+	Util.Loop.Bind(drvName, "RenderStepped", onFrame, drvName)
+	Util.Loop.Link(drvName, sg)
 end
-a = a or Util.LoopedHSV(t / 10, 0.8, 1)
-b = b or Color3.new(0, 0, 0)
-c = c or Color3.new(1, 1, 1)
-if cfg.UIAccent and cfg.UIAccent ~= "" then a = Util.ParseHex(cfg.UIAccent) or a end
-for _, o in ipairs(accents) do
-if o:IsA("UIStroke") then o.Color = a else o.BackgroundColor3 = a end
-end
-for _, o in ipairs(bgs) do o.BackgroundColor3 = b end
-for _, o in ipairs(texts) do o.TextColor3 = c end
-end
-local drvAcc, drvN = 0, 0
-RunService.RenderStepped:Connect(function(dt)
-if FX.IsLowEnd() then
-drvAcc = drvAcc + dt
-if drvAcc < 1 / FX.LowEndUIFPS then return end
-dt, drvAcc = drvAcc, 0
-else
-local gs = FX.Gov and FX.Gov.Stride or 1
-if gs > 1 then
-drvAcc = drvAcc + dt
-drvN = drvN + 1
-if drvN < gs then return end
-dt, drvAcc, drvN = drvAcc, 0, 0
-else
-drvAcc, drvN = 0, 0
-end
-end
-local ok, err = pcall(function()
-local t = os.clock()
-applyHidden(FX.Cfg.AdminTriHidden == true)
-local showTab = S.applied == true and FX.Cfg.AdminTriTab ~= false
-tab.Visible = showTab
-if showTab then
-tab.Position = UDim2.new(root.Position.X.Scale, 0, 0, 0)
-tab.BackgroundTransparency = 0.45 + math.sin(t * 2.5) * 0.15
-end
-applyTheme(t)
-S.boost = math.max(0, S.boost - dt * 1.6)
-S.flash = math.max(0, S.flash - dt * 2.2)
-S.shake = math.max(0, S.shake - dt * 3)
-local want = 0.9 + (S.hover and 1.1 or 0) + (S.open and 1.6 or 0) + S.boost * 2.5 + S.flash * 3
-for _, e in ipairs(U.Tris) do
-local T = e.tri
-if T and T.active then
-T.baseSpin = T.baseSpin + (want * e.mult - T.baseSpin) * (1 - math.exp(-6 * dt))
-T.scaleBase = e.scale * (1 + 0.05 * math.sin(t * 2.3) + 0.12 * S.flash)
-end
-end
-if S.shown then
-local speed = 1.4 + (S.open and 1.6 or 0) + S.boost * 3 + S.flash * 5 + (Util.FX.Audio.running and Util.FX.Audio.kick * 4 or 0)
-U.orbitA = (U.orbitA or 0) + dt * speed
-local R = (SIZE + 8) / 2
-for i, d in ipairs(dots) do
-local a = U.orbitA + (i - 1) * (math.pi * 2 / 3)
-d.Position = UDim2.new(0.5, math.cos(a) * R, 0.5, math.sin(a) * R)
-end
-U.btnGrad = ((U.btnGrad or 0) + dt * (90 + S.boost * 220 + (S.open and 120 or 0))) % 360
-grad.Rotation = U.btnGrad
-local pulse = SIZE + 14 + math.sin(t * 2) * 4 + S.flash * 18 + (Util.FX.Audio.running and Util.FX.Audio.kick * 10 or 0)
-aura.Size = UDim2.fromOffset(pulse, pulse)
-aura.BackgroundTransparency = 0.9 - S.flash * 0.35 - (S.open and 0.07 or 0)
-btn.Rotation = S.shake > 0 and math.sin(t * 55) * 7 * S.shake or 0
-if glyph.Visible then glyph.Rotation = (t * 80 * want) % 360 end
-end
-local g, bs = U.BarGrad, U.BarStroke
-if g and g.Parent then
-U.barGradA = ((U.barGradA or 0) + dt * (70 + (S.open and 90 or 0) + S.boost * 260)) % 360
-g.Rotation = U.barGradA
-bs.Thickness = 1.4 + S.boost * 1.2 + S.flash * 1.4
-end
-local sc = U.BarScan
-if sc and sc.Parent and S.open then
-U.scanT = ((U.scanT or 0) + dt / 1.5) % 1
-sc.Position = UDim2.new(0, -70 + U.scanT * 320, 1, 0)
-end
-end)
-if not ok and not U.tickWarned then
-U.tickWarned = true
-warn("[UhAdmin] driver error: " .. tostring(err))
-end
-end)
 applyHidden(FX.Cfg.AdminTriHidden == true)
 end)
 if not okL then
@@ -25760,19 +25826,31 @@ wait()
 lib.disconnect("noclip")
 end)
 cmd.add({"netless", "net"}, {"netless (net)", "Executes netless which makes scripts more stable"}, function()
-for i,v in next, game:GetService("Players").LocalPlayer.Character:GetDescendants() do
-if v:IsA("BasePart") and v.Name ~="HumanoidRootPart" then
-game:GetService("RunService").Heartbeat:connect(function()
-v.Velocity = Vector3.new(-30,0,0)
-end)
-end
-end
-wait();
-Notify({
-Description = "Netless has been activated, re-run this script if you die";
-Title = "Nameless Admin";
-Duration = 5;
-});
+	local netChar = game:GetService("Players").LocalPlayer.Character
+	local netParts, netN = {}, 0
+	for _, v in next, netChar:GetDescendants() do
+		if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then
+			netN += 1
+			netParts[netN] = v
+		end
+	end
+	local netVel = Vector3.new(-30, 0, 0)
+	Util.Loop.Unbind("NA.netless")
+	Util.Loop.Bind("NA.netless", "Heartbeat", function()
+		if netChar.Parent == nil then
+			Util.Loop.Unbind("NA.netless")
+			return
+		end
+		for i = 1, netN do
+			netParts[i].Velocity = netVel
+		end
+	end, "NA")
+	wait();
+	Notify({
+		Description = "Netless has been activated, re-run this script if you die";
+		Title = "Nameless Admin";
+		Duration = 5;
+	});
 end)
 cmd.add({"rocket"}, {"rocket <player>", "rockets a player"}, function(...)
 wait();
@@ -33060,30 +33138,20 @@ InvisibleCharacter.Parent = game.Lighting
 local Void = workspace.FallenPartsDestroyHeight
 InvisibleCharacter.Name = ""
 local CF
+local voidIsNegative = tostring(Void):find("-") ~= nil
+local function invisVoidCheck()
+	local ch = game.Players.LocalPlayer.Character
+	local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	local Y = hrp.Position.Y
+	if voidIsNegative then
+		if Y <= Void then Respawn() end
+	elseif Y >= Void then
+		Respawn()
+	end
+end
 local invisFix = game:GetService("RunService").Stepped:Connect(function()
-pcall(function()
-local IsInteger
-if tostring(Void):find'-' then
-IsInteger = true
-else
-IsInteger = false
-end
-local Pos = game.Players.LocalPlayer.Character.HumanoidRootPart.Position
-local Pos_String = tostring(Pos)
-local Pos_Seperate = Pos_String:split(', ')
-local X = tonumber(Pos_Seperate[1])
-local Y = tonumber(Pos_Seperate[2])
-local Z = tonumber(Pos_Seperate[3])
-if IsInteger == true then
-if Y <= Void then
-Respawn()
-end
-elseif IsInteger == false then
-if Y >= Void then
-Respawn()
-end
-end
-end)
+	pcall(invisVoidCheck)
 end)
 for i,v in pairs(InvisibleCharacter:GetDescendants())do
 if v:IsA("BasePart") then
