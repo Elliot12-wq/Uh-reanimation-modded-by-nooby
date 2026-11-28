@@ -65552,14 +65552,15 @@ Util.Fling.Descriptions = {
 "instant fling: saves your position, snaps your root + limbs onto the target for 1-2 frames with extreme velocity, then snaps straight back",
 "overflow fling: instantly applies a finite 1 decillion (1e33) velocity and angular impulse across all axes with independent per-axis alternation, aperiodic drift and rapid spin; hard-capped at 1e36, no NaN, no infinity",
 "PRoot fling: welds your HumanoidRootPart onto the target's HumanoidRootPart (locked to them every frame) and dumps huge linear + angular power into them for exactly 1 second, then your character snaps back to its normal reanimated position",
-"kill fling: fuses your HumanoidRootPart directly onto the target's HumanoidRootPart (zero offset, no jitter) and floods every physics channel with 1e300 linear and angular velocity — alternating axes every frame at 480 Hz — so astronomically extreme that the physics simulation collapses and kills them instead of sending them flying",
+"kill fling: fuses your HumanoidRootPart directly onto the target's HumanoidRootPart (zero offset, no jitter) and floods your whole assembly with 1e36 (Util.Fling.KillPower) linear and angular velocity — constant downward Y, X/Z and spin alternating at 480 Hz — so astronomically extreme that the target is driven straight under the map and killed instead of sent flying",
 "under void fling: attaches your HumanoidRootPart to the target's HumanoidRootPart (zero offset, re-fetched every frame) and floods every limb with 1e18 purely downward linear velocity plus 1e18 three-phase alternating angular velocity simultaneously — smashes the target straight down through the floor and under the void; the violent all-axis spin prevents any coherent directional escape so the assembly is driven directly beneath the map with no lateral launch",
 "sky fling: attaches your HumanoidRootPart to the target's HumanoidRootPart (zero offset, re-fetched every frame) and floods every limb with 1e18 purely upward linear velocity plus alternating X/Z to break physics equilibrium — launches the target straight up into the sky; the upward force overwhelms gravity and sends the assembly far above the map with no lateral drift",
 }
 Util.Fling.InstantDuration = 0.02
 Util.Fling.PRootDuration = 1.0
 Util.Fling.PRootPower = 9e8
-Util.Fling.KillDuration = 0.75
+Util.Fling.KillDuration = 1.5 -- ends early the moment the target dies (Step checks TargetAlive)
+Util.Fling.KillPower = 1e36 -- Kill Fling magnitude; float32-finite, same hard cap as Overflow Fling. If it ever goes inert, lower it (float32 max is ~3.4e38)
 Util.Fling.UnderVoidFlingDuration = 1.5
 Util.Fling.SkyFlingDuration = 1.5
 Util.Fling.WeakDuration = 0.4
@@ -65813,6 +65814,12 @@ end
 Util.Fling.OverflowMagnitude = function()
 return Util.Fling.OverflowScale(Util.Fling.OverflowDefault)
 end
+-- Kill Fling magnitude: always finite and clamped to [1, 3e38] so NaN/inf/garbage can never reach Roblox physics
+Util.Fling.KillMagnitude = function()
+local p = tonumber(Util.Fling.KillPower)
+if not p or p ~= p or p <= 0 then return 1e36 end
+return math.min(p, 3e38)
+end
 Util.Fling.ApplyRoot = function(RootPart, ft, flingcf)
 local mode = ft.Mode or 1
 local t = os.clock()
@@ -65892,24 +65899,39 @@ RootPart.AssemblyLinearVelocity = Vector3.new(pw * fl, pw * fl, -pw * fl)
 RootPart.AssemblyAngularVelocity = Vector3.new(pw, -pw * fl, pw)
 end)
 elseif mode == 11 then
--- Kill Fling: re-fetches the target's live HumanoidRootPart CFrame every ApplyRoot call so the
--- attachment stays exact even if the target moved since Step ran (fixes drift / "not attaching" bug).
--- Uses a large but float32-finite velocity (1.5e9) instead of 1e300: 1e300 overflows to inf in
--- Roblox's internal float32 physics and gets filtered/clamped to near-zero, which is why the old
--- code only produced a slight push. 1.5e9 is well inside float32 range so the engine actually
--- processes and transfers the force. A fixed large downward component (-kv on Y) drives the target
--- toward FallenPartsDestroyHeight while rapid 480 Hz X/Z alternation prevents physics stabilising.
+-- Kill Fling: locks onto the target's live HumanoidRootPart CFrame every call, then floods the whole
+-- reanimation assembly with Util.Fling.KillMagnitude() (default 1e36, finite float32 so the engine
+-- still processes it; 1e300 overflowed to inf and got discarded). Y is a constant -kv so the target is
+-- driven straight past FallenPartsDestroyHeight and dies instead of being launched sideways; X/Z and all
+-- three angular axes alternate at 480 Hz on two incommensurate phases so the solver never settles.
 local livePart = typeof(ft.Target) == "Instance" and Util.Fling.GetPart(ft.Target)
 local liveCF = (livePart and livePart.Parent) and livePart.CFrame or flingcf
-local kv = 1.5e9
+local kv = Util.Fling.KillMagnitude()
 local kf = (math.floor(t * 480) % 2 == 0) and 1 or -1
+local kg = (math.floor(t * 480 * 1.618034) % 2 == 0) and 1 or -1
+local klin = Vector3.new( kv * kf, -kv, -kv * kg)
+local kang = Vector3.new(-kv * kg,  kv * kf,  kv)
 RootPart.CFrame = liveCF -- zero offset: locked directly onto their live HumanoidRootPart
-RootPart.Velocity           = Vector3.new( kv * kf, -kv, -kv * kf)
-RootPart.RotVelocity        = Vector3.new(-kv * kf,  kv,  kv * kf)
+RootPart.Velocity    = klin
+RootPart.RotVelocity = kang
 pcall(function()
-RootPart.AssemblyLinearVelocity  = Vector3.new( kv * kf, -kv, -kv * kf)
-RootPart.AssemblyAngularVelocity = Vector3.new(-kv * kf,  kv,  kv * kf)
+RootPart.AssemblyLinearVelocity  = klin
+RootPart.AssemblyAngularVelocity = kang
 end)
+local ourCharK = RootPart.Parent
+if ourCharK then
+for _, bp in ourCharK:GetChildren() do
+if bp:IsA("BasePart") and bp ~= RootPart then
+pcall(function()
+bp.CFrame                  = liveCF
+bp.Velocity                = klin
+bp.RotVelocity             = kang
+bp.AssemblyLinearVelocity  = klin
+bp.AssemblyAngularVelocity = kang
+end)
+end
+end
+end
 elseif mode == 12 then
 	-- Under void fling: our entire reanimation assembly is pinned to the target's live
 	-- HumanoidRootPart position every frame. A constant uniform force (previous version)
