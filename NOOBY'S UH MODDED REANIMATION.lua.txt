@@ -66750,6 +66750,14 @@ LimbReanimator.Velocity = SaveData.Reanimator.LimbVelocity
 LimbReanimator.InitMode = SaveData.Reanimator.LimbInitMode
 LimbReanimator.ReplicateFPS10 = SaveData.Reanimator.LimbReplicateFPS10
 LimbReanimator.FlingEnabled = not SaveData.Reanimator.LimbRoleplay
+do
+	local RS = SaveData.Reanimator
+	if type(RS.IndependentJoint) ~= "table" then RS.IndependentJoint = {} end
+	local IJS = RS.IndependentJoint
+	IJS.Enabled = IJS.Enabled ~= false
+	if type(IJS.Selected) ~= "string" then IJS.Selected = "Left Shoulder" end
+	if type(IJS.Joints) ~= "table" then IJS.Joints = {} end
+end
 LimbReanimator.FlingTargets = {}
 LimbReanimator._TempNotFling = {}
 LimbReanimator.BuiltinModeNames = {"RootPart in very void", "RootPart in void", "Keep RootPart Streamed", "CurrentAngle Style", "RootPart is Torso", "RootPart in sky", "RootPart in very sky"}
@@ -67478,6 +67486,212 @@ local fakeHum = rc and rc:FindFirstChildOfClass("Humanoid")
 add("Camera: type=%s subjectIsFake=%s subject=%s", tostring(cam and cam.CameraType), tostring(cam and fakeHum ~= nil and cam.CameraSubject == fakeHum), tostring(cam and cam.CameraSubject))
 return table.concat(out, "\n")
 end
+-- ===== Independent Joint Reanimation: per-joint controller (config persists in SaveData.Reanimator.IndependentJoint; runtime state is released when reanimation stops) =====
+do
+	local IJ = {}
+	Reanimate.IndependentJoint = IJ
+	local S = SaveData.Reanimator.IndependentJoint
+	local J = S.Joints
+	local IDC, TAU = CFrame.identity, math.pi * 2
+	local clamp, exp, sin, rad, abs = math.clamp, math.exp, math.sin, math.rad, math.abs
+	-- per-joint persisted settings. P* studs, R* degrees, M* = constraint limits, MPS studs/s, MRS deg/s, A* = axis allowed (pos + rot)
+	local DEF = {
+		On = true, Px = 0, Py = 0, Pz = 0, Rx = 0, Ry = 0, Rz = 0, Speed = 12,
+		MPx = 10, MPy = 10, MPz = 10, MRx = 180, MRy = 180, MRz = 180, MPS = 40, MRS = 720,
+		AX = true, AY = true, AZ = true,
+		Anim = false, AnimAxis = 1, AnimAmp = 30, AnimHz = 1,
+	}
+	local RNG = {
+		Px = {-50, 50}, Py = {-50, 50}, Pz = {-50, 50}, Rx = {-180, 180}, Ry = {-180, 180}, Rz = {-180, 180}, Speed = {0.5, 60},
+		MPx = {0, 50}, MPy = {0, 50}, MPz = {0, 50}, MRx = {0, 180}, MRy = {0, 180}, MRz = {0, 180}, MPS = {0.5, 200}, MRS = {10, 3000},
+		AnimAxis = {1, 3}, AnimAmp = {0, 180}, AnimHz = {0.1, 10},
+	}
+	local BASE = {"RootJoint", "Neck", "Left Shoulder", "Right Shoulder", "Left Hip", "Right Hip"}
+	local Order, R, NormDone = {}, {}, {}
+	local DT, NOW, LAST = 0, 0, nil
+	IJ.Order = Order
+	IJ.UI = {Anim = false, Cons = false}
+	local function num(v, d, lo, hi)
+		v = tonumber(v)
+		if not v or v ~= v then v = d end
+		return clamp(v, lo, hi)
+	end
+	local function fin(cf)
+		local x, y, z, a, b, c, d, e, f, g, h, i = cf:GetComponents()
+		return abs(x) < 1e5 and abs(y) < 1e5 and abs(z) < 1e5 and abs(a) <= 1.01 and abs(b) <= 1.01 and abs(c) <= 1.01 and abs(d) <= 1.01 and abs(e) <= 1.01 and abs(f) <= 1.01 and abs(g) <= 1.01 and abs(h) <= 1.01 and abs(i) <= 1.01
+	end
+	local function note(key)
+		if not table.find(Order, key) then Order[#Order + 1] = key end
+	end
+	local function rebuild()
+		table.clear(Order)
+		local seen, extra = {}, {}
+		for _, k in BASE do Order[#Order + 1] = k seen[k] = true end
+		for k in J do
+			if type(k) == "string" and not seen[k] then extra[#extra + 1] = k end
+		end
+		table.sort(extra)
+		for _, k in extra do Order[#Order + 1] = k end
+	end
+	rebuild()
+	-- persisted config of one joint (created + normalized on first use; saved table IS the live config)
+	local function Cfg(key)
+		local c = J[key]
+		if type(c) ~= "table" then c = {} J[key] = c note(key) end
+		if not NormDone[key] then
+			NormDone[key] = true
+			for f, d in DEF do
+				if type(d) == "boolean" then
+					if c[f] == nil then c[f] = d else c[f] = c[f] and true or false end
+				else
+					local rg = RNG[f]
+					c[f] = num(c[f], d, rg[1], rg[2])
+				end
+			end
+		end
+		return c
+	end
+	IJ.Cfg = Cfg
+	-- target joint transform (Motor6D.Transform space): axis restrictions -> displacement / rotation limits -> finite check
+	local function retarget(r, c)
+		local on = S.Enabled and c.On
+		r.Anim = (on and c.Anim and c.AnimAmp > 0) or false
+		r.Dirty, r.Settled, r.Id = false, false, false
+		if not on then r.Tgt = IDC return end
+		local px, py, pz, rx, ry, rz = c.Px, c.Py, c.Pz, c.Rx, c.Ry, c.Rz
+		if r.Anim then
+			local a = c.AnimAmp * sin((NOW - r.T0) * TAU * c.AnimHz)
+			local ax = c.AnimAxis
+			if ax == 1 then rx += a elseif ax == 2 then ry += a else rz += a end
+		end
+		if not c.AX then px, rx = 0, 0 end
+		if not c.AY then py, ry = 0, 0 end
+		if not c.AZ then pz, rz = 0, 0 end
+		px, py, pz = clamp(px, -c.MPx, c.MPx), clamp(py, -c.MPy, c.MPy), clamp(pz, -c.MPz, c.MPz)
+		rx, ry, rz = clamp(rx, -c.MRx, c.MRx), clamp(ry, -c.MRy, c.MRy), clamp(rz, -c.MRz, c.MRz)
+		local t = CFrame.new(px, py, pz) * CFrame.Angles(rad(rx), rad(ry), rad(rz))
+		r.Tgt = fin(t) and t or IDC
+	end
+	-- DeltaTime interpolation toward the target with per-joint speed + max move / rotate speed; skipped entirely once settled
+	local function step(r, c)
+		if r.Dirty or r.Anim then retarget(r, c) end
+		if r.Settled then return end
+		local cur, tgt = r.Cur, r.Tgt
+		r.Prev = cur
+		local cp = cur.Position
+		local dp = tgt.Position - cp
+		local cr = cur.Rotation
+		local axis, ang = cr:ToObjectSpace(tgt.Rotation):ToAxisAngle()
+		if dp.Magnitude < 1e-4 and ang < 1e-3 then
+			r.Cur, r.Settled, r.Id = tgt, not r.Anim, tgt == IDC
+			return
+		end
+		local a = 1 - exp(-c.Speed * DT)
+		local sp = dp * a
+		local mp = c.MPS * DT
+		local m = sp.Magnitude
+		if m > mp then sp *= mp / m end
+		local sa = ang * a
+		local mr = rad(c.MRS) * DT
+		if sa > mr then sa = mr end
+		local new = CFrame.new(cp + sp) * (sa > 1e-6 and cr * CFrame.fromAxisAngle(axis, sa) or cr)
+		r.Cur = fin(new) and new or tgt
+	end
+	local function reg(key, make)
+		local r = {Cur = IDC, Tgt = IDC, Prev = IDC, Settled = true, Dirty = true, Id = true, Anim = false, T0 = NOW}
+		if make or J[key] then r.C = Cfg(key) end
+		if not make then note(key) end
+		R[key] = r
+		return r
+	end
+	function IJ.Begin()
+		table.clear(R)
+		LAST = nil
+	end
+	-- once per frame (from UpdateTransforms)
+	function IJ.Tick()
+		local n = os.clock()
+		DT = LAST and clamp(n - LAST, 0, 0.1) or 0
+		LAST, NOW = n, n
+	end
+	-- mapped joint: returns the base limb pose with this joint's offset applied in joint space (C0 * (Transform * J) * C1^-1); C0/C1 are never modified
+	function IJ.Apply(motor, mcf)
+		if not motor.Parent then return mcf end
+		local key = motor.Name
+		local r = R[key] or reg(key, true)
+		local c = r.C
+		if not c then return mcf end
+		step(r, c)
+		if r.Id then return mcf end
+		local c1 = motor.C1
+		return mcf * c1 * r.Cur * c1:Inverse()
+	end
+	-- Motor6Ds without a limb mapping (base transform is identity): returns the joint transform; unconfigured motors are untouched
+	function IJ.Extra(motor)
+		if not motor.Parent then return IDC end
+		local key = motor.Name
+		local r = R[key] or reg(key, false)
+		local c = r.C
+		if not c then return IDC end
+		step(r, c)
+		return r.Cur
+	end
+	-- character respawn: blend the new character in from its base pose
+	function IJ.Respawn()
+		for _, r in R do
+			r.Cur, r.Prev, r.Dirty, r.Settled, r.Id = IDC, IDC, true, false, false
+		end
+	end
+	-- reanimation stopped: drop all runtime joint state (saved config stays)
+	function IJ.Release()
+		table.clear(R)
+		LAST = nil
+		rebuild()
+	end
+	function IJ.Wake(key)
+		local r = R[key]
+		if r then
+			r.C = J[key] and Cfg(key) or nil
+			r.Dirty = true
+		end
+	end
+	function IJ.WakeAll()
+		for _, r in R do r.Dirty = true end
+	end
+	function IJ.SetEnabled(v)
+		S.Enabled = v and true or false
+		IJ.WakeAll()
+	end
+	-- change one setting of ONE joint (sanitized + clamped); never touches other joints
+	function IJ.Set(key, field, v)
+		local c = Cfg(key)
+		local d = DEF[field]
+		if d == nil then return end
+		if type(d) == "boolean" then
+			c[field] = v and true or false
+		else
+			local rg = RNG[field]
+			c[field] = num(v, d, rg[1], rg[2])
+		end
+		IJ.Wake(key)
+	end
+	function IJ.ResetJoint(key)
+		local c = Cfg(key)
+		for f, d in DEF do c[f] = d end
+		IJ.Wake(key)
+	end
+	function IJ.ResetAll()
+		for k in J do
+			if type(k) == "string" then IJ.ResetJoint(k) end
+		end
+		for _, k in Order do IJ.ResetJoint(k) end
+	end
+	function IJ.Selected()
+		local k = S.Selected
+		if not table.find(Order, k) then k = Order[1] end
+		return k
+	end
+end
 function LimbReanimator.Config(parent, hiderKey)
 UI.CreateText(parent, "as mentioned in the README, this only works for SOME games,\nbecause 'modern' games create the Animator automatically which breaks limb reanimation", 10, Enum.TextXAlignment.Center)
 local modenames = LimbReanimator.GetModeNames()
@@ -67613,6 +67827,8 @@ local BaseParts = {}
 local UnknownMotor6Ds = {}
 local Ragdoll = LimbReanimator.RagdollMode and true or false
 local VelInterp = LimbReanimator.VelInterpMode and LimbReanimator.VelInterpCore or false
+LimbReanimator.IJRun = LimbReanimator.IJMode and Reanimate.IndependentJoint or nil
+if LimbReanimator.IJRun then LimbReanimator.IJRun.Begin() end
 local RagdollParts, RagdollByPart, RGWC, RagdollWarned = {}, {}, {}, {}
 local RagdollZero = Vector3.zero
 local function RagdollFinite(p)
@@ -68939,6 +69155,7 @@ end)
 lastspawn = os.clock()
 table.clear(BaseParts)
 table.clear(UnknownMotor6Ds)
+if LimbReanimator.IJRun then LimbReanimator.IJRun.Respawn() end
 table.clear(RagdollParts)
 table.clear(RagdollByPart)
 for _,map in LimbMapping do
@@ -69031,8 +69248,10 @@ a %= 1 / 10
 lastrep = b - a
 end
 end
+local ij = LimbReanimator.IJRun
+if ij then ij.Tick() end
 for _,v in UnknownMotor6Ds do
-Util.SetMotor6DTransform(v, CFrame.identity)
+Util.SetMotor6DTransform(v, ij and ij.Extra(v) or CFrame.identity)
 end
 if Ragdoll then RagdollSample(RootPart) end
 if Servo then
@@ -69104,6 +69323,7 @@ map.CFrame = mcf
 fresh = true
 end
 if VelInterp then mcf = Reanimate.SanitizeLimbPose(map, v, VelInterp.Step(map, mcf, fresh, vnow)) end
+if ij then mcf = ij.Apply(v, mcf) end
 Util.SetMotor6DOffset(v, Reanimate.LimbHider.Void(map, mcf))
 end
 end
@@ -69332,6 +69552,10 @@ end
 table.clear(LimbReanimator.FlingTargets)
 table.clear(LimbReanimator._TempNotFling)
 CharConn:Disconnect()
+if LimbReanimator.IJRun then
+LimbReanimator.IJRun.Release()
+LimbReanimator.IJRun = nil
+end
 if Ragdoll then
 for _,map in LimbMapping do RagdollRelease(map) end
 RagdollClean()
@@ -69564,6 +69788,110 @@ repeat task.wait() until Reanimate.Stopping
 Reanimate.Stopping = false
 end
 end
+end
+-- ===== Independent Joint Reanimation (selectable Reanimator method; uses the Limb Reanimator pipeline + shared Limb Reanimator config) =====
+do
+	local IJ = Reanimate.IndependentJoint
+	local TL = Enum.TextXAlignment.Center
+	local function refresh() task.defer(function() pcall(Util.RefreshReanimatorConfig) end) end
+	function IJ.BuildUI(parent)
+		UI.CreateText(parent, "-=+ Independent Joint Reanimation +=-", 12, TL)
+		UI.CreateText(parent, "Every joint keeps its own offset, interpolation, constraints and animation. Offsets use joint space (the same space as Motor6D.Transform) on top of the normal limb pose; C0/C1 are never changed.", 10, TL)
+		UI.CreateSwitch(parent, "Independent Joint Reanimation Enabled", SaveData.Reanimator.IndependentJoint.Enabled).Changed:Connect(function(val)
+			IJ.SetEnabled(val)
+		end)
+		local key = IJ.Selected()
+		local c = IJ.Cfg(key)
+		UI.CreateDropdown(parent, "Joint", table.clone(IJ.Order), table.find(IJ.Order, key) or 1).Changed:Connect(function(val)
+			local k = IJ.Order[val]
+			if k and k ~= SaveData.Reanimator.IndependentJoint.Selected then
+				SaveData.Reanimator.IndependentJoint.Selected = k
+				refresh()
+			end
+		end)
+		local function sl(label, field, lo, hi, scale)
+			UI.CreateSlider(parent, label, math.floor(c[field] * scale + 0.5), lo, hi, 1).Changed:Connect(function(val)
+				IJ.Set(key, field, val / scale)
+			end)
+		end
+		local function sw(label, field)
+			UI.CreateSwitch(parent, label, c[field]).Changed:Connect(function(val)
+				IJ.Set(key, field, val)
+			end)
+		end
+		UI.CreateText(parent, "-- " .. key .. " --", 11, TL)
+		sw("Joint Enabled", "On")
+		sl("Position X (1/100 stud)", "Px", -1000, 1000, 100)
+		sl("Position Y (1/100 stud)", "Py", -1000, 1000, 100)
+		sl("Position Z (1/100 stud)", "Pz", -1000, 1000, 100)
+		sl("Rotation X (deg)", "Rx", -180, 180, 1)
+		sl("Rotation Y (deg)", "Ry", -180, 180, 1)
+		sl("Rotation Z (deg)", "Rz", -180, 180, 1)
+		sl("Interpolation Speed", "Speed", 1, 60, 1)
+		UI.CreateSwitch(parent, "Show Animation Controls", IJ.UI.Anim).Changed:Connect(function(val)
+			IJ.UI.Anim = val
+			refresh()
+		end)
+		if IJ.UI.Anim then
+			sw("Animation Contribution", "Anim")
+			UI.CreateDropdown(parent, "Animation Axis", {"X", "Y", "Z"}, c.AnimAxis).Changed:Connect(function(val)
+				IJ.Set(key, "AnimAxis", val)
+			end)
+			sl("Animation Amplitude (deg)", "AnimAmp", 0, 180, 1)
+			sl("Animation Speed (1/10 Hz)", "AnimHz", 1, 100, 10)
+		end
+		UI.CreateSwitch(parent, "Show Constraints", IJ.UI.Cons).Changed:Connect(function(val)
+			IJ.UI.Cons = val
+			refresh()
+		end)
+		if IJ.UI.Cons then
+			sl("Max Position X (1/100 stud)", "MPx", 0, 1000, 100)
+			sl("Max Position Y (1/100 stud)", "MPy", 0, 1000, 100)
+			sl("Max Position Z (1/100 stud)", "MPz", 0, 1000, 100)
+			sl("Max Rotation X (deg)", "MRx", 0, 180, 1)
+			sl("Max Rotation Y (deg)", "MRy", 0, 180, 1)
+			sl("Max Rotation Z (deg)", "MRz", 0, 180, 1)
+			sl("Max Move Speed (studs/s)", "MPS", 1, 200, 1)
+			sl("Max Rotate Speed (deg/s)", "MRS", 10, 2000, 1)
+			sw("Allow X Axis (position + rotation)", "AX")
+			sw("Allow Y Axis (position + rotation)", "AY")
+			sw("Allow Z Axis (position + rotation)", "AZ")
+		end
+		local rj = UI.CreateButton(parent, "Reset Individual Joint", 14)
+		rj.Activated:Connect(function()
+			IJ.ResetJoint(key)
+			refresh()
+		end)
+		local ra = UI.CreateButton(parent, "Reset All Joints", 14)
+		ra.Activated:Connect(function()
+			IJ.ResetAll()
+			refresh()
+		end)
+	end
+	local IJR = setmetatable({Name = "Independent Joint Reanimation", HiderKey = "IndependentJoint"}, {__index = LimbReanimator})
+	Reanimate.IndependentJointReanimator = IJR
+	function IJR.Config(parent)
+		IJ.BuildUI(parent)
+		UI.CreateSeparator(parent)
+		UI.CreateText(parent, "RootPart / init / fling options below are shared with the Limb Reanimator.", 10, TL)
+		LimbReanimator.Config(parent, "IndependentJoint")
+	end
+	function IJR.Start()
+		LimbReanimator.IJMode = true
+		local ok, err = pcall(LimbReanimator.Start)
+		LimbReanimator.IJMode = nil
+		if not ok then
+			warn("[Independent-Joint Reanimator] failed to start: " .. tostring(err))
+			pcall(Util.Notify, "Independent Joint Reanimation failed to start (see console): " .. tostring(err))
+			local ij = LimbReanimator.IJRun
+			LimbReanimator.IJRun = nil
+			if ij then pcall(ij.Release) end
+			pcall(Reanimate.DestroyCharacter)
+			Reanimate.Starting = false
+			repeat task.wait() until Reanimate.Stopping
+			Reanimate.Stopping = false
+		end
+	end
 end
 -- ===== Skeletal Retargeting Reanimation (R6 only) =====
 -- source animation -> source skeleton reader -> anatomical mapping -> reference-pose relative joint motion -> target R6 joint frames -> proportion compensation -> smoothing -> target R6 pose.
@@ -87454,7 +87782,7 @@ if not SaveData.ReanimSelRagdoll then
 SaveData.ReanimSelRagdoll = true
 if SaveData.SelectedReanimator > 3 then SaveData.SelectedReanimator = 1 end
 end
-if SaveData.SelectedReanimator > 13 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
+if SaveData.SelectedReanimator > 14 or SaveData.SelectedReanimator < 1 then SaveData.SelectedReanimator = 1 end
 Util.FCMark("reanim")
 
 local ReanimMethods = {
@@ -87471,6 +87799,7 @@ local ReanimMethods = {
 {Reanimate.AccessoriesReanimator, "Accessories Reanimation"},
 {Reanimate.KinematicReanimator, "Kinematic Reanimation"},
 {Reanimate.VelocityInterpolatedReanimator, "Velocity-Interpolated Reanimation"},
+{Reanimate.IndependentJointReanimator, "Independent Joint Reanimation"},
 }
 local ReanimMethodNames = {}
 for i, m in ReanimMethods do ReanimMethodNames[i] = m[2] end
@@ -88166,7 +88495,7 @@ end
 local hats
 if cur == HatReanimator then
 hats = true
-elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator or cur == Reanimate.HybridJointReanimator or cur == Reanimate.SkeletalRetargetReanimator or cur == Reanimate.KinematicReanimator or cur == Reanimate.VelocityInterpolatedReanimator then
+elseif cur == LimbReanimator or cur == Reanimate.RagdollReanimator or cur == Reanimate.ServoJointReanimator or cur == Reanimate.HybridJointReanimator or cur == Reanimate.IndependentJointReanimator or cur == Reanimate.SkeletalRetargetReanimator or cur == Reanimate.KinematicReanimator or cur == Reanimate.VelocityInterpolatedReanimator then
 hats = false
 else
 hats = (SaveData.SelectedReanimator == 2)
